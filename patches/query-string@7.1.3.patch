@@ -1,0 +1,14 @@
+diff --git a/index.js b/index.js
+index d45e67d91d38c91d05e68e8b338e4bc2de591dcc..f7d3a283c74a283f294ae165164b430e5518957e 100644
+--- a/index.js
++++ b/index.js
+@@ -1,6 +1,8 @@
+ 'use strict';
+ const strictUriEncode = require('strict-uri-encode');
+-const decodeComponent = require('decode-uri-component');
++const decodeComponentModule = require('decode-uri-component');
++// 0.5.1 is ESM-only, so CommonJS sees its namespace; earlier releases exported the function itself.
++const decodeComponent = decodeComponentModule.default ?? decodeComponentModule;
+ const splitOnFirst = require('split-on-first');
+ const filterObject = require('filter-obj');
+ 

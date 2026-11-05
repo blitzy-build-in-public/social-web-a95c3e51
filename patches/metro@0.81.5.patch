@@ -1,0 +1,19 @@
+diff --git a/src/Assets.js b/src/Assets.js
+index a94d722574aab457395814e858fcf36741714feb..b8ea67ad76cb366a7e198757dd3ce681687d9293 100644
+--- a/src/Assets.js
++++ b/src/Assets.js
+@@ -3,7 +3,13 @@
+ const AssetPaths = require("./node-haste/lib/AssetPaths");
+ const crypto = require("crypto");
+ const fs = require("fs");
+-const getImageSize = require("image-size");
++const imageSizeModule = require("image-size");
++// image-size 2.x exposes named bindings only (1.x was callable itself), so resolve the
++// callable; and it takes a Uint8Array alone, while getAssetData passes an asset file
++// path the way 1.x accepted, so read that path here.
++const imageSize = imageSizeModule.default ?? imageSizeModule.imageSize ?? imageSizeModule;
++const getImageSize = (input) =>
++  typeof input === "string" ? imageSize(fs.readFileSync(input)) : imageSize(input);
+ const path = require("path");
+ function isAssetTypeAnImage(type) {
+   return (

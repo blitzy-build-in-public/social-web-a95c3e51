@@ -1,0 +1,89 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.tablemateprover'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+
+// The app's root project already puts com.android.tools.build:gradle on the build classpath at the version
+// React Native 0.76.9 expects, so this module declares no AGP classpath of its own.
+
+// If you want to use the managed Android SDK versions from expo-modules-core, set this to true.
+// The Android SDK versions will be bumped from time to time in SDK releases and may introduce breaking changes in your module code.
+// Most of the time, you may like to manage the Android SDK versions yourself.
+def useManagedAndroidSdkVersions = false
+if (useManagedAndroidSdkVersions) {
+  useDefaultAndroidSdkVersions()
+} else {
+  buildscript {
+    // Simple helper that allows the root project to override versions declared by this library.
+    ext.safeExtGet = { prop, fallback ->
+      rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+    }
+  }
+  project.android {
+    // compileSdk 35 and targetSdk 34 are the Expo SDK 52 values; minSdk 29 is Tablemate's Android floor.
+    compileSdkVersion safeExtGet("compileSdkVersion", 35)
+    defaultConfig {
+      minSdkVersion safeExtGet("minSdkVersion", 29)
+      targetSdkVersion safeExtGet("targetSdkVersion", 34)
+    }
+  }
+}
+
+android {
+  namespace "expo.modules.tablemateprover"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // The @aar carries libjnidispatch.so for every Android ABI the app packages, and the uniffi 0.32.0 Kotlin
+  // bindings generated from ../rust load it through com.sun.jna.Native. Kotlin stdlib and kotlinx-coroutines
+  // reach this module through useCoreDependencies() and expo-modules-core 2.2.3, so nothing else is declared.
+  implementation 'net.java.dev.jna:jna:5.17.0@aar'
+}
+
+// `pnpm circuits:native android` (packages/circuits/scripts/build-native.sh) writes the git-ignored prover
+// outputs checked below; without them the Kotlin sources fail with an unresolved uniffi.mopro reference. The
+// paths are resolved here, before the action runs, so the action itself never touches the project.
+def moproKotlin = new File(projectDir, "src/main/java/uniffi/mopro/mopro.kt")
+def moproJniLibs = new File(projectDir, "src/main/jniLibs")
+def moproAbis = ["arm64-v8a", "x86_64"]
+
+tasks.register("verifyMoproOutputs") {
+  description = "Fails the build when the generated Mopro prover outputs are missing."
+  doLast {
+    def abiDirs = moproJniLibs.isDirectory() ? (moproJniLibs.listFiles() ?: new File[0]) : new File[0]
+    def foundAbis = abiDirs.findAll { new File(it, "libmopro_bindings.so").isFile() }*.name.sort()
+    // Set whenever one of the expected ABIs has no prover library, so both messages name the ABIs found.
+    def abiNote = (foundAbis.isEmpty() || moproAbis - foundAbis) ?
+      "\n  libmopro_bindings.so found for: " + (foundAbis.isEmpty() ? "no ABI" : foundAbis.join(", ")) +
+      " (expected: " + moproAbis.join(", ") + ")" : ""
+    def missing = []
+    if (!moproKotlin.isFile()) missing << "src/main/java/uniffi/mopro/mopro.kt"
+    if (foundAbis.isEmpty()) missing << "src/main/jniLibs/<abi>/libmopro_bindings.so"
+    if (!missing.isEmpty()) {
+      throw new GradleException("TablemateProver: missing generated prover outputs:\n  " + missing.join("\n  ") + abiNote +
+        "\nRun 'pnpm circuits:compile' then 'pnpm circuits:native android' (NDK 26.1.10909125, ANDROID_NDK_HOME) before an Android build.")
+    }
+    // JNA is still packaged for the other ABIs, so the module loads and isProverAvailable() is false there.
+    if (abiNote) logger.warn("TablemateProver: incomplete prover outputs:" + abiNote)
+  }
+}
+
+// Wired to preBuild, not evaluated at configuration time, so a checkout without the generated outputs still
+// configures while `./gradlew projects` or `clean` keeps working and a build fails with the message above.
+// Every Android development build of the app needs `pnpm circuits:native android` first, Maestro e2e builds
+// included, because the module is always autolinked. Release builds leave minification off, so no consumer
+// ProGuard rules ship here; if minify is ever enabled, com.sun.jna.** and uniffi.mopro.** need keep rules.
+tasks.named('preBuild') { dependsOn 'verifyMoproOutputs' }
