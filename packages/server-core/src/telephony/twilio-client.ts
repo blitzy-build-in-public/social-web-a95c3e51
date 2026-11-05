@@ -67,6 +67,12 @@ const MISSING_SIMULATOR_URL =
 const TWILIO_API_ORIGIN = 'https://api.twilio.com';
 
 /**
+ * The REST origin as a URI prefix. The trailing slash keeps the match on the origin's own boundary,
+ * so a host that merely begins with those characters is not rewritten onto another host either.
+ */
+const TWILIO_REST_URI_PREFIX = `${TWILIO_API_ORIGIN}/`;
+
+/**
  * The SDK's client and request-client types, derived from the package rather than imported from a
  * deep `twilio/lib/...` path, so this file does not depend on the SDK's internal layout (AAP 0.11.1).
  */
@@ -261,7 +267,7 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
         record: false,
         machineDetection: 'Enable',
       });
-      return { callSid: call.sid };
+      return { callSid: readCallSid(call.sid) };
     },
 
     async fetchCall(callSid: string): Promise<FetchedCall> {
@@ -287,7 +293,7 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
         limit: 20,
       });
       return page.map((call) => ({
-        callSid: call.sid,
+        callSid: readCallSid(call.sid),
         status: parseCallStatus(call.status),
         startTime: toIsoStartTime(call.startTime),
       }));
@@ -380,11 +386,18 @@ function forwardToSimulator(simulatorUrl: string): TwilioHttpClient {
   };
 }
 
-/** Point a URI the SDK built for the REST API at the simulator, path and query included. */
+/**
+ * Point a URI the SDK built for the REST API at the simulator, path and query included. In
+ * `simulator` mode no request may leave the host (AAP 0.3.3, AAP 0.6.2, AAP 0.11.2), so a URI
+ * outside the REST origin — the regional host the SDK builds when `TWILIO_REGION` or `TWILIO_EDGE`
+ * is set, or any request this transport was never meant to carry — fails the call closed instead
+ * of being sent to the real REST API.
+ */
 function toSimulatorUri(uri: string, baseUrl: string): string {
-  return uri.startsWith(TWILIO_API_ORIGIN)
-    ? `${baseUrl}${uri.slice(TWILIO_API_ORIGIN.length)}`
-    : uri;
+  if (!uri.startsWith(TWILIO_REST_URI_PREFIX)) {
+    throw new Error('the simulator transport refuses a request URI outside the Twilio REST origin');
+  }
+  return `${baseUrl}${uri.slice(TWILIO_API_ORIGIN.length)}`;
 }
 
 /**
@@ -409,6 +422,21 @@ function toIsoStartTime(startTime: unknown): string | null {
     return null;
   }
   return startTime.toISOString();
+}
+
+/**
+ * Read the SID a provider response carries. Every other field on this boundary goes through a
+ * guard, and this one is the value dispatch persists as `CallAttempt.twilioCallSid` — the unique
+ * key a signed status callback matches against, so an attempt whose call was created is adopted at
+ * all (AAP 0.3.2). A response without a usable SID is an error rather than an `undefined` written
+ * into that key, and {@link classifyCallError} answers `ambiguous` with it: the request reached
+ * Twilio, so the call may exist and is never redialled.
+ */
+function readCallSid(sid: unknown): string {
+  if (typeof sid !== 'string' || sid === '') {
+    throw new Error('twilio answered without a call sid');
+  }
+  return sid;
 }
 
 /** The only network codes that prove the request never reached Twilio. */
