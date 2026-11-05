@@ -7,6 +7,12 @@ const DEFAULT_RANDOM_BYTES = 32;
 const MIN_RANDOM_BYTES = 16;
 
 /**
+ * Safety ceiling, so a computed length cannot turn a mint into an allocation: the longest secret
+ * anything in the workspace mints is 32 bytes, and 64 already yields 86 base64url characters.
+ */
+const MAX_RANDOM_BYTES = 64;
+
+/**
  * HMAC-SHA256 of `data` under `key`, as raw bytes.
  *
  * The experiment module derives a variant bucket from the whole digest
@@ -111,10 +117,15 @@ function assertUsablePairId(id: string): void {
   }
 }
 
-/** Mints `bytes` random bytes as base64url, refusing lengths below the safety floor. */
+/**
+ * Mints `bytes` random bytes as base64url, refusing a length outside the 16-64 byte range so a
+ * computed count fails fast instead of reaching `randomBytes` as an allocation.
+ */
 function randomBase64Url(bytes: number): string {
-  if (!Number.isInteger(bytes) || bytes < MIN_RANDOM_BYTES) {
-    throw new RangeError(`random byte length must be an integer of at least ${MIN_RANDOM_BYTES}`);
+  if (!Number.isInteger(bytes) || bytes < MIN_RANDOM_BYTES || bytes > MAX_RANDOM_BYTES) {
+    throw new RangeError(
+      `random byte length must be an integer between ${MIN_RANDOM_BYTES} and ${MAX_RANDOM_BYTES}`,
+    );
   }
   return randomBytes(bytes).toString('base64url');
 }

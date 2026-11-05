@@ -23,8 +23,10 @@ import { QUEUE, type QueueName } from './names.ts';
  * completed and failed sets capped at 1,000 and 5,000 jobs.
  *
  * `priority` is deliberately absent: unset means no explicit priority, and BullMQ takes
- * unprioritised jobs before prioritised ones, so every queue is first in, first out unless a single
- * job is given a priority. Only one place's menu ingestion is (AAP 0.5.7).
+ * unprioritised jobs before prioritised ones, so every queue is first in, first out unless an
+ * individual job is given one. Only a place's `menu-ingest` job is, and only per job: its priority
+ * comes from the call-and-menu rule of AAP 0.5.7 and is passed as a `{ priority }` override to
+ * {@link jobOptionsFor}, never baked into these shared defaults.
  *
  * Deep-frozen, nested objects included, so no consumer can change a shared policy in place; callers
  * take a copy through {@link jobOptionsFor}.
