@@ -142,6 +142,35 @@ button:disabled {
   pointer-events: none;
 }
 
+/* A control answers the pointer in its own vocabulary, from tokens the tokens' CONTRAST_PAIRS and
+   NON_TEXT_CONTRAST_PAIRS already record: the filled action deepens to the palette's darkest tone
+   (its `on-primary` label measures 17.21:1 there, the same measurement the tokens record for
+   `text` on `background`), the header's outlined control takes the `primary` boundary (7.3:1 over
+   the page, 6.59:1 over its own fill), and a link deepens to the darkest tone. A disabled control
+   carries pointer-events: none, so it can never be hovered. */
+main button:hover,
+main button:active {
+  background: var(--tm-color-text);
+}
+
+header button:hover,
+header button:active {
+  /* Its fill is restated rather than only its edge: the header sits inside the `main` column with
+     everything else, so the filled-action rule above matches this control too. */
+  background: var(--tm-color-surface);
+  border-color: var(--tm-color-primary);
+}
+
+/* A link is underlined by the browser at rest, so its pointer affordance is the colour: it
+   deepens to the palette's darkest tone, whose recorded pair on the page is 17.21:1, against the
+   `primary` it rests in at 7.3:1. The underline is restated so the affordance does not depend on
+   the user agent's own link styling. */
+a:hover,
+a:active {
+  color: var(--tm-color-text);
+  text-decoration: underline;
+}
+
 a {
   color: var(--tm-color-primary);
 }
@@ -154,9 +183,17 @@ input:focus-visible {
 }
 
 /* Read off this element as text, so it stays exactly six digits and the visual grouping is
-   letter-spacing alone. */
+   letter-spacing alone. The check-in code is the console's one display element, sized from the
+   tokens' largest type role (--tm-font-size-display) rather than by a type size of this file's
+   own: it fills a phone's width at 18vw and never exceeds 4.5x that role. The line height stays
+   the unitless ratio a single line of digits needs, because the tokens state line heights as
+   lengths that track their own font size and cannot follow this viewport-derived size. */
 .code {
-  font-size: clamp(3rem, 18vw, 9rem);
+  font-size: clamp(
+    calc(var(--tm-font-size-display) * 1.5),
+    18vw,
+    calc(var(--tm-font-size-display) * 4.5)
+  );
   line-height: 1.1;
   font-weight: var(--tm-font-weight-bold);
   font-variant-numeric: tabular-nums;
@@ -191,10 +228,19 @@ input:focus-visible {
   fill: var(--tm-color-text);
 }
 
-/* Status and error lines; each carries its own words, so colour is never the only signal. */
+/* Status and error lines; each carries its own words, so colour is never the only signal. A plain
+   .notice is a status line (role="status"); the .notice-error modifier is the failure line
+   (role="alert") for a rejected secret or a failed refresh, so the danger fill stays available as
+   exactly that and a status is never painted as a failure. */
 .notice {
   padding: var(--tm-space-md) var(--tm-space-lg);
   border-radius: var(--tm-radius-md);
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text);
+}
+
+/* The failure surface: a rejected secret, a failed refresh. */
+.notice-error {
   background: var(--tm-color-danger);
   color: var(--tm-color-on-danger);
 }

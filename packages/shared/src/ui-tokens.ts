@@ -1,10 +1,11 @@
 /**
- * Design tokens for every Tablemate surface: colour, spacing, radii, type roles and the
- * contrast records the UI primitives are built and checked against (AAP 0.5.8).
+ * Design tokens for every Tablemate surface: colour, spacing, radii, type roles, the boundary
+ * widths and interaction opacity the primitives paint, and the contrast records the UI primitives
+ * are built and checked against (AAP 0.5.8).
  *
  * Platform-neutral plain values with no imports, so the native app, the web build and the Vite
  * venue console all read the same numbers. Consumers style from these tokens and never
- * hard-code a colour, a spacing step or a type size of their own.
+ * hard-code a colour, a spacing step, a boundary width or a type size of their own.
  */
 
 /**
@@ -87,6 +88,26 @@ export const fontWeights = {
 export const MIN_TOUCH_TARGET = 44;
 
 /**
+ * Boundary widths in points on native and CSS px on web, so no primitive carries a boundary value
+ * of its own. `edge` is a resting boundary, `control` the outline a control paints, which also
+ * reserves the band its keyboard focus ring shows, `accent` a status edge wide enough to carry a
+ * banner's tone, and `separator` the rule between stacked rows: one CSS pixel on web, one device
+ * pixel on native, which is what a platform's own hairline constant resolves to.
+ */
+export const borderWidths = { separator: 1, edge: 1, control: 2, accent: 4 } as const;
+
+/**
+ * How a control answers the pointer, as an opacity over its own fill (AAP 0.5.8).
+ *
+ * The palette holds no darker shade of `primary` or `danger` and records no darker text pair, so a
+ * filled control dims instead of taking a second colour: at `pressed` the white label still measures
+ * above 5:1 on either fill (onPrimary/primary 5.30:1, onDanger/danger 5.13:1 composited), and `hover`
+ * is the lighter step so a held control still reads as the stronger state. A control whose own fill
+ * is the lightest token steps to `surface` instead of dimming, which is the fill its press paints.
+ */
+export const interactionOpacity = { hover: 0.9, pressed: 0.85 } as const;
+
+/**
  * A foreground painted on a background, with the measured contrast between them.
  */
 interface ContrastPair {
@@ -108,6 +129,8 @@ export const CONTRAST_PAIRS = [
   { foreground: 'textMuted', background: 'background', ratio: 7.07 },
   { foreground: 'textMuted', background: 'surface', ratio: 6.38 },
   { foreground: 'onPrimary', background: 'primary', ratio: 7.3 },
+  // The fill a filled action dims toward while hovered, which its white label keeps 17.21:1 over.
+  { foreground: 'onPrimary', background: 'text', ratio: 17.21 },
   { foreground: 'primary', background: 'background', ratio: 7.3 },
   { foreground: 'primary', background: 'surface', ratio: 6.59 },
   { foreground: 'onDanger', background: 'danger', ratio: 6.47 },
@@ -126,6 +149,9 @@ export const CONTRAST_PAIRS = [
 export const NON_TEXT_CONTRAST_PAIRS = [
   { foreground: 'border', background: 'background', ratio: 3.7 },
   { foreground: 'border', background: 'surface', ratio: 3.34 },
+  // The hovered boundary of an outlined control: over the page it sits on and over its own fill.
+  { foreground: 'primary', background: 'background', ratio: 7.3 },
+  { foreground: 'primary', background: 'surface', ratio: 6.59 },
   { foreground: 'focusRing', background: 'background', ratio: 6.7 },
   { foreground: 'focusRing', background: 'surface', ratio: 6.04 },
 ] as const satisfies readonly ContrastPair[];

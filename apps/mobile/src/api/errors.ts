@@ -17,7 +17,20 @@
  * Its only import is `@tablemate/shared`, it has no side effects and it touches no platform API, so
  * the module loads unchanged under Hermes, in a browser and in a plain Node test process.
  */
-import { ErrorCode, ErrorEnvelope } from '@tablemate/shared';
+import {
+  BUDGET_MAX_CENTS,
+  BUDGET_MIN_CENTS,
+  CHECK_IN_CLOSES_AFTER_MINUTES,
+  CHECK_IN_OPENS_BEFORE_MINUTES,
+  DEPOSIT_LEVELS_CENTS,
+  DISPUTE_FILING_WINDOW_HOURS,
+  ErrorCode,
+  ErrorEnvelope,
+  PHOTO_MAX_BYTES,
+  START_HORIZON_DAYS,
+  STAY_MAX_DAYS,
+  STAY_MIN_DAYS,
+} from '@tablemate/shared';
 
 /**
  * Every code the client can hold: the shared server codes of AAP 0.5.4, plus the two that exist only
@@ -162,6 +175,23 @@ function retryAfterSecondsFrom(response: {
 /** What a screen shows for a code the map below does not hold. */
 const GENERIC_MESSAGE = 'Something went wrong. Please try again.';
 
+/** Joins items as an English list ending in `or`: `['5', '10', '20']` -> `'5, 10 or 20'`. */
+function joinWithOr(items: readonly string[]): string {
+  if (items.length === 0) return '';
+  const head = items.slice(0, -1).join(', ');
+  const last = items[items.length - 1] ?? '';
+  return head === '' ? last : `${head} or ${last}`;
+}
+
+/**
+ * The accepted deposit levels as whole USD amounts, e.g. `5, 10 or 20`, built from
+ * {@link DEPOSIT_LEVELS_CENTS} so the sentence cannot drift from what `POST /meetups` accepts.
+ */
+const DEPOSIT_AMOUNTS_TEXT = joinWithOr(DEPOSIT_LEVELS_CENTS.map((cents) => String(cents / 100)));
+
+/** The largest accepted photo in whole megabytes, built from {@link PHOTO_MAX_BYTES}. */
+const PHOTO_MAX_MEGABYTES = PHOTO_MAX_BYTES / 1024 / 1024;
+
 /**
  * The fixed English sentence each code shows a user (AAP 0.5.8: the interface is English only).
  *
@@ -169,7 +199,9 @@ const GENERIC_MESSAGE = 'Something went wrong. Please try again.';
  * sentence is short, actionable and repeats nothing the server sent: no field name, no id, no reason
  * text, no provider message (AAP 0.11.1). No sentence here repeats a fixed string of AAP 0.5.8; the
  * deposit framing, safety, age-gate, Table Credit, lodging-call and visibility notices belong to
- * their own screens.
+ * their own screens. A sentence that carries a rule's own number — a window, the deposit levels, the
+ * budget bounds, the stay range, the photo limit — is built from that shared constant rather than
+ * typed out, so the copy cannot drift from what the API enforces.
  *
  * The `/ops` operator screens share this mapping, so the operator codes are covered here too. Only a
  * code this client does not know at all reaches {@link GENERIC_MESSAGE}.
@@ -224,7 +256,7 @@ const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
   dispute_open: 'A report is open on this meetup, so it cannot be changed right now.',
   not_locked: 'This meetup is not locked yet.',
   already_checked_in: 'You have already checked in.',
-  dispute_window_closed: 'The 24 hours for reporting a problem have passed.',
+  dispute_window_closed: `The ${DISPUTE_FILING_WINDOW_HOURS} hours for reporting a problem have passed.`,
   meetup_not_locked: 'Day-plan ideas are available once the meetup is locked.',
   active_claim_exists: 'You already have a stay being verified.',
   call_in_progress: 'A call to the lodging is in progress. Try again when it ends.',
@@ -233,21 +265,21 @@ const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
 
   // 410 — a window closed
   proposal_lapsed: 'This proposal expired before it was answered.',
-  outside_window: 'Check-in opens 15 minutes before the start and closes 45 minutes after it.',
+  outside_window: `Check-in opens ${CHECK_IN_OPENS_BEFORE_MINUTES} minutes before the start and closes ${CHECK_IN_CLOSES_AFTER_MINUTES} minutes after it.`,
 
   // 413 and 422 — a value was rejected
-  photo_too_large: 'That photo is too large. Choose one under 5 MB.',
+  photo_too_large: `That photo is too large. Choose one under ${PHOTO_MAX_MEGABYTES} MB.`,
   proof_invalid: "That proof didn't verify. Import your booking again.",
   issuer_not_allowlisted: "We don't verify stays from that booking site yet.",
-  stay_out_of_range: 'Stays of 1 to 120 days can be verified.',
+  stay_out_of_range: `Stays of ${STAY_MIN_DAYS} to ${STAY_MAX_DAYS} days can be verified.`,
   self_proposal: "You can't propose a meetup to yourself.",
   venue_not_partner: 'Meetups can only be planned at a partner venue.',
-  starts_at_invalid: 'Pick a start time within the next 5 days.',
-  deposit_invalid: 'Choose a deposit of 5, 10 or 20 USD.',
+  starts_at_invalid: `Pick a start time within the next ${START_HORIZON_DAYS} days.`,
+  deposit_invalid: `Choose a deposit of ${DEPOSIT_AMOUNTS_TEXT} USD.`,
   invalid_code: 'That code is wrong or expired. Enter the code shown at the venue.',
   outside_geofence: 'You need to be at the venue to check in.',
   invalid_outcome: 'That action is not available for this item.',
-  budget_out_of_range: 'Choose a per-person budget between 5 and 100 USD.',
+  budget_out_of_range: `Choose a per-person budget between ${BUDGET_MIN_CENTS / 100} and ${BUDGET_MAX_CENTS / 100} USD.`,
   claim_dates_invalid: 'Your stay dates must fall inside your verified dates.',
   lodging_other_city: 'That lodging is not in your verified city.',
 

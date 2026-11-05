@@ -25,7 +25,14 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { PressableStateCallbackType, StyleProp, ViewStyle } from 'react-native';
-import { MIN_TOUCH_TARGET, colors, fontWeights, spacing, typography } from '@tablemate/shared';
+import {
+  MIN_TOUCH_TARGET,
+  borderWidths,
+  colors,
+  fontWeights,
+  spacing,
+  typography,
+} from '@tablemate/shared';
 
 /**
  * Props of {@link ListItem}.
@@ -69,6 +76,7 @@ export function ListItem({
   testID,
 }: ListItemProps): JSX.Element {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
 
   const children = (
     <>
@@ -112,6 +120,7 @@ export function ListItem({
 
   const rowStyle = ({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> => [
     styles.row,
+    hovered && !disabled ? styles.rowHovered : null,
     pressed && !disabled ? styles.rowPressed : null,
     focused ? styles.rowFocused : null,
     webFocusRingReset,
@@ -124,6 +133,10 @@ export function ListItem({
       disabled={disabled}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
+      // Hover reaches this pair on web alone: React Native 0.76 declares it on `PressableProps`
+      // and react-native-web forwards it to its hover hook, and neither iOS nor Android fires it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       onPress={activate}
       role={role}
       style={rowStyle}
@@ -144,6 +157,14 @@ export function ListItem({
  */
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 
+/**
+ * The rule between stacked rows. A hairline separator is one device pixel, which is what a
+ * platform's own `StyleSheet.hairlineWidth` resolves to (react-native-web sets it to 1), so web
+ * takes the tokens' `separator` step and native keeps the platform constant: the line rendered is
+ * unchanged on both platforms, and the value now has a name in the design source.
+ */
+const separatorWidth = Platform.OS === 'web' ? borderWidths.separator : StyleSheet.hairlineWidth;
+
 const styles = StyleSheet.create({
   row: {
     alignItems: 'center',
@@ -156,10 +177,10 @@ const styles = StyleSheet.create({
     // keyboard focus, so revealing the ring never moves the row's contents. A pressable row keeps
     // the browser's own outline off it on web, which leaves this band as the ring there.
     borderColor: colors.background,
-    borderWidth: 2,
+    borderWidth: borderWidths.control,
     // Separator hairline in the non-text border token (3.7:1 on the row background).
     borderBottomColor: colors.border,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: separatorWidth,
     flexDirection: 'row',
     gap: spacing.md,
     minHeight: MIN_TOUCH_TARGET,
@@ -170,6 +191,11 @@ const styles = StyleSheet.create({
   // would put the text below every contrast record; the Pressable already refuses presses.
   textDisabled: {
     color: colors.textMuted,
+  },
+  // A row's own fill is the lightest token, so the palette offers one pointer step for both
+  // states, and hover takes the same fill the press paints.
+  rowHovered: {
+    backgroundColor: colors.surface,
   },
   rowPressed: {
     backgroundColor: colors.surface,

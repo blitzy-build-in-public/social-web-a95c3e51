@@ -18,14 +18,26 @@ import { CODE_STEP_SECONDS, CODE_TOLERANCE_STEPS } from '@tablemate/shared';
 export const HTTP_DATE_RESOLUTION_MS = 1000;
 
 /**
+ * The only header shape this module trusts: the IMF-fixdate form of an HTTP date, which is what
+ * the API and its proxy emit. `Date.parse` accepts far more than that -- ISO 8601, the obsolete
+ * RFC 850 and asctime forms, and a date-time with no zone at all -- and it reads an unzoned
+ * date-time in the browser's own zone, so an offset taken from one would be hours out.
+ */
+const HTTP_DATE_PATTERN =
+  /^[A-Za-z]{3}, [0-9]{2} [A-Za-z]{3} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/;
+
+/**
  * Parses an HTTP `Date` header into epoch milliseconds (AAP 0.3.2, 0.5.1).
  *
  * The API exposes this header to the console's origin, which is what lets the offset be
- * re-estimated on every response instead of trusting the device clock.
+ * re-estimated on every response instead of trusting the device clock. Only the IMF-fixdate form
+ * of RFC 9110 is trusted (`Wed, 05 Nov 2026 12:00:00 GMT`): it is the one form whose zone is
+ * explicit, while every other shape `Date.parse` accepts would put the offset the countdown rests
+ * on hours out (AAP 0.5.1, 0.5.7).
  *
  * @param header - The header value, or nothing when the response carried none.
- * @returns Epoch milliseconds; `null` when the header is missing, blank or unparsable, so the
- * caller keeps the offset it already has.
+ * @returns Epoch milliseconds; `null` when the header is missing, blank or not in that form, so
+ * the caller keeps the offset it already has.
  */
 export function parseHttpDate(header: string | null | undefined): number | null {
   if (header === null || header === undefined) {
@@ -33,6 +45,9 @@ export function parseHttpDate(header: string | null | undefined): number | null 
   }
   const trimmed = header.trim();
   if (trimmed.length === 0) {
+    return null;
+  }
+  if (!HTTP_DATE_PATTERN.test(trimmed)) {
     return null;
   }
   const parsed = Date.parse(trimmed);

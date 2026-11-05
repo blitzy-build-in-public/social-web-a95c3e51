@@ -43,6 +43,9 @@ const LODGING_STATS_PATH = '/lodging-console/stats';
 /** The message a build without `VITE_API_URL` fails with, at load (AAP 0.6.2). */
 const MISSING_ORIGIN_MESSAGE = 'VITE_API_URL is not configured';
 
+/** The trailing slashes a configured API origin is stripped of at load (AAP 0.6.2). */
+const TRAILING_SLASHES = /\/+$/;
+
 /** The message a request that never reached the API answers with. */
 const NETWORK_MESSAGE = 'The API could not be reached.';
 
@@ -53,24 +56,44 @@ const ABORT_MESSAGE = 'The request was cancelled.';
 const UNAUTHORIZED_MESSAGE = 'The API rejected the secret.';
 
 /**
+ * The deadline every console request runs under, in milliseconds (AAP 0.11.1).
+ *
+ * AAP 0.11.1 bounds each external call the plan lists; the console's poll of the code route is the
+ * same kind of call made from the browser, and without a deadline a request the API accepts and
+ * never answers leaves the screen pending on an expired code, with no error and no recovery short
+ * of a page reload.
+ */
+const REQUEST_DEADLINE_MS = 10_000;
+
+/** The message a request that outlived that deadline answers with (AAP 0.11.1). */
+const DEADLINE_MESSAGE = 'The API did not answer before the request deadline.';
+
+/**
  * Resolves the API origin this console calls (AAP 0.6.2).
  *
- * `vite.config.ts` validates and normalizes `VITE_API_URL`; the check is repeated here so this
- * module's contract does not depend on another file's, and a bundle built without it fails at load
- * rather than issuing a request against the page's own origin.
+ * `vite.config.ts` validates and normalizes `VITE_API_URL`; both are repeated here so this module's
+ * contract does not depend on another file's, and a bundle built without it fails at load rather
+ * than issuing a request against the page's own origin.
+ *
+ * The origin is returned trimmed and without a trailing slash, because {@link API_BASE} appends
+ * `/v1` by concatenation: `http://host/` would otherwise build `http://host//v1/venue/check-in-code`
+ * -- a path no route matches, which breaks every console request. A value that holds nothing but
+ * slashes is as absent as a blank one and throws, rather than resolving to a path on the page's own
+ * origin.
  *
  * @param value - `import.meta.env.VITE_API_URL`, untyped by `vite/client` and therefore narrowed.
- * @returns The origin exactly as configured.
- * @throws Error when it is absent or blank.
+ * @returns The origin as configured, trimmed and with trailing slashes removed.
+ * @throws Error when it is absent, non-string, blank or nothing but slashes.
  */
 function resolveApiOrigin(value: unknown): string {
   if (typeof value !== 'string') {
     throw new Error(MISSING_ORIGIN_MESSAGE);
   }
-  if (value.trim().length === 0) {
+  const origin = value.trim().replace(TRAILING_SLASHES, '');
+  if (origin.length === 0) {
     throw new Error(MISSING_ORIGIN_MESSAGE);
   }
-  return value;
+  return origin;
 }
 
 /** `VITE_API_URL` read once at load, so every request of a page calls the same origin. */
@@ -163,9 +186,10 @@ export interface ConsoleApiErrorDetails {
  *
  * `kind` is what a screen branches on: `unauthorized` means the server rejected the secret and
  * `clearSecret` has already dropped it, `http` is any other refusal, `network` is a request that
- * never reached the API, and `invalid_response` is an answer this client cannot read. `message` is
- * written for a developer reading a console log -- it names the path and the status, and never the
- * secret or any part of one -- and no screen renders it.
+ * never reached the API or one that outlived its deadline unanswered, and `invalid_response` is an
+ * answer this client cannot read. `message` is written for a developer reading a console log -- it
+ * names the path and the status, and never the secret or any part of one -- and no screen renders
+ * it.
  */
 export class ConsoleApiError extends Error {
   /** Which failure this is. */
@@ -200,12 +224,27 @@ export class ConsoleApiError extends Error {
  * attributed to cookies, and the API's CORS configuration is what admits the two secret headers
  * (AAP 0.3.2). `sentAtMs` and `receivedAtMs` bracket the round trip for {@link estimateOffsetMs}.
  *
+ * Every request is bounded by {@link REQUEST_DEADLINE_MS}, composed with the caller's `signal` so
+ * either one can end it (AAP 0.11.1). A caller that unmounts still cancels exactly as it did, and a
+ * request that outlives its deadline fails as a `ConsoleApiError` of kind `network` with a message
+ * of its own -- the deadline signal's state is what classifies it, so a browser that rejects a
+ * timed-out `fetch` with an `AbortError`-named error is never read as the caller's cancellation.
+ *
+ * A redirect is refused (`redirect: 'error'`) rather than followed: the request carries a console
+ * secret, and the Fetch standard strips only `Authorization` on a cross-origin redirect, so a
+ * redirect issued by the API origin would hand `X-Venue-Secret` or `X-Lodging-Secret` to whatever
+ * origin it named. The refusal is a failed request like any other and reaches the caller as a
+ * `ConsoleApiError` of kind `network`; it stays a hard failure on purpose and must not be softened
+ * to a followed or manually handled redirect while this request carries a secret.
+ *
  * @param kind - The console the secret belongs to, which selects the header name.
  * @param path - The route path below {@link API_BASE}.
  * @param secret - The operator-issued secret; never placed in the URL or in an error message.
- * @param signal - Optional cancellation, e.g. from a component unmounting.
+ * @param signal - Optional cancellation, e.g. from a component unmounting; composed with the
+ * request deadline so either ends the request.
  * @returns The response and its parsed body.
- * @throws ConsoleApiError for every failure; a cancellation is rethrown as it arrived.
+ * @throws ConsoleApiError for every failure, a request that outlived its deadline included; a
+ * cancellation is rethrown as it arrived.
  */
 async function request(
   kind: ConsoleKind,
@@ -218,6 +257,11 @@ async function request(
     [kind === 'venue' ? VENUE_SECRET_HEADER : LODGING_SECRET_HEADER]: secret,
   };
 
+  // One deadline per request (AAP 0.11.1), composed with the caller's own signal: whichever aborts
+  // first ends the request, and the two stay distinguishable in the catch below.
+  const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
+  const composedSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+
   const sentAtMs = Date.now();
   let response: Response;
   try {
@@ -226,16 +270,17 @@ async function request(
       mode: 'cors',
       credentials: 'omit',
       cache: 'no-store',
+      // Refused rather than followed, so the console secret never travels to a redirect target.
+      redirect: 'error',
       headers,
-      // Spread rather than passed as `undefined`, so an absent signal stays absent.
-      ...(signal === undefined ? {} : { signal }),
+      signal: composedSignal,
     });
   } catch (error) {
-    throw failureFor(error, signal);
+    throw failureFor(error, signal, deadline);
   }
   const receivedAtMs = Date.now();
 
-  const text = await readBody(response, signal);
+  const text = await readBody(response, signal, deadline);
 
   if (!response.ok) {
     const code = envelopeCode(text);
@@ -324,14 +369,18 @@ export async function fetchLodgingStats(
 
 /**
  * The body of a received response as text (AAP 0.5.4). Reading it can fail on a connection that
- * drops mid-body, which is a network failure like any other; an aborted read is the caller's own
- * cancellation.
+ * drops mid-body, which is a network failure like any other; a read the caller aborted is its own
+ * cancellation, and one cut short by the request deadline is the deadline's failure.
  */
-async function readBody(response: Response, signal: AbortSignal | undefined): Promise<string> {
+async function readBody(
+  response: Response,
+  signal: AbortSignal | undefined,
+  deadline: AbortSignal,
+): Promise<string> {
   try {
     return await response.text();
   } catch (error) {
-    throw failureFor(error, signal);
+    throw failureFor(error, signal, deadline);
   }
 }
 
@@ -343,17 +392,28 @@ async function readBody(response: Response, signal: AbortSignal | undefined): Pr
  * `DOMException` satisfies `Error` at runtime although the DOM lib does not declare it, so the
  * rethrow narrows rather than rebuilds, and the fallback covers only a platform that rejects with
  * something else.
+ *
+ * An expired deadline is a failure: the API took the request and never answered it, which is a
+ * network failure, and it carries a message of its own so a screen can tell a stalled API from an
+ * unreachable one (AAP 0.11.1).
  */
-function failureFor(error: unknown, signal: AbortSignal | undefined): Error {
-  if (isAbort(error, signal)) {
+function failureFor(error: unknown, signal: AbortSignal | undefined, deadline: AbortSignal): Error {
+  if (isAbort(error, signal, deadline)) {
     return error instanceof Error ? error : new Error(ABORT_MESSAGE);
   }
-  return new ConsoleApiError('network', NETWORK_MESSAGE);
+  return new ConsoleApiError('network', deadline.aborted ? DEADLINE_MESSAGE : NETWORK_MESSAGE);
 }
 
-/** Whether a rejection is the caller's own cancellation rather than a failed request. */
-function isAbort(error: unknown, signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true || thrownName(error) === 'AbortError';
+/**
+ * Whether a rejection is the caller's own cancellation rather than a failed or timed-out request.
+ *
+ * The deadline signal's own `aborted` state is what separates the two, because a browser rejects a
+ * deadline abort with the same `AbortError` name it uses for a caller's abort: the name alone would
+ * report a stalled request as the caller's cancellation. The caller's signal is consulted first, so
+ * a request the caller abandoned as the deadline expired stays its cancellation.
+ */
+function isAbort(error: unknown, signal: AbortSignal | undefined, deadline: AbortSignal): boolean {
+  return signal?.aborted === true || (!deadline.aborted && thrownName(error) === 'AbortError');
 }
 
 /** The `name` a thrown value carries, or `''` when it carries none (a string, a number, a null). */

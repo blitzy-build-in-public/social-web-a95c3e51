@@ -7,6 +7,8 @@
  * 0.76) and ARIA in the DOM on web (react-native-web 0.19), and a `busy` button keeps its label
  * while reporting itself as both busy and disabled.
  *
+ * Six states are painted: default, hovered, focused, pressed, disabled and busy/loading.
+ *
  * Every value comes from `@tablemate/shared`, and each pair used here is recorded in its
  * `CONTRAST_PAIRS` or `NON_TEXT_CONTRAST_PAIRS` (WCAG 2.1 AA for sign-in, proposal, lock and
  * check-in). The border is painted in every state, so the keyboard focus ring cannot shift the
@@ -20,8 +22,10 @@ import { ActivityIndicator, Platform, Pressable, StyleSheet, Text } from 'react-
 import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 import {
   MIN_TOUCH_TARGET,
+  borderWidths,
   colors,
   fontWeights,
+  interactionOpacity,
   radii,
   spacing,
   typography,
@@ -60,17 +64,6 @@ export interface ButtonProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Painted width of the border, in points / px. Held in every state so focus cannot shift layout. */
-const BORDER_WIDTH = 2;
-
-/**
- * How the filled variants show a press. The palette holds no darker shade of `primary` or `danger`
- * and records no darker text/background pair, so a press dims the button instead: at this value the
- * white label still measures above 5:1 on either fill. The outlined variant, whose fill is already
- * the lightest token, swaps to `surface`.
- */
-const PRESSED_OPACITY = 0.85;
-
 /**
  * Keeps the browser's own focus outline off a focused button on web, where it would otherwise be
  * painted over the reserved 2 px band and the ring a keyboard user sees would be the browser's
@@ -91,7 +84,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radii.md,
-    borderWidth: BORDER_WIDTH,
+    borderWidth: borderWidths.control,
     borderStyle: 'solid',
   },
   label: {
@@ -113,8 +106,13 @@ const styles = StyleSheet.create({
   // React Native 0.76 exposes no outline style of its own and `webFocusRingReset` keeps the
   // browser's focus outline off the band on web, so the band is the ring a keyboard user sees.
   focused: { borderColor: colors.focusRing },
-  pressedFilled: { opacity: PRESSED_OPACITY },
+  pressedFilled: { opacity: interactionOpacity.pressed },
   pressedOutlined: { backgroundColor: colors.surface },
+  // How each variant answers the pointer: a filled one dims by the token's `hover` opacity, which
+  // is the step above its press, and the outlined one — whose own fill is already the lightest
+  // token — takes the `surface` fill its press paints.
+  hoveredFilled: { opacity: interactionOpacity.hover },
+  hoveredOutlined: { backgroundColor: colors.surface },
 });
 
 /**
@@ -126,6 +124,7 @@ interface VariantSpec {
   readonly container: StyleProp<ViewStyle>;
   readonly label: StyleProp<TextStyle>;
   readonly labelToken: ColorToken;
+  readonly hovered: StyleProp<ViewStyle>;
   readonly pressed: StyleProp<ViewStyle>;
 }
 
@@ -134,18 +133,21 @@ const VARIANTS: Record<ButtonVariant, VariantSpec> = {
     container: styles.primary,
     label: styles.primaryLabel,
     labelToken: 'onPrimary',
+    hovered: styles.hoveredFilled,
     pressed: styles.pressedFilled,
   },
   secondary: {
     container: styles.secondary,
     label: styles.secondaryLabel,
     labelToken: 'text',
+    hovered: styles.hoveredOutlined,
     pressed: styles.pressedOutlined,
   },
   danger: {
     container: styles.danger,
     label: styles.dangerLabel,
     labelToken: 'onDanger',
+    hovered: styles.hoveredFilled,
     pressed: styles.pressedFilled,
   },
 };
@@ -165,8 +167,14 @@ export function Button({
   style,
 }: ButtonProps) {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const handleFocus = useCallback(() => setFocused(true), []);
   const handleBlur = useCallback(() => setFocused(false), []);
+  // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+  // react-native-web forwards it to its hover hook, while iOS and Android never fire it, which is
+  // what a state only a pointer can reach should do.
+  const handleHoverIn = useCallback(() => setHovered(true), []);
+  const handleHoverOut = useCallback(() => setHovered(false), []);
 
   const variantSpec = VARIANTS[variant];
   // A busy button refuses presses exactly as a disabled one does, while keeping the variant's
@@ -184,6 +192,8 @@ export function Button({
       onPress={onPress}
       onFocus={handleFocus}
       onBlur={handleBlur}
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
       // `hint` has no ARIA equivalent and `testID` renders as `data-testid`, so each is attached
       // only when a caller supplies one rather than as an explicit `undefined` prop.
       {...(hint === undefined ? {} : { accessibilityHint: hint })}
@@ -191,6 +201,7 @@ export function Button({
       style={({ pressed }) => [
         styles.base,
         variantSpec.container,
+        hovered && !inactive && variantSpec.hovered,
         disabled && styles.disabled,
         pressed && variantSpec.pressed,
         focused && styles.focused,

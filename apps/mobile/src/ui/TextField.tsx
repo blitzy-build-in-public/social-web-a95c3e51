@@ -24,6 +24,7 @@ import { useId, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { TextInputProps, TextStyle } from 'react-native';
 import {
+  borderWidths,
   colors,
   fontWeights,
   MIN_TOUCH_TARGET,
@@ -118,7 +119,7 @@ const styles = StyleSheet.create({
     minHeight: MIN_TOUCH_TARGET,
     paddingBlock: spacing.sm,
     paddingInline: spacing.md,
-    borderWidth: 2,
+    borderWidth: borderWidths.control,
     borderColor: colors.border,
     borderRadius: radii.md,
     backgroundColor: colors.background,

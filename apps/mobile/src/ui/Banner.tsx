@@ -34,7 +34,7 @@ import {
   type Role,
   type ViewProps,
 } from 'react-native';
-import { colors, fontWeights, radii, spacing, typography } from '@tablemate/shared';
+import { borderWidths, colors, fontWeights, radii, spacing, typography } from '@tablemate/shared';
 import type { ColorToken } from '@tablemate/shared';
 import { Button } from './Button';
 
@@ -84,12 +84,6 @@ export interface BannerProps {
   /** Forwarded to the container that carries the tone, so a test can find it. */
   testID?: string;
 }
-
-/**
- * Painted width of the accent edge, in points / px. Sized so the edge clears the 3:1 non-text
- * minimum against the fill and still reads as a boundary rather than as a second border.
- */
-const ACCENT_WIDTH = 4;
 
 /**
  * Window, in milliseconds, within which the same message is not announced a second time: a screen
@@ -234,10 +228,12 @@ export function announce(message: string): void {
 const styles = StyleSheet.create({
   container: {
     // `surface` is the one fill every tone's text colour is recorded against. The edge is a
-    // logical `borderStart`, so it sits on the reading-start side in a right-to-left layout too.
+    // logical `borderStart`, so it sits on the reading-start side in a right-to-left layout too,
+    // and it takes the accent step: wide enough to read as a boundary rather than as a second
+    // border, with the `border` token clearing the 3:1 non-text minimum against this fill.
     backgroundColor: colors.surface,
     borderStartColor: colors.border,
-    borderStartWidth: ACCENT_WIDTH,
+    borderStartWidth: borderWidths.accent,
     borderRadius: radii.md,
     gap: spacing.md,
     padding: spacing.lg,
