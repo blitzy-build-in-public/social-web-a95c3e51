@@ -428,10 +428,9 @@ model City {
   callLanguage    String                                @map("call_language")
   currency        String                                @db.Char(3)
   centroid        Unsupported("geography(Point,4326)")?
-  bboxSouth       Float                                 @map("bbox_south")
-  bboxWest        Float                                 @map("bbox_west")
-  bboxNorth       Float                                 @map("bbox_north")
-  bboxEast        Float                                 @map("bbox_east")
+  // The lodging ingestion area (AAP 0.5.2): exactly the `bbox` object of `config/cities.json`,
+  // `{ south, west, north, east }`, as the shared `Bbox` schema validates it.
+  bbox            Json
   createdAt       DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
   venues          Venue[]
   places          Place[]
@@ -513,7 +512,7 @@ model Meetup {
   bothCheckedInAt          DateTime?          @map("both_checked_in_at") @db.Timestamptz(6)
   suggestionsFirstViewedAt DateTime?          @map("suggestions_first_viewed_at") @db.Timestamptz(6)
   budgetCents              Int?               @map("budget_cents")
-  budgetUpdatedById        String?            @map("budget_updated_by_id") @db.Uuid
+  budgetUpdatedBy          String?            @map("budget_updated_by") @db.Uuid
   settledAt                DateTime?          @map("settled_at") @db.Timestamptz(6)
   finalAt                  DateTime?          @map("final_at") @db.Timestamptz(6)
   createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -696,7 +695,7 @@ model Dispute {
   meetupId       String                 @map("meetup_id") @db.Uuid
   filedById      String                 @map("filed_by_id") @db.Uuid
   kind           DisputeKind            @default(other)
-  reason         String?                @db.VarChar(500)
+  reason         String                 @db.VarChar(500)
   status         DisputeStatus          @default(open)
   outcome        DisputeOutcome?
   resolutionNote DisputeResolutionNote? @map("resolution_note")
@@ -727,7 +726,7 @@ model Report {
   id         String   @id @default(uuid(7)) @db.Uuid
   reporterId String   @map("reporter_id") @db.Uuid
   reportedId String   @map("reported_id") @db.Uuid
-  reason     String?  @db.VarChar(500)
+  reason     String   @db.VarChar(500)
   meetupId   String?  @map("meetup_id") @db.Uuid
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   reporter   User     @relation("ReportReporter", fields: [reporterId], references: [id])

@@ -180,10 +180,7 @@ CREATE TABLE "city" (
     "call_language" TEXT NOT NULL,
     "currency" CHAR(3) NOT NULL,
     "centroid" geography(Point,4326),
-    "bbox_south" DOUBLE PRECISION NOT NULL,
-    "bbox_west" DOUBLE PRECISION NOT NULL,
-    "bbox_north" DOUBLE PRECISION NOT NULL,
-    "bbox_east" DOUBLE PRECISION NOT NULL,
+    "bbox" JSONB NOT NULL,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "city_pkey" PRIMARY KEY ("id")
@@ -253,7 +250,7 @@ CREATE TABLE "meetup" (
     "both_checked_in_at" TIMESTAMPTZ(6),
     "suggestions_first_viewed_at" TIMESTAMPTZ(6),
     "budget_cents" INTEGER,
-    "budget_updated_by_id" UUID,
+    "budget_updated_by" UUID,
     "settled_at" TIMESTAMPTZ(6),
     "final_at" TIMESTAMPTZ(6),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -406,7 +403,7 @@ CREATE TABLE "dispute" (
     "meetup_id" UUID NOT NULL,
     "filed_by_id" UUID NOT NULL,
     "kind" "dispute_kind" NOT NULL DEFAULT 'other',
-    "reason" VARCHAR(500),
+    "reason" VARCHAR(500) NOT NULL,
     "status" "dispute_status" NOT NULL DEFAULT 'open',
     "outcome" "dispute_outcome",
     "resolution_note" "dispute_resolution_note",
@@ -432,7 +429,7 @@ CREATE TABLE "report" (
     "id" UUID NOT NULL,
     "reporter_id" UUID NOT NULL,
     "reported_id" UUID NOT NULL,
-    "reason" VARCHAR(500),
+    "reason" VARCHAR(500) NOT NULL,
     "meetup_id" UUID,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
