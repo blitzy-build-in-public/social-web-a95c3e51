@@ -12,6 +12,13 @@
  * event logs its outcome without the email address, and a proof result logs the public outputs
  * and no signals beyond that (AAP 0.11.1).
  *
+ * Two vocabularies feed the list, because a protected value reaches a line under either of them: the
+ * camelCase field names the workspace's own models and DTOs use, and the `UPPER_SNAKE_CASE` keys of
+ * the environment schemas, which the built configuration keeps under the variables' own names. The
+ * list reaches {@link REDACTION_WRAPPER_DEPTH} wrappers deep and no further, pino's wildcard matching
+ * one level with no recursive form, so a caller holding a deeper structure logs the protected values
+ * themselves rather than the whole wrapper.
+ *
  * Nothing here reads `process.env`: the level and the mode arrive as parameters from the scoped
  * environment schemas under `src/env/`, and only `process.stdout.isTTY` is inspected, to decide
  * whether a human is watching the output.
@@ -41,7 +48,12 @@ export type LogLevel = (typeof LOG_LEVELS)[number];
  */
 export const LOGGER_REDACT_CENSOR = '[redacted]';
 
-/** Credential-carrying header names, under both parents a header object is logged at. */
+/**
+ * Credential-carrying header names, under both parents a header object is logged at.
+ * `sec-websocket-protocol` is the only channel a browser socket's bearer access token travels on: the
+ * browser WebSocket API cannot set an `authorization` header on the handshake, so the client sends
+ * the token in the subprotocol list and every later frame depends on it.
+ */
 const REDACTED_HEADER_NAMES = [
   'authorization',
   'cookie',
@@ -50,15 +62,47 @@ const REDACTED_HEADER_NAMES = [
   'x-twilio-signature',
   'stripe-signature',
   'x-test-control-token',
+  'sec-websocket-protocol',
 ] as const;
 
 /** The parents a header object appears under: Fastify's request log, and a bare `headers` field. */
 const HEADER_PARENTS = ['req.headers', 'headers'] as const;
 
 /**
- * Field names whose values are personal data, a credential or a position (AAP 0.3.2, 0.11.1):
- * email addresses, names and booking details, message bodies, coordinates, and the secrets the
- * payment, telephony, language-model and test-control integrations sign with.
+ * Field names whose values are personal data, a credential or a position (AAP 0.3.2, 0.11.1): email
+ * addresses, names and booking details, message bodies, coordinates, and the secrets the payment,
+ * telephony, language-model and test-control integrations sign with. The rest of the list covers the
+ * protected classes of the AAP 0.5.2 inventory: the tier-1 profile free text (`nickname`, `bio`), the
+ * ciphertext families (`emailCiphertext`, `deliveryTokenCiphertext`, `secretCiphertext`,
+ * `bookingNameCiphertext`, `bookingReferenceCiphertext`, `fullNameCiphertext`,
+ * `externalContactCiphertext`), the lookup and token hashes (`emailLookupHash`, `secretLookupHash`,
+ * `tokenHash`, `refreshTokenHash`), the Stripe identifiers (`stripeCustomerId`, `paymentIntentId`,
+ * `currentPaymentIntentId`), the call transcript and its summary, the dispute and report free text
+ * (`reason`), the pseudonymous re-identifiers (`actorHash`, `pairKey`) and the raw webhook bytes kept
+ * on the request for signature verification (`rawBody`).
+ *
+ * The families beside those cover what the names above leave out: the stored profile photo and the
+ * base64 the client sends and receives (`webp`, `photoBase64`), the hash a rotated refresh token is
+ * compared against (`previousRefreshTokenHash`), the payment-setup credentials a setup response
+ * carries (`setupIntentClientSecret`, `ephemeralKeySecret`), the built configuration's test-control
+ * credential (`testControlToken`, the camelCase name beside its `TEST_CONTROL_TOKEN` environment
+ * key) and the provider error text stored on a payment operation (`lastError`), whose provenance no
+ * caller can vouch for.
+ *
+ * Two families are deliberately NOT covered. The circuit's public values — `nullifierSalt`,
+ * `pubkeyHash`, `aliasHash` and `modulusBase64` — are public by construction, and AAP 0.11.1 lets
+ * a proof verification result log its public outputs, so censoring them would hide the line that
+ * logging point exists to write. A bare `code` stays free for the same reason: the venue's
+ * six-digit check-in code is derived per request and never stored, while error codes and Prisma
+ * codes are logged under that name, so no path can tell the two apart.
+ *
+ * An invariant for the call sites that log these shapes: several of the names above are ordinary
+ * words a machine-readable value may legitimately want, and censoring such a value costs the line its
+ * whole point. A code that has to be read back — a menu-pipeline drop reason, a call-dispatch
+ * decision, a retry outcome — is therefore logged under a name this list does not cover
+ * (`dropReason`, `blockedReason`, `decision`, `outcome`), never by widening the list to let one name
+ * through. The message string is no substitute either: redaction rewrites object fields and never the
+ * message.
  */
 const REDACTED_FIELD_NAMES = [
   'email',
@@ -81,23 +125,98 @@ const REDACTED_FIELD_NAMES = [
   'authToken',
   'webhookSecret',
   'clientSecret',
+  'setupIntentClientSecret',
+  'ephemeralKeySecret',
+  'testControlToken',
   'password',
+  'nickname',
+  'bio',
+  'photoBase64',
+  'webp',
+  'emailCiphertext',
+  'deliveryTokenCiphertext',
+  'secretCiphertext',
+  'bookingNameCiphertext',
+  'bookingReferenceCiphertext',
+  'fullNameCiphertext',
+  'externalContactCiphertext',
+  'emailLookupHash',
+  'secretLookupHash',
+  'tokenHash',
+  'refreshTokenHash',
+  'previousRefreshTokenHash',
+  'stripeCustomerId',
+  'paymentIntentId',
+  'currentPaymentIntentId',
+  'transcript',
+  'summary',
+  'lastError',
+  'reason',
+  'actorHash',
+  'pairKey',
+  'rawBody',
 ] as const;
 
 /**
- * The depths a sensitive field is redacted at. A pino wildcard matches exactly one level, so
- * each name needs its own path at depth 0 and one under a single and a double wildcard — enough
- * for the shapes the workspace logs, such as Fastify's `req.body` or a job payload's `data`.
+ * Credential-bearing environment keys, redacted beside the field names because the built
+ * configuration carries them under the variables' own names. AAP 0.11.1 makes environment variables
+ * `UPPER_SNAKE_CASE`, and AAP 0.6.2 has each process validate only its own scope, so the object
+ * `loadEnvironment` returns holds `DATABASE_URL` and `REDIS_URL` (connection strings carrying a
+ * password), `FIELD_ENCRYPTION_KEY` and its id, the salts and pepper every lookup hash is keyed
+ * with, the signing secrets, and the payment, telephony, language-model, mail, push and test-control
+ * credentials. One startup line logging that configuration would otherwise print all of them, which
+ * is what AAP 0.3.2 ("Logs") and 0.12.2 (secrets only from environment variables) forbid.
  */
-const FIELD_DEPTH_PREFIXES = ['', '*.', '*.*.'] as const;
+const REDACTED_ENV_KEY_NAMES = [
+  'DATABASE_URL',
+  'REDIS_URL',
+  'FIELD_ENCRYPTION_KEY',
+  'FIELD_ENCRYPTION_KEY_ID',
+  'ANALYTICS_SALT',
+  'NULLIFIER_SALT',
+  'EXPERIMENT_SALT',
+  'JWT_SECRET',
+  'EMAIL_LOOKUP_PEPPER',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  'TWILIO_AUTH_TOKEN',
+  'TWILIO_ACCOUNT_SID',
+  'LLM_API_KEY',
+  'TEST_CONTROL_TOKEN',
+  'SMTP_URL',
+  'EXPO_ACCESS_TOKEN',
+] as const;
+
+/**
+ * How many wrappers above a protected name the list still reaches. A pino wildcard matches exactly
+ * one level and pino has no recursive wildcard, which is why a bound exists at all. Four wrappers
+ * cover the shapes the workspace logs: a model row or a DTO, Fastify's `req.body`, a job payload's
+ * `data`, a nested `payload.user`, and the built configuration's `testOnly` group. A protected value
+ * nested deeper than this is NOT covered, so a caller logging a deeper structure passes the protected
+ * values themselves rather than the whole wrapper.
+ */
+const REDACTION_WRAPPER_DEPTH = 4;
+
+/**
+ * The prefixes a protected name gets a path under, one per depth the list reaches: the bare name at
+ * depth 0, then one `*.` segment per wrapper up to {@link REDACTION_WRAPPER_DEPTH}. Derived from the
+ * bound, so the paths and the number cannot drift apart.
+ */
+const REDACTION_DEPTH_PREFIXES: readonly string[] = Array.from(
+  { length: REDACTION_WRAPPER_DEPTH + 1 },
+  (_unused, depth) => '*.'.repeat(depth),
+);
 
 /** The paths {@link LOGGER_REDACT_PATHS} is built from, in the order pino receives them. */
 function redactPaths(): string[] {
   const headers = HEADER_PARENTS.flatMap((parent) =>
     REDACTED_HEADER_NAMES.map((name) => headerPath(parent, name)),
   );
-  const fields = FIELD_DEPTH_PREFIXES.flatMap((prefix) =>
-    REDACTED_FIELD_NAMES.map((name) => `${prefix}${name}`),
+  // The two vocabularies the workspace logs protected values under: the camelCase field names its
+  // own objects use, and the `UPPER_SNAKE_CASE` keys the built configuration keeps.
+  const names = [...REDACTED_FIELD_NAMES, ...REDACTED_ENV_KEY_NAMES];
+  const fields = REDACTION_DEPTH_PREFIXES.flatMap((prefix) =>
+    names.map((name) => `${prefix}${name}`),
   );
   // The response cookie is the one header a response object carries as a credential.
   return [...headers, 'res.headers["set-cookie"]', ...fields];

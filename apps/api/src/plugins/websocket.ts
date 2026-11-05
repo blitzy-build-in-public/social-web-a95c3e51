@@ -9,7 +9,9 @@
  * offered protocols are the only channel the token can travel on, and only the `bearer` entry may
  * ever be echoed back, never the token beside it (AAP 0.3.3). The token is read here and never
  * logged: neither this module nor `plugins/auth.ts` logs the header it came from, and Fastify's
- * request logging records only the method, url, host and IP (AAP 0.11.1).
+ * request logging records only the method, url, host and IP (AAP 0.11.1). An error raised while a
+ * socket is open is reported as a code and the error's name alone, never the error object, whose
+ * message and stack pino writes as strings that key-based redaction cannot rewrite (AAP 0.3.2).
  *
  * Authentication of an upgrade belongs to its route, not to this file: `@fastify/websocket`
  * dispatches an upgrade request through the Fastify router and hijacks the connection only inside
@@ -26,6 +28,8 @@
 import websocket from '@fastify/websocket';
 
 import { WS_BEARER_SUBPROTOCOL } from '@tablemate/shared';
+
+import type { WebsocketPluginOptions } from '@fastify/websocket';
 
 import type { App } from '../app.ts';
 
@@ -116,18 +120,42 @@ function handleProtocols(protocols: Set<string>): typeof WS_BEARER_SUBPROTOCOL |
 }
 
 /**
+ * The handler for an error raised on an established socket, typed from the plugin's own option type
+ * so the signature is checked here rather than inherited from {@link App}.
+ *
+ * It logs a code and the error's name, never the error object and never its message: the plugin's
+ * default handler calls `request.log.error(error)`, which promotes that message into the line's own
+ * `msg`, where the key-based redaction list cannot reach (AAP 0.3.2, 0.11.1). The line still carries
+ * the request id, because it is written through `request.log`. An arrow function, not a method: the
+ * plugin calls the handler with the Fastify instance as `this`, and nothing here reads it.
+ */
+const reportSocketError: NonNullable<WebsocketPluginOptions['errorHandler']> = (
+  error,
+  socket,
+  request,
+) => {
+  request.log.error({ code: 'internal_error', err: { name: error.name } }, 'websocket_error');
+  // The default handler terminates the socket and the plugin itself only attaches the listener, so
+  // dropping this would leave a socket whose error was reported still open.
+  socket.terminate();
+};
+
+/**
  * Registers the WebSocket server on the root app (AAP 0.5.1, registration step 6 of the
  * composition root), before any route is declared so every `{ websocket: true }` route in the
  * workspace is served by it.
  *
  * The registration is queued rather than awaited, which is how Fastify plugins compose: the
  * WebSocket server is created during `ready()`, and `app.register` returns the instance so the
- * caller keeps the synchronous `buildApp` contract. `errorHandler` and `preClose` stay at the
- * `@fastify/websocket` defaults, which log an established socket's error and close every client on
- * shutdown.
+ * caller keeps the synchronous `buildApp` contract. `errorHandler` is set rather than left at its
+ * default: the default hands the error object to pino and lets its message become the log line's
+ * own message, where the key-based redaction list cannot reach, so an error on an established
+ * socket is reported by {@link reportSocketError} as the error's name and a code and nothing else
+ * (AAP 0.3.2, 0.11.1). `preClose` stays at the default, which closes every client on shutdown.
  */
 export function registerWebsocket(app: App): void {
   app.register(websocket, {
     options: { maxPayload: WS_MAX_PAYLOAD_BYTES, handleProtocols },
+    errorHandler: reportSocketError,
   });
 }

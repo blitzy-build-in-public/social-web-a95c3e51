@@ -9,8 +9,10 @@
  *
  * Nothing about a failure leaves the process beyond the envelope's code, its message and, for an
  * unexpected error, the request id: no stack trace, no request body, no header, no token, no email
- * address, no coordinate, no message body (AAP 0.11.1). The original error reaches pino through its
- * `err` serializer, which is the only place it is recorded.
+ * address, no coordinate, no message body (AAP 0.11.1). The one place a failure is recorded is the
+ * 5xx log line, and what reaches pino there is the narrowed record {@link loggedFailure} builds — a
+ * name, the error's own short code and a sanitized message — never the thrown object, whose message
+ * and stack pino writes as strings that key-based redaction cannot rewrite (AAP 0.3.2).
  */
 
 import {
@@ -68,6 +70,41 @@ const OTHER_CLIENT_ERROR_CODES: ReadonlySet<string> = new Set([
   'FST_ERR_VALIDATION',
   'FST_ERR_BAD_URL',
 ]);
+
+/**
+ * The censor written in place of a value {@link sanitizeLogMessage} removes: the same string the
+ * shared logger's `redact` option writes (`LOGGER_REDACT_CENSOR` in
+ * `packages/server-core/src/logger.ts`), so an operator greps one marker wherever a value was
+ * removed, whichever of the two took it out.
+ */
+const LOG_REDACT_CENSOR = '[redacted]';
+
+/** The marker appended to a message longer than {@link MAX_LOG_MESSAGE_LENGTH}. */
+const LOG_TRUNCATION_MARKER = '…[truncated]';
+
+/** The longest message a log line carries before it is truncated. */
+const MAX_LOG_MESSAGE_LENGTH = 500;
+
+/** The longest an error's `name` may be and still be logged; an error name is a short token. */
+const MAX_ERROR_NAME_LENGTH = 64;
+
+/** How many entries of an error's cause chain a log line carries. */
+const MAX_CAUSE_ENTRIES = 3;
+
+/**
+ * The shape an error's own `code` must have to be logged under that key: a short token such as
+ * `P2002` or `FST_ERR_CTP_INVALID_MEDIA_TYPE`. A value-shape check rather than a vocabulary check,
+ * so a third-party string that is not a code — a message, a query fragment, a token — can never ride
+ * out under `code`.
+ */
+const LOGGABLE_ERROR_CODE_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * The email-address shape {@link sanitizeLogMessage} removes last, after the credentials above: one
+ * or more `local@domain` labels with a final label that carries no dot, as an address has.
+ */
+const EMAIL_ADDRESS_RE =
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/g;
 
 /** One failure, resolved to the code and the message the envelope carries. */
 interface Failure {
@@ -170,6 +207,125 @@ export function errorFrame(code: ErrorCode, message?: string, meetupId?: string)
 }
 
 /**
+ * What a log line may carry about one failure: the fields {@link loggedFailure} copies off a thrown
+ * value, and nothing else.
+ */
+interface LoggedFailure {
+  /** The error's name, or `Error` when the value carries no usable one. */
+  readonly name: string;
+  /** The error's own `code`, when its value has the shape of a code rather than of text. */
+  readonly code?: string;
+  /** The error's message, after {@link sanitizeLogMessage}. */
+  readonly message?: string;
+  /** The first {@link MAX_CAUSE_ENTRIES} entries of the error's cause chain, each of this shape. */
+  readonly causes?: LoggedFailure[];
+}
+
+/**
+ * The record the error handler logs for a failure, in place of the thrown object (AAP 0.3.2,
+ * 0.11.1).
+ *
+ * pino's `err` serializer writes a message and a stack as strings and copies an error's enumerable
+ * keys, and pino's redaction is key-based: it rewrites the value at a path and never text inside one.
+ * A raw error therefore reaches the log verbatim, which is how a provider error quoting a token, a
+ * Prisma error naming a parameter or a URL carrying a secret gets written. This record carries the
+ * name, the error's own short `code` and a sanitized message, plus the head of its cause chain, and
+ * nothing else of the value: no stack, no `meta`, no other enumerable key, no `clientVersion`.
+ */
+function loggedFailure(error: unknown): LoggedFailure {
+  return narrowFailure(error, MAX_CAUSE_ENTRIES);
+}
+
+/**
+ * Reduces one thrown value to a loggable record, then does the same for at most `remaining` entries
+ * of its cause chain — the singular `cause` an `Error` sets, which is where a provider's own failure
+ * and its text sit.
+ */
+function narrowFailure(error: unknown, remaining: number): LoggedFailure {
+  const cause = remaining > 0 ? readField(error, 'cause') : undefined;
+  const code = loggedCode(error);
+  const message = loggedMessage(error);
+  return {
+    name: loggedName(error),
+    ...(code === undefined ? {} : { code }),
+    ...(message === undefined ? {} : { message }),
+    // The key is plural on purpose: pino folds a singular `cause` into the serialized message, which
+    // would emit the causes' text as one string again, past the sanitizing above.
+    ...(isLoggableCause(cause) ? { causes: [narrowFailure(cause, remaining - 1)] } : {}),
+  };
+}
+
+/** An error's `name` when it is the short token an error name is, `Error` otherwise. */
+function loggedName(error: unknown): string {
+  const name = readField(error, 'name');
+  return typeof name === 'string' && name.length > 0 && name.length <= MAX_ERROR_NAME_LENGTH
+    ? name
+    : 'Error';
+}
+
+/** The error's own `code`, when its value has the shape of a code rather than of text. */
+function loggedCode(error: unknown): string | undefined {
+  const code = readField(error, 'code');
+  return typeof code === 'string' && LOGGABLE_ERROR_CODE_RE.test(code) ? code : undefined;
+}
+
+/** The error's message, sanitized, when the value carries a non-empty one. */
+function loggedMessage(error: unknown): string | undefined {
+  const message = readField(error, 'message');
+  return typeof message === 'string' && message.length > 0
+    ? sanitizeLogMessage(message)
+    : undefined;
+}
+
+/** Whether a value is one a cause chain can be walked through, rather than a primitive. */
+function isLoggableCause(value: unknown): value is object {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * The backstop for text of unknown provenance: the credentials, keys and email addresses an error
+ * message can quote, removed before the message is logged (AAP 0.3.2, 0.11.1).
+ *
+ * It is a backstop and not the primary control — the primary control is that the shared redaction
+ * list censors these fields by name and that this module narrows an error before pino sees it — so a
+ * pattern recognizes a shape and nothing more: text carrying a credential in no recognizable shape
+ * still passes.
+ *
+ * The rules overlap, so they run in the one order below, each tried before the rule that would
+ * otherwise swallow it: a password inside a `scheme://user:secret@host` URL is removed as a
+ * credential before the email rule could read the userinfo as an address, and a JWS is removed whole
+ * before the 32-hex rule could cut a segment out of it. The message is then truncated, because an
+ * error's text is unbounded and a log line is not.
+ */
+function sanitizeLogMessage(text: string): string {
+  const sanitized = text
+    // 1. Connection-string credentials: the userinfo of any `scheme://` URL.
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, `$1${LOG_REDACT_CENSOR}@`)
+    // 2. PEM private-key blocks.
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+      LOG_REDACT_CENSOR,
+    )
+    // 3. Stripe secret and restricted keys, and webhook signing secrets.
+    .replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}\b/g, LOG_REDACT_CENSOR)
+    .replace(/\bwhsec_[A-Za-z0-9]{8,}\b/g, LOG_REDACT_CENSOR)
+    // 4. Bearer credentials and the JWS triples our own access tokens are.
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${LOG_REDACT_CENSOR}`)
+    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, LOG_REDACT_CENSOR)
+    // 5. OpenAI-style keys, Twilio API-key SIDs and bare 32-hex tokens (a 64-hex digest stays
+    //    readable: it is a digest, not a credential).
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, LOG_REDACT_CENSOR)
+    .replace(/\bSK[0-9a-fA-F]{32}\b/g, LOG_REDACT_CENSOR)
+    .replace(/(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])/g, LOG_REDACT_CENSOR)
+    // 6. Email addresses last: an error message can quote one whole.
+    .replace(EMAIL_ADDRESS_RE, LOG_REDACT_CENSOR);
+
+  return sanitized.length > MAX_LOG_MESSAGE_LENGTH
+    ? `${sanitized.slice(0, MAX_LOG_MESSAGE_LENGTH)}${LOG_TRUNCATION_MARKER}`
+    : sanitized;
+}
+
+/**
  * Installs the error envelope on the instance `app.ts` builds (AAP 0.11.1). Both handlers are
  * synchronous: a returned promise would be awaited by Fastify, and nothing here waits for anything.
  */
@@ -178,13 +334,16 @@ export function registerErrorHandling(app: App): void {
     const failure = classifyFailure(error, request);
 
     if (ERROR_STATUS[failure.code] >= SERVER_FAULT_STATUS) {
-      // Our own defect, logged with pino's `err` serializer so the cause is in the log and only
-      // there. A response that failed its own schema is a defect with a name of its own, so an
-      // operator can tell it from an unexpected throw.
+      // Our own defect, logged with its cause and only there. A response that failed its own schema
+      // is a defect with a name of its own, so an operator can tell it from an unexpected throw.
       const message = isResponseSerializationError(error)
         ? 'response_serialization_failed'
         : 'request_failed';
-      request.log.error({ err: error, code: failure.code }, message);
+      // The narrowed record stands in for `{ err: error }`: pino's serializer writes a message and a
+      // stack as strings and redaction never rewrites a string, so the raw object would put a
+      // provider error quoting a token, a Prisma error naming a parameter or a URL carrying a secret
+      // in the log verbatim (AAP 0.3.2, 0.11.1).
+      request.log.error({ err: loggedFailure(error), code: failure.code }, message);
     } else {
       // The caller's mistake: the code and the status are enough to act on, and the original error is
       // deliberately not logged — it can hold the submitted body at this level.

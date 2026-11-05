@@ -433,7 +433,10 @@ export type EnvGuard = (env: NormalizedEnv) => readonly EnvIssue[];
  * already failed, and its findings are appended to the Zod issues in collection order with repeated
  * (variable, reason) pairs dropped: an operator must see every problem of a start attempt at once, and
  * Zod abandons object-level refinements once a child issue aborts, so a guard riding inside the shape
- * would report nothing in exactly the case that matters.
+ * would report nothing in exactly the case that matters. A failed field parse and a guard finding are
+ * therefore reported together in one {@link EnvValidationError}: a failed `z.object(shape).safeParse`
+ * always yields at least one issue, so the merged list is never empty when the parse failed and one
+ * refusal covers both.
  *
  * @param process - the process being configured, named by any {@link EnvValidationError}.
  * @param shape - the raw shape of the process's schema.
@@ -461,10 +464,9 @@ export function loadEnvironment<S extends z.ZodRawShape, T>(
     issues.push(...guard(env));
   }
   const findings = dedupeIssues(issues);
-  if (!parsed.success) {
-    throw new EnvValidationError(process, findings);
-  }
-  if (findings.length > 0) {
+  // Both cases refuse the start with the same list; the parse test is kept in the condition only to
+  // narrow `parsed` for the build below, since `!parsed.success` already implies at least one finding.
+  if (!parsed.success || findings.length > 0) {
     throw new EnvValidationError(process, findings);
   }
   return deepFreeze(build(parsed.data, env));
