@@ -24,7 +24,10 @@ Pod::Spec.new do |s|
   # The app ships iOS, Android and web: there is no tvOS target, and iOS 16.0 is the project floor.
   s.platforms = { :ios => '16.0' }
   # Swift 5 language mode, so the generated uniffi bindings compile without Swift 6 strict-concurrency errors.
-  s.swift_version = '5.9'
+  # SWIFT_VERSION takes a language mode, not a compiler version: Xcode 16.4 (Swift 6.1) accepts only 4.0,
+  # 4.2, 5.0 and 6.0, and CocoaPods writes this value through verbatim, so '5.9' failed the pod's own build
+  # with `error: SWIFT_VERSION '5.9' is unsupported, supported versions are: 4.0, 4.2, 5.0, 6.0`.
+  s.swift_version = '5.0'
   s.source = { git: '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
