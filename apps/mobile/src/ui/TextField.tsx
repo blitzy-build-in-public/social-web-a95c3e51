@@ -6,8 +6,9 @@
  * bound to it (`aria-describedby` on web, `accessibilityHint` on iOS and Android) so a screen reader
  * reaches them from the field; an error is prefixed with the word "Error:" so its meaning is not
  * carried by colour alone; the input keeps a 2 px border in every state, so the focus ring never
- * shifts the layout; and the field is at least `MIN_TOUCH_TARGET` tall with the 16-point body font,
- * which also keeps iOS Safari from zooming a focused input.
+ * shifts the layout; on web that band is the ring itself, because `webFocusRingReset` keeps the
+ * browser's own outline off the input; and the field is at least `MIN_TOUCH_TARGET` tall with the
+ * 16-point body font, which also keeps iOS Safari from zooming a focused input.
  *
  * Every colour, spacing step, radius and type size comes from the shared tokens: each text colour is
  * a `CONTRAST_PAIRS` entry over the field's own background, and the input border and focus ring are
@@ -21,7 +22,7 @@
  */
 import { useId, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { TextInputProps } from 'react-native';
+import type { TextInputProps, TextStyle } from 'react-native';
 import {
   colors,
   fontWeights,
@@ -94,6 +95,15 @@ interface WebInputAria {
 function elementId(value: string): { id?: string; nativeID?: string } {
   return Platform.OS === 'web' ? { id: value } : { nativeID: value };
 }
+
+/**
+ * Keeps the browser's own focus outline off the input on web, where it would otherwise be painted
+ * over the reserved 2 px band and the ring a keyboard user sees would be the browser's default
+ * rather than the `colors.focusRing` border the focused input paints (WCAG 2.4.7). React Native
+ * 0.76 declares no `outline` style, so the long form is asserted once here; react-native-web drops
+ * the `outline` shorthand as an invalid short form. The value is empty off web.
+ */
+const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as TextStyle;
 
 const styles = StyleSheet.create({
   field: {
@@ -218,6 +228,7 @@ export function TextField({
           isMultiline ? styles.inputMultiline : null,
           focused ? styles.inputFocused : null,
           isDisabled ? styles.inputDisabled : null,
+          webFocusRingReset,
         ]}
         testID={testID}
       />
