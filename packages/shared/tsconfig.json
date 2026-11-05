@@ -1,0 +1,26 @@
+// The TypeScript project for @tablemate/shared. Everything tsconfig.base.json carries —
+// the strict flags, NodeNext resolution, verbatimModuleSyntax, rewriteRelativeImportExtensions
+// and the "tablemate-source" custom condition — applies unchanged, so only what this workspace
+// adds appears here.
+//
+// `types: []` together with lib ES2023 is load-bearing: these sources run under Hermes, in
+// browsers and in Node, so they may use neither DOM nor Node globals. `Buffer.from(...)`,
+// `new TextEncoder()` and `process` are compile errors here, and the UTF-8 byte-length helper
+// this package needs is written out in src/schemas/common.ts instead. Do not add "node".
+//
+// rootDir stays "." so emitted files land in dist/src/ and dist/test/, the layout
+// package.json `exports` maps ("tablemate-source" -> src/index.ts, types/default -> dist/src/).
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

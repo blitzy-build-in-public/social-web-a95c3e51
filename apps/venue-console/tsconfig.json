@@ -1,0 +1,27 @@
+// TypeScript project for the venue console and the lodging stats console. Vite bundles this
+// app, so the project type-checks only: "module": "preserve" with "moduleResolution":
+// "bundler" replaces the base's NodeNext, and noEmit leaves every emitted file to Vite.
+// strict, verbatimModuleSyntax, rewriteRelativeImportExtensions and the load-bearing
+// customConditions "tablemate-source" that resolves @tablemate/shared to its TypeScript
+// source are inherited from tsconfig.base.json and deliberately not restated here.
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    // React 18 automatic runtime, so screens need no `import React`.
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // Types import.meta.env (VITE_API_URL) and asset imports. Node built-ins are absent on
+    // purpose: everything under src/ runs in the browser.
+    "types": ["vite/client"],
+    // packages/shared/src writes its relative imports with the .ts extension.
+    "allowImportingTsExtensions": true
+  },
+  // test/ and vite.config.ts are included so typescript-eslint's projectService finds a
+  // project for them. This project is intentionally not composite and is not referenced by
+  // the root tsconfig.json, so `tsc -b` at the root never builds it.
+  "include": ["src", "test", "vite.config.ts"]
+}
