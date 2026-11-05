@@ -1,0 +1,41 @@
+{
+  "name": "@tablemate/circuits",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tablemate itinerary circuit, issuer registry builder and client-safe circuit input generator",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "tablemate-source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "circuit:compile": "bash scripts/compile.sh",
+    "circuit:setup": "bash scripts/setup.sh",
+    "registry": "tsx --conditions=tablemate-source scripts/build-registry.ts",
+    "samples": "tsx --conditions=tablemate-source scripts/check-samples.ts",
+    "fixtures": "tsx --conditions=tablemate-source scripts/make-test-fixtures.ts",
+    "fetch-dkim-key": "tsx --conditions=tablemate-source scripts/fetch-dkim-key.ts",
+    "native": "bash scripts/build-native.sh",
+    "native-smoke": "bash scripts/native-smoke.sh",
+    "build": "tsc -b",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0",
+    "@tablemate/shared": "workspace:*",
+    "@zk-email/circuits": "6.3.4",
+    "circomlib": "2.0.5",
+    "poseidon-lite": "0.3.0"
+  },
+  "devDependencies": {
+    "@zk-email/helpers": "6.4.2",
+    "circom_tester": "0.0.24",
+    "snarkjs": "0.7.6"
+  }
+}

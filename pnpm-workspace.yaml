@@ -8,6 +8,11 @@ packages:
 
 overrides:
   snarkjs: 0.7.6
+  # jsonpath, reached through snarkjs's bfj dependency, pins underscore at exactly 1.13.6,
+  # which carries GHSA-qpx9-hpmf-5gmw (unlimited recursion in _.flatten and _.isEqual) and
+  # would fail the repository-wide `pnpm audit --prod` gate. Pin the patched release of the
+  # same series instead.
+  underscore: 1.13.8
 
 # pnpm 11 replaced onlyBuiltDependencies with allowBuilds. Without these entries pnpm
 # exits 1 with ERR_PNPM_IGNORED_BUILDS and the Prisma engines, the esbuild binary and
