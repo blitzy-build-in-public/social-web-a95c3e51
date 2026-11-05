@@ -1,0 +1,17 @@
+{
+  "greeting.menu_prices": "Halo, ini asisten otomatis yang menelepon atas nama Tablemate untuk menanyakan harga menu Anda.",
+  "greeting.lodging_stay_verification": "Halo, ini asisten otomatis yang menelepon atas nama Tablemate untuk mengonfirmasi masa menginap seorang tamu.",
+  "ask.cheapest_main": "Apa hidangan utama Anda yang paling murah, dan berapa harganya?",
+  "ask.priciest_main": "Lalu, apa hidangan utama Anda yang paling mahal, dan berapa harganya?",
+  "ask.coffee_or_beer": "Terakhir, berapa harga kopi atau bir?",
+  "ask.stay": "Apakah ada tamu atas nama {bookingName} yang menginap di tempat Anda dari tanggal {stayFrom} sampai tanggal {stayTo}?",
+  "readback.price": "Saya catat {dish} seharga {price}.",
+  "readback.stay": "Untuk memastikan: apakah ada tamu atas nama {bookingName} yang menginap di tempat Anda dari tanggal {stayFrom} sampai tanggal {stayTo}? Mohon jawab ya atau tidak.",
+  "confirm.prompt": "Apakah itu benar?",
+  "retry.unclear": "Maaf, saya kurang jelas mendengarnya. Bisakah Anda mengulanginya?",
+  "switch.english": "Baik, mari kita lanjutkan dalam bahasa Inggris.",
+  "closing.thanks": "Terima kasih banyak atas bantuan Anda. Sampai jumpa.",
+  "closing.refused": "Tidak apa-apa, mohon maaf telah mengganggu. Sampai jumpa.",
+  "closing.do_not_call": "Baik, kami mengerti. Kami tidak akan menelepon lagi. Sampai jumpa.",
+  "closing.budget": "Terima kasih atas waktu Anda. Kami akan menindaklanjutinya dengan cara lain. Sampai jumpa."
+}

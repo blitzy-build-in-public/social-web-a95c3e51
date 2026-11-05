@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fixture Service Worker Café</title>
+</head>
+<body>
+<h1>Fixture Service Worker Café</h1>
+<ul class="menu"><li><span class="dish">Galão</span> <span class="price">1,60 €</span></li></ul>
+<!-- Every URL below is deliberately hostile. The crawler's browser context
+     blocks service workers and fulfils every request through safe-fetch, so
+     nothing here may be looked up, fetched or opened: an uncertain domain, a
+     private address, a metadata address, a service worker registration and a
+     WebSocket, each one refused before any connection is made. -->
+<iframe src="http://frames.uncertain.fixture.test/" title="Fixture frame"></iframe>
+<img src="http://img.uncertain.fixture.test/pixel.png" alt="">
+<img src="http://10.255.0.1/pixel.png" alt="">
+<script>
+// Three independent attempts, so a refusal or exception in one never stops the
+// others from being attempted and counted.
+try {
+  navigator.serviceWorker?.register('sw.js').catch(() => {});
+} catch {}
+try {
+  fetch('http://169.254.169.254/').catch(() => {});
+} catch {}
+try {
+  const ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onerror = () => {};
+} catch {}
+</script>
+</body>
+</html>
