@@ -1,0 +1,6 @@
+# Rust 1.99.1 with the native prover's four build targets (AAP 0.4.2).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt"]
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "aarch64-linux-android", "x86_64-linux-android"]
