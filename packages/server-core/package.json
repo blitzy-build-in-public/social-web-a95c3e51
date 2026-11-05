@@ -1,0 +1,32 @@
+{
+  "name": "@tablemate/server-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Server-only utilities shared by api, workers and the seed: scoped environment schemas, logger, clock, field encryption and hashing, the language-model adapter with its spend reservation, the Twilio client, queue definitions and city-local time.",
+  "exports": {
+    ".": {
+      "tablemate-source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@tablemate/shared": "workspace:*",
+    "bullmq": "6.6.0",
+    "ioredis": "6.0.0",
+    "luxon": "3.7.2",
+    "openai": "7.50.0",
+    "pino": "10.4.0",
+    "twilio": "6.2.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/luxon": "3.7.6",
+    "pino-pretty": "13.2.0"
+  }
+}
