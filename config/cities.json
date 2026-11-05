@@ -1,0 +1,64 @@
+{
+  "cities": [
+    {
+      "id": "lisbon",
+      "circuitCityId": 1,
+      "name": "Lisbon",
+      "countryCode": "PT",
+      "timezone": "Europe/Lisbon",
+      "callLanguage": "pt-PT",
+      "currency": "EUR",
+      "centroid": { "lat": 38.7223, "lng": -9.1393 },
+      "bbox": { "south": 38.69, "west": -9.23, "north": 38.78, "east": -9.1 },
+      "aliases": ["Lisbon", "Lisboa"]
+    },
+    {
+      "id": "mexico-city",
+      "circuitCityId": 2,
+      "name": "Mexico City",
+      "countryCode": "MX",
+      "timezone": "America/Mexico_City",
+      "callLanguage": "es-US",
+      "currency": "MXN",
+      "centroid": { "lat": 19.4326, "lng": -99.1332 },
+      "bbox": { "south": 19.38, "west": -99.21, "north": 19.45, "east": -99.12 },
+      "aliases": ["Mexico City", "Ciudad de México", "Ciudad de M=C3=A9xico", "CDMX"]
+    },
+    {
+      "id": "medellin",
+      "circuitCityId": 3,
+      "name": "Medellín",
+      "countryCode": "CO",
+      "timezone": "America/Bogota",
+      "callLanguage": "es-US",
+      "currency": "COP",
+      "centroid": { "lat": 6.2442, "lng": -75.5812 },
+      "bbox": { "south": 6.19, "west": -75.61, "north": 6.28, "east": -75.55 },
+      "aliases": ["Medellin", "Medellín", "Medell=C3=ADn"]
+    },
+    {
+      "id": "chiang-mai",
+      "circuitCityId": 4,
+      "name": "Chiang Mai",
+      "countryCode": "TH",
+      "timezone": "Asia/Bangkok",
+      "callLanguage": "th-TH",
+      "currency": "THB",
+      "centroid": { "lat": 18.7883, "lng": 98.9853 },
+      "bbox": { "south": 18.76, "west": 98.94, "north": 18.82, "east": 99.02 },
+      "aliases": ["Chiang Mai", "Chiangmai"]
+    },
+    {
+      "id": "canggu",
+      "circuitCityId": 5,
+      "name": "Canggu",
+      "countryCode": "ID",
+      "timezone": "Asia/Makassar",
+      "callLanguage": "id-ID",
+      "currency": "IDR",
+      "centroid": { "lat": -8.6478, "lng": 115.1385 },
+      "bbox": { "south": -8.67, "west": 115.11, "north": -8.62, "east": 115.16 },
+      "aliases": ["Canggu", "Canggu, Bali"]
+    }
+  ]
+}
