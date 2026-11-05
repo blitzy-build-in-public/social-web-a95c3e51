@@ -13,6 +13,14 @@ nodeLinker: hoisted
 saveExact: true
 # The root scripts `test:stripe` and `perf` run `VAR=value cmd`, which needs shell emulation.
 shellEmulator: true
+# pnpm 12 enforces the root `packageManager` pin itself and records the pnpm version it resolved
+# for the project in a leading "env" document of pnpm-lock.yaml, which turns that file into a
+# two-document YAML stream no single-document consumer (js-yaml's load, PyYAML, dependency-review,
+# SBOM and licence scanners) can read. Ignoring the pin at install time leaves pnpm nothing to
+# record, so it writes one document holding all nine importers; corepack still activates the
+# pinned 12.16.1 from the root manifest's `packageManager` field, which is the install path the
+# images use.
+pmOnFail: ignore
 
 # The snarkjs override replaces the git-hosted fork that @zk-email/helpers declares;
 # without it pnpm refuses the install with ERR_PNPM_EXOTIC_SUBDEP.

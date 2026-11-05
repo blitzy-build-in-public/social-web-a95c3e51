@@ -46,9 +46,14 @@ apps/mobile/android
 apps/mobile/dist
 apps/mobile/web-build
 apps/mobile/modules/tablemate-prover/rust/target
+apps/mobile/modules/tablemate-prover/rust/build
+apps/mobile/modules/tablemate-prover/rust/MoproiOSBindings
+apps/mobile/modules/tablemate-prover/rust/MoproAndroidBindings
+apps/mobile/modules/tablemate-prover/rust/Config.toml
 apps/mobile/modules/tablemate-prover/ios/Frameworks
 apps/mobile/modules/tablemate-prover/ios/Generated
 apps/mobile/modules/tablemate-prover/android/src/main/jniLibs
+apps/mobile/modules/tablemate-prover/android/src/main/java/uniffi
 apps/mobile/modules/tablemate-prover/android/build
 **/*.apk
 **/*.aab

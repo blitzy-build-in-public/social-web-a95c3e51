@@ -37,6 +37,10 @@ coverage/
 /apps/mobile/modules/tablemate-prover/android/src/main/java/uniffi/
 /apps/mobile/modules/tablemate-prover/android/build/
 /apps/mobile/modules/tablemate-prover/rust/target/
+/apps/mobile/modules/tablemate-prover/rust/build/
+/apps/mobile/modules/tablemate-prover/rust/MoproiOSBindings/
+/apps/mobile/modules/tablemate-prover/rust/MoproAndroidBindings/
+/apps/mobile/modules/tablemate-prover/rust/Config.toml
 
 # Expo app: framework caches, web export, build artefacts and prebuilt native projects
 /apps/mobile/.expo/
