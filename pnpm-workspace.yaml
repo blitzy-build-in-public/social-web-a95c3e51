@@ -103,6 +103,20 @@ allowBuilds:
 # 0.81.5 (src/Assets.js getAssetSize/getAssetData) also needs the asset file path it passes read
 # for it; decode-uri-component 0.5.1 is ESM-only, so query-string 7.1.3 (index.js line 3)
 # resolves its default export.
+#
+# tar and xcode are patched for the same reason: the pin and the consumer disagree, and the
+# difference has no release to carry it. The tar override above forces the 7.x line onto
+# @expo/cli 0.22.28, which unpacks the project template through
+# `interopDefault(require('tar')).default.extract`, while tar 7's CommonJS entry exports the
+# function under its own name and marks the module as ESM — so prebuild died on
+# "Cannot read properties of undefined (reading 'extract')". xcode 3.0.1 reads a group's path
+# without checking that the template has such a group, which Expo SDK 52's iOS project does not
+# have for the 'Resources' group expo-share-intent's share-extension target asks for; the patch
+# mirrors the fix expo-share-intent's own installation notes point at. Each patch adds a guard
+# only: no pin moves, no advisory is ignored, and no consumer's behaviour changes beyond the
+# call it was already making.
 patchedDependencies:
   metro@0.81.5: patches/metro@0.81.5.patch
   query-string@7.1.3: patches/query-string@7.1.3.patch
+  tar@7.5.21: patches/tar@7.5.21.patch
+  xcode@3.0.1: patches/xcode@3.0.1.patch
