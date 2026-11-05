@@ -23,7 +23,10 @@ import type { OpenAiResponsesClient } from './openai.ts';
 // `openai.ts` and `fake.ts` import this file's error classes and `assertLlmRequest`, so this cycle
 // is safe only while nothing here reads an imported binding at module top level: both factories are
 // called from `createLlmAdapter`'s body alone, and no constant below is built from an imported
-// value.
+// value. `test/unit/spend.test.ts` holds that condition in place: it loads this file, `openai.ts`
+// and `fake.ts` one at a time as the graph's entry point in a fresh module registry, so a top-level
+// read of an imported binding added later fails there with a temporal-dead-zone error rather than
+// when the process starts.
 
 /** One message of the conversation sent to the provider (AAP 0.5.6). */
 export interface LlmMessage {

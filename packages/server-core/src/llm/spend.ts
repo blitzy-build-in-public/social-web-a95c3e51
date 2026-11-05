@@ -293,7 +293,14 @@ export type LlmSuspensionReason = 'llm_count_mismatch';
  * operator re-enable step is {@link SuspensionStore.clear}, documented in `docs/operations.md`.
  */
 export interface SuspensionStore {
-  /** Whether use is currently suspended anywhere. */
+  /**
+   * Whether use is currently suspended anywhere.
+   *
+   * A store that cannot read the flag rejects instead of answering. {@link createLlmSpend} is what
+   * fails closed on that: it treats the unreadable flag as suspended and logs one
+   * `llm_suspension_store_unavailable` line carrying a `code`, so an outage is never
+   * indistinguishable from an operator suspension.
+   */
   isSuspended(): Promise<boolean>;
   /** Suspend every city for `reason` as of `since`, counting the event for the dashboard. */
   suspend(reason: LlmSuspensionReason, since: Date): Promise<void>;
@@ -324,19 +331,17 @@ export const LLM_COUNT_MISMATCHES_KEY = 'llm:count_mismatches';
 /**
  * The Redis-backed suspension flag (AAP 0.5.6), shared by every process through one key.
  *
- * It fails closed: an unreadable flag reads as suspended, because sending a request whose
- * reservation cannot be checked may cross the city cap, while a request that is not sent only defers
- * a job. `suspend` writes the flag before it counts the event, so a failure part-way through cannot
- * lose the suspension.
+ * A read failure propagates: the store never converts an unreadable flag into an answer, so a Redis
+ * outage cannot pass for an operator suspension. {@link createLlmSpend} is what fails closed on it —
+ * it treats the unreadable flag as suspended, because sending a request whose reservation cannot be
+ * checked may cross the city cap, while a request that is not sent only defers a job, and leaves one
+ * `llm_suspension_store_unavailable` line naming the cause with a `code`. `suspend` writes the flag
+ * before it counts the event, so a failure part-way through cannot lose the suspension.
  */
 export function createRedisSuspensionStore(redis: SuspensionRedis): SuspensionStore {
   return {
     async isSuspended() {
-      try {
-        return (await redis.get(LLM_SUSPENDED_KEY)) !== null;
-      } catch {
-        return true;
-      }
+      return (await redis.get(LLM_SUSPENDED_KEY)) !== null;
     },
 
     async suspend(reason: LlmSuspensionReason, since: Date) {
@@ -510,15 +515,21 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
    * and nothing is reserved for it (AAP 0.5.6), so every failure becomes an `LlmCountError`: the
    * vocabulary's own error passes through, anything else is wrapped with its cause, and a figure
    * that is not a count is an invalid count.
+   *
+   * The caller's deadline and its own `signal` carry over, so a relay connection that closed or a
+   * cancelled job cancels the count too.
    */
   const count = async (
     adapter: LlmAdapter,
     request: LlmRequest,
-    timeoutMs: number,
+    options: { timeoutMs: number; signal?: AbortSignal | undefined },
   ): Promise<number> => {
     let value: number;
     try {
-      value = await adapter.countInputTokens(request, callOptions(timeoutMs, undefined));
+      value = await adapter.countInputTokens(
+        request,
+        callOptions(options.timeoutMs, options.signal),
+      );
     } catch (error) {
       if (error instanceof LlmCountError) {
         throw error;
@@ -558,8 +569,8 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
   /**
    * Record a mismatch: one warning carrying counts and the provider identity and nothing of the
    * request, then the suspension that stops every city until an operator re-enables it (AAP 0.5.6).
-   * A suspension that cannot be written is logged; other processes read the shared flag, which fails
-   * closed.
+   * A suspension that cannot be written is logged, and the failed write leaves use running: only a
+   * flag that is set stops traffic.
    */
   const onMismatch = async (
     adapter: LlmAdapter,
@@ -628,7 +639,7 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     request: LlmRequest,
     options: { timeoutMs: number },
   ): Promise<{ countedInputTokens: number; boundMicros: number }> => {
-    const countedInputTokens = await count(adapter, request, options.timeoutMs);
+    const countedInputTokens = await count(adapter, request, { timeoutMs: options.timeoutMs });
     return {
       countedInputTokens,
       boundMicros: boundMicros(countedInputTokens, request.maxTokens, prices),
@@ -654,7 +665,10 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       throw new LlmSuspendedError();
     }
     const startedMs = clock.nowMs();
-    const countedInputTokens = await count(adapter, request, options.timeoutMs);
+    const countedInputTokens = await count(adapter, request, {
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
     const bound = boundMicros(countedInputTokens, request.maxTokens, prices);
     const reservation = await reserveLlm(options.cityId, bound);
     if (reservation === null) {
@@ -713,7 +727,10 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       micros: options.remainingMicros,
     };
     const startedMs = clock.nowMs();
-    const countedInputTokens = await count(adapter, request, options.timeoutMs);
+    const countedInputTokens = await count(adapter, request, {
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
     const bound = boundMicros(countedInputTokens, request.maxTokens, prices);
     if (bound > scope.micros) {
       // The turn is not sent: the relay speaks its closing line and the attempt needs review.

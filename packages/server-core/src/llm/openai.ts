@@ -28,7 +28,14 @@ import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError } from '
 import type { InputTokenCountParams } from 'openai/resources/responses/index.js';
 import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses.js';
 import { assertLlmRequest, LlmCountError, LlmProviderError, LlmTimeoutError } from './adapter.ts';
-import type { LlmAdapter, LlmCallOptions, LlmError, LlmRequest, LlmResult } from './adapter.ts';
+import type {
+  LlmAdapter,
+  LlmCallOptions,
+  LlmError,
+  LlmRequest,
+  LlmResult,
+  LlmUsage,
+} from './adapter.ts';
 
 /**
  * The models `LLM_MODEL` may name (AAP 0.5.6): each used text-only, billed purely per input and
@@ -61,6 +68,15 @@ export function isSupportedModel(model: string): model is SupportedModel {
  * both calls here refuse it first and nothing is counted that `complete` could not send.
  */
 export const OPENAI_MIN_OUTPUT_TOKENS = 16;
+
+/**
+ * The client's own deadline for any call that does not pass one, standing at the ceiling AAP 0.11.1
+ * sets for the language model ("language model 3 s in calls and 60 s in extraction"). Every call
+ * this file makes passes `LlmCallOptions.timeoutMs`, which overrides it, so it bounds exactly the
+ * call that forgot one; without it the SDK's own default of ten minutes applies (verified in the
+ * installed `openai` 7.50.0).
+ */
+export const OPENAI_DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
  * What every call to the client carries: the caller's deadline, its abort signal and the retry
@@ -172,7 +188,9 @@ export interface OpenAiAdapterOptions {
  * Build the OpenAI adapter for `options.model` under the request profile (AAP 0.3.1, AAP 0.5.6).
  *
  * The client is built with `maxRetries: 0` and every call repeats it, so each reservation made from
- * {@link LlmAdapter.countInputTokens} covers exactly one sent request.
+ * {@link LlmAdapter.countInputTokens} covers exactly one sent request. It also carries
+ * {@link OPENAI_DEFAULT_TIMEOUT_MS} as its own bounded deadline, so a call that omitted its per-call
+ * option could not inherit the SDK's ten-minute default.
  *
  * @param options The API key, the model and an optional client, which suites inject.
  * @throws RangeError when `options.model` is outside {@link SUPPORTED_MODELS}. The message names the
@@ -184,27 +202,33 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
     throw new RangeError(`unsupported_llm_model: ${model}`);
   }
   const client: OpenAiResponsesClient =
-    options.client ?? new OpenAI({ apiKey: options.apiKey, maxRetries: 0 });
+    options.client ??
+    new OpenAI({
+      apiKey: options.apiKey,
+      maxRetries: 0,
+      timeout: OPENAI_DEFAULT_TIMEOUT_MS,
+    });
 
   /**
    * The provider's own count for the payload `complete` would send (AAP 0.5.6); nothing is sent and
    * nothing is reserved by this call.
    *
    * @throws RangeError when `request.maxTokens` is below the provider's minimum; LlmCountError when
-   * the count fails, times out or is not a count, in which case the request must not be sent.
+   * the count fails, times out or is not a count — an answer that is not a non-negative safe integer
+   * `input_tokens` is `invalid_count` — in which case the request must not be sent.
    */
   async function countInputTokens(request: LlmRequest, call: LlmCallOptions): Promise<number> {
     assertLlmRequest(request);
     assertSendableOutputBound(request.maxTokens);
     const countRequest = buildResponsesInput(request, model);
-    let counted: { input_tokens: number };
+    let counted: unknown;
     try {
       counted = await client.responses.inputTokens.count(countRequest, callOptions(call));
     } catch (error) {
       throw new LlmCountError(isTimeoutOrAbort(error) ? 'timeout' : 'provider', { cause: error });
     }
-    const tokens = counted.input_tokens;
-    if (!Number.isSafeInteger(tokens) || tokens < 0) {
+    const tokens = (counted as { input_tokens?: unknown } | null | undefined)?.input_tokens;
+    if (typeof tokens !== 'number' || !Number.isSafeInteger(tokens) || tokens < 0) {
       throw new LlmCountError('invalid_count');
     }
     return tokens;
@@ -215,7 +239,9 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
    * response state outlives the call.
    *
    * @throws RangeError as above; LlmTimeoutError when the deadline elapses or the caller aborts, and
-   * LlmProviderError on any other failure. Tokens may have been consumed in either case.
+   * LlmProviderError on any other failure, a reply that carried no response body included. An
+   * unreadable usage is not such a failure: it is reported as `null`, so the whole reservation is
+   * charged. Tokens may have been consumed in either case.
    */
   async function complete(request: LlmRequest, call: LlmCallOptions): Promise<LlmResult> {
     assertLlmRequest(request);
@@ -225,21 +251,22 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
       max_output_tokens: request.maxTokens,
       store: false,
     };
-    let sent: OpenAiResponseSummary;
+    let sent: unknown;
     try {
       sent = await client.responses.create(body, callOptions(call));
     } catch (error) {
       throw providerError(error);
     }
-    const text = sent.output_text ?? '';
-    const usage = sent.usage ?? null;
+    if (typeof sent !== 'object' || sent === null) {
+      throw new LlmProviderError({ cause: new Error('llm_response_missing') });
+    }
+    const reply = sent as OpenAiResponseSummary;
+    const text = typeof reply.output_text === 'string' ? reply.output_text : '';
+    const usage = readUsage(reply.usage);
     return {
       text,
       json: request.jsonSchema === undefined ? null : parseJson(text),
-      usage:
-        usage === null
-          ? null
-          : { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens },
+      usage,
     };
   }
 
@@ -293,6 +320,28 @@ function providerError(error: unknown): LlmError {
     return new LlmProviderError({ status: error.status, cause: error });
   }
   return new LlmProviderError({ cause: error });
+}
+
+/**
+ * The reported usage as the contract's shape, or `null` when the provider reported none or reported
+ * something that is not two numbers: an unreadable usage is no reported usage, so `spend.ts` charges
+ * the whole reservation (AAP 0.5.6) instead of pricing a figure it cannot trust.
+ *
+ * Only the shape is checked. A number that is fractional or negative flows through as it stands,
+ * because that is a reported figure `spend.ts` must see to classify it.
+ */
+function readUsage(usage: unknown): LlmUsage | null {
+  if (typeof usage !== 'object' || usage === null) {
+    return null;
+  }
+  const { input_tokens: inputTokens, output_tokens: outputTokens } = usage as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+  };
+  if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') {
+    return null;
+  }
+  return { inputTokens, outputTokens };
 }
 
 /**

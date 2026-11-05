@@ -1,14 +1,16 @@
 /**
- * The spend cap's unit suite (AAP 0.5.6): the pure cost arithmetic, the memory stores that apply the
- * same predicates as the SQL ones, the fail-closed suspension flag, and every path through
- * `runMetered` and `runMeteredWithin`.
+ * The spend cap's unit suite (AAP 0.5.6): the pure cost arithmetic, the memory stores that apply
+ * the same predicates as the SQL ones, the suspension flag the meter fails closed on, the provider
+ * boundary's own error contract over a stub client, every path through `runMetered` and
+ * `runMeteredWithin`, and the module graph `src/llm/{adapter,openai,fake}.ts` form, each of the
+ * three loaded as its own entry point.
  *
  * The adapters here are scripted rather than the fake provider, so a count and a reported usage are
  * exact and every assertion is arithmetic: the fake provider's byte-based tokenizer is exercised by
  * the integration suites, which need whole pipelines.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Redis } from 'ioredis';
 
 import { createTestClock } from '../../src/clock.ts';
@@ -38,6 +40,8 @@ import {
   createSqlSpendStore,
   parseUsdPerMTok,
 } from '../../src/llm/spend.ts';
+import { OPENAI_DEFAULT_TIMEOUT_MS, createOpenAiAdapter } from '../../src/llm/openai.ts';
+import type { OpenAiResponseSummary, OpenAiResponsesClient } from '../../src/llm/openai.ts';
 import type {
   LlmPrices,
   LlmReservation,
@@ -125,7 +129,10 @@ class MemorySpendStore implements SpendStore {
   }
 }
 
-/** The suspension flag in memory, failing closed the way the Redis one does. */
+/**
+ * The suspension flag in memory: with `throwOnRead` set it rejects the way the Redis one does when
+ * its connection is lost, and the meter is what fails closed on the rejection.
+ */
 class MemorySuspensionStore implements SuspensionStore {
   private suspended = false;
   private mismatches = 0;
@@ -167,16 +174,19 @@ class ScriptedAdapter implements LlmAdapter {
   readonly provider = 'fake' as const;
   readonly model = 'scripted-1';
   readonly counted: LlmRequest[] = [];
+  readonly countSignals: (AbortSignal | undefined)[] = [];
   readonly sent: LlmRequest[] = [];
   readonly sendTimeouts: number[] = [];
+  readonly sendSignals: (AbortSignal | undefined)[] = [];
   private readonly script: AdapterScript;
 
   constructor(script: AdapterScript) {
     this.script = script;
   }
 
-  async countInputTokens(request: LlmRequest): Promise<number> {
+  async countInputTokens(request: LlmRequest, options: LlmCallOptions): Promise<number> {
     this.counted.push(request);
+    this.countSignals.push(options.signal);
     this.script.onCount?.();
     if (this.script.countThrows !== undefined) {
       throw this.script.countThrows;
@@ -187,6 +197,7 @@ class ScriptedAdapter implements LlmAdapter {
   async complete(request: LlmRequest, options: LlmCallOptions): Promise<LlmResult> {
     this.sent.push(request);
     this.sendTimeouts.push(options.timeoutMs);
+    this.sendSignals.push(options.signal);
     if (this.script.sendThrows !== undefined) {
       throw this.script.sendThrows;
     }
@@ -461,14 +472,38 @@ describe('createRedisSuspensionStore', () => {
     expect(await store.mismatchCount()).toBe(1);
   });
 
-  it('fails closed when the flag cannot be read, and reads a corrupt counter as zero', async () => {
+  it('rejects an unreadable flag, leaving the meter to fail closed, and reads a bad counter as zero', async () => {
     const fake = fakeRedis();
     const store = createRedisSuspensionStore(fake.redis);
     fake.values.set(LLM_COUNT_MISMATCHES_KEY, 'not-a-number');
     expect(await store.mismatchCount()).toBe(0);
 
     fake.failReads = true;
-    expect(await store.isSuspended()).toBe(true);
+    await expect(store.isSuspended()).rejects.toThrow('connection lost');
+  });
+
+  it('lets a Redis outage reach the meter, which refuses every city and logs the cause', async () => {
+    const fake = fakeRedis();
+    const suspension = createRedisSuspensionStore(fake.redis);
+    const { spend, entries } = harness({ suspension });
+    const adapter = new ScriptedAdapter({ count: 1 });
+    fake.failReads = true;
+
+    expect(await spend.reserveLlm('lisbon', 1)).toBeNull();
+    await expect(
+      spend.runMetered(adapter, request(), { cityId: 'lisbon', timeoutMs: 1000 }),
+    ).rejects.toThrow(LlmSuspendedError);
+    expect(adapter.counted).toHaveLength(0);
+    expect(adapter.sent).toHaveLength(0);
+
+    // The refused reservation and the refused turn each leave exactly one line naming the cause, so
+    // the outage is never silent and never mistaken for an operator suspension.
+    expect(entries.map((entry) => entry.fields['event'])).toEqual([
+      'llm_suspension_store_unavailable',
+      'llm_suspension_store_unavailable',
+    ]);
+    expect(entries.every((entry) => typeof entry.fields['code'] === 'string')).toBe(true);
+    expect(JSON.stringify(entries)).not.toContain(SECRET_TEXT);
   });
 });
 
@@ -789,6 +824,25 @@ describe('runMetered', () => {
     expect(adapter.sendTimeouts).toEqual([1]);
   });
 
+  it('passes the caller signal to the count and to the send', async () => {
+    const { spend } = harness();
+    const adapter = new ScriptedAdapter({
+      count: 10,
+      usage: { inputTokens: 10, outputTokens: 1 },
+    });
+    const controller = new AbortController();
+
+    await spend.runMetered(adapter, request(10), {
+      cityId: 'lisbon',
+      timeoutMs: 3000,
+      signal: controller.signal,
+    });
+
+    // A relay socket that closed, or a cancelled job, cancels the count as well as the send.
+    expect(adapter.countSignals).toEqual([controller.signal]);
+    expect(adapter.sendSignals).toEqual([controller.signal]);
+  });
+
   it('never lets concurrent requests charge past the cap', async () => {
     const { spend, store } = harness({ prices: UNIT_PRICES });
     const adapter = new ScriptedAdapter({
@@ -905,6 +959,27 @@ describe('runMeteredWithin', () => {
     expect(await suspension.isSuspended()).toBe(true);
   });
 
+  it('passes the caller signal to the count and to the classification', async () => {
+    const { spend, store } = harness({ prices: UNIT_PRICES });
+    await store.tryReserve({ ...scope, capMicros: CAP_MICROS });
+    const adapter = new ScriptedAdapter({
+      count: 100,
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    const controller = new AbortController();
+
+    await spend.runMeteredWithin(adapter, request(10), {
+      reservation: scope,
+      remainingMicros: 1000,
+      timeoutMs: 3000,
+      signal: controller.signal,
+    });
+
+    // The turn's count and its classification share the caller's abort as well as its deadline.
+    expect(adapter.countSignals).toEqual([controller.signal]);
+    expect(adapter.sendSignals).toEqual([controller.signal]);
+  });
+
   it('refuses a turn while suspended, before counting anything', async () => {
     const suspension = new MemorySuspensionStore();
     await suspension.suspend('llm_count_mismatch', new Date('2026-11-04T12:00:00.000Z'));
@@ -995,5 +1070,259 @@ describe('reservation bookkeeping', () => {
 
     expect(() => spend.dialogueBudgetMicros(-1, 60)).toThrow(RangeError);
     expect(() => spend.dialogueBudgetMicros(Number.MAX_SAFE_INTEGER, 2)).toThrow(RangeError);
+  });
+});
+
+/** The key the adapter is handed; a suite injects the client, so nothing reaches a provider. */
+const STUB_API_KEY = 'stub-openai-key';
+
+/** One of the adapter's own models (AAP 0.5.6), so the adapter builds rather than refusing. */
+const STUB_MODEL = 'gpt-4.1-mini';
+
+/** What the stub provider answers with, and what it fails with. */
+interface ProviderScript {
+  /** The count endpoint's answer — `{ input_tokens: n }` — or any value that is not one. */
+  count?: unknown;
+  countThrows?: Error;
+  /** The response body `create` answers, or any value that is not a response body. */
+  response?: unknown;
+  responseThrows?: Error;
+}
+
+/**
+ * The OpenAI client as a stub (`OpenAiResponsesClient`): it answers what a test scripts and records
+ * the deadline each call carried, so the provider boundary is exercised with no network.
+ */
+class StubOpenAiClient implements OpenAiResponsesClient {
+  readonly countBodies: unknown[] = [];
+  readonly countDeadlines: (number | undefined)[] = [];
+  readonly sendBodies: unknown[] = [];
+  readonly sendDeadlines: (number | undefined)[] = [];
+  private readonly script: ProviderScript;
+
+  constructor(script: ProviderScript) {
+    this.script = script;
+  }
+
+  readonly responses: OpenAiResponsesClient['responses'] = {
+    create: async (body, options) => {
+      const failure = this.script.responseThrows;
+      this.sendBodies.push(body);
+      this.sendDeadlines.push(options?.timeout);
+      if (failure !== undefined) {
+        throw failure;
+      }
+      return this.script.response as OpenAiResponseSummary;
+    },
+    inputTokens: {
+      count: async (body, options) => {
+        const failure = this.script.countThrows;
+        this.countBodies.push(body);
+        this.countDeadlines.push(options?.timeout);
+        if (failure !== undefined) {
+          throw failure;
+        }
+        return this.script.count as { input_tokens: number };
+      },
+    },
+  };
+}
+
+/** The stub client and the real adapter built over it, as one fixture. */
+function provider(script: ProviderScript): { client: StubOpenAiClient; adapter: LlmAdapter } {
+  const client = new StubOpenAiClient(script);
+  return {
+    client,
+    adapter: createOpenAiAdapter({ apiKey: STUB_API_KEY, model: STUB_MODEL, client }),
+  };
+}
+
+/**
+ * The provider boundary's own contract (AAP 0.5.6): every failure `createOpenAiAdapter` can raise,
+ * over a stub client, and the same answers as the meter sees them — the layer where a bare
+ * `TypeError` would be rewrapped and a usage read as a figure it cannot trust would charge a
+ * mismatch and suspend every city instead of charging the reservation.
+ */
+describe('createOpenAiAdapter', () => {
+  it('passes each call its own deadline, under the extraction ceiling the client defaults to', async () => {
+    const { client, adapter } = provider({
+      count: { input_tokens: 12 },
+      response: { output_text: '{}' },
+    });
+
+    await adapter.countInputTokens(request(), { timeoutMs: 1000 });
+    await adapter.complete(request(), { timeoutMs: 1000 });
+
+    // AAP 0.11.1: 3 s in a call and 60 s in extraction. The client's own deadline stands at that
+    // ceiling, and every call here passes its own, which overrides it.
+    expect(OPENAI_DEFAULT_TIMEOUT_MS).toBe(60_000);
+    expect(client.countDeadlines).toEqual([1000]);
+    expect(client.sendDeadlines).toEqual([1000]);
+  });
+
+  it.each([
+    ['a null answer', null],
+    ['an undefined answer', undefined],
+    ['an answer without the field', {}],
+    ['a string count', { input_tokens: '12' }],
+    ['a fractional count', { input_tokens: 1.5 }],
+    ['a negative count', { input_tokens: -1 }],
+  ])('rejects %s as an invalid count and sends nothing', async (_name, answer) => {
+    const { client, adapter } = provider({ count: answer });
+
+    const error = await rejection(adapter.countInputTokens(request(), { timeoutMs: 1000 }));
+
+    expect(error).toBeInstanceOf(LlmCountError);
+    expect((error as LlmCountError).reason).toBe('invalid_count');
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect(client.sendBodies).toHaveLength(0);
+  });
+
+  it('classifies an unexpected count failure as the provider and an abort as a timeout', async () => {
+    const transport = provider({ countThrows: new Error('socket hung up') });
+    const aborted = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const aborting = provider({ countThrows: aborted });
+
+    const failed = await rejection(
+      transport.adapter.countInputTokens(request(), { timeoutMs: 1000 }),
+    );
+    const abortedCount = await rejection(
+      aborting.adapter.countInputTokens(request(), { timeoutMs: 1000 }),
+    );
+
+    expect((failed as LlmCountError).reason).toBe('provider');
+    expect((abortedCount as LlmCountError).reason).toBe('timeout');
+    expect((abortedCount as LlmCountError).cause).toBe(aborted);
+  });
+
+  it('returns a valid count as it stands', async () => {
+    const { adapter } = provider({ count: { input_tokens: 12 } });
+
+    expect(await adapter.countInputTokens(request(), { timeoutMs: 1000 })).toBe(12);
+  });
+
+  it.each([
+    ['a null body', null],
+    ['an undefined body', undefined],
+    ['a body that is not an object', 'not-a-response'],
+  ])('reports %s as a provider error, never a TypeError', async (_name, body) => {
+    const { adapter } = provider({ count: { input_tokens: 10 }, response: body });
+
+    const error = await rejection(adapter.complete(request(), { timeoutMs: 1000 }));
+
+    expect(error).toBeInstanceOf(LlmProviderError);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect((error as LlmProviderError).status).toBeNull();
+  });
+
+  it('charges the whole reservation and logs nothing when the reply carried no body', async () => {
+    const { spend, store, suspension, entries } = harness();
+    const { adapter } = provider({ count: { input_tokens: 10 }, response: null });
+    const bound = boundMicros(10, 100, PRICES);
+
+    const error = await rejection(
+      spend.runMetered(adapter, request(), { cityId: 'lisbon', timeoutMs: 60_000 }),
+    );
+
+    expect((error as LlmProviderError).chargedMicros).toBe(bound);
+    expect(store.row('lisbon', '2026-11-04').spent).toBe(bound);
+    expect(store.row('lisbon', '2026-11-04').reserved).toBe(0);
+    expect(entries).toHaveLength(0);
+    expect(await suspension.isSuspended()).toBe(false);
+  });
+
+  it.each([
+    ['no usage', null],
+    ['a usage that is not an object', 'nonsense'],
+    ['a usage whose fields are not numbers', { input_tokens: 'x', output_tokens: 1 }],
+  ])(
+    'reports %s as no usage, charging the reservation without suspending',
+    async (_name, usage) => {
+      const { spend, store, suspension, entries } = harness();
+      const { adapter } = provider({
+        count: { input_tokens: 10 },
+        response: { output_text: '{}', usage },
+      });
+      const bound = boundMicros(10, 100, PRICES);
+
+      const direct = await adapter.complete(request(), { timeoutMs: 1000 });
+      const charge = await spend.runMetered(adapter, request(), {
+        cityId: 'lisbon',
+        timeoutMs: 60_000,
+      });
+
+      expect(direct.usage).toBeNull();
+      expect(charge.chargedMicros).toBe(bound);
+      expect(store.row('lisbon', '2026-11-04').spent).toBe(bound);
+      expect(store.row('lisbon', '2026-11-04').reserved).toBe(0);
+      expect(entries).toHaveLength(0);
+      expect(await suspension.isSuspended()).toBe(false);
+    },
+  );
+
+  it.each([
+    ['round numbers', { input_tokens: 10, output_tokens: 4 }, { inputTokens: 10, outputTokens: 4 }],
+    [
+      'a fractional figure',
+      { input_tokens: 1.5, output_tokens: 0 },
+      { inputTokens: 1.5, outputTokens: 0 },
+    ],
+  ])('reports %s of usage as they stand', async (_name, usage, expected) => {
+    const { adapter } = provider({
+      count: { input_tokens: 10 },
+      response: { output_text: '{}', usage },
+    });
+
+    // A figure that is not a whole count still travels: the meter is what classifies it.
+    expect((await adapter.complete(request(), { timeoutMs: 1000 })).usage).toEqual(expected);
+  });
+});
+
+/**
+ * The module graph `src/llm/{adapter,openai,fake}.ts` forms at start-up: `adapter.ts` imports both
+ * provider factories while each provider imports back `adapter.ts`'s error classes and
+ * `assertLlmRequest`, so the cycle is safe only while no module reads an imported binding at its
+ * own top level. Each case resets the registry and imports one module as the graph's entry point,
+ * which is the order a process gets it in, and then uses that module's own exports; a top-level
+ * read added later meets its import's temporal dead zone here instead of when the process starts.
+ * The fresh registry hands back new class identities, so an assertion reads `provider`, `model` or
+ * a code and never `instanceof` against the classes this file imported statically.
+ */
+describe('the llm module graph', () => {
+  it('builds the adapter factory when adapter.ts is the entry point', async () => {
+    vi.resetModules();
+
+    const adapter = await import('../../src/llm/adapter.ts');
+    const built = adapter.createLlmAdapter({ provider: 'fake' });
+
+    expect(built.provider).toBe('fake');
+    // `LlmError` is a class binding the providers import back, so it must be constructible here.
+    expect(typeof adapter.LlmError).toBe('function');
+    expect(new adapter.LlmError('llm_suspended', 'llm_suspended').code).toBe('llm_suspended');
+  });
+
+  it('builds the OpenAI adapter when openai.ts is the entry point', async () => {
+    vi.resetModules();
+
+    const openai = await import('../../src/llm/openai.ts');
+    const built = openai.createOpenAiAdapter({
+      apiKey: STUB_API_KEY,
+      model: STUB_MODEL,
+      client: new StubOpenAiClient({}),
+    });
+
+    expect(built.provider).toBe('openai');
+    expect(built.model).toBe(STUB_MODEL);
+    expect(openai.SUPPORTED_MODELS).toContain(STUB_MODEL);
+  });
+
+  it('builds the fake adapter when fake.ts is the entry point', async () => {
+    vi.resetModules();
+
+    const fake = await import('../../src/llm/fake.ts');
+    const built = fake.createFakeLlmAdapter({});
+
+    expect(built.provider).toBe('fake');
+    expect(built.model).toBe('fake');
   });
 });
