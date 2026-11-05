@@ -1,0 +1,262 @@
+/**
+ * Tablemate partner console styles (AAP 0.8.1, 0.5.8, 0.3.2).
+ *
+ * Styled entirely from the shared tokens in `packages/shared/src/ui-tokens.ts`, which `main.tsx`
+ * publishes as custom properties on the document root. This file declares none of them, holds no
+ * hex literal and fetches no remote resource, so the nginx Content-Security-Policy (AAP 0.3.2)
+ * needs no exception for it. It consumes --tm-color-{background,surface,text,text-muted,primary,
+ * on-primary,border,danger,on-danger,focus-ring}, --tm-space-{xs,sm,md,lg,xl,xxl},
+ * --tm-radius-{sm,md,lg,pill}, --tm-font-size-{caption,body,label,title,heading,display},
+ * --tm-line-height-{caption,body,label,title,heading,display}, --tm-font-weight-{regular,medium,
+ * bold} and --tm-touch-target: each key the kebab-case form of the token it comes from, published
+ * in rem so text follows the reader's system font size. Text is painted only in pairs recorded in
+ * the tokens' CONTRAST_PAIRS; boundaries and the focus ring only in NON_TEXT_CONTRAST_PAIRS.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* Every rem below resolves against the reader's system font size. */
+  font-size: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--tm-color-background);
+  color: var(--tm-color-text);
+  /* The family names are left unquoted on purpose: Prettier keeps an unquoted name as written but
+     rewrites a quoted one to the quote style its configuration happens to set. */
+  font-family:
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    sans-serif;
+  font-size: var(--tm-font-size-body);
+  line-height: var(--tm-line-height-body);
+}
+
+/* The console's markup carries the classes below, so the shell is styled by element and spacing
+   comes from the layout's gap rather than from margins between siblings. */
+h1,
+h2,
+p,
+dl,
+dd,
+figure,
+figcaption,
+form {
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--tm-font-size-heading);
+  line-height: var(--tm-line-height-heading);
+}
+
+h2 {
+  font-size: var(--tm-font-size-title);
+  line-height: var(--tm-line-height-title);
+}
+
+/* One centred column: header, secret form, code, countdown and any status line stack below. */
+main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-xl);
+  max-width: 40rem;
+  margin-inline: auto;
+  padding-inline: var(--tm-space-lg);
+  padding-block: var(--tm-space-xl);
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-md);
+  align-items: center;
+  justify-content: space-between;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-md);
+}
+
+label {
+  display: block;
+  font-size: var(--tm-font-size-label);
+  line-height: var(--tm-line-height-label);
+  font-weight: var(--tm-font-weight-medium);
+}
+
+input,
+button {
+  min-height: var(--tm-touch-target);
+  padding-inline: var(--tm-space-md);
+  border-radius: var(--tm-radius-md);
+  font-family: inherit;
+  font-size: var(--tm-font-size-label);
+  line-height: var(--tm-line-height-label);
+  font-weight: var(--tm-font-weight-medium);
+}
+
+input {
+  width: 100%;
+  background: var(--tm-color-background);
+  color: var(--tm-color-text);
+  border: 1px solid var(--tm-color-border);
+}
+
+button {
+  min-width: var(--tm-touch-target);
+  border: 1px solid transparent;
+  background: var(--tm-color-primary);
+  color: var(--tm-color-on-primary);
+  cursor: pointer;
+}
+
+/* The header carries only the escape hatch out of the session, so it reads as the secondary
+   control rather than the primary one. */
+header button {
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text);
+  border-color: var(--tm-color-border);
+}
+
+/* A control that cannot be used must not look like one; the pair stays legible. */
+button:disabled,
+input:disabled {
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text-muted);
+  border-color: var(--tm-color-border);
+  cursor: default;
+}
+
+button:disabled {
+  pointer-events: none;
+}
+
+a {
+  color: var(--tm-color-primary);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--tm-color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Read off this element as text, so it stays exactly six digits and the visual grouping is
+   letter-spacing alone. */
+.code {
+  font-size: clamp(3rem, 18vw, 9rem);
+  line-height: 1.1;
+  font-weight: var(--tm-font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* Time left is stated as text, never by colour alone (AAP 0.5.8). */
+.countdown {
+  font-size: var(--tm-font-size-title);
+  line-height: var(--tm-line-height-title);
+  text-align: center;
+}
+
+/* The QR form of the code: light background behind dark modules, both from the tokens, so the
+   quiet zone a scanner needs survives. Fill comes from these classes, never from inline style,
+   which the console's Content-Security-Policy would refuse. */
+.qr {
+  display: block;
+  width: min(70vw, 18rem);
+  height: auto;
+  margin: auto;
+  background: var(--tm-color-background);
+}
+
+.qr-bg {
+  fill: var(--tm-color-background);
+}
+
+.qr-modules {
+  fill: var(--tm-color-text);
+}
+
+/* Status and error lines; each carries its own words, so colour is never the only signal. */
+.notice {
+  padding: var(--tm-space-md) var(--tm-space-lg);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-color-danger);
+  color: var(--tm-color-on-danger);
+}
+
+/* Lodging stats: each term shares a line with its value and the pair wraps as a unit, so a term
+   too wide for the row moves the value onto the next line instead of squeezing it out of the
+   viewport once the text is scaled up. A two-track grid cannot do this: whichever track is not
+   flexible takes the row and starves the other. */
+dl {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--tm-space-lg);
+  row-gap: var(--tm-space-sm);
+  overflow-wrap: anywhere;
+}
+
+dt {
+  color: var(--tm-color-text-muted);
+  font-weight: var(--tm-font-weight-medium);
+}
+
+dd {
+  flex: 1 1 auto;
+}
+
+.trend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-sm);
+}
+
+.trend svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.trend-bar {
+  fill: var(--tm-color-primary);
+}
+
+.trend-baseline {
+  stroke: var(--tm-color-border);
+  stroke-width: 1;
+}
+
+figcaption {
+  color: var(--tm-color-text-muted);
+  font-size: var(--tm-font-size-caption);
+  line-height: var(--tm-line-height-caption);
+}
+
+/* Text a screen reader reads and the screen does not show, for a label a visible element
+   already carries. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
