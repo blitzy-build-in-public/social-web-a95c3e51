@@ -1,0 +1,19 @@
+// Solution file for the root `tsc -b tsconfig.json` step that the root `build` and `typecheck`
+// scripts run (package.json). It references the six composite, emitting projects and carries no
+// compiler options of its own; `files: []` keeps the solution file from compiling anything itself.
+//
+// apps/mobile and apps/venue-console are noEmit bundler projects, not composite ones, so a project
+// reference cannot reach them: the root scripts typecheck them through their own `typecheck` script.
+// The order below is a reading order only — tsc -b derives the real build order from the references
+// each project declares.
+{
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/circuits" },
+    { "path": "packages/server-core" },
+    { "path": "packages/db" },
+    { "path": "apps/api" },
+    { "path": "apps/workers" }
+  ]
+}
