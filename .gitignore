@@ -1,0 +1,63 @@
+# Tablemate repository exclusions.
+#
+# Grouped by what produces the path. Everything the toolchain generates is ignored;
+# everything a build must be reproducible from stays tracked: the pnpm and Cargo
+# lockfiles, the generated issuer registries, the emitted OpenAPI document, the Prisma
+# migrations, the DKIM-signed test emails and the labelled menu fixtures.
+#
+# Paths inside this repository are anchored with a leading "/", so a rule such as
+# "/apps/mobile/ios/" cannot reach the committed native module sources at
+# "apps/mobile/modules/tablemate-prover/ios/".
+
+# Dependencies, build output and OS files
+node_modules/
+dist/
+.tsbuild/
+*.tsbuildinfo
+coverage/
+*.log
+.DS_Store
+
+# Environment and local secrets; .env.example stays tracked as the committed template
+.env
+.env.*
+!.env.example
+# Seed fixture console secrets (.local/fixture-secrets.json) and load-test results (.local/perf/)
+/.local/
+
+# Circuits: compiled artefacts, the downloaded powers-of-tau file and user-supplied emails
+/packages/circuits/build/
+/packages/circuits/samples/
+*.ptau
+
+# Native prover libraries and bindings written by packages/circuits/scripts/build-native.sh
+/apps/mobile/modules/tablemate-prover/ios/Frameworks/
+/apps/mobile/modules/tablemate-prover/ios/Generated/
+/apps/mobile/modules/tablemate-prover/android/src/main/jniLibs/
+/apps/mobile/modules/tablemate-prover/android/src/main/java/uniffi/
+/apps/mobile/modules/tablemate-prover/android/build/
+/apps/mobile/modules/tablemate-prover/rust/target/
+
+# Expo app: framework caches, web export, build artefacts and prebuilt native projects
+/apps/mobile/.expo/
+/apps/mobile/dist/
+/apps/mobile/web-build/
+/apps/mobile/ios/
+/apps/mobile/android/
+/apps/mobile/expo-env.d.ts
+.expo/
+*.apk
+*.aab
+*.ipa
+
+# Test output
+test-results/
+playwright-report/
+blob-report/
+/apps/mobile/e2e/maestro/output/
+
+# Browser screenshots and screen recordings captured by the validation harness
+/blitzy/
+
+# Editors
+.idea/
