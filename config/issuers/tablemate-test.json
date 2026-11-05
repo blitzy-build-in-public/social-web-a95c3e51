@@ -1,0 +1,37 @@
+{
+  "issuerId": 999,
+  "displayName": "Tablemate Test Issuer",
+  "verificationStatus": "verified",
+  "keys": [
+    {
+      "domain": "tablemate.test",
+      "selector": "fixture",
+      "modulusBase64": ""
+    }
+  ],
+  "template": {
+    "fields": {
+      "city": {
+        "anchor": "City: ",
+        "terminator": 13,
+        "charset": "text"
+      },
+      "arrival": {
+        "anchor": "Check-in: ",
+        "terminator": 13,
+        "charset": "date"
+      },
+      "departure": {
+        "anchor": "Check-out: ",
+        "terminator": 13,
+        "charset": "alnum"
+      },
+      "reference": {
+        "anchor": "Booking reference: ",
+        "terminator": 13,
+        "charset": "alnum"
+      }
+    },
+    "dateFormat": "ISO_YMD"
+  }
+}

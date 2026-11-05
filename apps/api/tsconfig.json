@@ -1,0 +1,18 @@
+// The TypeScript project for @tablemate/api: composite so `tsc -b` emits dist/{src,scripts,test}/**.
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "types": ["node"],
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.json", "scripts/**/*.ts", "test/**/*.ts", "test/**/*.json"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/db" },
+    { "path": "../../packages/server-core" },
+    { "path": "../../packages/circuits" }
+  ]
+}
