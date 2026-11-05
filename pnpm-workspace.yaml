@@ -1,0 +1,25 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm 12 no longer reads the `pnpm` field in package.json, so workspace-wide settings
+# live here. The snarkjs override replaces the git-hosted fork that @zk-email/helpers
+# declares; without it pnpm refuses the install with ERR_PNPM_EXOTIC_SUBDEP.
+
+overrides:
+  snarkjs: 0.7.6
+
+# pnpm 11 replaced onlyBuiltDependencies with allowBuilds. Without these entries pnpm
+# exits 1 with ERR_PNPM_IGNORED_BUILDS and the Prisma engines, the esbuild binary and
+# the native addons below are never built.
+allowBuilds:
+  "@prisma/client": true
+  "@prisma/engines": true
+  "@zk-email/zk-regex-circom": true
+  blake-hash: true
+  cpu-features: true
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true
+  protobufjs: true
+  ssh2: true
