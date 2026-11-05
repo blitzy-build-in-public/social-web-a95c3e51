@@ -2,9 +2,20 @@ packages:
   - apps/*
   - packages/*
 
-# pnpm 12 no longer reads the `pnpm` field in package.json, so workspace-wide settings
-# live here. The snarkjs override replaces the git-hosted fork that @zk-email/helpers
-# declares; without it pnpm refuses the install with ERR_PNPM_EXOTIC_SUBDEP.
+# Workspace-wide settings live here: pnpm 12 ignores the `pnpm` field in package.json and
+# every non-auth .npmrc setting, so the settings below are the authoritative copies of what
+# the plan states in that field and in .npmrc.
+#
+# Expo SDK 52 (React Native 0.76.9) Metro and native autolinking do not work with pnpm's
+# isolated node_modules layout; Expo's own pnpm template uses the hoisted linker.
+nodeLinker: hoisted
+# Exact version pins: every dependency is declared at its resolved version and no range.
+saveExact: true
+# The root scripts `test:stripe` and `perf` run `VAR=value cmd`, which needs shell emulation.
+shellEmulator: true
+
+# The snarkjs override replaces the git-hosted fork that @zk-email/helpers declares;
+# without it pnpm refuses the install with ERR_PNPM_EXOTIC_SUBDEP.
 
 overrides:
   snarkjs: 0.7.6
@@ -25,7 +36,7 @@ overrides:
   # injection and denial-of-service advisories; 0.8.15 patches every one of them. Scoped below
   # 0.9: the 0.9.12 that plist resolves is already outside every advisory's range, and a blanket
   # pin would drop it under that package's own ^0.9.10 for no gain.
-  "@xmldom/xmldom@<0.9": 0.8.15
+  '@xmldom/xmldom@<0.9': 0.8.15
   # postcss 8.4.49, via @expo/metro-config, carries the high GHSA-6g55-p6wh-862q and
   # GHSA-r28c-9q8g-f849 (arbitrary file read) and two moderate advisories, all cleared from
   # 8.5.23; 8.5.32 is the release vite already resolves.
@@ -48,7 +59,7 @@ overrides:
   # through the `$data` option); 8.18.0 is the first patched release and 8.20.0 is the release
   # schema-utils already resolves. Scoped to the 8.x line: the ajv 6 that ESLint resolves sits
   # outside the advisory's range and does not accept ajv 8's option set.
-  "ajv@^8.0.0": 8.20.0
+  'ajv@^8.0.0': 8.20.0
 
 # `pnpm audit --prod` reports no high or critical advisories (AAP 0.11.2). The four advisories
 # below are moderate or low and reach the tree only through the Expo SDK 52 toolchain, whose
@@ -73,9 +84,9 @@ auditConfig:
 # exits 1 with ERR_PNPM_IGNORED_BUILDS and the Prisma engines, the esbuild binary and
 # the native addons below are never built.
 allowBuilds:
-  "@prisma/client": true
-  "@prisma/engines": true
-  "@zk-email/zk-regex-circom": true
+  '@prisma/client': true
+  '@prisma/engines': true
+  '@zk-email/zk-regex-circom': true
   blake-hash: true
   cpu-features: true
   esbuild: true
