@@ -28,8 +28,12 @@ include "./anchor_extract.circom";
 ///         in `out[1]`, every byte range-checked to 0-255 — so the encoding is injective and byte 31
 ///         cannot carry weight back into `out[0]`. `anchorLength` and `terminator` reach the four
 ///         `FieldExtract` instances the main circuit wires these same signals into, which range-check a
-///         length of 1-32 and a non-zero terminator; the charset and date-format codes are constrained
-///         here, because the registry leaf is what they are hashed into and nothing else bounds them.
+///         length of 1-32 and a non-zero terminator. The charset and date-format codes are pinned to the
+///         coded sets here so `TemplateHash` is well-formed on its own: the registry leaf is built from
+///         `out`, and no other template bounds them for a standalone use. In the instantiated circuit
+///         `FieldExtract` pins each charset code again through its one-hot selector sum and `DateParse`
+///         pins the date-format code through its layout selection sum, over these same signals, so the
+///         two paths agree rather than one relying on the other.
 /// @notice A date format, terminator class or charset outside the coded sets below needs a circuit
 ///         revision and a new trusted setup, which `docs/zk-proofs.md` records, not a configuration edit.
 /// @input anchors The four anchors, zero-padded to 32 bytes, in field order.

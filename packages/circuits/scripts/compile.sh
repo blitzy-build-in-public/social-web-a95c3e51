@@ -8,6 +8,17 @@
 # powersOfTau28_hez_final_22.ptau can prove: 4,194,304 constraints (2^22).
 #
 # Invoked as `bash scripts/compile.sh` through the `circuit:compile` package script.
+#
+# Environment knobs, all optional; `bash scripts/compile.sh --help` prints the same list.
+#
+#   CIRCUITS_NODE_HEAP_MB  node's heap for the `snarkjs r1cs info` parse of the R1CS, which a circuit
+#                          of a few million constraints does not fit in node's default heap.
+#                          Default 8192 MB, and a positive integer of megabytes: any other value is
+#                          rejected before the multi-minute compile it precedes, not after it.
+#   TMPDIR                 the directory the docs-block content temp file is created in. Default
+#                          /tmp. The other temp this script uses, the one write_doc_block renames
+#                          into place, is created next to the document instead, so its rename is
+#                          atomic whatever TMPDIR is.
 
 set -euo pipefail
 
@@ -27,6 +38,90 @@ die() {
     exit 1
 }
 
+usage() {
+    # usage: the script's own contract, for an operator who has no other way to read it. It runs
+    # before the lock is taken, so --help neither waits on a run in progress nor starts one.
+    cat <<'USAGE'
+usage: bash scripts/compile.sh
+
+Compiles the itinerary circuit (circuits/tablemate_itinerary.circom) into the git-ignored build/,
+records the constraint count and public-signal shape in docs/zk-proofs.md, and fails when the circuit
+outgrows the 4,194,304 constraints (2^22) the powers-of-tau file powersOfTau28_hez_final_22.ptau can
+prove.
+
+Environment:
+  CIRCUITS_NODE_HEAP_MB  node heap for the R1CS parse; default 8192, a positive integer of megabytes
+  TMPDIR                 where the docs-block content temp file is created; default /tmp
+
+Writes:
+  build/tablemate_itinerary.r1cs, .sym, .wasm and build/tablemate_itinerary_js/
+  the circuits:compile block of docs/zk-proofs.md
+
+Options:
+  -h, --help             print this text and exit, without taking the build directory lock
+USAGE
+}
+
+# The script takes no arguments: anything other than a help request is a caller's mistake to report
+# rather than an invocation to guess at, so it exits before the lock and before the compile below.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die "unknown argument '$1'; this script takes no arguments, and --help prints its contract" ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------------------------
+# The build directory lock
+# ---------------------------------------------------------------------------------------------
+
+# build/ is shared with setup.sh, and both write fixed intermediate names inside it, so one run at a
+# time owns it: two runs interleaving those writes can leave a proving key, a verification key or a
+# manifest that corresponds to no single compile. The lock is taken before the first of those writes
+# and held for the whole run.
+#
+# flock is preferred where it exists, because the kernel drops the lock when the process ends, a
+# killed one included. macOS ships no flock, so the fallback is an atomic mkdir, which does outlive a
+# killed run and therefore names itself and the remedy in its message. `-n` gives up at once instead
+# of queueing: a second run in one checkout is a mistake to report, not a run to hold for the minutes
+# a compile takes.
+LOCK_DIR="$BUILD_DIR/.lock.d"
+LOCK_HELD=""
+mkdir -p "$BUILD_DIR"
+if command -v flock >/dev/null 2>&1; then
+    # The lock is the build directory itself, opened read-only: a read-only open has neither
+    # O_CREAT nor O_TRUNC, so no file is created for a local writer to plant a symlink at, and a
+    # fixed lock-file name can no longer be followed and truncated as `9>"$BUILD_DIR/.lock"` was.
+    # The directory both runs agree on already exists, so they lock the same inode without
+    # creating anything.
+    exec 9<"$BUILD_DIR"
+    flock -n 9 ||
+        die "another compile or ceremony holds the build directory lock $BUILD_DIR; wait for it to finish and run again"
+    LOCK_HELD="flock"
+elif ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    die "another compile or ceremony holds the build directory lock $LOCK_DIR; remove that directory if no run is active, then run again"
+else
+    LOCK_HELD="mkdir"
+fi
+
+release_lock() {
+    # release_lock: gives the build directory back. Under flock there is nothing to do: the lock is
+    # taken on the directory itself, which must not be removed, and the kernel releases it when the
+    # process exits. The mkdir fallback owns its directory and removes it.
+    if [ "$LOCK_HELD" = "mkdir" ]; then
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+# Registered at acquisition, so a failure before the traps below is covered too; the EXIT trap is
+# replaced there by one that releases the lock as well. The signal handlers release the lock and then
+# end the run, because a trapped signal no longer terminates the shell by default: a `kill`ed compile
+# must still stop it, which is how it behaved before the lock existed. 130 and 143 are the shell's
+# status for SIGINT and SIGTERM.
+trap release_lock EXIT
+trap 'release_lock; exit 130' INT
+trap 'release_lock; exit 143' TERM
+
 # ---------------------------------------------------------------------------------------------
 # Tools and dependency files
 # ---------------------------------------------------------------------------------------------
@@ -38,6 +133,16 @@ CIRCOM_VERSION="$(circom --version 2>&1 || true)"
 case "$CIRCOM_VERSION" in
     *2.1.9*) ;;
     *) die "circom 2.1.9 is required (the requested 2.1 line; 2.2.x is outside it), but PATH has: ${CIRCOM_VERSION:-unknown}" ;;
+esac
+
+# CIRCUITS_NODE_HEAP_MB tunes the heap snarkjs gets for the R1CS parse below. It comes from the
+# environment, so a value it cannot use is rejected here, before the multi-minute compile it
+# precedes. Only a plain decimal count of megabytes with no leading zero is accepted, written as the
+# rejections that leave exactly it: a glob such as [1-9][0-9]* would also match "16G", because its
+# trailing * means any characters, and a leading zero is the octal spelling of a number.
+CIRCUITS_NODE_HEAP_MB="${CIRCUITS_NODE_HEAP_MB:-8192}"
+case "$CIRCUITS_NODE_HEAP_MB" in
+    ''|0*|*[!0-9]*) die "CIRCUITS_NODE_HEAP_MB must be a positive integer number of megabytes, without a sign and without a leading zero (for example 8192); got: '$CIRCUITS_NODE_HEAP_MB'" ;;
 esac
 
 # Both roots are searched because the hoisted install keeps snarkjs and the circuit libraries at
@@ -67,6 +172,13 @@ done
 # ---------------------------------------------------------------------------------------------
 
 mkdir -p "$BUILD_DIR"
+
+# The outputs of an earlier compile are removed first, so a compile that fails part way leaves no
+# earlier revision's R1CS or WASM behind for setup.sh to build a proving key for: only these four
+# paths are touched, and none of the artefacts setup.sh owns (the keys, the verification key and the
+# manifest) is.
+rm -f "$ARTIFACT.r1cs" "$ARTIFACT.sym" "$ARTIFACT.wasm" "$WASM_DIR/tablemate_itinerary.wasm"
+
 printf 'compile.sh: compiling %s (this takes several minutes)\n' "$CIRCUIT"
 
 # `--sym` and `--r1cs` are what packages/circuits/test/* load through circom_tester's
@@ -90,9 +202,15 @@ cp "$WASM_DIR/tablemate_itinerary.wasm" "$ARTIFACT.wasm"
 
 # snarkjs colours its output even when stdout is not a terminal, so the codes are stripped before
 # parsing. The heap bound is raised because the R1CS of a multi-million-constraint circuit does not
-# fit node's default heap.
-if ! INFO="$(NODE_OPTIONS="--max-old-space-size=${CIRCUITS_NODE_HEAP_MB:-8192}" \
+# fit node's default heap; CIRCUITS_NODE_HEAP_MB, validated above, tunes it.
+if ! INFO="$(NODE_OPTIONS="--max-old-space-size=${CIRCUITS_NODE_HEAP_MB}" \
     "$SNARKJS" r1cs info "$ARTIFACT.r1cs" 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g')"; then
+    # INFO holds the parse's own output, node's complaint included. It is printed before dying
+    # because the assignment that captured it is otherwise discarded and the message below names
+    # only the file, which leaves the cause of a failed parse invisible.
+    if [ -n "$INFO" ]; then
+        printf '%s\n' "$INFO" >&2
+    fi
     die "snarkjs r1cs info failed on $ARTIFACT.r1cs"
 fi
 
@@ -103,7 +221,13 @@ info_value() {
 }
 
 CONSTRAINTS="$(info_value Constraints)"
-[ -n "$CONSTRAINTS" ] || die "could not read the constraint count from snarkjs r1cs info"
+# The count is parsed out of snarkjs's free-form output, so anything that is not a run of digits is
+# rejected here: the `-gt` comparison below cannot fail on a non-integer, it evaluates false, which
+# would leave RESULT at "within limit" and let a circuit the Phase 1 file may not be able to prove
+# through.
+case "$CONSTRAINTS" in
+    ''|*[!0-9]*) die "could not parse the constraint count from snarkjs r1cs info: '${CONSTRAINTS:-empty}'" ;;
+esac
 WIRES="$(info_value Wires)"
 PRIVATE_INPUTS="$(info_value 'Private Inputs')"
 PUBLIC_INPUTS="$(info_value 'Public Inputs')"
@@ -132,8 +256,15 @@ write_doc_block() {
     local file="$1" name="$2" content="$3" tmp begin end
     begin="<!-- BEGIN $name -->"
     end="<!-- END $name -->"
-    tmp="$file.tmp.$$"
     mkdir -p "$(dirname "$file")"
+    # The temp file stays in the document's own directory, so the rename below is atomic, but its
+    # name is generated rather than derived from this process's pid and the document's name: a
+    # symlink planted at a name a local writer can predict can then no longer make this script
+    # truncate a file outside the repository through the write below (CWE-377, CWE-59). mktemp
+    # creates it 0600, and the document it becomes ships with the 0644 mode of every other tracked
+    # file under docs/ while holding nothing but public hashes.
+    tmp="$(mktemp "${file}.tmp.XXXXXX")" || die "could not create a temporary file next to $file"
+    chmod 0644 "$tmp"
     if [ -f "$file" ] && grep -qF "$begin" "$file" && grep -qF "$end" "$file"; then
         # The content file is read with awk's getline: a multi-line value cannot travel through
         # `awk -v`, which BSD awk and mawk both reject.
@@ -155,7 +286,7 @@ SNARKJS_VERSION="$(node -p "require('$SNARKJS_MODULES/snarkjs/package.json').ver
 
 DOC_CONTENT="$(mktemp "${TMPDIR:-/tmp}/tablemate-compile-block.XXXXXX")" ||
     die "could not create a temporary file for the docs block"
-trap 'rm -f "$DOC_CONTENT"' EXIT
+trap 'rm -f "$DOC_CONTENT"; release_lock' EXIT
 
 {
     printf 'Constraints|%s\n' "$CONSTRAINTS"

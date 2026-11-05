@@ -18,6 +18,26 @@
 #
 # Invoked as `bash scripts/setup.sh` through the `circuit:setup` package script and root
 # `circuits:setup`; root `circuits:build` runs compile.sh first, which this script does not repeat.
+#
+# Environment knobs, all optional; `bash scripts/setup.sh --help` prints the same list.
+#
+#   PTAU_PATH              the phase 1 file. Default build/ptau/powersOfTau28_hez_final_22.ptau. An
+#                          existing file at that path is used as it stands and skips the download,
+#                          which is the fast path for a fresh checkout: point it at a verified copy
+#                          rather than fetch 4.8 GB again.
+#   PTAU_URL               the URL the file is downloaded from when it is absent. Default
+#                          https://circom.info/powersOfTau28_hez_final_22.ptau.
+#   PTAU_MIRROR            the URL tried only once PTAU_URL has failed. Default
+#                          https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau.
+#   BEACON_HASH            the beacon's entropy: a supplied value reproduces an earlier ceremony and
+#                          must be 64 hex characters, and otherwise 32 fresh random bytes are used
+#                          and recorded, a beacon being public by definition.
+#   CIRCUITS_NODE_HEAP_MB  node's heap for the ceremony, which needs well over node's default.
+#                          Default 16384 MB.
+#   TMPDIR                 the directory the transcript, the step-output and the docs-block temp
+#                          files are created in. Default /tmp. The temp write_doc_block renames into
+#                          place is created next to the document instead, so its rename is atomic
+#                          whatever TMPDIR is.
 
 set -euo pipefail
 
@@ -39,11 +59,19 @@ DOC="$REPO_ROOT/docs/zk-proofs.md"
 # v0.7.5 tag and current master list identically, and BLAKE2b-512 is the algorithm that table
 # publishes. The size check reads no bytes and catches a truncated download before the digest pass,
 # which alone takes minutes on 4.8 GB.
+#
+# The primary URL is the one that answers in the environments this ships to; the fallback is the
+# googleapis URL the pinned snarkjs README's own table names, which answers 403 there, so it is tried
+# only once the primary has failed. Both are overridable (PTAU_URL, PTAU_MIRROR), and neither is
+# contacted when PTAU_PATH already names an existing file.
 PTAU="${PTAU_PATH:-$BUILD_DIR/ptau/powersOfTau28_hez_final_22.ptau}"
 PTAU_B2SUM=0d64f63dba1a6f11139df765cb690da69d9b2f469a1ddd0de5e4aa628abb28f787f04c6a5fb84a235ec5ea7f41d0548746653ecab0559add658a83502d1cb21b
 PTAU_SIZE=4831921304
-PTAU_URL="${PTAU_URL:-https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau}"
-PTAU_MIRROR="https://circom.info/powersOfTau28_hez_final_22.ptau"
+PTAU_URL="${PTAU_URL:-https://circom.info/powersOfTau28_hez_final_22.ptau}"
+PTAU_MIRROR="${PTAU_MIRROR:-https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau}"
+# What actually produced the phase 1 file. The transcript records it, so the document that stands as
+# the ceremony's record names the source that was used rather than the URL that was merely configured.
+PTAU_SOURCE=""
 
 # A beacon is public by definition: a supplied BEACON_HASH reproduces an earlier ceremony, and
 # otherwise fresh random bytes are used and recorded in docs/zk-proofs.md. The exponent is fixed at
@@ -55,6 +83,95 @@ die() {
     printf 'setup.sh: %s\n' "$1" >&2
     exit 1
 }
+
+usage() {
+    # usage: the script's own contract, for an operator who has no other way to read it. It runs
+    # before the lock is taken, so --help neither waits on a run in progress nor starts one.
+    cat <<'USAGE'
+usage: bash scripts/setup.sh
+
+Runs the Groth16 trusted setup over the compiled circuit: a groth16 setup pass over the powers-of-tau
+file powersOfTau28_hez_final_22.ptau, two contributions, a beacon, a full zkey verify and the
+verification-key export, then artifacts.manifest.json and the ceremony record.
+
+Environment:
+  PTAU_PATH              powers-of-tau file; default build/ptau/powersOfTau28_hez_final_22.ptau, and
+                         an existing file at that path skips the download (this is the fast path)
+  PTAU_URL               download URL tried first; default the circom.info powersOfTau28_hez_final_22.ptau
+  PTAU_MIRROR            URL tried only when PTAU_URL fails; default the googleapis URL of the same name
+  BEACON_HASH            beacon entropy; default 32 fresh random bytes, a supplied value is 64 hex
+  CIRCUITS_NODE_HEAP_MB  node heap for the ceremony; default 16384, a positive integer of megabytes
+  TMPDIR                 where the transcripts and the docs-block temp file are created; default /tmp
+
+Writes:
+  build/tablemate_itinerary.zkey, build/verification_key.json, build/artifacts.manifest.json
+  the circuits:setup block of docs/zk-proofs.md
+
+Options:
+  -h, --help             print this text and exit, without taking the build directory lock
+USAGE
+}
+
+# The script takes no arguments: anything other than a help request is a caller's mistake to report
+# rather than an invocation to guess at, so it exits before the lock and before the ceremony below.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die "unknown argument '$1'; this script takes no arguments, and --help prints its contract" ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------------------------
+# The build directory lock
+# ---------------------------------------------------------------------------------------------
+
+# build/ is shared with compile.sh, and every writing step here uses a fixed name inside it (the
+# phase 1 file, the intermediate keys, the proving key, the verification key and the manifest), so
+# one run at a time owns it: two runs interleaving those writes can leave a proving key, a
+# verification key or a manifest that corresponds to no single ceremony. The lock is taken before the
+# first of those writes and held for the whole run.
+#
+# flock is preferred where it exists, because the kernel drops the lock when the process ends, a
+# killed one included. macOS ships no flock, so the fallback is an atomic mkdir, which does outlive a
+# killed run and therefore names itself and the remedy in its message. `-n` gives up at once instead
+# of queueing: a second run in one checkout is a mistake to report, not a run to hold for the tens of
+# minutes a ceremony takes.
+LOCK_DIR="$BUILD_DIR/.lock.d"
+LOCK_HELD=""
+mkdir -p "$BUILD_DIR"
+if command -v flock >/dev/null 2>&1; then
+    # The lock is the build directory itself, opened read-only: a read-only open has neither
+    # O_CREAT nor O_TRUNC, so no file is created for a local writer to plant a symlink at, and a
+    # fixed lock-file name can no longer be followed and truncated as `9>"$BUILD_DIR/.lock"` was.
+    # The directory both runs agree on already exists, so they lock the same inode without
+    # creating anything.
+    exec 9<"$BUILD_DIR"
+    flock -n 9 ||
+        die "another compile or ceremony holds the build directory lock $BUILD_DIR; wait for it to finish and run again"
+    LOCK_HELD="flock"
+elif ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    die "another compile or ceremony holds the build directory lock $LOCK_DIR; remove that directory if no run is active, then run again"
+else
+    LOCK_HELD="mkdir"
+fi
+
+release_lock() {
+    # release_lock: gives the build directory back. Under flock there is nothing to do: the lock is
+    # taken on the directory itself, which must not be removed, and the kernel releases it when the
+    # process exits. The mkdir fallback owns its directory and removes it.
+    if [ "$LOCK_HELD" = "mkdir" ]; then
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+# Registered at acquisition, so a failure before the trap below is covered too; that trap releases
+# the lock by calling cleanup, which calls release_lock in turn. The signal handlers release the lock
+# and then end the run, because a trapped signal no longer terminates the shell by default: a
+# `kill`ed ceremony must still stop it, which is how it behaved before the lock existed. 130 and 143
+# are the shell's status for SIGINT and SIGTERM.
+trap release_lock EXIT
+trap 'release_lock; exit 130' INT
+trap 'release_lock; exit 143' TERM
 
 command -v node >/dev/null 2>&1 || die "node is not on PATH; install Node 22.23.4"
 
@@ -77,8 +194,43 @@ done
 # Phase 1 — the compiled circuit and the powers-of-tau file
 # ---------------------------------------------------------------------------------------------
 
+# CIRCUITS_NODE_HEAP_MB is the heap node gets for the whole ceremony, exported as NODE_OPTIONS
+# before the first step. It comes from the environment, so a value it cannot use is rejected here,
+# before the phase 1 file is verified, before any download and before any ceremony step: node refuses
+# such a value at its next invocation itself, and there the complaint is about that invocation rather
+# than about the value that caused it. Only a plain decimal count of megabytes with no leading zero is
+# accepted, written as the rejections that leave exactly it: a glob such as [1-9][0-9]* would also
+# match "16G", because its trailing * means any characters, and a leading zero is the octal spelling
+# of a number.
+CIRCUITS_NODE_HEAP_MB="${CIRCUITS_NODE_HEAP_MB:-16384}"
+case "$CIRCUITS_NODE_HEAP_MB" in
+    ''|0*|*[!0-9]*) die "CIRCUITS_NODE_HEAP_MB must be a positive integer number of megabytes, without a sign and without a leading zero (for example 16384); got: '$CIRCUITS_NODE_HEAP_MB'" ;;
+esac
+
+# A supplied beacon stands in the transcript as a full-strength part of the ceremony, and snarkjs
+# refuses a malformed hash without failing its step, so the loss would surface at the verify gate
+# three retries later and be read as a key that does not match the circuit. The form is therefore
+# checked here, before any artefact, download or ceremony step: hex only, and the 64 characters (32
+# bytes) this script generates for a beacon of its own. Every run of this environment is a
+# development ceremony, so the width is a record-keeping rule, not a strength policy.
+if [ -n "$BEACON_HASH" ]; then
+    case "$BEACON_HASH" in
+        *[!0-9a-fA-F]*) die "BEACON_HASH must be 64 hex characters (32 bytes) and '$BEACON_HASH' is not hex" ;;
+    esac
+    [ "${#BEACON_HASH}" = 64 ] ||
+        die "BEACON_HASH must be 64 hex characters (32 bytes) and '$BEACON_HASH' is ${#BEACON_HASH} of them"
+fi
+
 if [ ! -f "$R1CS" ] || [ ! -f "$WASM" ]; then
     die "run pnpm circuits:compile first: $R1CS and $WASM are both required"
+fi
+
+# The clients build their witnesses with this WASM, so the proving key has to be made for it, and the
+# manifest publishes its hash beside the key's. Only the R1CS is read back by the verify gate, so an
+# R1CS recompiled without a fresh WASM would otherwise be signed off as a matched pair. Equal times
+# pass, which is what both a `circuits:build` run and a setup-only run over a completed build leave.
+if [ "$R1CS" -nt "$WASM" ]; then
+    die "$R1CS is newer than $WASM: the WASM must not be older than the R1CS it does not match; run pnpm circuits:compile"
 fi
 
 DOWNLOADED=0
@@ -87,13 +239,20 @@ if [ ! -f "$PTAU" ]; then
         die "curl is not on PATH and $PTAU is missing; fetch powersOfTau28_hez_final_22.ptau (4.8 GB) and set PTAU_PATH"
     mkdir -p "$(dirname "$PTAU")"
     printf 'setup.sh: fetching %s (about 4.8 GB); an interrupted transfer resumes on the next run\n' "$PTAU_URL"
-    if ! curl -fL --retry 3 -C - -o "$PTAU.part" "$PTAU_URL"; then
-        printf 'setup.sh: %s failed; trying the mirror %s\n' "$PTAU_URL" "$PTAU_MIRROR"
+    if curl -fL --retry 3 -C - -o "$PTAU.part" "$PTAU_URL"; then
+        PTAU_SOURCE="downloaded from $PTAU_URL"
+    else
+        printf 'setup.sh: %s failed; trying the fallback %s\n' "$PTAU_URL" "$PTAU_MIRROR"
         curl -fL --retry 3 -C - -o "$PTAU.part" "$PTAU_MIRROR" ||
             die "could not download powersOfTau28_hez_final_22.ptau from either URL"
+        PTAU_SOURCE="downloaded from $PTAU_MIRROR"
     fi
     mv "$PTAU.part" "$PTAU"
     DOWNLOADED=1
+elif [ -n "${PTAU_PATH:-}" ]; then
+    PTAU_SOURCE="supplied via PTAU_PATH at $PTAU"
+else
+    PTAU_SOURCE="already present at $PTAU"
 fi
 
 stream_digest() {
@@ -140,10 +299,16 @@ printf 'setup.sh: phase 1 file verified at %s (%s bytes)\n' "$PTAU" "$PTAU_BYTES
 # ---------------------------------------------------------------------------------------------
 
 # A circuit of a few million constraints needs well over node's default heap, and the run is long:
-# the step labels below are all the progress a reader gets for a while.
-export NODE_OPTIONS="--max-old-space-size=${CIRCUITS_NODE_HEAP_MB:-16384}"
-SNARKJS_VERSION="$(node -p "require('$SNARKJS_MODULES/snarkjs/package.json').version" 2>/dev/null)" ||
+# the step labels below are all the progress a reader gets for a while. CIRCUITS_NODE_HEAP_MB, checked
+# with the other environment inputs above, holds the heap every step of the ceremony runs under.
+export NODE_OPTIONS="--max-old-space-size=${CIRCUITS_NODE_HEAP_MB}"
+# The version read is the first thing node does under that NODE_OPTIONS, so whatever node says about
+# it is printed before dying: a heap node cannot run under is a complaint about the value, and
+# `2>/dev/null` would leave only the message below, which blames the package.json this reads.
+if ! SNARKJS_VERSION="$(node -p "require('$SNARKJS_MODULES/snarkjs/package.json').version" 2>&1)"; then
+    printf '%s\n' "$SNARKJS_VERSION" >&2
     die "could not read the snarkjs version from $SNARKJS_MODULES/snarkjs/package.json"
+fi
 printf 'setup.sh: snarkjs %s under %s (the ceremony takes a long time)\n' "$SNARKJS_VERSION" "$NODE_OPTIONS"
 
 LOG="$(mktemp "${TMPDIR:-/tmp}/tablemate-setup-transcript.XXXXXX")" || die "could not create a temporary transcript"
@@ -152,10 +317,12 @@ DOC_CONTENT=""
 
 cleanup() {
     # Neither an intermediate key nor the transcript outlives the run: a _000N.zkey is not an
-    # artefact, and a transcript could hold a contribution entropy.
+    # artefact, and a transcript could hold a contribution entropy. The build directory lock goes
+    # back here too, which is the EXIT trap the script runs on every exit path it has.
     rm -f "$LOG" "$STEP_OUT" \
         "$ARTIFACT"_0000.zkey "$ARTIFACT"_0001.zkey "$ARTIFACT"_0002.zkey
     if [ -n "$DOC_CONTENT" ]; then rm -f "$DOC_CONTENT"; fi
+    release_lock
 }
 trap cleanup EXIT
 
@@ -318,10 +485,16 @@ manifest_entry() {
 } > "$MANIFEST"
 
 # The manifest is a contract with ArtifactsManifest in packages/shared, so it is parsed rather than
-# trusted: an unknown key, an uppercase digest or a missing file entry stops the ceremony here.
+# trusted: an unknown key, an uppercase digest or a missing file entry stops the ceremony here. One
+# rejection handler ends the chain, so a missing import, a JSON syntax error and a schema mismatch all
+# report a single line and exit 1 instead of an unhandled rejection with a raw parser stack; a schema
+# error's message spans several lines by itself, so it is collapsed to keep that line single.
 manifest_check='Promise.all([import("@tablemate/shared"), import("node:fs")]).then(([shared, fs]) => {
   shared.ArtifactsManifest.parse(JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8")));
-}, (error) => { console.error(String((error && error.message) || error)); process.exitCode = 1; });'
+}).catch((error) => {
+  console.error(String((error && error.message) || error).replace(/\s+/g, " ").trim());
+  process.exitCode = 1;
+});'
 
 if ! ( cd "$PKG_DIR" && MANIFEST_PATH="$MANIFEST" "$TSX" --conditions=tablemate-source --eval "$manifest_check" ); then
     die "$MANIFEST does not parse against ArtifactsManifest from @tablemate/shared"
@@ -340,8 +513,15 @@ write_doc_block() {
     local file="$1" name="$2" content="$3" tmp begin end
     begin="<!-- BEGIN $name -->"
     end="<!-- END $name -->"
-    tmp="$file.tmp.$$"
     mkdir -p "$(dirname "$file")"
+    # The temp file stays in the document's own directory, so the rename below is atomic, but its
+    # name is generated rather than derived from this process's pid and the document's name: a
+    # symlink planted at a name a local writer can predict can then no longer make this script
+    # truncate a file outside the repository through the write below (CWE-377, CWE-59). mktemp
+    # creates it 0600, and the document it becomes ships with the 0644 mode of every other tracked
+    # file under docs/ while holding nothing but public hashes.
+    tmp="$(mktemp "${file}.tmp.XXXXXX")" || die "could not create a temporary file next to $file"
+    chmod 0644 "$tmp"
     if [ -f "$file" ] && grep -qF "$begin" "$file" && grep -qF "$end" "$file"; then
         # The content file is read with awk's getline: a multi-line value cannot travel through
         # `awk -v`, which BSD awk and mawk both reject.
@@ -364,7 +544,7 @@ DOC_CONTENT="$(mktemp "${TMPDIR:-/tmp}/tablemate-setup-block.XXXXXX")" ||
 {
     printf 'ptau file|%s (%s bytes)\n' "$(basename "$PTAU")" "$PTAU_BYTES"
     printf 'ptau BLAKE2b-512|%s\n' "$PTAU_B2SUM"
-    printf 'ptau source|%s\n' "$PTAU_URL"
+    printf 'ptau source|%s\n' "$PTAU_SOURCE"
     printf 'snarkjs|%s\n' "$SNARKJS_VERSION"
     printf 'Circuit hash|%s\n' "$CIRCUIT_HASH"
     printf 'Contribution 1 name|%s\n' 'tablemate dev contribution 1'
