@@ -252,8 +252,8 @@ function SetupFields({ testID, onDone }: SetupFieldsProps): ReactElement {
 
     void (async () => {
       try {
-        // Card only, because the API creates the SetupIntent with `payment_method_types: ['card']`,
-        // so `if_required` never navigates away from this page.
+        // Card only, because the API creates the SetupIntent with
+        // `allowed_payment_method_types: ['card']`, so `if_required` never leaves this page.
         const confirmed = await stripe.confirmSetup({
           elements,
           redirect: 'if_required',

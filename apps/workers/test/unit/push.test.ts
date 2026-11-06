@@ -1,0 +1,188 @@
+/**
+ * The Expo push sender's unit suite (AAP 0.3.3, 0.11.1): the bound on one chunk send, and the
+ * ticket handling the `notifications` job reads.
+ *
+ * The bound is the module's own — `SEND_TIMEOUT_MS` in `src/notify/push.ts`, ten seconds, the
+ * same fast-provider bound `notify/email.ts` gives a connection. AAP 0.11.1 makes it required:
+ * every external call carries a timeout. It is also what stops a dark Expo endpoint from holding
+ * the `notifications` job's only concurrency slot open with no BullMQ retry ever firing
+ * (AAP 0.5.6). Every case drives the module's own `deps.client` seam, so none reaches the network.
+ *
+ * Timers are faked for the whole suite, so proving the ten-second bound costs the run nothing and
+ * the handles the module leaves behind can be counted.
+ */
+
+import { type ExpoPushMessage, type ExpoPushTicket } from 'expo-server-sdk';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  PushDeliveryError,
+  createPushSender,
+  type ExpoPushClient,
+  type PushSender,
+} from '../../src/notify/push.ts';
+
+/**
+ * The send bound `src/notify/push.ts` declares (`SEND_TIMEOUT_MS`): the ten seconds AAP 0.11.1 puts
+ * on the same kind of provider here. The module does not export it, so the number is repeated — a
+ * change to the bound the module ships has to fail this suite.
+ */
+const PUSH_SEND_TIMEOUT_MS = 10_000;
+
+/** Any non-blank `EXPO_ACCESS_TOKEN` enables push (AAP 0.3.3). Never a real token. */
+const ACCESS_TOKEN = 'test-access-token';
+
+/**
+ * A well-formed Expo push token: the one shape `Expo.isExpoPushToken` accepts. The value is
+ * assembled here rather than written out, so the literal never reads as a captured push token to
+ * a scanner.
+ */
+const PUSH_TOKEN = `ExponentPushToken[${'a'.repeat(22)}]`;
+
+/** The notification under test, which carries no text the user wrote (AAP 0.3.4). */
+const MESSAGE = { title: 'A seat is held', body: 'Your proposal was accepted.' };
+
+/** A ticket case: the label, the one ticket Expo answers, and the result the send must report. */
+type TicketCase = readonly [
+  label: string,
+  ticket: ExpoPushTicket,
+  sent: number,
+  invalidTokens: readonly string[],
+];
+
+/**
+ * The two answers one well-formed token can get. Only the ticket differs, so both are rows of one
+ * table: an accepted message is counted as sent, and a retired device is dropped from the token set
+ * instead of failing the send — which is what keeps the job from retrying a dead token forever.
+ */
+const TICKET_CASES: readonly TicketCase[] = [
+  ['an accepted message', { status: 'ok', id: 'expo-receipt-1' }, 1, []],
+  [
+    'a device Expo reports as unregistered',
+    {
+      status: 'error',
+      message: 'Device not registered',
+      details: { error: 'DeviceNotRegistered' },
+    },
+    0,
+    [PUSH_TOKEN],
+  ],
+];
+
+/**
+ * A stub Expo client: one chunk per call, and an answer the case chooses.
+ *
+ * `answer` takes the chunk and returns its tickets — or a promise that never settles, which is
+ * the dark endpoint the bound exists for. `chunks` records every request the sender made, so a
+ * case can also assert that no request was made at all.
+ */
+function stubClient(answer: (messages: ExpoPushMessage[]) => Promise<ExpoPushTicket[]>): {
+  client: ExpoPushClient;
+  chunks: ExpoPushMessage[][];
+} {
+  const chunks: ExpoPushMessage[][] = [];
+
+  const client: ExpoPushClient = {
+    chunkPushNotifications(messages: ExpoPushMessage[]): ExpoPushMessage[][] {
+      // One chunk of every message keeps the ticket at index n answering for the token at index n.
+      return messages.length === 0 ? [] : [messages];
+    },
+    sendPushNotificationsAsync(messages: ExpoPushMessage[]): Promise<ExpoPushTicket[]> {
+      chunks.push(messages);
+      return answer(messages);
+    },
+  };
+
+  return { client, chunks };
+}
+
+/** An answer that never arrives: the half-open Expo endpoint the send bound exists for. */
+function neverAnswers(): Promise<ExpoPushTicket[]> {
+  // Only the bound ends this promise, which is exactly what the bound case asserts.
+  return new Promise<ExpoPushTicket[]>(() => {});
+}
+
+/** The sender with push on: `createPushSender` returns `null` only when no token is configured. */
+function senderFor(client: ExpoPushClient): PushSender {
+  const sender = createPushSender(ACCESS_TOKEN, { client });
+
+  if (sender === null) {
+    throw new Error('push is enabled for a non-blank EXPO_ACCESS_TOKEN');
+  }
+
+  return sender;
+}
+
+beforeEach(() => {
+  // The bound is ten real seconds, so the timers are faked: the suite stays fast, and the
+  // handles the module leaves behind can be counted.
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('createPushSender', () => {
+  it('disables push when no access token is configured', () => {
+    // Push is switched off by configuration, not by a flag (AAP 0.3.3): with no token there is no
+    // sender at all, so no Expo client is built and nothing can be sent.
+    expect(createPushSender(undefined)).toBeNull();
+    expect(createPushSender('')).toBeNull();
+    expect(createPushSender('   ')).toBeNull();
+  });
+});
+
+describe('PushSender.send ticket handling', () => {
+  it.each(TICKET_CASES)('%s', async (_label, ticket, sent, invalidTokens) => {
+    const { client, chunks } = stubClient(() => Promise.resolve([ticket]));
+
+    const result = await senderFor(client).send([PUSH_TOKEN], MESSAGE);
+
+    expect(result).toEqual({ sent, invalidTokens: [...invalidTokens] });
+    // The chunk was requested once, under one message for the one token.
+    expect(chunks).toHaveLength(1);
+  });
+
+  it('retires a token that is not an Expo token without making a request', async () => {
+    // The SDK's own predicate decides, so a token Expo cannot address is dropped before the chunk
+    // that would fail it — and every well-formed token beside it — is sent. The stub never
+    // answers, so a request here would hang instead of returning this result.
+    const { client, chunks } = stubClient(neverAnswers);
+
+    const result = await senderFor(client).send(['not-an-expo-token'], MESSAGE);
+
+    expect(result).toEqual({ invalidTokens: ['not-an-expo-token'], sent: 0 });
+    expect(chunks).toEqual([]);
+  });
+});
+
+describe('PushSender.send send bound', () => {
+  it('fails a never-answering endpoint at the bound and clears the timer', async () => {
+    // The dark-endpoint case the bound exists for: nothing settles the request, so only the
+    // bound ends it — and it ends as a failed request, which is the code the job's retry path
+    // already handles. Without the bound the send would stay pending here, holding the job's
+    // only concurrency slot.
+    const { client, chunks } = stubClient(neverAnswers);
+    const otherTimers = vi.getTimerCount();
+
+    const send = senderFor(client).send([PUSH_TOKEN], MESSAGE);
+    const rejection = expect(send).rejects.toBeInstanceOf(PushDeliveryError);
+
+    // The send installed the bound, and nothing else of its own.
+    expect(vi.getTimerCount()).toBe(otherTimers + 1);
+
+    // One millisecond short of the bound the chunk is still in flight, and it is still armed.
+    await vi.advanceTimersByTimeAsync(PUSH_SEND_TIMEOUT_MS - 1);
+    expect(vi.getTimerCount()).toBe(otherTimers + 1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await rejection;
+
+    // The recorded code is the one a thrown request gets, the request is not repeated, and the
+    // timer is gone with the race.
+    await expect(send).rejects.toMatchObject({ codes: ['request_failed'] });
+    expect(chunks).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(otherTimers);
+  });
+});

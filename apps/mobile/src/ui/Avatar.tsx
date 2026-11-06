@@ -10,10 +10,13 @@
  *
  * Only native can send a header with an image, so the photo loads differently per platform: native
  * hands the bearer token to `Image`, while react-native-web cannot and the effect fetches the bytes
- * and shows them from an object URL it revokes. A load that fails — a `404` after the viewer's tier
- * dropped, a network error, bytes that do not decode — falls back to the pattern silently, with
- * nothing about the failure logged (AAP 0.5.5). Colours, radius and size come from
- * `@tablemate/shared`'s tokens, and the palette names only pairs recorded in `CONTRAST_PAIRS`.
+ * and shows them from an object URL it revokes. A load refused with `401` joins the session's one
+ * rotation and is retried once with the token that rotation installed (AAP 0.3.3, AAP 0.5.4) —
+ * inside the loader on web, and on native from the `Image`'s error, which is the only status-free
+ * signal a stale access token produces there. A load that then fails — a `404` after the viewer's
+ * tier dropped, a second refusal, a network error, bytes that do not decode — falls back to the
+ * pattern silently, with nothing about the failure logged (AAP 0.5.5). Colours, radius and size come
+ * from `@tablemate/shared`'s tokens, and the palette names only pairs recorded in `CONTRAST_PAIRS`.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Image, Platform, StyleSheet, View } from 'react-native';
@@ -22,7 +25,7 @@ import { Rect, Svg } from 'react-native-svg';
 import { colors, radii } from '@tablemate/shared';
 import type { ColorToken } from '@tablemate/shared';
 
-import { userPhotoRequest } from '../api/client';
+import { refreshSession, userPhotoRequest } from '../api/client';
 
 /**
  * Props of {@link Avatar}.
@@ -200,13 +203,90 @@ function photoRequest(userId: string): { url: string; headers: Record<string, st
   }
 }
 
+/** The one refusal a session rotation recovers from: an access token the API no longer accepts. */
+const UNAUTHORIZED = 401;
+
+/**
+ * Sends one photo request and reads its answer as bytes.
+ *
+ * Only the fields this module reads are named, so the answer stays structural and the browser's and
+ * React Native's `Response` both fit it. A `200` answers its bytes; any other status answers that
+ * status with no bytes, because only a `401` is worth acting on; and an unreachable origin, a decode
+ * failure or an aborted signal answers `null`, keeping no reason (AAP 0.5.5).
+ *
+ * @param request - The URL and headers {@link photoRequest} built.
+ * @param signal - The effect's signal, so a traveler change or an unmount stops the request.
+ * @returns The answer's status and bytes, or `null` when there was no answer.
+ */
+async function fetchPhotoBytes(
+  request: { url: string; headers: Record<string, string> },
+  signal: AbortSignal,
+): Promise<{ status: number; bytes: Blob | null } | null> {
+  try {
+    const answer = await fetch(request.url, { headers: request.headers, signal });
+    if (!answer.ok) return { status: answer.status, bytes: null };
+    return { status: answer.status, bytes: await answer.blob() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Loads a traveler's photo bytes, joining the session's single-flight rotation once when the bearer
+ * token the request carried is refused with `401` (AAP 0.3.3, AAP 0.5.4).
+ *
+ * The bytes cannot come through `./client`'s `request()`, which parses JSON, so the recovery that
+ * path performs is repeated here on the same terms and through the same {@link refreshSession}: the
+ * rotation is shared with the client, the socket and the bootstrap, so one started here is joined
+ * rather than duplicated. One rotation spends one refresh token, and a second concurrent rotation
+ * would be read as reuse and revoke the whole session (AAP 0.11.2), which is why exactly one join is
+ * made per load and no rotation is ever started for anything but a `401`.
+ *
+ * The retry re-reads the request with {@link photoRequest} on purpose: that call reads the token as
+ * it stands now, so the retry carries what the rotation installed where the first attempt carried
+ * the stale one. This route's only `401` is the bearer guard's own `401 token_invalid` (AAP 0.5.4),
+ * which is why the status alone decides — an image load has no envelope to read either. Everything
+ * else returns no photo — a non-`401` refusal, a second refusal after the retry, a rotation the
+ * session refuses, an aborted signal and an unreachable origin all leave the generated pattern in
+ * place. Nothing about any of them is logged, and the token, the URL and the status never reach a
+ * log, an error message or a thrown value (AAP 0.5.5, AAP 0.11.1).
+ *
+ * @param userId - The traveler whose bytes are requested; `hasPhoto` already decided disclosure.
+ * @param signal - The effect's signal, forwarded to both attempts.
+ * @returns The photo bytes, or `null` when the photo cannot be shown.
+ */
+async function loadPhotoBytes(userId: string, signal: AbortSignal): Promise<Blob | null> {
+  const first = photoRequest(userId);
+  if (first === null) return null;
+
+  const answer = await fetchPhotoBytes(first, signal);
+  if (answer === null) return null;
+  if (answer.status !== UNAUTHORIZED) return answer.bytes;
+
+  try {
+    await refreshSession();
+  } catch {
+    // A refused rotation means the session is spent; the next authenticated read signs the traveler
+    // out. This load only gives up on the photo (AAP 0.3.2).
+    return null;
+  }
+
+  const rotated = photoRequest(userId);
+  if (rotated === null) return null;
+  const retry = await fetchPhotoBytes(rotated, signal);
+  return retry === null ? null : retry.bytes;
+}
+
 /**
  * Renders a traveler's avatar: the generated pattern, or the API's photo once it has loaded.
  *
  * The photo is requested only for what the API itself reported — `hasPhoto` exactly as it arrived, and
  * an id to request the bytes with — and a load that fails falls back to the pattern with nothing logged
- * (AAP 0.3.2, AAP 0.5.4, AAP 0.5.5). On web the bytes are fetched with the bearer header and shown from
- * an object URL, which the effect revokes when the traveler changes or the component unmounts.
+ * (AAP 0.3.2, AAP 0.5.4, AAP 0.5.5). A load refused with `401` is recovered once by joining the
+ * session's shared rotation and retrying with the token it installed (AAP 0.3.3), so an avatar whose
+ * photo was requested with an expired access token still shows it. On web the bytes are fetched with
+ * the bearer header and shown from an object URL, which the effect revokes when the traveler changes
+ * or the component unmounts.
  *
  * The frame reserves exactly `size` × `size` and clips to a circle, so a list of avatars lines up on
  * whatever is drawn inside, and no text in it has to follow the reader's font size.
@@ -232,26 +312,33 @@ export function Avatar({
   // A native load that failed, remembered by traveler so the next one still gets an attempt.
   const [failedPhotoUserId, setFailedPhotoUserId] = useState<string | null>(null);
 
+  // The one rotation-joined retry a native load gets, remembered by traveler: `rotations` is 0 while
+  // the rotation it joined runs and 1 once a fresh token is installed, which is what makes the source
+  // memo below rebuild the request. `null` until a load fails.
+  const [nativeRetry, setNativeRetry] = useState<{ userId: string; rotations: number } | null>(
+    null,
+  );
+
   // Web holds the fetched bytes as an object URL, tagged with the traveler it belongs to, so a
   // previous row's photo is never drawn over the next one's pattern while it loads.
   const [webPhoto, setWebPhoto] = useState<{ userId: string; url: string } | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || photoUserId === null) return undefined;
-    const request = photoRequest(photoUserId);
-    if (request === null) return undefined;
     const controller = new AbortController();
     let objectUrl: string | null = null;
     let live = true;
-    void fetch(request.url, { headers: request.headers, signal: controller.signal })
-      .then((response) => (response.ok ? response.blob() : null))
-      .then((blob) => {
-        if (!live || blob === null) return;
-        objectUrl = URL.createObjectURL(blob);
+    // Recovery-aware: a load refused with `401` joins the session's rotation and is retried once with
+    // the token that rotation installed (AAP 0.3.3). `live` keeps a rotation that finishes after the
+    // traveler changed from drawing its photo over the next one's pattern.
+    void loadPhotoBytes(photoUserId, controller.signal)
+      .then((bytes) => {
+        if (!live || bytes === null) return;
+        objectUrl = URL.createObjectURL(bytes);
         setWebPhoto({ userId: photoUserId, url: objectUrl });
       })
-      // Silent by design: a refused or failed load leaves the generated pattern in place, and
-      // neither the id, the URL, the token nor the status reaches a log (AAP 0.5.5).
+      // Silent by design: a refused, failed or undecodable load leaves the generated pattern in
+      // place, and neither the id, the URL, the token nor the status reaches a log (AAP 0.5.5).
       .catch(() => undefined);
     return () => {
       // Abandoned when the traveler changes and released on unmount: no request outlives the render
@@ -262,6 +349,31 @@ export function Avatar({
     };
   }, [photoUserId]);
 
+  /**
+   * Reacts to a native image load that failed, by joining the session's rotation once for this
+   * traveler (AAP 0.3.3, AAP 0.5.4).
+   *
+   * An image load reports no status on iOS or Android, so a failed load is the only signal a stale
+   * access token produces there, and that leaves a rotation as the one recovery available. The retry
+   * is bounded to one per traveler per mount: the same traveler failing again falls through to the
+   * generated pattern, and so does a rotation the session refuses. Because {@link refreshSession} is
+   * single-flight, a list of avatars failing at once spends one rotation between them rather than one
+   * each.
+   */
+  const retryNativePhoto = (): void => {
+    if (photoUserId === null) return;
+    if (nativeRetry !== null && nativeRetry.userId === photoUserId) {
+      // This traveler's one retry is spent and the reload failed too: the pattern stands in.
+      setFailedPhotoUserId(photoUserId);
+      return;
+    }
+    setNativeRetry({ userId: photoUserId, rotations: 0 });
+    void refreshSession().then(
+      () => setNativeRetry({ userId: photoUserId, rotations: 1 }),
+      () => setFailedPhotoUserId(photoUserId),
+    );
+  };
+
   // The source to draw, or null for the pattern. Native carries the bearer token on the source, which
   // React Native sends on iOS and Android; web shows the object URL the effect built, because
   // react-native-web cannot send a header on an image.
@@ -270,9 +382,15 @@ export function Avatar({
     if (Platform.OS === 'web') {
       return webPhoto !== null && webPhoto.userId === photoUserId ? { uri: webPhoto.url } : null;
     }
+    // A retry whose rotation is still running draws the pattern: with `rotations` at 1 the request
+    // below is rebuilt from the token the rotation installed, and drawing nothing until then is what
+    // replaces the failed image instead of re-offering it the same stale header.
+    if (nativeRetry !== null && nativeRetry.userId === photoUserId && nativeRetry.rotations === 0) {
+      return null;
+    }
     const request = photoRequest(photoUserId);
     return request === null ? null : { uri: request.url, headers: request.headers };
-  }, [failedPhotoUserId, photoUserId, webPhoto]);
+  }, [failedPhotoUserId, nativeRetry, photoUserId, webPhoto]);
 
   return (
     <View
@@ -307,7 +425,15 @@ export function Avatar({
       ) : (
         <Image
           {...HIDDEN_FROM_ASSISTIVE_TECH}
-          onError={() => setFailedPhotoUserId(photoUserId)}
+          onError={() => {
+            if (Platform.OS === 'web' || photoUserId === null) {
+              // Web recovered inside the loader, so an error here is bytes that do not decode: the
+              // pattern is the fallback, as it is for a native retry that failed twice.
+              setFailedPhotoUserId(photoUserId);
+              return;
+            }
+            retryNativePhoto();
+          }}
           resizeMode="cover"
           source={photoSource}
           style={[styles.photo, { height: size, width: size }]}

@@ -35,9 +35,10 @@ import { CARD_PAYMENTS_UNAVAILABLE } from '../copy/strings';
 import { Banner, Button, announce } from '../ui';
 
 /**
- * The URL 3-D Secure and bank redirects return to (AAP 0.3.4). `app.config.ts` sets the scheme
- * `tablemate`, and the app root ignores this exact URL so Expo Router does not navigate when Stripe
- * hands the app back to itself.
+ * The URL a redirect-based 3-D Secure step returns to (AAP 0.3.4). `app.config.ts` sets the scheme
+ * `tablemate`, and `apps/mobile/app/+native-intent.tsx` answers nothing for this exact URL, so Expo
+ * Router does not navigate away from the screen that started the flow when Stripe hands the app
+ * back to itself.
  */
 export const STRIPE_RETURN_URL = 'tablemate://stripe-redirect';
 

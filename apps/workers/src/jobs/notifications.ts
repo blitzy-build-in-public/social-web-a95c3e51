@@ -4,8 +4,9 @@
  *
  * A domain transaction never sends anything. It writes a `Notification` outbox row — ids only — and
  * the API's dispatcher publishes that row as a `notifications`/`deliver` job carrying the row's id,
- * which is what makes this consumer idempotent per row: the per-channel Redis markers below
- * suppress a second send when a redelivered job is processed again.
+ * which is what makes this consumer idempotent per row: the per-channel Redis markers below are
+ * written before the send, so a crash in that window leaves the row read as already sent by the next
+ * run, and a failed send clears the marker so the retry still delivers.
  *
  * Two paths run through {@link process}:
  *
@@ -86,8 +87,8 @@ const SENT_KEY_TTL_SECONDS = 604_800;
 
 /**
  * Why a notification was not delivered. `missing` is the row the payload names having been purged,
- * `expired` a magic link whose 15 minutes had passed, `already_sent` a redelivery of a row whose
- * message this channel already carried, `user_deleted` a recipient who is gone or deleting,
+ * `expired` a magic link whose 15 minutes had passed, `already_sent` a redelivery of a row this
+ * channel's send was already claimed for, `user_deleted` a recipient who is gone or deleting,
  * `undecryptable` a stored ciphertext no key of the ring can read, and `no_channel` a recipient
  * with neither a push token nor an address to send to (AAP 0.3.2, 0.5.3).
  */
@@ -143,12 +144,14 @@ export async function writeNotificationOutbox(
  * Redis markers, one per channel (AAP 0.3.2).
  */
 
-/** The key marking that `channel` has carried this outbox row's message. */
+/** The key claiming `channel` for this outbox row's message. */
 function sentKey(outboxId: string, channel: DeliveryChannel): string {
   return `notify-sent:${outboxId}:${channel}`;
 }
 
-/** Whether `channel` already carried this row's message in an earlier run of this job. */
+/**
+ * Whether `channel`'s one send for this row has already been claimed by an earlier run of this job.
+ */
 async function channelAlreadySent(
   ctx: WorkerContext,
   outboxId: string,
@@ -158,11 +161,15 @@ async function channelAlreadySent(
 }
 
 /**
- * Marks `channel` as having carried this row's message.
+ * Claims `channel` for this row's message.
  *
  * The marker is set with `NX`, so it never overwrites the marker an earlier run left, and its TTL is
  * {@link SENT_KEY_TTL_SECONDS}: the guarantee is per row and per channel, which is the granularity a
  * redelivery works at.
+ *
+ * It goes up before the send and not after it (see {@link sendChannelOnce}), so a crash between the
+ * marker and the provider's answer is read as sent instead of sending twice: the marker claims the
+ * channel, it is not a receipt of carriage, and only a send that delivered nothing removes it.
  */
 async function markChannelSent(
   ctx: WorkerContext,
@@ -170,6 +177,57 @@ async function markChannelSent(
   channel: DeliveryChannel,
 ): Promise<void> {
   await ctx.redis.set(sentKey(outboxId, channel), '1', 'EX', SENT_KEY_TTL_SECONDS, 'NX');
+}
+
+/** Removes the marker of a channel whose send reached nobody, so that channel is not lost. */
+async function clearChannelSent(
+  ctx: WorkerContext,
+  outboxId: string,
+  channel: DeliveryChannel,
+): Promise<void> {
+  await ctx.redis.del(sentKey(outboxId, channel));
+}
+
+/**
+ * Sends on `channel` with that channel's sent marker written before the send (AAP 0.3.2).
+ *
+ * The ordering is the invariant: the marker precedes the send, so a redelivery of the row — BullMQ's
+ * own retry inside the queue's 5 tries, or the dispatcher publishing an undispatched row again —
+ * finds the channel claimed and sends nothing, which is what makes this consumer idempotent on the
+ * outbox row id (AAP 0.3.2, 0.5.6). The cost is one unsent message where the opposite order would
+ * send a second one: a crash between the marker and the provider's answer is read as already sent,
+ * because neither SMTP nor Expo offers an idempotency key that a retry could match against a
+ * delivery which may never have happened.
+ *
+ * A send that failed, and a send that delivered nothing at all, clear the marker again before they
+ * rethrow or return, so a transient failure still delivers on the retry (AAP 0.11.1) and a push that
+ * reached no device leaves the email fallback open.
+ *
+ * @param attempt - the channel's own send. It resolves `true` once the provider accepted the
+ *   message, `false` when the provider accepted none of the recipients it was given.
+ * @returns what `attempt` resolved, for the caller's channel decision.
+ */
+async function sendChannelOnce(
+  ctx: WorkerContext,
+  outboxId: string,
+  channel: DeliveryChannel,
+  attempt: () => Promise<boolean>,
+): Promise<boolean> {
+  await markChannelSent(ctx, outboxId, channel);
+
+  let delivered: boolean;
+  try {
+    delivered = await attempt();
+  } catch (error) {
+    await clearChannelSent(ctx, outboxId, channel);
+    throw error;
+  }
+
+  if (!delivered) {
+    await clearChannelSent(ctx, outboxId, channel);
+  }
+
+  return delivered;
 }
 
 /** Nulls a magic-link row's raw token, guarded so it is written only for a row that still holds one. */
@@ -236,8 +294,9 @@ export async function process(
  * The order of the checks is the point of this path. `expiresAt` is read before anything is
  * decrypted or sent, so a job that reaches a link after its 15 minutes clears the raw token and
  * stops: a backlogged queue delays a sign-in, it never mails a dead link. A row whose token has
- * already been cleared is a link that has been sent, and a row whose email marker exists is one
- * whose mail went out before a crash stopped the job — neither sends again.
+ * already been cleared is a link that has been sent. The email marker is written before the send, so
+ * a crash in that window leaves the row read as already sent by the next run, which then clears the
+ * token instead of mailing it; a send that failed cleared the marker, so that retry still delivers.
  */
 async function deliverMagicLink(
   ctx: WorkerContext,
@@ -273,8 +332,8 @@ async function deliverMagicLink(
   }
 
   if (await channelAlreadySent(ctx, payload.outboxId, 'email')) {
-    // The mail went out and the process died before the row was cleared: clearing it here finishes
-    // what the earlier run started instead of sending the link a second time.
+    // The earlier run claimed this channel and died before the row was cleared: clearing it here
+    // finishes what that run started instead of mailing the link a second time.
     await clearDeliveryToken(ctx, tokenId);
     ctx.logger.info({ event: 'notification_skipped', ...log, reason: 'already_sent' });
     return { skipped: 'already_sent' };
@@ -292,15 +351,17 @@ async function deliverMagicLink(
     magicLinkToken: secrets.token,
   });
 
-  await ctx.mailer.send({
-    to: secrets.to,
-    subject: rendered.emailSubject,
-    text: rendered.emailText,
+  await sendChannelOnce(ctx, payload.outboxId, 'email', async () => {
+    await ctx.mailer.send({
+      to: secrets.to,
+      subject: rendered.emailSubject,
+      text: rendered.emailText,
+    });
+    return true;
   });
 
-  // The marker is written before the token is cleared, so a crash in between leaves a row that the
-  // next run recognises as sent rather than mails again.
-  await markChannelSent(ctx, payload.outboxId, 'email');
+  // The marker went up before the send and the token is cleared after it, so a crash in either
+  // window leaves a row the next run clears instead of mailing the link a second time.
   await clearDeliveryToken(ctx, tokenId);
 
   ctx.logger.info({ event: 'notification_sent', ...log, channel: 'email' });
@@ -597,15 +658,16 @@ async function lockLostOutcome(
  * Sends one rendered notification on the channel the recipient has, once.
  *
  * Push comes first where Expo push is configured and the recipient has registered devices; email is
- * the fallback, which is the only channel a browser has. A marker for the channel that already
- * carried the message ends the job with nothing sent, and a send that reaches nobody on push —
- * because every token was invalid — falls through to email, so the recipient is not left uninformed
- * by a device that has gone away. Tokens Expo reports as unregistered are deleted.
+ * the fallback, which is the only channel a browser has. A marker for a channel whose send was
+ * already claimed ends the job with nothing sent, and a send that reaches nobody on push — because
+ * every token was invalid — falls through to email, so the recipient is not left uninformed by a
+ * device that has gone away. Tokens Expo reports as unregistered are deleted.
  *
  * @param emailCiphertext - the recipient's stored address, `null` once their account is erased.
  * @returns the channel that carried the message, or why nothing was sent.
- * @throws the mailer's or the push sender's own failure, so the job retries; the marker set after a
- *   successful send stops that retry from repeating it.
+ * @throws the mailer's or the push sender's own failure, so the job retries (AAP 0.11.1). The
+ *   channel's marker was written before the send, so the retry repeats no send; a failure or a push
+ *   that reached no device has already cleared it again, so the retry can still deliver.
  */
 async function deliver(
   ctx: WorkerContext,
@@ -635,20 +697,25 @@ async function deliver(
 
     // The push data carries identifiers only: it reaches the device unredacted (AAP 0.3.4).
     const data = meetupId === null ? { kind: payload.kind } : { kind: payload.kind, meetupId };
-    const result = await push.send(tokens, {
-      title: rendered.title,
-      body: rendered.body,
-      data,
+    const delivered = await sendChannelOnce(ctx, payload.outboxId, 'push', async () => {
+      const result = await push.send(tokens, {
+        title: rendered.title,
+        body: rendered.body,
+        data,
+      });
+
+      if (result.invalidTokens.length > 0) {
+        await ctx.db.pushToken.deleteMany({
+          where: { userId: recipientId, token: { in: result.invalidTokens } },
+        });
+      }
+
+      // A push that reached no device is not a delivery, so its marker comes off again and the
+      // message falls through to email below.
+      return result.sent > 0;
     });
 
-    if (result.invalidTokens.length > 0) {
-      await ctx.db.pushToken.deleteMany({
-        where: { userId: recipientId, token: { in: result.invalidTokens } },
-      });
-    }
-
-    if (result.sent > 0) {
-      await markChannelSent(ctx, payload.outboxId, 'push');
+    if (delivered) {
       ctx.logger.info({ event: 'notification_sent', ...log, channel: 'push' });
       return { channel: 'push', kind: payload.kind };
     }
@@ -672,8 +739,10 @@ async function deliver(
     return { skipped: 'undecryptable' };
   }
 
-  await ctx.mailer.send({ to, subject: rendered.emailSubject, text: rendered.emailText });
-  await markChannelSent(ctx, payload.outboxId, 'email');
+  await sendChannelOnce(ctx, payload.outboxId, 'email', async () => {
+    await ctx.mailer.send({ to, subject: rendered.emailSubject, text: rendered.emailText });
+    return true;
+  });
 
   ctx.logger.info({ event: 'notification_sent', ...log, channel: 'email' });
   return { channel: 'email', kind: payload.kind };

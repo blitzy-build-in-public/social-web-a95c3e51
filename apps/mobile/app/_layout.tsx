@@ -321,7 +321,11 @@ export default function RootLayout(): ReactElement {
           <PaymentsProvider>
             <ShareIntentIntake>
               <Gate />
-              <View style={styles.fill}>
+              {/* The page's one main landmark, on the wrapper that holds the Stack rather than in a
+                  screen: react-native-web renders role="main" as a real <main> (AAP 0.5.8), it
+                  covers every route, the screens that do not render the Screen primitive included,
+                  and react-native's own Role union accepts 'main', so iOS and Android are unchanged. */}
+              <View role="main" style={styles.fill}>
                 <Stack
                   screenOptions={{
                     headerBackTitle: 'Back',

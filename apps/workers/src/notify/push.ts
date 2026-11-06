@@ -6,6 +6,12 @@
  * holds no state, opens no connection until a send is attempted, and takes its Expo client as an
  * injected dependency so a test can assert the requests without reaching the network.
  *
+ * Every chunk send is bounded (AAP 0.11.1): {@link SEND_TIMEOUT_MS} caps one chunk, and a chunk
+ * that exhausts it fails exactly as a lost answer does. Its code is recorded and the chunks after
+ * it still go out. The SDK itself passes no `signal`, so the bound is a race this module owns:
+ * without it a dark Expo endpoint would hold the `notifications` job's only concurrency slot open
+ * and delivery would stop.
+ *
  * Push is switched off by configuration, not by a flag: with no `EXPO_ACCESS_TOKEN` the
  * `workers` environment leaves the credential unset (it is optional there, AAP 0.3.3) and
  * {@link createPushSender} returns `null`, which the job reads as "this deployment sends no push".
@@ -24,6 +30,14 @@ const UNKNOWN_ERROR_CODE = 'unknown_error';
 
 /** The one ticket failure that retires a token rather than failing the send. */
 const DEVICE_NOT_REGISTERED = 'DeviceNotRegistered';
+
+/**
+ * How long one Expo chunk send may take, the bound AAP 0.11.1 puts on every external call and the
+ * same ten seconds `notify/email.ts` gives a connection to the same kind of provider. A chunk that
+ * reaches it is recorded as a failed request, so the `notifications` job fails into its retry
+ * (AAP 0.5.6) instead of waiting on an endpoint that never answers.
+ */
+const SEND_TIMEOUT_MS = 10_000;
 
 /**
  * One notification to deliver to a set of the recipient's devices.
@@ -162,10 +176,11 @@ export function createPushSender(
 
           let tickets: ExpoPushTicket[];
           try {
-            tickets = await client.sendPushNotificationsAsync(chunk);
+            tickets = await sendChunkWithinTimeout(client, chunk);
           } catch {
-            // The answer was lost rather than the messages refused. Only a code is kept: the
-            // thrown error's text may quote the access token or a recipient.
+            // The answer was lost, or never came within the send's bound, rather than the messages
+            // refused. Only a code is kept: the thrown error's text may quote the access token or a
+            // recipient.
             recordCode(codes, REQUEST_FAILED_CODE);
             continue;
           }
@@ -205,6 +220,34 @@ export function createPushSender(
       return { invalidTokens, sent };
     },
   };
+}
+
+/**
+ * Sends one chunk under {@link SEND_TIMEOUT_MS}.
+ *
+ * `expo-server-sdk` 8.0.0 hands its request to `fetch` with no `signal` and no timeout of its own,
+ * so the race is the only bound this module can put on a chunk. A bound that elapses rejects the
+ * chunk like any lost answer, which is the path the caller already has: the code is recorded and
+ * the chunk after it still goes out. The timer is cleared whichever way the race ends, so no handle
+ * outlives the send.
+ */
+async function sendChunkWithinTimeout(
+  client: ExpoPushClient,
+  chunk: ExpoPushMessage[],
+): Promise<ExpoPushTicket[]> {
+  let timer: NodeJS.Timeout | undefined;
+
+  const bound = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new PushDeliveryError([REQUEST_FAILED_CODE]));
+    }, SEND_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([client.sendPushNotificationsAsync(chunk), bound]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
