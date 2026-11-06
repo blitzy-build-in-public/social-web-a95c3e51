@@ -15,14 +15,16 @@
  * `NON_TEXT_CONTRAST_PAIRS` entries (WCAG 1.4.11). The error state keeps that recorded border and
  * carries its message in the error text, its colour and `aria-invalid`, because the token module
  * records no boundary pair for the error colour and a primitive never invents one. The field carries
- * no live region — the screens announce core-flow errors through `announce()` in `Banner.tsx`, and
- * one here would speak them twice.
+ * no live region on iOS or Android — the screens announce core-flow errors through `announce()` in
+ * `Banner.tsx`, and one here would speak them twice — while on web the error text is itself the live
+ * region, because `announce()` is a no-op there and this is the only place the message exists
+ * (WCAG 4.1.3).
  *
  * Nothing in this component logs or persists `value`, which is an email address or a booking name.
  */
 import { useId, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, View } from 'react-native';
-import type { TextInputProps, TextStyle } from 'react-native';
+import type { Role, TextInputProps, TextStyle } from 'react-native';
 import {
   borderWidths,
   colors,
@@ -87,6 +89,22 @@ interface WebInputAria {
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
 }
+
+/**
+ * What makes the error text a live region, on web alone (AAP 0.5.8; WCAG 4.1.3 Status Messages).
+ *
+ * The message the field renders is the only place a caller shows a rejected value — `error` is
+ * passed for a bad email address, a wrong venue code, a bad stay date — and on web nothing else
+ * speaks it: `announce()` is a no-op off iOS and Android, and a screen that shows the message here
+ * rather than in a `Banner` has no other live region. `role="alert"` is what gives the inserted
+ * sentence priority in a browser, and `aria-live` states the same requirement explicitly.
+ *
+ * Off web the attributes are withheld rather than mapped: React Native turns `aria-live` into
+ * Android's live region, and every caller already speaks the same sentence through `announce()`,
+ * so asserting it here as well would say it twice on Android.
+ */
+const webErrorLiveRegion: Readonly<{ role?: Role; 'aria-live'?: 'assertive' }> =
+  Platform.OS === 'web' ? { role: 'alert', 'aria-live': 'assertive' } : {};
 
 /**
  * The DOM `id` on web and the native accessibility identifier elsewhere. `nativeID` is the React
@@ -239,7 +257,7 @@ export function TextField({
         </Text>
       ) : null}
       {errorText !== '' ? (
-        <Text {...elementId(errorId)} style={styles.error}>
+        <Text {...elementId(errorId)} {...webErrorLiveRegion} style={styles.error}>
           {`${ERROR_PREFIX}${errorText}`}
         </Text>
       ) : null}

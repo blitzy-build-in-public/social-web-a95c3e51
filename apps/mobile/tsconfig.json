@@ -10,10 +10,17 @@
 //     "tablemate-source" is repeated: workspace packages resolve to their TypeScript source,
 //     as Metro, Vitest and tsx resolve them. "react-native" is the condition Expo's own base
 //     config carries.
-//   - moduleSuffixes makes an extensionless platform-split import (./prover, ./storage,
-//     ./card-setup) type-check against the .native variant; the .web files are type-checked in
-//     their own right because the include globs cover them, so each pair must satisfy the
-//     interface its neutral module declares.
+//   - moduleSuffixes selects the .native half of a platform split, and the empty suffix must come
+//     first. TypeScript strips the extension of an explicit `.ts` specifier and then applies each
+//     suffix in turn, so [".native", ""] would resolve the `.ts` spelling - the workspace's way of
+//     naming a module's own file - to its platform twin: `./prover.ts` would land on
+//     prover.native.ts, leaving the neutral src/zk/prover.ts unreachable for the platform halves
+//     that type-import its contracts, and the pair collides only there, where the neutral file
+//     shares the halves' basename. With "" first, an explicit `.ts` specifier keeps naming its own
+//     file, which is also how Metro reads one, while an extensionless import (./storage,
+//     ./card-setup, ./register) still falls back to the .native variant. The .web files are
+//     type-checked in their own right because the include globs cover them, so each pair must
+//     satisfy the interface its neutral module declares.
 //   - lib omits WebWorker deliberately: WebWorker and DOM cannot coexist in one programme, and
 //     the web prover worker types `self`, the OPFS handles and its frames locally instead.
 //   - noEmit permits allowImportingTsExtensions, which the relative `.ts` imports of the
@@ -25,7 +32,7 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "preserve",
     "moduleResolution": "bundler",
-    "moduleSuffixes": [".native", ""],
+    "moduleSuffixes": ["", ".native"],
     "customConditions": ["tablemate-source", "react-native"],
     "jsx": "react-jsx",
     "noEmit": true,
