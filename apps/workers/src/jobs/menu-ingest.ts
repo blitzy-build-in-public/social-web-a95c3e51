@@ -128,6 +128,18 @@ const OPEN_TASK_PREDICATE = Prisma.sql`(
       )`;
 
 /**
+ * The one definition of "this place's `menu_prices` refresh is still outstanding", as an SQL
+ * predicate over the `call_task` table aliased `t` (AAP 0.5.3, 0.5.6).
+ *
+ * `queued`, `in_progress` and `needs_review` count as outstanding, plus an `unreachable` task no
+ * operator has resolved — the same statuses {@link OPEN_TASK_PREDICATE} carries and the parent rule
+ * for both. {@link hasOpenMenuPricesTask} applies it to refuse a second task for one place, and
+ * `./price-freshness.ts` applies it to leave a place whose refresh is already in flight out of its
+ * bounded page, so no second reader spells the rule out again and the two can never drift apart.
+ */
+export const OPEN_MENU_PRICES_TASK_PREDICATE: Prisma.Sql = OPEN_TASK_PREDICATE;
+
+/**
  * The reason a place took the phone fallback, as the `menu_phone_fallback` log line carries it
  * (AAP 0.5.6, 0.11.1).
  *

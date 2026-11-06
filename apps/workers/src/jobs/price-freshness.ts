@@ -24,14 +24,26 @@
  *     the place, because `suggestions` would already hold a usable price for it and a call would
  *     buy nothing.
  *
+ * Both selections are bounded to {@link STALE_PLACE_BATCH} places and both leave out a place whose
+ * `menu_prices` refresh is already outstanding, and the two facts together are what lets one run
+ * hand a city over to the next instead of reading the same head forever (AAP 0.5.6, 0.5.7). The
+ * ordering is by ascending place id, so a bounded page is stable and the sweep moves through the
+ * city over consecutive daily runs; a place stays eligible while its prices stay stale, so nothing
+ * is skipped, only deferred. The producers would refuse an outstanding place anyway — a menu
+ * re-read of a place whose fallback call is already in flight buys nothing, and `ensureMenuPricesTask`
+ * opens no second `menu_prices` task for it and takes a transaction and a per-place advisory lock for
+ * the privilege — so leaving it out changes no work a run starts, which is what makes the page always
+ * contain places the run can act on.
+ *
  * Idempotency holds by construction, so a retry and the sweeper's own repeat are no-ops (AAP
  * 0.3.2). A menu job carries the deterministic id `menu-ingest-<placeId>-<localDateKey>`, which
  * BullMQ suppresses while a job of that id is waiting, delayed or retained, and a successful
  * re-read leaves the place fresh, so the next run no longer selects it.
  * `ensureMenuPricesTask` refuses a place that already has an open `menu_prices` task, so a second
- * run opens no second call. A second run against the same day therefore adds nothing, whether the
- * first one succeeded or failed: the same places still qualify — their prices are still stale — so
- * `enqueueMenuIngest` is asked for the same ids again, and the queue keeps one job per place.
+ * run opens no second call. A second run at the same instant therefore adds nothing, whether the
+ * first one succeeded or failed: a place whose call the first run opened is gone from the next page,
+ * and a place it only queued a re-read for comes back with the same job id, which the queue already
+ * holds.
  *
  * Two conventions are load-bearing here. Time comes from `ctx.clock.now()` and every cut-off is
  * computed in Node and bound as a parameter — never SQL `now()` — so the test clock moves both
@@ -40,8 +52,9 @@
  * (AAP 0.5.2).
  *
  * @see AAP 0.5.6 for the job table (daily per city, "re-queues stale records"), 0.5.7 for the two
- *   freshness windows and the estimate's current-set rule, 0.5.2 for the fixture environments,
- *   0.3.2 for the idempotency rules, 0.11.1 for the clock, and 0.8.1 for this file.
+ *   freshness windows and the estimate's current-set rule, 0.5.3 for the call-task lifecycle the
+ *   outstanding-work exclusion reads, 0.5.2 for the fixture environments, 0.3.2 for the idempotency
+ *   rules, 0.11.1 for the clock, and 0.8.1 for this file.
  */
 
 import { Prisma, fixturePredicate } from '@tablemate/db';
@@ -49,10 +62,27 @@ import { QUEUE, QueuePayloadError, isJobName, parseJobData } from '@tablemate/se
 import { DAY_MS, FRESHNESS_ONLINE_DAYS, FRESHNESS_PHONE_OPERATOR_DAYS } from '@tablemate/shared';
 import type { CitySlug } from '@tablemate/shared';
 
-import { enqueueMenuIngest, ensureMenuPricesTask } from './menu-ingest.ts';
+import {
+  OPEN_MENU_PRICES_TASK_PREDICATE,
+  enqueueMenuIngest,
+  ensureMenuPricesTask,
+} from './menu-ingest.ts';
 // Type-only on purpose: `queues.ts` owns `WorkerContext` and value-imports this file's `process`, so
 // a value import back would close a runtime cycle. A type-only import is erased on emit.
 import type { WorkerContext } from '../queues.ts';
+
+/**
+ * The most places each of the two selections below returns in one run (AAP 0.5.6, 0.5.7).
+ *
+ * The job is scheduled daily per city, so a batch of 500 is a page that schedule can repeat: both
+ * selections are ordered by ascending place id and leave out a place whose refresh is already
+ * outstanding, so the places a run acted on are gone from the next page and consecutive runs walk
+ * the city rather than covering it in one pass. 500 is a run whose fan-out — one queued job per
+ * place, and one transaction with a per-place advisory lock for each place that needs a call —
+ * stays bounded while a city's place table grows with every weekly Overpass refresh, and a city
+ * with more stale places than that is finished by the following daily runs.
+ */
+const STALE_PLACE_BATCH = 500;
 
 /**
  * The `price-freshness` job as a processor receives it: a structural subset of BullMQ's `Job`, so a
@@ -78,33 +108,41 @@ export interface PriceFreshnessResult {
   /** The city whose stale prices were re-queued. */
   readonly cityId: CitySlug;
   /**
-   * What `enqueueMenuIngest` reported for the aged-out online set: one entry per place whose online
-   * prices aged past 30 days. A repeat run asks for those same places again, so the count repeats
-   * while BullMQ suppresses the duplicate job ids, which is why it is a report of the request rather
-   * than of the jobs the queue gained.
+   * What `enqueueMenuIngest` reported for the page of aged-out online places this run selected, at
+   * most {@link STALE_PLACE_BATCH} of them: one entry per place whose online prices aged past 30
+   * days. A place the queue already holds today's job for comes back with the same job id, so the
+   * count repeats while BullMQ suppresses the duplicate, which is why it is a report of the request
+   * rather than of the jobs the queue gained.
    */
   readonly menuJobs: number;
   /**
    * The `menu_prices` call tasks this run actually opened: `ensureMenuPricesTask` answers true only
-   * when it created one, so a place with a call already open contributes nothing on a re-run.
+   * when it created one, and a place whose task was already outstanding is not selected at all, so a
+   * re-run opens nothing for the places the first run acted on.
    */
   readonly callTasks: number;
 }
 
 /**
- * The `place_id` values of one city's places whose approved online-menu prices have aged out, in
- * ascending id order (AAP 0.5.7).
+ * The `place_id` values of one city's places whose approved online-menu prices have aged out, at
+ * most {@link STALE_PLACE_BATCH} of them, in ascending id order (AAP 0.5.6, 0.5.7).
  *
  * Both arms carry `review_status = 'approved'`: a record an operator has not approved is not a
  * price, so a place whose only online records are awaiting review still counts as one that needs
  * re-reading. The two arms together are the "has an online set and none of it is fresh" test, and
  * they are what keeps this selection identical to the one `suggestions` reads prices by.
  *
+ * A place whose `menu_prices` refresh is already outstanding is left out. Neither producer would act
+ * on such a row — `ensureMenuPricesTask` opens no second task for it, and a menu re-read of a place
+ * whose fallback call is in flight buys nothing — and skipping it is what makes the bounded page
+ * advance: with a bare `LIMIT` the same outstanding places would hold the head of every run's page
+ * until their calls resolved, and the places behind them would never be reached.
+ *
  * @param ctx - The worker context: the guarded client and the `APP_ENV` both predicates read.
  * @param cityId - The city whose places are examined; an unknown slug matches no row and reports
  *   nothing rather than failing, because the scheduler only ever enqueues configured cities.
  * @param onlineCutoff - The freshness floor for an online record, `now - 30 days`.
- * @returns The place ids, deterministic in id order.
+ * @returns The place ids, deterministic in id order and at most `STALE_PLACE_BATCH` of them.
  */
 async function placesWithStaleOnlinePrices(
   ctx: WorkerContext,
@@ -133,8 +171,16 @@ async function placesWithStaleOnlinePrices(
                 AND "pr"."captured_at" >= ${onlineCutoff}::timestamptz
                 AND ${fixturePredicate(ctx.env.APP_ENV, 'pr')}
            )
+       AND NOT EXISTS (
+             SELECT 1
+               FROM "call_task" AS "t"
+              WHERE "t"."place_id" = "p"."id"
+                AND "t"."kind" = 'menu_prices'
+                AND ${OPEN_MENU_PRICES_TASK_PREDICATE}
+           )
        AND ${fixturePredicate(ctx.env.APP_ENV, 'p')}
      ORDER BY "p"."id" ASC
+     LIMIT ${STALE_PLACE_BATCH}::int
   `);
 
   return rows.map((row) => row.id);
@@ -142,17 +188,23 @@ async function placesWithStaleOnlinePrices(
 
 /**
  * The place ids of one city whose approved phone-quoted or operator-entered prices have aged out
- * and whose estimate no fresh online set already supplies (AAP 0.5.7).
+ * and whose estimate no fresh online set already supplies, at most {@link STALE_PLACE_BATCH} of
+ * them, in ascending id order (AAP 0.5.6, 0.5.7).
  *
  * The three arms are the rule: the place has phone or operator prices, none of them is inside the
  * 60-day window, and it holds no fresh approved online record. Without the last arm a place that
  * `suggestions` can price from its own website would be sent to a paid call for nothing.
  *
+ * A place whose `menu_prices` refresh is already outstanding is left out for the same reason the
+ * selection is bounded at all: `ensureMenuPricesTask` opens no second task for it — it takes a
+ * transaction and a per-place advisory lock only to answer `false` — so a page that kept returning
+ * such a place would spend the run on it and never reach the places behind it.
+ *
  * @param ctx - The worker context: the guarded client and the `APP_ENV` both predicates read.
  * @param cityId - The city whose places are examined.
  * @param phoneCutoff - The freshness floor for a phone or operator record, `now - 60 days`.
  * @param onlineCutoff - The freshness floor for an online record, `now - 30 days`.
- * @returns The place ids, deterministic in id order.
+ * @returns The place ids, deterministic in id order and at most `STALE_PLACE_BATCH` of them.
  */
 async function placesWithStalePhonePrices(
   ctx: WorkerContext,
@@ -190,8 +242,16 @@ async function placesWithStalePhonePrices(
                 AND "pr"."captured_at" >= ${onlineCutoff}::timestamptz
                 AND ${fixturePredicate(ctx.env.APP_ENV, 'pr')}
            )
+       AND NOT EXISTS (
+             SELECT 1
+               FROM "call_task" AS "t"
+              WHERE "t"."place_id" = "p"."id"
+                AND "t"."kind" = 'menu_prices'
+                AND ${OPEN_MENU_PRICES_TASK_PREDICATE}
+           )
        AND ${fixturePredicate(ctx.env.APP_ENV, 'p')}
      ORDER BY "p"."id" ASC
+     LIMIT ${STALE_PLACE_BATCH}::int
   `);
 
   return rows.map((row) => row.id);
@@ -204,6 +264,14 @@ async function placesWithStalePhonePrices(
  * `names.ts` and `payloads.ts` are built for: the name and the data are validated together, so a
  * name this queue does not accept, or data that does not match that name's schema, fails here
  * rather than reaching a rule.
+ *
+ * Both selections are bounded, and both leave out a place whose `menu_prices` refresh is already
+ * outstanding, so the run's fan-out does not grow with the city's place table and the sweep walks a
+ * city over consecutive daily runs instead of re-reading its head (AAP 0.3.2, 0.5.6). The page moves
+ * in ascending place id, and every place the run acts on carries outstanding work afterwards and so
+ * leaves the next page, while a place the run only queued a re-read for keeps its prices until the
+ * re-read lands and is selected again — with the same job id, which the queue already holds, so a
+ * re-run at the same instant is a no-op either way.
  *
  * The menu re-reads go through `enqueueMenuIngest`, which is the only producer of this queue's jobs
  * and the place where a deterministic job id and the call-and-menu priority are applied, and the

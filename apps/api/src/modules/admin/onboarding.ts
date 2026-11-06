@@ -105,6 +105,29 @@ const PLACE_REFRESH_ENQUEUE_FAILED = 'place_refresh_enqueue_failed';
 // event so the defect is visible rather than silent.
 const VENUE_LOCATION_MISSING = 'admin_venue_location_missing';
 const LODGING_LOCATION_MISSING = 'admin_lodging_location_missing';
+// A registry read that came back with more rows than the bound below, logged under its own event
+// so a truncated registry is visible rather than silently read as a complete one. The line carries
+// the bound and nothing else (AAP 0.11.1).
+const ADMIN_VENUES_TRUNCATED = 'admin_venues_truncated';
+const ADMIN_LODGINGS_TRUNCATED = 'admin_lodgings_truncated';
+
+/**
+ * The bound on both registry reads, {@link listVenues} and {@link listLodgings}, and the largest id
+ * list either of them hands to `readPoints` as one `uuid[]` bind.
+ *
+ * The operator queue reads in the sibling admin modules use the same batch size
+ * (`ADMIN_CALL_TASKS_LIMIT` in `admin/call-tasks.ts`, `ADMIN_LODGING_CLAIMS_LIMIT` in
+ * `admin/lodging-claims.ts`). Both reads are ordered by (city, name, id), so the bound answers
+ * deterministically: the same rows come back from every read, and an operator that needs an older
+ * row reads it in the database. The contract AAP 0.5.4 fixes for this route group carries no cursor
+ * and no filter, so a cap is the resolution here rather than a contract change.
+ *
+ * Each read asks for one row beyond this bound and treats that row as a sentinel: it is dropped
+ * before the ids reach `readPoints`, and its presence is what reports the truncation. A registry
+ * silently cut to this many rows would read as a complete one, so the bound is made visible the
+ * same way a row whose location is NULL is (AAP 0.5.4, 0.5.6, 0.11.1).
+ */
+const ADMIN_REGISTRY_LIMIT = 200;
 
 /**
  * The venue columns every answer here is built from (AAP 0.5.4): the public `VenueDto` fields plus the
@@ -222,28 +245,41 @@ export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLod
  * guard narrows this read to `isFixture: false` everywhere else (AAP 0.5.2). `readPoints` applies the
  * same rule, so both reads agree on what exists.
  *
- * The contract carries no cursor and no filter, so the whole registry is answered: the pilot has five
- * cities with at least ten partner venues each.
+ * The contract carries no cursor and no filter (AAP 0.5.4), so the read is bounded instead of paged:
+ * the first {@link ADMIN_REGISTRY_LIMIT} rows in the (city, name, id) order above are answered, and a
+ * registry holding more than that is reported through `admin_venues_truncated` rather than answered as
+ * if it were complete (AAP 0.11.1).
  *
  * @param services - The app's services (see {@link OnboardingServices}).
- * @returns Every venue the process may see, with its coordinates and its secret issue time.
+ * @returns The first {@link ADMIN_REGISTRY_LIMIT} venues the process may see, in (city, name, id)
+ *   order, with their coordinates and their secret issue time.
  */
 export async function listVenues(services: OnboardingServices): Promise<AdminVenuesResponse> {
   const rows = await services.db.venue.findMany({
     select: VENUE_SELECT,
     orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+    take: ADMIN_REGISTRY_LIMIT + 1,
   });
+
+  // The row past the bound is a sentinel: its presence says there are more venues than this read
+  // answers, and it is dropped here so the id list below can never exceed ADMIN_REGISTRY_LIMIT.
+  const truncated = rows.length > ADMIN_REGISTRY_LIMIT;
+  const page = truncated ? rows.slice(0, ADMIN_REGISTRY_LIMIT) : rows;
+
+  if (truncated) {
+    services.logger.warn({ event: ADMIN_VENUES_TRUNCATED, limit: ADMIN_REGISTRY_LIMIT });
+  }
 
   const points = await readPoints(
     services.db,
     'venue',
-    rows.map((row) => row.id),
+    page.map((row) => row.id),
     services.env.APP_ENV,
   );
 
   const items: AdminVenueDto[] = [];
 
-  for (const row of rows) {
+  for (const row of page) {
     const point = points.get(row.id);
 
     if (point === undefined) {
@@ -266,28 +302,41 @@ export async function listVenues(services: OnboardingServices): Promise<AdminVen
  * directory, so it is left out here too; its claims, activity facts and console secret stay attached,
  * and it returns when the element reappears in a refresh. A manually entered lodging has no
  * `osmType`, no `osmId` and `phoneSource = operator`, which is what keeps the refresh from replacing
- * its phone number or removing it (AAP 0.5.6). Ordered and bounded as {@link listVenues} is.
+ * its phone number or removing it (AAP 0.5.6). Ordered and bounded exactly as {@link listVenues} is:
+ * the first {@link ADMIN_REGISTRY_LIMIT} rows in (city, name, id) order are answered, and a larger
+ * registry is reported through `admin_lodgings_truncated`. The bound is what keeps this read off a
+ * table the weekly refresh adds to with every element it finds (AAP 0.5.6).
  *
  * @param services - The app's services (see {@link OnboardingServices}).
- * @returns Every current lodging the process may see, with its coordinates and phone facts.
+ * @returns The first {@link ADMIN_REGISTRY_LIMIT} current lodgings the process may see, in
+ *   (city, name, id) order, with their coordinates and phone facts.
  */
 export async function listLodgings(services: OnboardingServices): Promise<AdminLodgingsResponse> {
   const rows = await services.db.lodging.findMany({
     where: { osmMissingAt: null },
     select: LODGING_SELECT,
     orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+    take: ADMIN_REGISTRY_LIMIT + 1,
   });
+
+  // The sentinel row, dropped before the ids reach `readPoints`, exactly as in {@link listVenues}.
+  const truncated = rows.length > ADMIN_REGISTRY_LIMIT;
+  const page = truncated ? rows.slice(0, ADMIN_REGISTRY_LIMIT) : rows;
+
+  if (truncated) {
+    services.logger.warn({ event: ADMIN_LODGINGS_TRUNCATED, limit: ADMIN_REGISTRY_LIMIT });
+  }
 
   const points = await readPoints(
     services.db,
     'lodging',
-    rows.map((row) => row.id),
+    page.map((row) => row.id),
     services.env.APP_ENV,
   );
 
   const items: AdminLodgingDto[] = [];
 
-  for (const row of rows) {
+  for (const row of page) {
     const point = points.get(row.id);
 
     if (point === undefined) {

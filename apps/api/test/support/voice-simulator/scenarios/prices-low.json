@@ -10,7 +10,10 @@
         "values": { "dish": "bifana no prato", "priceAmount": 7, "priceText": "7 euros" }
       }
     },
-    { "say": "Talvez, não tenho a certeza.", "classify": { "label": "unclear" } },
+    {
+      "say": "É a bifana no prato, como já disse, mas não lhe sei dizer o preço.",
+      "classify": { "label": "dish", "values": { "dish": "bifana no prato" } }
+    },
     {
       "say": "O mais caro é o polvo à lagareiro, anda pelos 24 euros.",
       "classify": {

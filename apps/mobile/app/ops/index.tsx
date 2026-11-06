@@ -105,6 +105,31 @@ const BAR_MARKER_CASING = 4;
  */
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 
+/** The three fields of a `keydown` event this screen reads; React Native declares no key event. */
+interface WebKeyEvent {
+  readonly key?: string;
+  readonly repeat?: boolean;
+  readonly preventDefault?: () => void;
+}
+
+/**
+ * Takes Space as an activation the responder withholds: react-native-web answers Enter for any
+ * element but Space only for a native `button` or a `role="button"`, and each filter chip of this
+ * dashboard is a radio. Enter is left to the responder, which would otherwise fire a press twice.
+ */
+function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
+  if (Platform.OS !== 'web') return {};
+  return {
+    onKeyDown: (event) => {
+      if (event.repeat === true) return;
+      if (event.key !== ' ' && event.key !== 'Spacebar') return;
+      // Space would otherwise scroll the page behind the chip.
+      event.preventDefault?.();
+      activate();
+    },
+  };
+}
+
 /**
  * The filter behind the request: the applied range and the two optional selections, each held as
  * `null` while it stands for "all" so the query is built without the key rather than with an
@@ -407,6 +432,7 @@ function Chip({
 
   return (
     <Pressable
+      {...spaceActivates(onPress)}
       role="radio"
       aria-checked={selected}
       onPress={onPress}

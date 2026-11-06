@@ -11,22 +11,37 @@
  * the next pass. Nothing below reads Redis, and nothing here calls Stripe — money moves only through
  * the operations {@link settleMeetup} plans, which `payments/operations.ts` executes.
  *
- * **The lock.** One holder transaction per pass takes a **transaction-scoped**
- * `pg_try_advisory_xact_lock` and stays open for the whole pass. A session-level
- * `pg_try_advisory_lock` would be unsafe with Prisma's pool: each statement is handed whichever
- * connection is free, so the matching unlock could run on another connection and leave the lock held
- * forever. The holder writes nothing; every step does its work on other pooled connections through
- * its own transaction, so the pool must allow at least two connections (Prisma's default does).
- * Because the lock is taken for the pass, "a second API replica cannot double-settle" (AAP 0.3.2):
- * the second pass finds the lock taken and returns `{ skipped: true }`. A caller that must run after
- * any pass in flight passes `waitForLock: true` and gets the blocking
+ * **The lock.** One holder transaction takes a **transaction-scoped** `pg_try_advisory_xact_lock`,
+ * and it covers the pass's **decision phase** alone: the three deciding steps, their selections and
+ * the settlement decisions, each of which commits through its own transactions on other pooled
+ * connections. The two PaymentIntent retrievals {@link settleMeetup} makes to decide a settlement
+ * stay inside it, because they are the decision — whether each hold still stands — and not work done
+ * after one. The holder therefore ends before the pass's **executor phase** starts, so no
+ * transaction and no pooled connection of this pass is held, and the advisory lock is free, while an
+ * executor provider call runs: the runs {@link runOperationsFor} makes for the meetups the decisions
+ * recorded, and {@link runPendingOperations} behind them, happen after it, and are safe there because
+ * every operation a decision wrote is claimed atomically and records its result conditionally on
+ * that claim. The holder itself writes nothing, so the pool must allow at least two connections while it
+ * is open — the holder and the step transaction in flight (Prisma's default does).
+ *
+ * The scope is deliberately transactional, not session-level: with Prisma's pool each statement is
+ * handed whichever connection is free, so a `pg_try_advisory_lock`'s matching unlock could run on
+ * another connection and leave the lock held for the life of a pooled connection — every later pass
+ * would then skip and the settlement backstop would die silently. A transaction-scoped lock cannot
+ * leak; it ends with the holder, on any ending.
+ *
+ * Because the lock covers the pass's decisions, "a second API replica cannot double-settle"
+ * (AAP 0.3.2): the second pass finds the lock taken and returns `{ skipped: true }`. A caller that
+ * must run after any pass in flight passes `waitForLock: true` and gets the blocking
  * `pg_advisory_xact_lock` instead.
  *
  * **The pass is bounded.** No further item is started once {@link PASS_BUDGET_MS} of monotonic
- * `performance.now()` has elapsed, which keeps the holder inside its own transaction timeout. The
- * measure is monotonic and deliberately independent of the app clock: a frozen test clock never
- * advances, so a deadline measured with `services.clock` would never fire. Items that finished stay
- * committed even if the holder later rolls back, because each step commits its own transaction.
+ * `performance.now()` has elapsed, which keeps the decision phase inside the holder's own
+ * transaction timeout and bounds the executor phase's provider calls. The measure is monotonic and
+ * deliberately independent of the app clock: a frozen test clock never advances, so a deadline
+ * measured with `services.clock` would never fire. Items that finished stay committed even if the
+ * holder later rolls back, because each step commits its own transaction, and an executor run the
+ * deadline stopped leaves its operation open for the next pass to resume.
  *
  * **Time.** "Overdue" is judged against `services.clock.now()` and never `Date.now()` (AAP 0.11.1).
  * The intervals come from `@tablemate/shared`, the same constants `./timers.ts` computes its due
@@ -88,9 +103,10 @@ const PASS_BUDGET_MS = 45_000;
 const LOCK_MAX_WAIT_MS = 5_000;
 
 /**
- * How long the holder transaction may stay open: longer than {@link PASS_BUDGET_MS} by a margin, so
- * a pass that used its whole budget still finishes inside the holder rather than being killed by
- * Prisma's own deadline.
+ * How long the holder transaction may stay open: the wait for the lock plus the pass's decision
+ * phase, never the executor phase's provider calls, which run once the holder has ended. It is
+ * longer than {@link PASS_BUDGET_MS} by a margin, so a pass that used its whole decision budget
+ * still finishes inside the holder rather than being killed by Prisma's own deadline.
  */
 const HOLDER_TIMEOUT_MS = 55_000;
 
@@ -135,7 +151,7 @@ export interface SweepOptions {
 export interface SweepSummary {
   /** Whether another pass held the lock, in which case every tally below is zero. */
   readonly skipped: boolean;
-  /** Proposals this pass lapsed, each of which had its release operations run (AAP 0.5.3). */
+  /** Proposals this pass lapsed; the executor phase then runs the releases each one recorded. */
   readonly lapsed: number;
   /** Meetups this pass settled into an outcome (`completed`, `forfeited`, `unattended`). */
   readonly settled: number;
@@ -165,7 +181,25 @@ interface Counters {
   errors: number;
 }
 
-/** Everything a pass needs while it runs: its bounds, the instant it judges with, and its tallies. */
+/**
+ * A meetup whose open payment operations the pass's executor phase still has to run (AAP 0.3.2).
+ *
+ * A step records one as soon as it commits the operation rows a decision implies: the lapse
+ * transition's releases, a settlement's capture and release. The step travels with the record, so a
+ * failure of its executor run is logged under the step that planned it, exactly as it was when the
+ * run happened inside the step.
+ */
+interface PlannedOperation {
+  /** The step that recorded it, for the log line its executor run carries on failure. */
+  readonly step: SweepStep;
+  /** The meetup whose open operations {@link runOperationsFor} is to run. */
+  readonly meetupId: string;
+}
+
+/**
+ * Everything a pass needs while it runs: its bounds, the instant it judges with, its tallies, and
+ * the executor work its decision phase recorded.
+ */
 interface Pass {
   /** How many candidates one step reads. */
   readonly batchSize: number;
@@ -175,6 +209,8 @@ interface Pass {
   readonly startedAt: number;
   /** The tallies the steps add to. */
   readonly counters: Counters;
+  /** The executor work the decision phase recorded, in the order it was recorded. */
+  readonly planned: PlannedOperation[];
 }
 
 /*
@@ -184,19 +220,36 @@ interface Pass {
 /**
  * Run one sweep, or skip it because another pass holds the lock (AAP 0.3.2, 0.5.1).
  *
- * The pass holds the transaction-scoped advisory lock for its whole duration and then works through
- * four steps in order: lapse, settle, escalate, resume payment operations. Every step's selection
- * and every item are isolated, so one failing meetup cannot cost the others their settlement, and the
- * payment operations of an earlier settlement still resume after a failure in any of the three
- * steps above.
+ * A pass runs in two phases. The **decision phase** holds the transaction-scoped advisory lock and
+ * works through the three deciding steps in order — lapse, settle, escalate — each of which commits
+ * its own work through its own transactions and records every meetup whose open operations the
+ * second phase still has to run. The **executor phase** then runs once the holder transaction has
+ * ended: it carries out what the decisions recorded, meetup by meetup, and resumes every unfinished
+ * payment operation behind them.
+ *
+ * Splitting the pass is what keeps a transaction, a pooled connection and the advisory lock away
+ * from the provider calls the executor makes — {@link runOperationsFor} for the meetups a decision
+ * recorded, and {@link runPendingOperations} behind them (AAP 0.3.2 executes the operations a
+ * decision plans after that decision commits). Running them outside the holder cannot double-apply
+ * an effect: each operation was claimed atomically when the executor took it, and it records its
+ * result conditionally on that claim, so two executors — two replicas, the sweeper overlapping the
+ * dispatcher — cannot both apply one. The decisions themselves stay inside the phase, the two
+ * PaymentIntent retrievals a settlement needs included: those are what decide whether each hold still
+ * stands, and AAP 0.3.2 reconciles both authorizations immediately before the settlement transaction.
+ * The lock therefore spans every decision the pass takes, and a second pass skips rather than
+ * deciding the same meetup twice.
+ *
+ * Every step's selection and every item are isolated, so one failing meetup cannot cost the others
+ * their settlement, and the payment operations of an earlier settlement still resume after a failure
+ * in any of the three steps above.
  *
  * The steps re-read what they act on under the meetup row lock (`meetups/state-machine.ts`), so this
  * pass competes with a cancellation, a block, a hold-loss webhook, an operator resolution and
  * `DELETE /me` exactly as they compete with each other, and the loser of a race does nothing.
  *
- * Never throws for a failure inside a step: those are counted and logged. It can reject when the
- * holder transaction itself fails — PostgreSQL unreachable, or the lock query refused — which
- * {@link startSweeper} records and a route caller answers as a server error.
+ * Never throws for a failure inside a step or an executor run: those are counted and logged. It can
+ * reject when the holder transaction itself fails — PostgreSQL unreachable, or the lock query
+ * refused — which {@link startSweeper} records and a route caller answers as a server error.
  *
  * @param services - The app's services: the database, the injected clock and the logger. The lock is
  *   taken through `services.db`, and no other member is read.
@@ -205,17 +258,23 @@ interface Pass {
  * @see AAP 0.3.2 for the lock, the recovery and the Redis-free guarantee; 0.5.3 for the transitions
  *   the steps drive; 0.5.6 for the queue whose delayed jobs it backs up.
  */
-export function runSweeper(services: AppServices, opts: SweepOptions = {}): Promise<SweepSummary> {
+export async function runSweeper(
+  services: AppServices,
+  opts: SweepOptions = {},
+): Promise<SweepSummary> {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
   // The budget covers the wait for the lock as well as the work, so a pass that queued behind a long
   // one starts less work rather than overrunning the holder's own timeout.
   const startedAt = performance.now();
 
-  return services.db.$transaction(
-    async (holder: DbTx) => {
+  // The decision phase: the lock, the three deciding steps and nothing that reaches a provider.
+  // `null` is its answer when another pass holds the lock, which is the only case where this pass
+  // does nothing at all rather than record work for the executor phase.
+  const decided: Pass | null = await services.db.$transaction(
+    async (holder: DbTx): Promise<Pass | null> => {
       if (!(await acquireLock(holder, opts.waitForLock === true))) {
         services.logger.debug({ event: 'sweeper_skipped' }, 'sweeper_skipped');
-        return skippedSummary();
+        return null;
       }
 
       // Read the instant only once the lock is held, so a pass that waited behind another judges
@@ -225,14 +284,23 @@ export function runSweeper(services: AppServices, opts: SweepOptions = {}): Prom
         now: services.clock.now(),
         startedAt,
         counters: emptyCounters(),
+        planned: [],
       };
 
-      const summary = await runSteps(services, pass);
-      reportPass(services, summary);
-      return summary;
+      await decideSteps(services, pass);
+      return pass;
     },
     { maxWait: LOCK_MAX_WAIT_MS, timeout: HOLDER_TIMEOUT_MS },
   );
+
+  if (decided === null) {
+    return skippedSummary();
+  }
+
+  // The executor phase, with no transaction, no pooled connection and no lock held by this pass.
+  const summary = await executePlannedOperations(services, decided);
+  reportPass(services, summary);
+  return summary;
 }
 
 /*
@@ -351,11 +419,52 @@ async function acquireLock(holder: DbTx, wait: boolean): Promise<boolean> {
  * The pass (AAP 0.3.2, 0.5.3)
  */
 
-/** Run the four steps in order, and report the pass's tallies (AAP 0.3.2). */
-async function runSteps(services: AppServices, pass: Pass): Promise<SweepSummary> {
+/**
+ * The decision phase — the three deciding steps, in order (AAP 0.3.2).
+ *
+ * It runs inside the holder transaction, so it decides and commits and calls no provider but the two
+ * PaymentIntent retrievals a settlement makes. Each step records the executor work its decisions
+ * imply on the pass, for {@link executePlannedOperations} to run after the holder has ended.
+ */
+async function decideSteps(services: AppServices, pass: Pass): Promise<void> {
   await lapseDueProposals(services, pass);
   await settleDueMeetups(services, pass);
   await escalateDueDisputes(services, pass);
+}
+
+/**
+ * The executor phase — run what the decisions recorded, then resume the rest (AAP 0.3.2).
+ *
+ * The holder transaction has ended by the time this runs, so the pass holds no transaction, no
+ * pooled connection and no advisory lock while a provider call is in flight: what it runs are the
+ * open operations of the meetups the decision phase recorded, meetup by meetup, and then
+ * {@link resumeOperations} for everything else that is still open — an ambiguous hold create whose
+ * answer was lost, an `executing` row whose process died, a retryable failure, and the capture and
+ * release of an earlier settlement.
+ *
+ * Single-flight is preserved without the lock: each operation is claimed atomically by
+ * `payments/operations.ts` and records its result conditionally on that claim, so a second executor
+ * reaching the same row applies no second effect.
+ *
+ * Every run is isolated like the steps' items — one failing meetup costs that meetup alone — and the
+ * pass deadline is checked before each one, so a pass that has used its budget starts no further
+ * provider work and leaves the rest to the next pass.
+ */
+async function executePlannedOperations(services: AppServices, pass: Pass): Promise<SweepSummary> {
+  for (const planned of pass.planned) {
+    if (passExpired(pass)) {
+      warnDeadline(services, planned.step);
+      break;
+    }
+
+    try {
+      await runOperationsFor(services, { meetupId: planned.meetupId });
+    } catch (error) {
+      pass.counters.errors += 1;
+      logItemFailed(services, planned.step, planned.meetupId, error);
+    }
+  }
+
   await resumeOperations(services, pass);
 
   return { skipped: false, ...pass.counters };
@@ -368,8 +477,8 @@ async function runSteps(services: AppServices, pass: Pass): Promise<SweepSummary
  * invisible to the recipient, because the initiator's hold never held — when
  * {@link RECIPIENT_DEADLINE_HOURS} have passed since its creation. {@link lapseIfDue} re-reads both
  * under the meetup row lock by the same rule, so a job that arrives early and this selection cannot
- * disagree. The transition writes a release operation for every non-final deposit attempt, and the
- * executor runs them here.
+ * disagree. The transition writes a release operation for every non-final deposit attempt; the pass
+ * records the meetup, and the executor phase runs those releases once the holder has ended.
  */
 async function lapseDueProposals(services: AppServices, pass: Pass): Promise<void> {
   await eachCandidate(
@@ -380,7 +489,7 @@ async function lapseDueProposals(services: AppServices, pass: Pass): Promise<voi
     async (id) => {
       if (await lapseIfDue(services, id)) {
         pass.counters.lapsed += 1;
-        await runOperationsFor(services, { meetupId: id });
+        pass.planned.push({ step: 'lapse', meetupId: id });
       }
     },
   );
@@ -395,9 +504,10 @@ async function lapseDueProposals(services: AppServices, pass: Pass): Promise<voi
  * the selection and the call still reaches {@link settleMeetup}, which answers `postponed` for it
  * and leaves it `locked` with check-in open.
  *
- * The executor is called after every result, not only after a settlement: it returns as soon as the
- * meetup has no open operation, and calling it here is what carries a settlement's capture and
- * release out in the same pass that decided them.
+ * Every candidate is recorded for the executor phase whatever {@link settleMeetup} answered, not
+ * only when it settled: the executor returns as soon as the meetup has no open operation, and
+ * running it is what carries a settlement's capture and release out in the same pass that decided
+ * them.
  */
 async function settleDueMeetups(services: AppServices, pass: Pass): Promise<void> {
   await eachCandidate(
@@ -415,7 +525,7 @@ async function settleDueMeetups(services: AppServices, pass: Pass): Promise<void
         pass.counters.lockLost += 1;
       }
 
-      await runOperationsFor(services, { meetupId: id });
+      pass.planned.push({ step: 'settle', meetupId: id });
     },
   );
 }
@@ -446,11 +556,12 @@ async function escalateDueDisputes(services: AppServices, pass: Pass): Promise<v
  * Step 4 — resume every unfinished payment operation (AAP 0.3.2).
  *
  * This is the recovery path the whole settlement design rests on, and it runs last on purpose: the
- * three steps above plan operations, and one pass should carry out what it planned. It covers what
- * no client will ever return for: an ambiguous hold create whose response was lost, an `executing`
- * row whose process died, a retryable failure, and the capture and release of an earlier
- * settlement. It reads nothing but PostgreSQL and the payment gateway, so a paused Redis does not
- * stop it.
+ * three steps above decide and record, and one pass should carry out what it decided. It is the last
+ * piece of {@link executePlannedOperations}, so it runs with the holder transaction already ended and
+ * holds no lock while it calls the provider. It covers what no client will ever return for: an
+ * ambiguous hold create whose response was lost, an `executing` row whose process died, a retryable
+ * failure, and the capture and release of an earlier settlement. It reads nothing but PostgreSQL and
+ * the payment gateway, so a paused Redis does not stop it.
  *
  * {@link runPendingOperations} logs its own per-operation failures but lets a failure of its first
  * read reject, which is why the whole call is isolated here rather than inside it.
@@ -525,10 +636,7 @@ async function eachCandidate(
       await act(id);
     } catch (error) {
       pass.counters.errors += 1;
-      services.logger.error(
-        { event: 'sweeper_item_failed', step, id, code: failureToken(error) },
-        'sweeper_item_failed',
-      );
+      logItemFailed(services, step, id, error);
     }
   }
 }
@@ -669,6 +777,21 @@ function reportPass(services: AppServices, summary: SweepSummary): void {
     return;
   }
   services.logger.debug({ event: 'sweeper_pass', ...summary }, 'sweeper_pass');
+}
+
+/**
+ * Record that one item of a step, or one executor run, failed, and let the pass carry on
+ * (AAP 0.11.1).
+ *
+ * The `sweeper_item_failed` line names the item and its step and carries the failure's own short
+ * token, never the error object: a message and a stack are written by pino as strings that key-based
+ * redaction cannot rewrite.
+ */
+function logItemFailed(services: AppServices, step: SweepStep, id: string, error: unknown): void {
+  services.logger.error(
+    { event: 'sweeper_item_failed', step, id, code: failureToken(error) },
+    'sweeper_item_failed',
+  );
 }
 
 /** Record that a step stopped early because the pass used its whole budget (AAP 0.3.2). */

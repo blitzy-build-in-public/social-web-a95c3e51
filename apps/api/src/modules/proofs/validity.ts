@@ -25,7 +25,7 @@
  *   0.5.7 for the validity and discovery rules, and 0.11.1 for the injected clock.
  */
 
-import type { DbClient, DbTx, Prisma } from '@tablemate/db';
+import { Prisma, type DbClient, type DbTx } from '@tablemate/db';
 import { addLocalDays, endOfLocalDay, startOfLocalDay } from '@tablemate/server-core';
 import { DAY_MS, PROOF_VALID_FROM_DAYS_BEFORE } from '@tablemate/shared';
 
@@ -316,12 +316,32 @@ export async function currentProof(
 }
 
 /**
+ * One row of {@link PROOF_SUMMARY_SELECT}, with the owner {@link currentProofsFor} keys its map by.
+ *
+ * The statement there names its columns as this type spells them. Prisma delivers a `@db.Date`
+ * column as a `Date` at UTC midnight and `issuer_id` as a `bigint` for a raw read exactly as it does
+ * for a typed one, so {@link toProofSummary} reads this row as it reads a selected row.
+ */
+type ProofRowWithUser = ProofRow & { readonly userId: string };
+
+/**
  * The current valid proof of every requested user, in one query (AAP 0.5.7).
  *
  * Batches the `currentCityId` and `proofDates` of a whole page of `Tier0Profile`s — discovery pages
- * and lodging guest lists — so building twenty profiles costs one read rather than twenty. Rows come
- * back latest first overall, so each user's first row is that user's latest valid proof. Duplicate
- * ids are collapsed, and an empty request queries nothing.
+ * and lodging guest lists — so building twenty profiles costs one read rather than twenty (AAP
+ * 0.5.4, whose traveler page holds 20 profiles). The read is one row per requested user at the
+ * database level: `DISTINCT ON (p."user_id")` keeps each user's latest valid proof and returns
+ * nothing else, so a user with several valid overlapping stays no longer multiplies the rows the
+ * database sends. It is the same statement `cities/discovery.ts` runs for its page of travelers,
+ * and Prisma's own `distinct` cannot replace it: that option reaches PostgreSQL as no `DISTINCT ON`
+ * at all — the database still returns every matching row and the client de-duplicates them — which
+ * is exactly the unbounded read this read is here to avoid.
+ *
+ * The `ORDER BY` leads with `user_id`, which `DISTINCT ON` requires of its expression, and the rest
+ * of it is {@link LATEST_FIRST}; each user's first row under that order is therefore still their
+ * latest proof, which is what the map holds. The window is the two inclusive bounds of
+ * {@link validAt}, written out because the read is a statement. Duplicate ids are collapsed, and an
+ * empty request queries nothing.
  *
  * A user with no valid proof is absent from the map rather than mapped to `null`: callers render an
  * unverified traveler by omitting those fields.
@@ -343,11 +363,25 @@ export async function currentProofsFor(
     return proofs;
   }
 
-  const rows = await db.itineraryProof.findMany({
-    where: { userId: { in: wanted }, ...validAt(now) },
-    orderBy: [...LATEST_FIRST],
-    select: { ...PROOF_SUMMARY_SELECT, userId: true },
-  });
+  // The column list is PROOF_SUMMARY_SELECT's own, aliased to the names ProofRow gives those
+  // columns, and the ids bind as the one `uuid[]` the whole page needs.
+  const rows = await db.$queryRaw<ProofRowWithUser[]>(Prisma.sql`
+    SELECT DISTINCT ON (p."user_id")
+           p."id" AS "id",
+           p."user_id" AS "userId",
+           p."city_id" AS "cityId",
+           p."arrival_date" AS "arrivalDate",
+           p."departure_date" AS "departureDate",
+           p."issuer_id" AS "issuerId",
+           p."valid_from" AS "validFrom",
+           p."valid_to" AS "validTo",
+           p."created_at" AS "createdAt"
+      FROM "itinerary_proof" p
+     WHERE p."user_id" = ANY(${wanted}::uuid[])
+       AND p."valid_from" <= ${now}
+       AND p."valid_to" >= ${now}
+     ORDER BY p."user_id", p."created_at" DESC, p."id" DESC
+  `);
 
   for (const row of rows) {
     if (!proofs.has(row.userId)) {

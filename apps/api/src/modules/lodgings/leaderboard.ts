@@ -24,7 +24,7 @@
  * composition root is another file's deliverable, it is not on this file's dependency whitelist,
  * and the narrowed interface states exactly the capabilities these functions use.
  *
- * Two invariants the SQL keeps:
+ * Three invariants the SQL keeps:
  *
  * - Raw statements are `Prisma.sql` tagged templates with double-quoted identifiers, so no value is
  *   ever concatenated into SQL (AAP 0.11.2), and every statement that reads `lodging` or `venue`
@@ -34,6 +34,10 @@
  *   ({@link currentStayPredicate}), never until the end of a UTC day, so the directory's guest
  *   count, a lodging's guest list and the claim rules agree on who is currently staying
  *   (AAP 0.5.3, 0.5.7).
+ * - A traveler who is deleted or awaiting erasure is not a current guest: every statement that
+ *   counts or lists a live stay joins `"user"` and drops them ({@link liveTravelerPredicate}), so a
+ *   claim that outlives `DELETE /me` until `account-erasure` removes it (AAP 0.5.2) has already
+ *   left the directory's guest count and the guest list (AAP 0.5.7).
  *
  * @see AAP 0.5.7 for the leaderboard, visibility and claim rules, 0.5.2 for `LodgingActivityFact`
  *   and `LodgingClaim`, 0.5.4 for the directory and console routes, 0.8.1 for this file.
@@ -89,6 +93,9 @@ const CLAIM_ALIAS = 'c';
 
 /** The alias {@link currentStayPredicate} expects for `city`. */
 const CITY_ALIAS = 'ci';
+
+/** The alias {@link liveTravelerPredicate} expects for `user`. */
+const USER_ALIAS = 'u';
 
 /** The alias the venue-covering statement gives `venue`. */
 const VENUE_ALIAS = 'v';
@@ -376,11 +383,42 @@ export function currentStayPredicate(claimAlias: string, cityAlias: string, now:
 }
 
 /**
+ * The one definition of "a traveler this deployment still counts", as a SQL fragment (AAP 0.5.2,
+ * 0.5.7).
+ *
+ * It reads as `"<userAlias>"."deleted_at" IS NULL AND "<userAlias>"."deletion_requested_at" IS
+ * NULL`: a traveler who has asked for erasure, or whose account has been erased to a tombstone,
+ * stops being a current guest at once — the `lodging_claim` row that names them outlives
+ * `DELETE /me` until `account-erasure` removes it (AAP 0.5.2). `lodgings/visibility.ts` excludes
+ * the same two states from the guest list it renders, so the count shown beside a lodging and the
+ * guests listed under it cannot disagree about who is staying.
+ *
+ * The caller's `FROM` must join the user table to the claim's owner
+ * (`"user" AS "u" ON "u"."id" = "c"."user_id"`), which is why this takes the alias rather than
+ * naming one. No value reaches the SQL: the alias is the only text, and it is validated against the
+ * shared identifier pattern first (AAP 0.11.2).
+ *
+ * @param userAlias - The alias of `user` in the caller's statement.
+ * @returns The SQL fragment, ready to be interpolated into a `Prisma.sql` statement.
+ * @throws RangeError when the alias is not a plain lower-case identifier.
+ * @see AAP 0.5.2 for erasure and the tombstone, 0.5.7 for the guest count and the guest list.
+ */
+function liveTravelerPredicate(userAlias: string): Prisma.Sql {
+  assertSqlAlias(userAlias);
+  const user = Prisma.raw(`"${userAlias}"`);
+  return Prisma.sql`${user}."deleted_at" IS NULL AND ${user}."deletion_requested_at" IS NULL`;
+}
+
+/**
  * How many currently verified guests each of `lodgingIds` has (AAP 0.5.7 "Lodging visibility").
  *
  * Every current verified guest counts, whether or not they opted in to the guest list: the number
  * is a fact about the lodging, and `showStaying` decides only whether their tier-0 profile is
- * listed. The number is the raw count, because the caller decides whether it can be shown — a
+ * listed. A current guest is also a traveler this deployment still counts, so the statement joins
+ * `"user"` and drops a deleted or erasure-pending account ({@link liveTravelerPredicate}): a claim
+ * that outlives `DELETE /me` until `account-erasure` removes it (AAP 0.5.2) does not keep the count
+ * up, which is what makes the count agree with the guest list `lodgings/visibility.ts` renders
+ * (AAP 0.5.7). The number is the raw count, because the caller decides whether it can be shown — a
  * caller serializing it goes through {@link toGuestCount}, which turns anything below
  * `GUEST_COUNT_THRESHOLD` into the label instead of a number that could single a guest out.
  *
@@ -424,8 +462,10 @@ export async function guestCountFor(
       FROM "lodging_claim" AS "c"
       JOIN "lodging" AS "l" ON "l"."id" = "c"."lodging_id"
       JOIN "city" AS "ci" ON "ci"."id" = "l"."city_id"
+      JOIN "user" AS "u" ON "u"."id" = "c"."user_id"
      WHERE "c"."lodging_id" = ANY(${wanted}::uuid[])
        AND ${currentStayPredicate(CLAIM_ALIAS, CITY_ALIAS, now)}
+       AND ${liveTravelerPredicate(USER_ALIAS)}
        AND ${fixturePredicate(appEnv, LODGING_ALIAS)}
      GROUP BY "c"."lodging_id"
   `);
@@ -478,8 +518,10 @@ async function computeLeaderboard(
   const appEnv = services.env.APP_ENV;
 
   // One statement for the city's listed lodgings, each with its current verified guest count as a
-  // correlated subquery; one for every fact inside the window, served by
-  // `lodging_activity_fact (lodging_id, completed_at)`.
+  // correlated subquery; the subquery counts exactly what `guestCountFor` counts, joining `"user"`
+  // and dropping a deleted or erasure-pending traveler (`liveTravelerPredicate`, AAP 0.5.2), so the
+  // directory's number and one lodging's guest list can never disagree. One statement for every
+  // fact inside the window, served by `lodging_activity_fact (lodging_id, completed_at)`.
   const lodgingRows = await services.db.$queryRaw<LodgingRow[]>(Prisma.sql`
     SELECT "l"."id"::text AS "id",
            "l"."city_id" AS "city_id",
@@ -490,8 +532,10 @@ async function computeLeaderboard(
            (SELECT count(*)::int
               FROM "lodging_claim" AS "c"
               JOIN "city" AS "ci" ON "ci"."id" = "l"."city_id"
+              JOIN "user" AS "u" ON "u"."id" = "c"."user_id"
              WHERE "c"."lodging_id" = "l"."id"
-               AND ${currentStayPredicate(CLAIM_ALIAS, CITY_ALIAS, now)}) AS "guests"
+               AND ${currentStayPredicate(CLAIM_ALIAS, CITY_ALIAS, now)}
+               AND ${liveTravelerPredicate(USER_ALIAS)}) AS "guests"
       FROM "lodging" AS "l"
      WHERE "l"."city_id" = ${cityId}
        AND "l"."osm_missing_at" IS NULL
@@ -605,6 +649,75 @@ async function writeLeaderboardCache(
 }
 
 /**
+ * The recomputation of each city's board that this process already has in flight
+ * ({@link coalesceLeaderboard}), keyed by the city the board belongs to.
+ *
+ * Per process and never shared: a second API replica keeps its own map (AAP 0.3.2), and both
+ * replicas still read and write the one cached board in Redis.
+ */
+const boardsInFlight = new Map<string, Promise<LodgingSummary[]>>();
+
+/**
+ * Recomputes a city's board, and hands the callers that arrive while it runs the same board
+ * (AAP 0.5.7).
+ *
+ * A cold city, and equally a city `invalidateLeaderboard` has just dropped after the commit that
+ * changed it (AAP 0.5.3), is the one moment every concurrent reader of the directory has work to
+ * do. The first caller therefore computes and caches the board, and each caller that joins it is
+ * answered with that one board instead of paying for a second pair of statements; the entry is
+ * removed as soon as the recomputation settles, whether it produced a board or threw, so a failure
+ * is never cached, the next caller recomputes, and no settled board is held for the life of the
+ * process.
+ *
+ * @param services - The app's services, narrowed to what this module uses.
+ * @param cityId - The city whose board is wanted.
+ * @returns The activity-ordered board, one array shared by every caller that joined this
+ *   recomputation; its callers treat it as read-only ({@link leaderboard} sorts a copy for
+ *   `sort=name`).
+ * @throws Whatever the statements or `LodgingSummary` raised; every caller that joined receives
+ *   the same rejection.
+ */
+async function coalesceLeaderboard(
+  services: LodgingLeaderboardServices,
+  cityId: string,
+): Promise<LodgingSummary[]> {
+  const running = boardsInFlight.get(cityId);
+  if (running !== undefined) {
+    return await running;
+  }
+
+  const started = recomputeLeaderboard(services, cityId);
+  boardsInFlight.set(cityId, started);
+
+  try {
+    return await started;
+  } finally {
+    // Only this caller's own entry is dropped, so a later recomputation of the same city can never
+    // have its entry removed by the one it replaced.
+    if (boardsInFlight.get(cityId) === started) {
+      boardsInFlight.delete(cityId);
+    }
+  }
+}
+
+/**
+ * The one recomputation {@link coalesceLeaderboard} shares: the city's scored and ranked board,
+ * then its cache entry for `LEADERBOARD_CACHE_SECONDS`.
+ *
+ * The order is the load-bearing part: the cache is written before the promise resolves, so a caller
+ * that starts a recomputation right after this one settled reads the entry it wrote rather than
+ * computing a third board.
+ */
+async function recomputeLeaderboard(
+  services: LodgingLeaderboardServices,
+  cityId: string,
+): Promise<LodgingSummary[]> {
+  const computed = await computeLeaderboard(services, cityId, services.clock.now());
+  await writeLeaderboardCache(services, cityId, computed);
+  return computed;
+}
+
+/**
  * A city's lodgings in the order the caller asked for, each with its rank, activity score and
  * current verified guest count (AAP 0.5.4 `GET /cities/:cityId/lodgings`, AAP 0.5.7).
  *
@@ -615,9 +728,14 @@ async function writeLeaderboardCache(
  *
  * The board is served from Redis for `LEADERBOARD_CACHE_SECONDS` and recomputed otherwise; a Redis
  * outage, an unreadable entry or a stale cache is logged and never fails the read, because the
- * directory is a read over PostgreSQL tables that stay available (AAP 0.3.2). The route has already
- * checked that the city exists and that the caller holds a proof for it, so neither is re-checked
- * here; a city with no lodging answers an empty list.
+ * directory is a read over PostgreSQL tables that stay available (AAP 0.3.2). A recomputation is
+ * coalesced per process ({@link coalesceLeaderboard}), so the callers that arrive while a cold or
+ * just-invalidated city is being computed share one board rather than each paying for one; that
+ * board is handed to all of them and must be treated as read-only, which is why `sort=name` sorts a
+ * copy instead of the board itself. Coalescing reaches no further than the process: a second API
+ * replica recomputes at most one board of its own, and Redis is the only cache the replicas share.
+ * The route has already checked that the city exists and that the caller holds a proof for it, so
+ * neither is re-checked here; a city with no lodging answers an empty list.
  *
  * @param services - The app's services, narrowed to what this module uses.
  * @param cityId - The city whose directory is wanted.
@@ -633,15 +751,9 @@ export async function leaderboard(
   sort: LodgingSort,
 ): Promise<LodgingSummary[]> {
   const cached = await readLeaderboardCache(services, cityId);
+  const board = cached ?? (await coalesceLeaderboard(services, cityId));
 
-  if (cached !== null) {
-    return sort === 'name' ? [...cached].sort(compareByName) : cached;
-  }
-
-  const computed = await computeLeaderboard(services, cityId, services.clock.now());
-  await writeLeaderboardCache(services, cityId, computed);
-
-  return sort === 'name' ? [...computed].sort(compareByName) : computed;
+  return sort === 'name' ? [...board].sort(compareByName) : board;
 }
 
 /**
@@ -729,8 +841,9 @@ async function readLodgingFacts(
  *
  * `activityScore` and `weeklyTrend` come from this lodging's own facts, read fresh: the score is
  * exactly the number of counted facts, and the 13 weekly points bucket those same facts, so the
- * points always sum to the score. The rank comes from the cached board, and the guest count from
- * {@link guestCountFor}, which is why those two can trail a change by up to the cache's life.
+ * points always sum to the score. The rank comes from the activity board's cached order, which is
+ * why only `rank` can trail a change by up to the cache's life; the guest count is
+ * {@link guestCountFor}'s live read, so a removal is reflected at once (AAP 0.5.7).
  *
  * `rank` is read from the activity board rather than counted by a statement of its own, so that
  * this console and the directory answer with one number: the position has to be the one the

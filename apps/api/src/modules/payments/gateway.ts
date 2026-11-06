@@ -299,9 +299,12 @@ export interface PaymentsGateway {
    *   5xx, a 429 or an unrecognized failure — so `operations.ts` reconciles rather than guesses: it
    *   replays the create under the same key, which the provider answers with the stored result of
    *   the first request, and persists the recovered PaymentIntent.
-   * @throws PaymentIdempotencyError when replaying the key is refused as an idempotency conflict,
-   *   which means the parameters of this attempt changed; `operations.ts` logs
-   *   `hold_replay_params_changed` and leaves the hold to the 12-hour rule.
+   * @throws PaymentIdempotencyError when replaying the key is refused as an idempotency conflict
+   *   that the recovery cannot resolve: a conflict is first resolved by recovering the PaymentIntent
+   *   the metadata this application itself wrote on the attempt names — the parameters a replay
+   *   derives can differ from the first request's — and only a conflict that finds no such intent, or
+   *   one whose status decides nothing, is left for `operations.ts` to log as
+   *   `hold_replay_params_changed` and hand to the operator, never to replay again.
    * @throws PaymentRejectedError on a definite 4xx refusal that is not a card error, such as
    *   `resource_missing` or `payment_intent_unexpected_state`: nothing happened, and the caller
    *   retrieves the PaymentIntent to decide.

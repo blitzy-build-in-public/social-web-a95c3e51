@@ -150,6 +150,32 @@ const MARKER_DOT_SIZE = 10;
  */
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 
+/** The three fields of a `keydown` event this screen reads; React Native declares no key event. */
+interface WebKeyEvent {
+  readonly key?: string;
+  readonly repeat?: boolean;
+  readonly preventDefault?: () => void;
+}
+
+/**
+ * Takes Space as an activation the responder withholds: react-native-web answers Enter for any
+ * element but Space only for a native `button` or a `role="button"`, and every venue and deposit
+ * option of this screen is a radio. Enter is left to the responder, which would otherwise fire a
+ * press twice.
+ */
+function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
+  if (Platform.OS !== 'web') return {};
+  return {
+    onKeyDown: (event) => {
+      if (event.repeat === true) return;
+      if (event.key !== ' ' && event.key !== 'Spacebar') return;
+      // Space would otherwise scroll the page behind the option.
+      event.preventDefault?.();
+      activate();
+    },
+  };
+}
+
 // --- The venue's city's own time (AAP 0.5.8) ----------------------------------------------------
 
 /** A wall-clock reading in one zone: the fields {@link START_PATTERN} carries. */
@@ -409,6 +435,7 @@ function RadioOption({
 
   return (
     <Pressable
+      {...spaceActivates(onPress)}
       role="radio"
       aria-checked={selected}
       accessibilityState={{ selected, checked: selected }}

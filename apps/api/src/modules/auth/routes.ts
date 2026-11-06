@@ -91,7 +91,12 @@ export default function authRoutes(app: App): Promise<void> {
           // `z.void()` rather than the `z.null()` the 204s declare: an empty answer needs `send()`
           // with no payload, which Fastify's reply type allows only when the status's schema resolves
           // to `void`, and it is the body — not the status — that carries no information here.
-          response: { 202: z.void(), 400: ErrorEnvelope, 429: ErrorEnvelope },
+          response: {
+            202: z.void(),
+            400: ErrorEnvelope,
+            429: ErrorEnvelope,
+            503: ErrorEnvelope,
+          },
         },
       },
       async (request, reply) => {
@@ -113,7 +118,13 @@ export default function authRoutes(app: App): Promise<void> {
         schema: {
           tags: [AUTH_TAG],
           body: VerifyRequest,
-          response: { 200: VerifyResponse, 400: ErrorEnvelope, 401: ErrorEnvelope },
+          response: {
+            200: VerifyResponse,
+            400: ErrorEnvelope,
+            401: ErrorEnvelope,
+            429: ErrorEnvelope,
+            503: ErrorEnvelope,
+          },
         },
       },
       async (request) => verifyMagicLink(app.services, request.body.token),
@@ -126,7 +137,13 @@ export default function authRoutes(app: App): Promise<void> {
         schema: {
           tags: [AUTH_TAG],
           body: RefreshRequest,
-          response: { 200: RefreshResponse, 400: ErrorEnvelope, 401: ErrorEnvelope },
+          response: {
+            200: RefreshResponse,
+            400: ErrorEnvelope,
+            401: ErrorEnvelope,
+            429: ErrorEnvelope,
+            503: ErrorEnvelope,
+          },
         },
       },
       async (request) => refresh(app.services, request.body.refreshToken),
@@ -150,7 +167,12 @@ export default function authRoutes(app: App): Promise<void> {
           security: OPENAPI_SECURITY.bearer,
           // No `body`: the session ended is the one the access token names in its `sid`, so the route
           // takes no payload and a client sends none (AAP 0.5.4).
-          response: { 204: z.null(), 401: ErrorEnvelope },
+          response: {
+            204: z.null(),
+            401: ErrorEnvelope,
+            429: ErrorEnvelope,
+            503: ErrorEnvelope,
+          },
         },
       },
       async (request, reply) => {

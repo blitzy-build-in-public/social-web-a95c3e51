@@ -164,7 +164,12 @@ export function registerStatusWebhook(app: App): void {
         // carries no body, so Fastify runs no serializer for it; the `400` is the one refusal this
         // route answers itself — an unusable attempt id, a body that is not a form, or a field the
         // schema rejects — and the document publishes it.
-        response: { 204: z.null(), 400: ErrorEnvelope },
+        response: {
+          204: z.null(),
+          400: ErrorEnvelope,
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
+        },
       },
     },
     async (request, reply) => {

@@ -11,9 +11,12 @@
  * reason, in the order `no_priced_places`, `none_open`, `budget_too_low`.
  *
  * Read-only by design (AAP 0.5.1): one parameterized statement over `Place` and `PriceRecord`, no
- * write, no transaction, no external service, and no price is ever guessed. A failure here therefore
- * reaches `routes.ts` alone, which answers `503 suggestions_unavailable` on that route while
- * proposing, locking, checking in and settling are untouched (AAP 0.3.2).
+ * write, no transaction, no external service, and no price is ever guessed. Per place it ships the
+ * rows of the newest capture batch of each source rather than every in-window row — all the estimate
+ * can read from a place — so the payload no longer grows with a place's weekly recaptures
+ * (AAP 0.5.7). A failure here therefore reaches `routes.ts` alone, which answers
+ * `503 suggestions_unavailable` on that route while proposing, locking, checking in and settling are
+ * untouched (AAP 0.3.2).
  *
  * Two conventions are load-bearing. Every identifier of the statement comes from a helper of
  * `@tablemate/db` — `fixturePredicate`, `geoColumn`, `withinMeters`, `distanceMeters` — and every
@@ -98,7 +101,12 @@ export interface CandidatePlace {
   readonly distanceM: number;
   /** The place's `opening_hours` value as OpenStreetMap stores it, or `null` when it has none. */
   readonly openingHours: string | null;
-  /** Every approved price row inside the widest freshness window, as the statement aggregated it. */
+  /**
+   * The rows of the place's newest capture batch per source among its approved rows inside the
+   * widest freshness window, as the statement aggregated them: the first stage of `currentSet`'s
+   * rule, which `estimatePlace` completes with the per-source window and the per-item dedupe
+   * (AAP 0.5.7).
+   */
   readonly prices: readonly PriceRow[];
 }
 
@@ -134,9 +142,10 @@ export interface SuggestResult {
 
 /**
  * The statement's freshness prefilter: `FRESHNESS_PHONE_OPERATOR_DAYS` (60 days), the widest window
- * of any source. It is only a prefilter — `estimatePlace` applies the exact per-source window
- * (`isFresh`: 30 days online, 60 days for a phone quote or an operator entry), which stays the one
- * authoritative freshness rule.
+ * of any source. It bounds both what the statement scans and what it aggregates: only the rows of a
+ * place's newest capture batch per source inside this window reach the API. It is still only a
+ * prefilter — `estimatePlace` applies the exact per-source window (`isFresh`: 30 days online, 60 days
+ * for a phone quote or an operator entry), which stays the one authoritative freshness rule.
  */
 const WIDEST_FRESHNESS_DAYS = FRESHNESS_PHONE_OPERATOR_DAYS;
 
@@ -185,7 +194,7 @@ const CANDIDATE_ROW_MISMATCH = 'suggestions: a candidate row does not match the 
 /**
  * The candidate statement: every category-carrying place within the suggestion radius of the
  * meetup's venue that has at least one approved price row inside the widest freshness window, with
- * those rows aggregated per place.
+ * the rows of that place's newest capture batch per source aggregated into one array.
  *
  * The 2 km test is `withinMeters(geoColumn('p', 'place'), geoColumn('v', 'venue'), …)`, so the
  * GiST-indexed `place.location` stands on the left and the venue row — reduced to one by its primary
@@ -194,6 +203,23 @@ const CANDIDATE_ROW_MISMATCH = 'suggestions: a candidate row does not match the 
  * 23:00 cut-off are judged in. `opening_hours` is deliberately not filtered here: a priced place
  * with no hours, or with hours that do not parse, counts as priced but not open, which is what makes
  * `emptyReason` `none_open` rather than `no_priced_places` (AAP 0.5.7).
+ *
+ * The aggregate carries only what the estimate can read. Inside the widest-window prefilter one
+ * capture batch is kept per source — its own newest — which is the first stage of `currentSet`'s rule
+ * (AAP 0.5.7): a weekly crawl adds a batch per week, so a place accumulates captures of the same menu
+ * inside the 60-day window, and only the newest of them can weigh on an estimate. A batch's recency
+ * is the latest `capturedAt` of its rows, and two batches captured at the same instant are separated
+ * by the larger `capture_batch_id` first, which is exactly how `latestBatchPerSource` orders them.
+ *
+ * Reducing any further in SQL would change the estimate. The second stage of that rule — the latest
+ * record per `(itemCategory, normalizedName)` across the kept batches — is not reproducible per
+ * place here, because the record it keeps for an item can come from another source while an older
+ * batch of the item's own source holds it too; dropping such a row in SQL could drop the row
+ * `estimatePlace` would have chosen. The batch rule has no such gap: a source has one freshness
+ * window and a batch is written with one capture instant, so a batch whose rows are all stale is
+ * never a source's newest fresh batch — the batch kept here is the batch `currentSet` keeps, and the
+ * rows kept here are a superset of the rows that rule keeps. The per-item dedupe and the exact
+ * per-source window therefore stay in `estimatePlace`, the one authoritative rule.
  *
  * `isPartnerVenue` asks whether any active partner venue is linked to the place, so the meetup's own
  * venue place — when that venue carries a `place_id` — is a candidate at 0 m that ranks first. Each
@@ -232,19 +258,45 @@ function candidatesStatement(env: AppEnv, venueId: string, now: Date): Prisma.Sq
        AND ${fixturePredicate(env, 'p')}
       JOIN LATERAL (
         SELECT json_agg(json_build_object(
-                 'id', r."id", 'captureBatchId', r."capture_batch_id",
-                 'itemName', r."item_name", 'normalizedName', r."normalized_name",
-                 'itemCategory', r."item_category", 'alcoholic', r."alcoholic",
-                 'perPerson', r."per_person", 'ticketType', r."ticket_type",
-                 'priceUsdCents', r."price_usd_cents", 'source', r."source",
-                 'sourceUrl', r."source_url", 'reviewStatus', r."review_status",
-                 'capturedAtMs', (EXTRACT(EPOCH FROM r."captured_at") * 1000)::bigint
-               ) ORDER BY r."id") AS "items"
-          FROM "price_record" "r"
-         WHERE r."place_id" = p."id"
-           AND r."review_status" = 'approved'
-           AND r."captured_at" >= ${widestCutoff}
-           AND ${fixturePredicate(env, 'r')}
+                 'id', "k"."id", 'captureBatchId', "k"."capture_batch_id",
+                 'itemName', "k"."item_name", 'normalizedName', "k"."normalized_name",
+                 'itemCategory', "k"."item_category", 'alcoholic', "k"."alcoholic",
+                 'perPerson', "k"."per_person", 'ticketType', "k"."ticket_type",
+                 'priceUsdCents', "k"."price_usd_cents", 'source', "k"."source",
+                 'sourceUrl', "k"."source_url", 'reviewStatus', "k"."review_status",
+                 'capturedAtMs', (EXTRACT(EPOCH FROM "k"."captured_at") * 1000)::bigint
+               ) ORDER BY "k"."id") AS "items"
+          FROM (
+            SELECT "b".*,
+                   rank() OVER (
+                     PARTITION BY "b"."source"
+                     ORDER BY "b"."batch_latest" DESC, "b"."capture_batch_id" DESC
+                   ) AS "batch_rank"
+              FROM (
+                SELECT "r"."id",
+                       "r"."capture_batch_id",
+                       "r"."item_name",
+                       "r"."normalized_name",
+                       "r"."item_category",
+                       "r"."alcoholic",
+                       "r"."per_person",
+                       "r"."ticket_type",
+                       "r"."price_usd_cents",
+                       "r"."source",
+                       "r"."source_url",
+                       "r"."review_status",
+                       "r"."captured_at",
+                       max("r"."captured_at") OVER (
+                         PARTITION BY "r"."source", "r"."capture_batch_id"
+                       ) AS "batch_latest"
+                  FROM "price_record" "r"
+                 WHERE r."place_id" = p."id"
+                   AND r."review_status" = 'approved'
+                   AND r."captured_at" >= ${widestCutoff}
+                   AND ${fixturePredicate(env, 'r')}
+              ) "b"
+          ) "k"
+         WHERE "k"."batch_rank" = 1
       ) "prices" ON "prices"."items" IS NOT NULL
      WHERE "v"."id" = ${venueId}::uuid
        AND ${fixturePredicate(env, 'v')}
@@ -261,7 +313,8 @@ function candidatesStatement(env: AppEnv, venueId: string, now: Date): Prisma.Sq
  * @param services - The guarded client and the environment whose fixture policy applies.
  * @param venueId - The meetup's venue, whose row also supplies the city the window is judged in.
  * @param now - The instant the freshness prefilter is measured at.
- * @returns Every candidate within 2 km that carries an approved, in-window price row.
+ * @returns Every candidate within 2 km that carries an approved, in-window price row, with the rows
+ *   of its newest capture batch per source.
  * @throws Error when a returned row does not match the shape the statement built.
  */
 export async function loadCandidates(

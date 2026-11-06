@@ -576,15 +576,17 @@ export async function createClaim(
  *
  * Ownership is part of the query, so another traveler's claim is answered exactly like a claim that
  * does not exist: `404 claim_not_found`, never a hint that the id is real. The response carries the
- * status and, once the claim has reached `verified`, `rejected` or `unreachable`, the instant it did;
- * the booking name and reference are not part of the contract and are never read here (AAP 0.5.2).
+ * status and, once the claim has reached `verified`, `rejected` or `unreachable`, the instant it
+ * did — the `resolvedAt` key is absent until then, as AAP 0.5.4 states the shape `{ status,
+ * resolvedAt? }`; the booking name and reference are not part of the contract and are never read
+ * here (AAP 0.5.2).
  *
  * A plain read: it opens no transaction, takes no lock and changes nothing.
  *
  * @param services - The app's services, read for the guarded client alone.
  * @param userId - The authenticated caller.
  * @param claimId - The claim to read, as a UUID from the route's schema.
- * @returns The claim's status and resolution instant.
+ * @returns The claim's status, with the resolution instant only once the claim has one.
  * @throws AppError `claim_not_found` (404) when the caller holds no such claim.
  */
 export async function getClaim(
@@ -601,7 +603,10 @@ export async function getClaim(
     throw new AppError('claim_not_found');
   }
 
-  return { status: row.status, resolvedAt: row.resolvedAt?.toISOString() ?? null };
+  const resolvedAt = row.resolvedAt?.toISOString();
+
+  // The key is absent while the claim is unresolved and holds the instant once it is (AAP 0.5.4).
+  return resolvedAt === undefined ? { status: row.status } : { status: row.status, resolvedAt };
 }
 
 /**

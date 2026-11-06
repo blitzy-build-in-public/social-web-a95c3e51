@@ -59,6 +59,7 @@ import { compensateLostHold } from '../settlement/settle.ts';
 
 import { advanceDeposit, findHoldOperation, isTerminalOperation } from './holds.ts';
 import { TERMINAL_OPERATION_STATUSES } from './holds.ts';
+import type { HoldHandOffMarker } from './holds.ts';
 import {
   isPaymentError,
   PaymentDeclinedError,
@@ -91,7 +92,9 @@ export const INTERRUPTED_AFTER_MS = 2 * 60_000;
  *
  * Stripe keeps an idempotency result for at least 24 hours, so a replay is still safe at 12; the
  * margin exists so that the hand-off happens while the key is unquestionably still live rather than
- * at the edge of the provider's window. A second authorization is never attempted after it.
+ * at the edge of the provider's window. A second authorization is never attempted after it: the
+ * deposit stays `pending`, so the retry route keeps answering `409 hold_pending` until an operator
+ * decides what the attempt's authorization was.
  */
 export const HOLD_UNRESOLVED_AFTER_MS = 12 * 3_600_000;
 
@@ -315,7 +318,10 @@ function errorField(error: unknown, field: string): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** One operation row, or `null` when it no longer exists. */
+/**
+ * One operation row, or `null` when it no longer exists. Not `async`: the read is the promise the
+ * client returns, and the repository's `require-await` rule rejects a function that awaits nothing.
+ */
 function readOperation(
   services: AppServices,
   operationId: string,
@@ -926,19 +932,17 @@ async function executeHold(
     return pendingOutcome('skipped', await readOperation(services, operation.id));
   }
 
-  // A replay of an unresolved attempt is handed to the operator rather than sent again: the
-  // provider's idempotency result may be at the edge of its window, and an authorization nobody can
-  // still settle is worse than a meetup the initiator is told to retry (AAP 0.3.2).
+  // A replay that has still not resolved the create after twelve hours is handed to the operator: the
+  // provider's idempotency result is at the edge of its window, and if the first create did place an
+  // authorization its id was never learned, so no release can ever be written for it (AAP 0.3.2).
   if (isReplay(claim) && elapsedSince(services, operation.createdAt) >= HOLD_UNRESOLVED_AFTER_MS) {
-    services.logger.error({
-      event: 'payment_operation_unresolved',
-      operationId: operation.id,
-      depositId: deposit.id,
-    });
-    return recordHoldFailure(services, claim, deposit, attempt, {
-      lastError: 'unresolved_12h',
-      paymentIntentId: null,
-    });
+    return handOffUnresolvedHold(
+      services,
+      claim,
+      deposit,
+      'payment_operation_unresolved',
+      'unresolved_12h',
+    );
   }
 
   const customer = await services.db.user.findUnique({
@@ -986,12 +990,70 @@ async function executeHold(
 }
 
 /**
+ * Hands an unresolved hold create to the operator (AAP 0.3.2 "Reconciling an ambiguous hold create").
+ *
+ * Two paths reach it, and they are the two cases where the create may have succeeded with an answer
+ * we never learned: the twelve-hour rule, where the replay has not resolved the create, and an
+ * idempotency conflict the gateway could not resolve. Neither may be replayed again — a replay that
+ * has not worked for twelve hours stops being safe as the provider's key ages, and an idempotency
+ * conflict cannot be replayed at all — and neither may be replaced by a new attempt's key, because a
+ * second authorization is what the rule forbids.
+ *
+ * The row is closed `failed_terminal` with the marker in `last_error`, which takes it out of every
+ * later claim ({@link openOperations} selects `pending`, `failed_retryable` and interrupted
+ * `executing` rows only, so the hand-off is one-shot) and records it where an operator reads it. The
+ * deposit is deliberately left exactly as it is — `pending` — because that is what keeps the retry
+ * route answering `409 hold_pending` (AAP 0.5.3's retry guard) and what keeps `releaseAllOpen`,
+ * `completeSettlement` and the `delete_customer` gate honest about an attempt whose authorization may
+ * still be live.
+ *
+ * The operator's procedure, and the reason the row carries everything it needs for it: select the
+ * hand-offs with `kind = 'hold' AND last_error IN (HOLD_HAND_OFF_MARKERS)`, read the attempt's own
+ * PaymentIntent at the provider by the metadata this application wrote on it (`depositId` plus
+ * `attempt`), then either cancel it — after which the provider's own event moves the deposit, since
+ * a cancellation that is not ours is a hold loss — or record its id so the attempt's release can
+ * cancel it and the retry may proceed. Until one of those happens the deposit stays `pending`, which
+ * is deliberate: the alternative is a second authorization.
+ *
+ * Only the operation row is written, through {@link recordAlone}, so no meetup lock is taken and no
+ * deposit row is touched, and the returned outcome carries no `hold` arm: the inline request that
+ * asked for the hold therefore answers `503 payment_unavailable`, which is the AAP's answer while the
+ * replay has not succeeded.
+ *
+ * @param services - The app's services.
+ * @param claim - The claim to record against.
+ * @param deposit - The deposit the attempt belongs to.
+ * @param event - The log event naming the rule that handed the attempt off.
+ * @param marker - The marker written to `last_error` and logged.
+ * @returns The outcome for the closed operation row, with no hold arm.
+ */
+function handOffUnresolvedHold(
+  services: AppServices,
+  claim: ClaimedOperation,
+  deposit: Deposit,
+  event: 'payment_operation_unresolved' | 'hold_replay_params_changed',
+  marker: HoldHandOffMarker,
+): Promise<PendingOutcome> {
+  // `marker`, not `lastError`: the redaction list covers the `lastError` field name, and a marker
+  // behind a censor tells an operator nothing.
+  services.logger.error({
+    event,
+    operationId: claim.operation.id,
+    depositId: deposit.id,
+    marker,
+  });
+
+  return recordAlone(services, claim, { status: 'failed_terminal', lastError: marker });
+}
+
+/**
  * Decides what a thrown failure of a hold create means (AAP 0.3.2).
  *
  * `unavailable` is the ambiguous create: the answer was lost, so the deposit stays `pending` and the
  * sweeper replays the identical request under the same key, which either returns the stored result of
- * the first request or performs it once. `idempotency` means the replay's parameters changed, so
- * replaying cannot recover the attempt and it is left to the twelve-hour rule. `rejected` is a
+ * the first request or performs it once. `idempotency` is a conflict the gateway could not resolve —
+ * the create under this key may have succeeded while its replay can no longer learn the id — so the
+ * attempt is handed to the operator rather than left as a replay that cannot work. `rejected` is a
  * definite refusal, so nothing was authorized. `declined` is the card itself refusing the request:
  * nothing was authorized either, so the attempt ends the way a returned decline ends it — the
  * operation `failed_terminal` and the deposit `failed` (AAP 0.5.3). Every failure this rule knows
@@ -1025,16 +1087,12 @@ async function holdFailure(
   }
 
   if (failure === 'idempotency') {
-    services.logger.error({
-      event: 'hold_replay_params_changed',
-      operationId: claim.operation.id,
-      depositId: deposit.id,
-    });
-    return recordAlone(
+    return handOffUnresolvedHold(
       services,
       claim,
-      { status: 'failed_retryable', lastError: 'idempotency_error' },
-      { outcome: 'unavailable' },
+      deposit,
+      'hold_replay_params_changed',
+      'idempotency_error',
     );
   }
 
@@ -1072,12 +1130,16 @@ async function holdFailure(
 }
 
 /**
- * Records a hold attempt that placed no authorization, and moves the deposit to `failed`.
+ * Records a hold attempt that definitely placed no authorization, and moves the deposit to `failed`.
  *
  * A decline is not a crash: the deposit's `pending → failed` row is what lets the initiator retry the
- * attempt, and `failed → pending` on the retry is the other half of that path (AAP 0.5.3). The hold
- * is unresolved after twelve hours for the same reason — the deposit has no authorization and the
- * attempt is over, so `failed` leaves the retry route open for the initiator.
+ * attempt, and `failed → pending` on the retry is the other half of that path (AAP 0.5.3).
+ *
+ * Only a definite outcome belongs here — no saved card, a card decline, or a refusal that created no
+ * PaymentIntent. An attempt whose create may have left an authorization is
+ * {@link handOffUnresolvedHold} instead: this path moves the deposit out of `pending`, which reopens
+ * the retry route, and a retry there would be a second authorization while the first may still be
+ * live (AAP 0.3.2 "Reconciling an ambiguous hold create").
  *
  * @param services - The app's services.
  * @param claim - The claim to record against.

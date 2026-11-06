@@ -177,13 +177,14 @@ export type LodgingClaimCreated = z.infer<typeof LodgingClaimCreated>;
  * The response of `GET /me/lodging-claims/:id`, the caller's own claim only, so another user's id
  * answers `404 claim_not_found` (AAP 0.5.4).
  *
- * `resolvedAt` is set once the claim reaches `verified`, `rejected` or `unreachable`; the booking
- * name and reference are not part of the shape, and the details behind them are erased shortly
- * after it is (AAP 0.5.2).
+ * `resolvedAt` is optional and absent while the claim is unresolved: AAP 0.5.4 states the shape as
+ * `{ status, resolvedAt? }`. It holds the ISO instant at which the claim reached `verified`,
+ * `rejected` or `unreachable`. The booking name and reference are not part of the shape, and the
+ * details behind them are erased shortly after that instant (AAP 0.5.2).
  */
 export const LodgingClaimStatusDto = z.object({
   status: LodgingClaimStatus,
-  resolvedAt: IsoDateTime.nullable(),
+  resolvedAt: IsoDateTime.optional(),
 });
 export type LodgingClaimStatusDto = z.infer<typeof LodgingClaimStatusDto>;
 

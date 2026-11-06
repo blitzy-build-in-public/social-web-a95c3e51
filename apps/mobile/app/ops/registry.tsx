@@ -165,6 +165,32 @@ const SECTION_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
 /** Keeps the browser's own focus outline off a focused chip, so the reserved band is the ring. */
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 
+/** The three fields of a `keydown` event this screen reads; React Native declares no key event. */
+interface WebKeyEvent {
+  readonly key?: string;
+  readonly repeat?: boolean;
+  readonly preventDefault?: () => void;
+}
+
+/**
+ * Takes Space as an activation the responder withholds: react-native-web answers Enter for any
+ * element but Space only for a native `button` or a `role="button"`, and every chip of this
+ * screen — city, lodging kind and filter — is a radio. Enter is left to the responder, which would
+ * otherwise fire a press twice.
+ */
+function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
+  if (Platform.OS !== 'web') return {};
+  return {
+    onKeyDown: (event) => {
+      if (event.repeat === true) return;
+      if (event.key !== ' ' && event.key !== 'Spacebar') return;
+      // Space would otherwise scroll the page behind the chip.
+      event.preventDefault?.();
+      activate();
+    },
+  };
+}
+
 // --- Helpers -----------------------------------------------------------------------------------
 
 /** One inline message per field, keyed by the first segment of the issue's path. */
@@ -253,8 +279,10 @@ function switchProps(checked: boolean, disabled: boolean): Partial<SwitchProps> 
 
 /**
  * One selectable chip. `role="radio"` with `aria-checked` is the pair both platforms understand:
- * React Native maps it onto the native radio role and react-native-web onto the DOM attribute, and
- * the press responder answers Space for a radio-role element as it does for a button (AAP 0.5.8).
+ * React Native maps it onto the native radio role and react-native-web onto the DOM attribute. The
+ * responder answers Enter for any element but withholds Space from one that is neither a native
+ * `button` nor `role="button"`, so this chip takes Space itself and leaves Enter to the responder
+ * (AAP 0.5.8).
  */
 function Chip({
   label,
@@ -271,6 +299,7 @@ function Chip({
 
   return (
     <Pressable
+      {...spaceActivates(onPress)}
       aria-checked={selected}
       aria-label={label}
       onBlur={() => setFocused(false)}

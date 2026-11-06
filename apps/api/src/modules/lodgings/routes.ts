@@ -114,7 +114,13 @@ export default function lodgingRoutes(app: App): Promise<void> {
         security: OPENAPI_SECURITY.bearer,
         params: CityIdParams,
         querystring: LodgingListQuery,
-        response: { 200: LodgingsResponse, 403: ErrorEnvelope, 404: ErrorEnvelope },
+        response: {
+          200: LodgingsResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+        },
       },
     },
     async (request) => {
@@ -148,7 +154,13 @@ export default function lodgingRoutes(app: App): Promise<void> {
         tags: [LODGINGS_TAG],
         security: OPENAPI_SECURITY.bearer,
         params: IdParams,
-        response: { 200: LodgingDetail, 403: ErrorEnvelope, 404: ErrorEnvelope },
+        response: {
+          200: LodgingDetail,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+        },
       },
     },
     async (request) => {
@@ -225,10 +237,13 @@ export default function lodgingRoutes(app: App): Promise<void> {
         response: {
           201: LodgingClaimCreated,
           400: ErrorEnvelope,
+          401: ErrorEnvelope,
           403: ErrorEnvelope,
           404: ErrorEnvelope,
           409: ErrorEnvelope,
           422: ErrorEnvelope,
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
         },
       },
     },
@@ -251,7 +266,13 @@ export default function lodgingRoutes(app: App): Promise<void> {
         tags: [LODGINGS_TAG],
         security: OPENAPI_SECURITY.bearer,
         params: IdParams,
-        response: { 200: LodgingClaimStatusDto, 404: ErrorEnvelope },
+        response: {
+          200: LodgingClaimStatusDto,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+        },
       },
     },
     async (request) => {
@@ -273,7 +294,16 @@ export default function lodgingRoutes(app: App): Promise<void> {
         params: IdParams,
         // `204` carries no body: Fastify runs no serializer for that status, and the reply below
         // hands it the `null` the schema declares.
-        response: { 204: z.null(), 404: ErrorEnvelope, 409: ErrorEnvelope },
+        response: {
+          204: z.null(),
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+          409: ErrorEnvelope,
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
+        },
       },
     },
     async (request, reply) => {
@@ -295,7 +325,15 @@ export default function lodgingRoutes(app: App): Promise<void> {
         tags: [LODGINGS_TAG],
         security: OPENAPI_SECURITY.bearer,
         body: VisibilityRequest,
-        response: { 200: VisibilityResponse, 409: ErrorEnvelope },
+        response: {
+          200: VisibilityResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          409: ErrorEnvelope,
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
+        },
       },
     },
     async (request) => {

@@ -176,11 +176,20 @@ export default function AgeGateScreen(): ReactElement {
         />
 
         <View style={styles.confirmRow}>
-          {/* The visible label is the other half of the target: pressing it toggles the switch. It is
-              a `Text` rather than a `Pressable` so that it is not a second control — a pressable row
-              wrapped around a `Switch` nests one control in another, which a screen reader reads
-              twice and a keyboard reaches twice. On web it adds no tab stop, and the switch beside it
-              stays the one control the name and state belong to. */}
+          {/* One row, one control: the `Switch` owns the accessible name, the checked state, the
+              row's 44 pt target and the keyboard operation. A keyboard user toggles the setting
+              there — Tab to the switch, Space to flip it — which is where WCAG 2.1.1 is
+              satisfied, and is why the web flow stays fully keyboard-operable. The visible label is
+              therefore a pointer-only convenience target: pressing it toggles the same state for a
+              mouse or touch user, and it is not a control a keyboard or screen-reader user has to
+              reach. It is a `Text` and deliberately not a `Pressable` with `accessibilityRole` or
+              `role`, because a second control for one action would add a second stop to the tab
+              order and a second same-named switch to the accessibility tree on web, where
+              react-native-web makes the `switch` and `checkbox` roles focusable; every switch row
+              in this app carries exactly one control, as `app/lodgings/claim.tsx` and
+              `app/profile/stay.tsx` do. On web react-native-web therefore renders this label as a
+              plain element carrying only a click handler, with no `tabindex` and no role, which is
+              the intended consequence of that design rather than an oversight. */}
           <Text onPress={toggleAdult} style={styles.confirmLabel}>
             {AGE_GATE_CONFIRM}
           </Text>

@@ -440,10 +440,10 @@ export default function LodgingClaimScreen(): ReactElement {
       setBookingReference('');
       setConsentedNotice(null);
       // The status view reads this query, so the answer the route just gave is seeded before the
-      // first poll: the screen shows `pending_call` at once (AAP 0.5.3).
+      // first poll: the screen shows `pending_call` at once (AAP 0.5.3). A new claim is unresolved,
+      // so the seed is the exact shape of that response — no `resolvedAt` key (AAP 0.5.4).
       queryClient.setQueryData(queryKeys.lodgingClaim(created.claimId), {
         status: created.status,
-        resolvedAt: null,
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.me });
       announce(CLAIM_SUBMITTED);

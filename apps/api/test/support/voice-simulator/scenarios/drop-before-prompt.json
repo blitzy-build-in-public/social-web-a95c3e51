@@ -1,0 +1,8 @@
+{
+  "name": "drop-before-prompt",
+  "answer": "human",
+  "turns": [],
+  "dropAfterTurn": 0,
+  "finalStatus": "completed",
+  "durationSec": 2
+}

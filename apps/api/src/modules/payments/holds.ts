@@ -223,6 +223,37 @@ export function isTerminalOperation(status: PaymentOperationStatus): boolean {
 }
 
 /**
+ * The `last_error` values that mean a hold create was handed to the operator: twelve hours without a
+ * resolved replay, and an idempotency conflict the gateway could not resolve (AAP 0.3.2).
+ */
+export const HOLD_HAND_OFF_MARKERS = ['unresolved_12h', 'idempotency_error'] as const;
+
+/** One of {@link HOLD_HAND_OFF_MARKERS}: the marker a hand-off writes to an operation's `last_error`. */
+export type HoldHandOffMarker = (typeof HOLD_HAND_OFF_MARKERS)[number];
+
+/**
+ * True when a `hold` operation was handed to the operator instead of being resolved (AAP 0.3.2).
+ *
+ * Such a row is still `failed_terminal`, and it is **not** proof that the attempt left nothing at
+ * Stripe: the create may have succeeded with an answer we never learned, so no PaymentIntent id is
+ * recorded anywhere and there may be an authorization under the row's key that only an operator can
+ * settle. Nothing may assume otherwise — not {@link releaseAllOpen}, which would otherwise declare
+ * that authorization released, and not {@link startNewAttempt}, which would otherwise authorize a
+ * second time under a new attempt's key while the first may still be live.
+ *
+ * @param operation - The operation row, or the two fields this reads off one.
+ * @returns True for a hold whose create was handed to the operator.
+ */
+export function isHandedOffHold(operation: Pick<PaymentOperation, 'kind' | 'lastError'>): boolean {
+  if (operation.kind !== 'hold') {
+    return false;
+  }
+
+  const marker = operation.lastError;
+  return marker !== null && HOLD_HAND_OFF_MARKERS.some((handOff) => handOff === marker);
+}
+
+/**
  * The statuses an operation may still be claimed from (AAP 0.3.2). A row left `executing` past two
  * minutes is a call whose answer was lost, not a call that is running.
  */
@@ -514,8 +545,13 @@ export async function planDeleteCustomer(
 
 /**
  * The outcome of {@link startNewAttempt}: the new attempt and its hold, or why none was started.
+ *
  * `hold_pending` is the caller's `409 hold_pending` and `not_failed` its `409 not_proposed`
- * (AAP 0.5.4); this leaf names the reason and leaves the mapping to the route.
+ * (AAP 0.5.4). `hold_pending` is the answer whenever the current attempt is still unresolved — a
+ * create in flight, an ambiguous create waiting for its replay, or one handed to the operator —
+ * because the meetup **is** proposed, so `409 not_proposed` would tell the client it is not;
+ * `not_failed` is the answer only when this deposit has nothing left to recover. This leaf names the
+ * reason and leaves the mapping to the route.
  */
 export type StartAttemptResult =
   | { readonly ok: true; readonly attempt: number; readonly holdOp: PaymentOperation }
@@ -524,11 +560,17 @@ export type StartAttemptResult =
 /**
  * Starts the next hold attempt of a `failed` deposit (AAP 0.5.3 `failed → pending`).
  *
- * This is the retry behind `POST /meetups/:id/hold` and a repeated `POST /meetups/:id/accept`. It
- * refuses while the current attempt's hold is not terminal, because while an ambiguous create is
- * unresolved its replay is the only way to learn the PaymentIntent id and a second attempt would risk
- * a second authorization (AAP 0.3.2). A superseded attempt never keeps its authorization: its
- * PaymentIntent, when the hold recorded one, is released under its own attempt's key.
+ * This is the retry behind `POST /meetups/:id/hold` and a repeated `POST /meetups/:id/accept`. The
+ * rule it enforces is that the retry may not proceed while the current attempt is unresolved, which
+ * is either a `pending` deposit — its attempt never reached a conclusion, be that a create in
+ * flight, an ambiguous create being replayed, or one handed to the operator — or a `failed` deposit
+ * whose current attempt's `hold` row is not terminal. Both answer `hold_pending`, because an
+ * ambiguous create's replay is the only way to learn its PaymentIntent id and a second attempt would
+ * risk a second authorization (AAP 0.3.2). A deposit with nothing to recover answers `not_failed`:
+ * `held`, `requires_action`, `released`, `captured`, `expired`, `refunded`, or a `failed` deposit
+ * whose hold row is terminal, and that last one starts attempt `n + 1`. A superseded attempt never
+ * keeps its authorization: its PaymentIntent, when the hold recorded one, is released under its own
+ * attempt's key.
  *
  * The guarded deposit move runs before anything is planned, so a refused retry writes nothing, and it
  * clears `currentPaymentIntentId`, `captureBefore` and `canceledAt`, which all belong to the attempt
@@ -545,6 +587,14 @@ export async function startNewAttempt(
   deposit: Deposit,
   now: Date,
 ): Promise<StartAttemptResult> {
+  // A `pending` deposit has not concluded its attempt whatever its hold row says, so there is still
+  // something to recover: a create may be in flight, an ambiguous one may be waiting for its replay,
+  // and one may have been handed to the operator. None of them may be followed by a second
+  // authorization under a new attempt's key (AAP 0.3.2).
+  if (deposit.status === 'pending') {
+    return { ok: false, reason: 'hold_pending' };
+  }
+
   if (deposit.status !== 'failed') {
     return { ok: false, reason: 'not_failed' };
   }
@@ -703,9 +753,24 @@ export async function releaseAllOpen(
  * deposit's status until the executor or the webhook confirms the release. A `failed` deposit whose
  * hold was never sent is still released at once, because the fence in this same transaction moves that
  * row to `fenced`: terminal, and carrying no id.
+ *
+ * A **handed-off** row ({@link isHandedOffHold}) is the third case, and the one this function must
+ * never wave through: its status is terminal and it records no id, yet the create may have succeeded
+ * with an answer we never learned, so an authorization under its key may still be live. Declaring the
+ * deposit `released` over it would say an authorization was released that nobody has cancelled, which
+ * AAP 0.5.3's "never leaves an authorization outstanding" forbids; the attempt is therefore left to
+ * the operator, and the deposit keeps its status.
  */
 function hasNoAuthorization(hold: PaymentOperation | null): boolean {
-  return hold === null || (isTerminalOperation(hold.status) && hold.paymentIntentId === null);
+  if (hold === null) {
+    return true;
+  }
+
+  if (isHandedOffHold(hold)) {
+    return false;
+  }
+
+  return isTerminalOperation(hold.status) && hold.paymentIntentId === null;
 }
 
 /** What {@link fenceCaptures} found: what it fenced, and the capture a reversal must wait for. */

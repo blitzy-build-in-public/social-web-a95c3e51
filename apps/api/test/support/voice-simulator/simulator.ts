@@ -90,14 +90,17 @@ import {
 import budgetExhaustion from './scenarios/budget-exhaustion.json' with { type: 'json' };
 import busyScenario from './scenarios/busy.json' with { type: 'json' };
 import doNotCallScenario from './scenarios/do-not-call.json' with { type: 'json' };
+import dropBeforePromptScenario from './scenarios/drop-before-prompt.json' with { type: 'json' };
 import dropMidScriptScenario from './scenarios/drop-mid-script.json' with { type: 'json' };
 import englishSwitchScenario from './scenarios/english-switch.json' with { type: 'json' };
+import machineScenario from './scenarios/machine.json' with { type: 'json' };
 import noAnswerScenario from './scenarios/no-answer.json' with { type: 'json' };
 import noScenario from './scenarios/no.json' with { type: 'json' };
 import pricesHighScenario from './scenarios/prices-high.json' with { type: 'json' };
 import pricesLowScenario from './scenarios/prices-low.json' with { type: 'json' };
 import stopScenario from './scenarios/stop.json' with { type: 'json' };
 import vendorDownScenario from './scenarios/vendor-down.json' with { type: 'json' };
+import wantsHumanScenario from './scenarios/wants-human.json' with { type: 'json' };
 import yesScenario from './scenarios/yes.json' with { type: 'json' };
 
 // ---------------------------------------------------------------------------------------------
@@ -138,9 +141,12 @@ export function twilioSignature(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The twelve scripts one call can play, in `./scenarios/<name>.json` (AAP 0.8.1): three price calls, a
- * lodging yes and no, an unanswered line, a busy line, a drop mid-script, a refusal, a do-not-call
- * request, a switch to English, a dialogue that never progresses and a down vendor.
+ * The scripts one call can play, in `./scenarios/<name>.json` (AAP 0.8.1). The twelve names AAP 0.5.6
+ * lists first — three price calls, a lodging yes and no, an unanswered line, a busy line, a drop
+ * mid-script, a refusal, a do-not-call request, a switch to English, a dialogue that never progresses
+ * and a down vendor — then the three the trigger set and the label vocabulary need beyond them: an
+ * answering machine and a call dropped before any data, the two remaining `no_answer` triggers of
+ * AAP 0.5.3, and a callee who asks for a person (AAP 0.5.6).
  */
 export const SCENARIO_NAMES = [
   'prices-high',
@@ -155,6 +161,9 @@ export const SCENARIO_NAMES = [
   'english-switch',
   'budget-exhaustion',
   'vendor-down',
+  'machine',
+  'drop-before-prompt',
+  'wants-human',
 ] as const;
 
 /** One scripted scenario's name, which is also its file's stem under `./scenarios/`. */
@@ -210,8 +219,13 @@ const ScenarioSchema = z.strictObject({
   /** The language the callee speaks; the city's own language comes from the TwiML (AAP 0.5.6). */
   language: CallLanguage.optional(),
   turns: z.array(ScenarioTurnSchema),
-  /** Drop the socket abruptly once this many prompts have been sent, leaving partial data. */
-  dropAfterTurn: z.number().int().min(1).optional(),
+  /**
+   * Drop the socket abruptly once this many prompts have been sent. `0` drops it as soon as the
+   * relay session is established, before any prompt — the "call dropped before any data" trigger
+   * AAP 0.5.3 maps to `no_answer`; a positive count drops it once that many prompts have been sent,
+   * leaving partial data, which is the `needs_review` case of the same row.
+   */
+  dropAfterTurn: z.number().int().min(0).optional(),
   /** Keep repeating the last turn — a callee who never answers the question (AAP 0.5.6). */
   loopLastTurn: z.boolean().optional(),
   finalStatus: ScenarioFinalStatus,
@@ -240,9 +254,15 @@ const SCENARIO_SOURCES: Readonly<Record<ScenarioName, unknown>> = {
   'english-switch': englishSwitchScenario,
   'budget-exhaustion': budgetExhaustion,
   'vendor-down': vendorDownScenario,
+  machine: machineScenario,
+  'drop-before-prompt': dropBeforePromptScenario,
+  'wants-human': wantsHumanScenario,
 };
 
-/** The parsed scenarios, built on the first {@link loadScenarios} call and reused after that. */
+/**
+ * The parsed scenarios, built and deep-frozen on the first {@link loadScenarios} call and reused
+ * after that, so no suite can change what a later one plays.
+ */
 let parsedScenarios: ReadonlyMap<ScenarioName, Scenario> | null = null;
 
 /**
@@ -265,18 +285,20 @@ function readClassificationProperties(): readonly string[] {
 }
 
 /**
- * Every scripted scenario, parsed and validated on the first call (AAP 0.11.2).
+ * Every scripted scenario, parsed, validated and deep-frozen on the first call (AAP 0.11.2).
  *
  * Lazy on purpose: importing this module has no side effect, so a unit suite that only wants
  * {@link scenarioClassifier} or {@link twilioSignature} still parses nothing, and a broken scenario
  * file fails the suite that reads it with that file named.
  *
- * @returns The scenarios by name, immutable and shared by every simulator in the process.
+ * @returns The scenarios by name, deep-frozen at runtime and shared by every simulator in the
+ *   process: a mutation attempt throws rather than silently changing what another simulator plays.
  * @throws Error when a scenario file does not match {@link ScenarioSchema}, when its `name` disagrees
- *   with its file, when a rule the plain schema cannot express is broken (a human answer with no
- *   turns, a drop beyond the last turn, a duration on an unanswered call, a classification value the
- *   classifier's schema does not declare), or when two turns anywhere share identical words with
- *   different classifications — which would make {@link scenarioClassifier} ambiguous.
+ *   with its file, when a rule the plain schema cannot express is broken (a human answer that scripts
+ *   no turn and does not drop before the first prompt, a drop beyond the last turn, a duration on an
+ *   unanswered call, a classification value the classifier's schema does not declare), or when two
+ *   turns anywhere share identical words with different classifications — which would make
+ *   {@link scenarioClassifier} ambiguous.
  */
 export function loadScenarios(): ReadonlyMap<ScenarioName, Scenario> {
   if (parsedScenarios !== null) {
@@ -298,8 +320,9 @@ export function loadScenarios(): ReadonlyMap<ScenarioName, Scenario> {
   }
   assertUnambiguousTurns(scenarios);
 
-  parsedScenarios = scenarios;
-  return scenarios;
+  const frozen = freezeScenarios(scenarios);
+  parsedScenarios = frozen;
+  return frozen;
 }
 
 /**
@@ -313,7 +336,15 @@ export function loadScenarios(): ReadonlyMap<ScenarioName, Scenario> {
  */
 function assertScenarioRules(scenario: Scenario, file: string): void {
   const answered = !UNANSWERED_ANSWERS.includes(scenario.answer);
-  if (scenario.answer === 'human' && scenario.turns.length === 0 && scenario.vendor === undefined) {
+  // A script that drops before the first prompt has no question to answer, so it owes no turn
+  // (AAP 0.5.3, "a call dropped before any data"); every other human answer owes at least one.
+  const dropsOnOpen = scenario.dropAfterTurn === 0;
+  if (
+    scenario.answer === 'human' &&
+    scenario.turns.length === 0 &&
+    scenario.vendor === undefined &&
+    !dropsOnOpen
+  ) {
     throw new Error(`${file} answers as a human but scripts no turn`);
   }
   if (scenario.dropAfterTurn !== undefined && scenario.dropAfterTurn > scenario.turns.length) {
@@ -353,6 +384,60 @@ function assertUnambiguousTurns(scenarios: ReadonlyMap<ScenarioName, Scenario>):
       }
     }
   }
+}
+
+/**
+ * Freeze everything {@link loadScenarios} hands out, so the immutability it documents holds at
+ * runtime and not only in its type (AAP 0.11.2).
+ *
+ * The map is process-wide on purpose, so without this a suite that deleted a name or pushed a turn
+ * would change what every other simulator and every later test in the same worker plays, and the
+ * outcome would depend on the order the suites ran in. Every scenario, its `turns` array, each turn,
+ * each turn's `classify` and that `classify`'s `values` are frozen too, because a scenario object
+ * reached through a frozen map is still mutable on its own.
+ *
+ * `Object.freeze(map)` alone would not be enough: `Map.prototype.set`, `delete` and `clear` keep
+ * working on a frozen map. The three are therefore shadowed by own properties that refuse and name
+ * the supported way to play something else. Only a map this module builds is frozen — a map a suite
+ * passes through `VoiceSimulatorOptions.scenarios` belongs to that suite and is left exactly as given.
+ *
+ * @param scenarios - The scenarios {@link loadScenarios} just parsed and checked.
+ * @returns The same map, deep-frozen, to be cached as the process's scenarios.
+ */
+function freezeScenarios(
+  scenarios: Map<ScenarioName, Scenario>,
+): ReadonlyMap<ScenarioName, Scenario> {
+  for (const scenario of scenarios.values()) {
+    for (const turn of scenario.turns) {
+      if (turn.classify !== undefined) {
+        if (turn.classify.values !== undefined) {
+          Object.freeze(turn.classify.values);
+        }
+        Object.freeze(turn.classify);
+      }
+      Object.freeze(turn);
+    }
+    Object.freeze(scenario.turns);
+    Object.freeze(scenario);
+  }
+
+  const refuse = (): never => {
+    throw new Error(
+      'the scenario map is immutable: a suite that needs a different scenario should pass its own ' +
+        'map through createVoiceSimulator({ scenarios })',
+    );
+  };
+  for (const mutator of ['set', 'delete', 'clear'] as const) {
+    Object.defineProperty(scenarios, mutator, {
+      value: refuse,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+
+  Object.freeze(scenarios);
+  return scenarios;
 }
 
 /** A Zod failure as one line: every issue's path and message, in the order they were found. */
@@ -1185,7 +1270,9 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       status: call.status,
       direction: 'outbound-api',
       answered_by: call.answeredBy,
-      duration: call.done && call.durationSec !== null ? String(call.durationSec) : null,
+      // Twilio reports the status and the duration together: `durationSec` is stamped with the
+      // terminal status in `finishCall`, so the field stays `null` until the call has ended.
+      duration: call.durationSec === null ? null : String(call.durationSec),
       start_time: runtime.startedAt === null ? null : toRfc2822(runtime.startedAt),
       end_time: runtime.endedAt === null ? null : toRfc2822(runtime.endedAt),
       date_created: toRfc2822(runtime.createdAt),
@@ -1272,6 +1359,9 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
    */
   async function runRelay(runtime: SimRuntime, language: CallLanguage): Promise<void> {
     const { call, scenario } = runtime;
+    // `0` closes the socket the moment the session is established, which is the "call dropped
+    // before any data" trigger AAP 0.5.3 maps to `no_answer`.
+    const dropAfterTurn = scenario.dropAfterTurn;
     const relayUrl = call.twiml.relayUrl;
     const address = addressFor(runtime);
     if (relayUrl === null || address === undefined) {
@@ -1461,6 +1551,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
 
     let sent = 0;
     for (;;) {
+      // Before the first prompt and before waiting for one is the drop that leaves no data at all.
+      if (dropAfterTurn === 0) {
+        socket.terminate();
+        break;
+      }
       const event = await nextEvent();
       if (event.kind === 'timeout') {
         fail(
@@ -1495,8 +1590,8 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       }
       sent += 1;
       // A call that drops here leaves the dialogue mid-script, which is what its outcome reports as
-      // partial data rather than as an answer (AAP 0.5.3).
-      if (scenario.dropAfterTurn !== undefined && sent >= scenario.dropAfterTurn) {
+      // partial data rather than as an answer (AAP 0.5.3). A count of 0 was already taken above.
+      if (dropAfterTurn !== undefined && dropAfterTurn > 0 && sent >= dropAfterTurn) {
         socket.terminate();
         break;
       }
@@ -1943,6 +2038,9 @@ const DEFAULT_VOICE_SIM_PORT = 4010;
 /** The most of a REST request body the server will read, so a runaway client cannot exhaust it. */
 const MAX_REQUEST_BYTES = 64 * 1024;
 
+/** The refusal a body over {@link MAX_REQUEST_BYTES} is answered with: the client's violation, not a fault. */
+const PAYLOAD_TOO_LARGE = 'payload_too_large';
+
 /** What {@link startVoiceSimulatorServer} needs. */
 export interface VoiceSimulatorServerOptions {
   port: number;
@@ -2063,6 +2161,15 @@ export async function startVoiceSimulatorServer(
           response.destroy();
           return;
         }
+        // A body over the bound is the caller's violation, not the simulator's own failure, so it is
+        // answered as a client error rather than through the internal-failure path below (AAP 0.11.1).
+        if (isPayloadTooLargeError(error)) {
+          if (!response.headersSent) {
+            response.writeHead(413, { 'content-type': 'application/json' });
+          }
+          response.end(JSON.stringify({ error: PAYLOAD_TOO_LARGE }));
+          return;
+        }
         if (!response.headersSent) {
           response.writeHead(500, { 'content-type': 'application/json' });
         }
@@ -2097,20 +2204,38 @@ export async function startVoiceSimulatorServer(
   };
 }
 
-/** Read a request body, refusing one larger than the simulator will carry. */
+/**
+ * Read a request body, refusing one larger than {@link MAX_REQUEST_BYTES}.
+ *
+ * The bound is what keeps a runaway client from exhausting the server's memory: past it, nothing
+ * further is buffered. The rest of the body is nevertheless drained to its end before the refusal is
+ * raised, because a client still uploading when the server answers can see its socket reset instead
+ * of reading the response. The refusal is {@link payloadTooLargeError}, and the server answers it
+ * with `413` and {@link PAYLOAD_TOO_LARGE} (AAP 0.11.1).
+ *
+ * @param request - The request whose body to read.
+ * @returns The body, as text, when it is within the bound.
+ * @throws An `Error` carrying `code: 'PAYLOAD_TOO_LARGE'` for a body over the bound, and the
+ *   request stream's own error when it fails.
+ */
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
+  let oversized = false;
   await new Promise<void>((resolve, reject) => {
     request.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_REQUEST_BYTES) {
-        reject(new Error('the voice simulator refuses a request body over 64 kib'));
+        oversized = true;
         return;
       }
       chunks.push(chunk);
     });
     request.on('end', () => {
+      if (oversized) {
+        reject(payloadTooLargeError());
+        return;
+      }
       resolve();
     });
     request.on('error', (error: Error) => {
@@ -2201,6 +2326,24 @@ function readScenarioName(
 /** Whether a failure is the vendor-down refusal {@link vendorDownError} builds. */
 function isVendorDownError(error: unknown): boolean {
   return error instanceof Error && (error as { code?: unknown }).code === 'ECONNREFUSED';
+}
+
+/**
+ * The refusal {@link readBody} raises for a body over {@link MAX_REQUEST_BYTES} (AAP 0.11.1).
+ *
+ * It carries its own `code` so the server answers the client's violation with `413`, rather than
+ * letting it fall through to the `500` an unexpected failure gets.
+ */
+function payloadTooLargeError(): Error {
+  return Object.assign(
+    new Error(`the voice simulator refuses a request body over ${MAX_REQUEST_BYTES / 1024} kib`),
+    { code: PAYLOAD_TOO_LARGE },
+  );
+}
+
+/** Whether a failure is the too-large-body refusal {@link payloadTooLargeError} builds. */
+function isPayloadTooLargeError(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === PAYLOAD_TOO_LARGE;
 }
 
 /**

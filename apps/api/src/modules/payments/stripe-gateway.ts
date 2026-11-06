@@ -100,6 +100,18 @@ const SIGNATURE_TOLERANCE_SECONDS = 300;
 /** How many saved cards one hold's card selection considers, so the choice is stable across a replay. */
 const CARD_SEARCH_LIMIT = 100;
 
+/**
+ * How many of a customer's PaymentIntents one recovery read considers (AAP 0.3.2).
+ *
+ * A recovery only ever runs from the replay of a live attempt, so the intent the first request made —
+ * if it made one — is among the customer's newest, and one page of 100 is enough for it to be there.
+ * The provider's search endpoint is refused here instead: its own documentation says not to use it in
+ * a read-after-write flow where strict consistency is necessary, because data is searchable in less
+ * than a minute, while a list is strongly consistent. Bounding the read also keeps the recovery to
+ * one request inside the 10-second timeout rather than a paginated scan.
+ */
+const HOLD_RECOVERY_LIST_LIMIT = 100;
+
 /** How the SDK's own timeout abort reads, which is the connection failure carrying no distinct `code`. */
 const TIMEOUT_MESSAGE = /timed out|timeout/i;
 
@@ -427,6 +439,114 @@ export function createStripeGateway(
     return newestCardId(cards.data);
   }
 
+  /**
+   * The result a create the provider refused as an idempotency conflict did not lose (AAP 0.3.2).
+   *
+   * A replay sends a `payment_method` re-derived from the customer's live state, so it stops being
+   * the first request's as soon as a card is saved or the default is re-pointed in between; the
+   * provider then answers `idempotency_error` and the attempt would stay unresolved until the
+   * twelve-hour rule. The first request is not lost, though: it wrote this attempt's `depositId` and
+   * `attempt` into the PaymentIntent's metadata when it confirmed it, which is what finds that intent
+   * again. What comes back is reported exactly as the first request's own answer would have been, and
+   * `operations.ts` persists the id on the operation and on the deposit.
+   *
+   * The read is a list of the customer's own PaymentIntents, newest first, bounded by
+   * {@link HOLD_RECOVERY_LIST_LIMIT} and timed by {@link timed} like every other call here, so it is
+   * measured for `Server-Timing` and its failures are mapped.
+   *
+   * @param request The attempt being replayed, whose metadata is the link to its own intent.
+   * @param cause The conflict being resolved, rethrown when nothing resolves it.
+   * @throws PaymentIdempotencyError when no listed PaymentIntent carries this attempt's metadata, or
+   *   when the one that does reports a status nothing can be decided from: an attempt that cannot be
+   *   resolved is left unresolved for the operator rather than guessed at.
+   */
+  async function recoverHoldAttempt(
+    request: HoldRequest,
+    cause: PaymentIdempotencyError,
+  ): Promise<HoldResult> {
+    const listed = await timed('hold:recover', () =>
+      client.paymentIntents.list({
+        customer: request.customerId,
+        limit: HOLD_RECOVERY_LIST_LIMIT,
+        // The result reports the deposit's `captureBefore`, which only an expanded charge carries
+        // (AAP 0.2.4).
+        expand: ['data.latest_charge'],
+      }),
+    );
+
+    const matches = listed.data.filter((intent) => {
+      const metadata = PaymentIntentMetadata.safeParse(intent.metadata);
+      return (
+        metadata.success &&
+        metadata.data.depositId === request.depositId &&
+        metadata.data.attempt === request.attempt
+      );
+    });
+
+    if (matches.length > 1) {
+      // A second intent under this attempt's metadata means the provider no longer held the first
+      // request's idempotency result when a later send arrived; the newest is this attempt's own.
+      logger.warn(
+        {
+          event: 'stripe_hold_recovery_multiple',
+          op: 'hold:recover',
+          depositId: request.depositId,
+          attempt: request.attempt,
+          count: matches.length,
+        },
+        'several PaymentIntents carry this attempt metadata',
+      );
+    }
+
+    // Newest first, so the leading match is the intent this attempt's own create made.
+    const recovered = matches[0];
+
+    if (recovered === undefined) throw cause;
+
+    switch (recovered.status) {
+      case 'requires_capture': {
+        const state = toIntentState(recovered);
+        return {
+          kind: 'requires_capture',
+          paymentIntentId: state.id,
+          clientSecret: requireClientSecret(state.clientSecret),
+          captureBefore: state.captureBefore,
+        };
+      }
+      case 'requires_action': {
+        const state = toIntentState(recovered);
+        return {
+          kind: 'requires_action',
+          paymentIntentId: state.id,
+          clientSecret: requireClientSecret(state.clientSecret),
+        };
+      }
+      case 'requires_payment_method':
+        return {
+          kind: 'declined',
+          paymentIntentId: recovered.id,
+          code: declinedCode(recovered.last_payment_error),
+        };
+      default:
+        // `processing`, `requires_confirmation`, `canceled` and `succeeded` leave the attempt open —
+        // its authorization may still be settling, or may already be gone — so nothing is decided
+        // from them. The conflict stands, and `operations.ts` hands the unresolved operation to the
+        // operator rather than replaying it (AAP 0.3.2).
+        logger.warn(
+          {
+            event: 'stripe_hold_recovery_undecidable',
+            op: 'hold:recover',
+            depositId: request.depositId,
+            attempt: request.attempt,
+            status: recovered.status,
+            paymentIntentId: recovered.id,
+          },
+          'recovered PaymentIntent has an undecidable status',
+        );
+        throw cause;
+    }
+  }
+
   /** Place and confirm one hold attempt (AAP 0.2.4, AAP 0.5.3). */
   async function createAndConfirmHold(request: HoldRequest): Promise<HoldResult> {
     const paymentMethodId = await selectPaymentMethod(request.customerId);
@@ -465,6 +585,11 @@ export function createStripeGateway(
       // this arm to `402 hold_failed`, the meetup stays `proposed` and the attempt may be retried.
       if (error instanceof PaymentDeclinedError) {
         return { kind: 'declined', paymentIntentId: error.paymentIntentId, code: error.code };
+      }
+      // A conflict says this send's parameters are not the first request's, not that the first
+      // request is lost: the attempt's own PaymentIntent is recovered before the conflict stands.
+      if (error instanceof PaymentIdempotencyError) {
+        return await recoverHoldAttempt(request, error);
       }
       throw toPaymentError(error);
     }

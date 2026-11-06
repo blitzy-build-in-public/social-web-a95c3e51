@@ -261,7 +261,7 @@ export default function citiesRoutes(app: App): Promise<void> {
       schema: {
         tags: [CITIES_TAG],
         security: OPENAPI_SECURITY.bearer,
-        response: { 200: CitiesResponse },
+        response: { 200: CitiesResponse, 401: ErrorEnvelope, 403: ErrorEnvelope },
       },
     },
     async () => cityList(app.services),
@@ -274,7 +274,13 @@ export default function citiesRoutes(app: App): Promise<void> {
         tags: [CITIES_TAG],
         security: OPENAPI_SECURITY.bearer,
         params: CityIdParams,
-        response: { 200: VenuesResponse, 404: ErrorEnvelope },
+        response: {
+          200: VenuesResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+        },
       },
     },
     async (request) => cityVenues(app.services, request.params.cityId),
@@ -291,6 +297,7 @@ export default function citiesRoutes(app: App): Promise<void> {
         response: {
           200: TravelersResponse,
           400: ErrorEnvelope,
+          401: ErrorEnvelope,
           403: ErrorEnvelope,
           404: ErrorEnvelope,
         },
