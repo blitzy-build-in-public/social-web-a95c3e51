@@ -1,0 +1,52 @@
+# Device proving benchmark and native smoke check (AAP 0.5.5, AAP 0.2.4, criterion 4). It drives
+# app/dev/zk-bench.tsx — present only in a build with EXPO_PUBLIC_ZK_BENCH=1, i.e. the eas.json
+# `bench` profile — which proves the bundled fixture .eml on the device and renders one JSON line.
+# Run it with packages/circuits/scripts/native-smoke.sh (RUNS=1, RUNS defaults to 30 alone) and by
+# hand on a physical device for the 30-run benchmark.
+#
+# Maestro binds command-line `-e` values first and lets a literal header value win, so every default
+# below reads the incoming value first — a literal here would turn the smoke check into 30 runs:
+#   RUNS           1 for the native smoke check, 30 for the device benchmark.
+#   ARTIFACTS_URL  origin of the `artifacts` nginx service serving the .wasm, .zkey and manifest.
+#   OUTPUT         file native-smoke.sh writes the result to; echoed back in the emitted payload.
+#   COLLECT_URL    optional HTTP sink for that payload; empty posts nothing.
+#   SALT           optional nullifier salt; the app defaults to 1 and host verification ignores it.
+#
+# scripts/collect-bench.js validates the copied result and prints the single `ZK_BENCH_RESULT <json>`
+# line native-smoke.sh writes to OUTPUT, because Maestro's GraalJS cannot write files itself. A bench
+# build calls no API, only the artefacts service. Tagged `bench`, never `e2e`, so the `e2e:native`
+# run cannot select it and start a benchmark inside the end-to-end suite.
+appId: com.tablemate.app
+name: zk-bench
+tags: [bench]
+env:
+  RUNS: ${RUNS || '30'}
+  ARTIFACTS_URL: ${ARTIFACTS_URL || 'http://localhost:8070'}
+  OUTPUT: ${OUTPUT || ''}
+  COLLECT_URL: ${COLLECT_URL || ''}
+  SALT: ${SALT || ''}
+---
+# Cold start, so the screen reads the deep-link parameters as its initial URL.
+- stopApp
+- openLink: "tablemate://dev/zk-bench?runs=${RUNS}&artifactsUrl=${encodeURIComponent(ARTIFACTS_URL)}${SALT ? '&salt=' + SALT : ''}"
+# iOS asks before it hands a custom scheme to the app that registered it.
+- runFlow:
+    when:
+      platform: iOS
+      visible: Open
+    commands:
+      - tapOn: Open
+# 150 s per measured run, plus 15 min for the resumable key download, its hash check and the warm-ups.
+- extendedWaitUntil:
+    visible:
+      id: zk-bench-status
+      text: 'done|error'
+    timeout: ${Number(RUNS) * 150000 + 900000}
+- copyTextFrom:
+    id: zk-bench-result
+- runScript:
+    file: scripts/collect-bench.js
+    env:
+      RUNS: ${RUNS}
+      OUTPUT: ${OUTPUT}
+      COLLECT_URL: ${COLLECT_URL}
