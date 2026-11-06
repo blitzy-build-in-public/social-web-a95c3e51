@@ -1,0 +1,22 @@
+{
+  "result": "success",
+  "provider": "https://fx.fixture.test/",
+  "documentation": "https://fx.fixture.test/docs",
+  "terms_of_use": "https://fx.fixture.test/terms",
+  "time_last_update_unix": 1793664001,
+  "time_last_update_utc": "Tue, 03 Nov 2026 00:00:01 +0000",
+  "time_next_update_unix": 1793750401,
+  "time_next_update_utc": "Wed, 04 Nov 2026 00:00:01 +0000",
+  "time_eol_unix": 0,
+  "base_code": "USD",
+  "rates": {
+    "USD": 1,
+    "EUR": 0.8,
+    "MXN": 20,
+    "COP": 4000,
+    "THB": 32,
+    "IDR": 16000,
+    "GBP": 0.75,
+    "JPY": 150
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API (fixture)",
+  "osm3s": { "timestamp_osm_base": "2026-11-02T00:00:00Z", "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL." },
+  "_cases": {
+    "removed": "node/930005",
+    "renamed": "node/930002",
+    "renamedTo": "Fixture Hostel Chiado Novo",
+    "operatorPhone": "node/930003",
+    "osmPhoneChanged": "node/930004",
+    "osmPhoneTo": "+14155550191",
+    "new": "node/930006",
+    "returned": "node/930007",
+    "unchanged": ["node/930001", "way/940001", "way/940002", "relation/950001"]
+  },
+  "elements": [
+    { "type": "node", "id": 930001, "lat": 38.71030, "lon": -9.13760, "tags": { "name": "Fixture Hostel Baixa", "tourism": "hostel", "phone": "+14155550180", "addr:street": "Rua da Fixture", "addr:housenumber": "40", "addr:postcode": "0000-002", "addr:city": "Lisboa" } },
+    { "type": "node", "id": 930002, "lat": 38.71080, "lon": -9.14270, "tags": { "name": "Fixture Hostel Chiado Novo", "tourism": "hostel", "phone": "+14155550181" } },
+    { "type": "node", "id": 930003, "lat": 38.71410, "lon": -9.13930, "tags": { "name": "Fixture Hotel Rossio", "tourism": "hotel", "phone": "+14155550190" } },
+    { "type": "node", "id": 930004, "lat": 38.71190, "lon": -9.13140, "tags": { "name": "Fixture Guest House Alfama", "tourism": "guest_house", "phone": "+14155550191" } },
+    { "type": "way", "id": 940001, "center": { "lat": 38.71200, "lon": -9.14080 }, "tags": { "name": "Fixture Hotel Carmo", "tourism": "hotel", "contact:phone": "+14155550184" } },
+    { "type": "way", "id": 940002, "center": { "lat": 38.70990, "lon": -9.13340 }, "tags": { "name": "Fixture Guest House Sé", "tourism": "guest_house" } },
+    { "type": "relation", "id": 950001, "center": { "lat": 38.70800, "lon": -9.13680 }, "tags": { "name": "Fixture Hotel Comércio", "tourism": "hotel", "phone": "+14155550185", "addr:street": "Travessa do Teste", "addr:housenumber": "3", "addr:city": "Lisboa" } },
+    { "type": "node", "id": 930006, "lat": 38.71510, "lon": -9.14310, "tags": { "name": "Fixture Hostel Novo", "tourism": "hostel", "phone": "+14155550187" } },
+    { "type": "node", "id": 930007, "lat": 38.70870, "lon": -9.14830, "tags": { "name": "Fixture Guest House Regresso", "tourism": "guest_house", "phone": "+14155550188" } }
+  ]
+}
