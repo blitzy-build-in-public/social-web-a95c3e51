@@ -8,15 +8,19 @@
  *
  * The two directions carry deliberately different contracts:
  * - A client frame is a `z.strictObject`, so a key the API does not act on is refused instead of
- *   quietly ignored.
- * - A server frame is a strip-mode `z.object`, so a field a newer API adds never breaks an older
- *   client that parses the frame.
+ *   quietly ignored. Its discriminant is optional on the wire: AAP 0.5.4 states the client's chat
+ *   frame as `{ meetupId, body }`, while the app sends the same frame with `type: 'chat_send'`, and
+ *   one schema describes both — a frame that omits the discriminant is one chat send, and a frame
+ *   carrying any other `type` is refused exactly like any other unknown key (AAP 0.11.1).
+ * - A server frame is a strip-mode `z.object` with a required discriminant, so a field a newer API
+ *   adds never breaks an older client that parses the frame.
  *
  * Access is decided before any frame is exchanged. The socket answers `403 messaging_locked` when
  * the pair has neither a locked nor a completed meetup, and `403 blocked` when a block exists in
- * either direction (AAP 0.5.4). Every chat write then runs behind the account-deletion write fence,
- * so a message sent after `DELETE /me` is answered with an {@link ErrorFrame} carrying
- * `token_invalid` and is never stored (AAP 0.5.3).
+ * either direction (AAP 0.5.4). Every chat write then re-resolves the session the socket was admitted
+ * with and runs behind the account-deletion write fence, so a message sent after `DELETE /me`, or
+ * after the session was revoked by a logout or rotated away, is answered with an {@link ErrorFrame}
+ * carrying `token_invalid` and is never stored (AAP 0.5.3).
  *
  * Client-safe: `zod` and four sibling modules only — no Node built-in, no DOM global, no top-level
  * side effect — because the same module loads under Hermes, in a browser and in the API.
@@ -72,21 +76,32 @@ export function userChannel(userId: string): string {
 /**
  * The only frame a client sends: one chat message for a meetup (AAP 0.5.4, `ChatSend`).
  *
+ * AAP 0.5.4 states the frame as the two fields a client has to know, `{ meetupId, body }`. The
+ * discriminant is this module's own, because {@link ClientFrame} is one union over every frame shape
+ * a client may send (AAP 0.11.1), so it is optional on the wire and filled in here: a frame that
+ * omits `type` is one chat send, and every parsed value carries `type: 'chat_send'`. The object stays
+ * strict, so an unknown key is still refused and `'chat_send'` stays the only accepted value of
+ * `type`.
+ *
  * `body` is trimmed first and then held to 1 to {@link MESSAGE_MAX_CHARS} (1,000) characters, so a
  * whitespace-only message is refused like an empty one. The API checks access before storing it:
  * the sender must be a participant of a `locked` or `completed` meetup with no block in either
  * direction, and the write runs behind the deletion write fence (AAP 0.5.3).
  */
 export const ChatSend = z.strictObject({
-  type: z.literal('chat_send'),
+  type: z.literal('chat_send').default('chat_send'),
   meetupId: Uuid,
   body: z.string().trim().min(1).max(MESSAGE_MAX_CHARS),
 });
 export type ChatSend = z.infer<typeof ChatSend>;
 
 /**
- * Every frame a client may send on the chat socket, discriminated on `type`. A frame that is not a
- * {@link ChatSend} is answered with an {@link ErrorFrame} carrying `invalid_field` (AAP 0.5.4).
+ * Every frame a client may send on the chat socket, discriminated on `type` (AAP 0.11.1). The
+ * discriminant is required on each {@link ServerFrame} and optional on a client frame, where
+ * {@link ChatSend} fills it in, so both the AAP's `{ meetupId, body }` frame and the app's
+ * `{ type: 'chat_send', meetupId, body }` frame are accepted on the wire. A frame that is not a
+ * {@link ChatSend} — one carrying an unknown key included — is answered with an {@link ErrorFrame}
+ * carrying `invalid_field` (AAP 0.5.4).
  */
 export const ClientFrame = z.discriminatedUnion('type', [ChatSend]);
 export type ClientFrame = z.infer<typeof ClientFrame>;
@@ -121,7 +136,8 @@ export type MeetupStatusFrame = z.infer<typeof MeetupStatusFrame>;
  * A refused client frame, mirroring the REST envelope's `{ code, message }` (AAP 0.5.4). Codes the
  * chat socket returns are `messaging_locked` and `blocked` for access, `invalid_field` for a frame
  * the {@link ClientFrame} schema rejects, `rate_limited` for a write over the per-user limit, and
- * `token_invalid` for a write attempted after account deletion (AAP 0.3.2, AAP 0.5.3).
+ * `token_invalid` for a write attempted with a session that is no longer live — the account asked for
+ * deletion, the session was revoked by a logout, or a rotation replaced it (AAP 0.3.2, AAP 0.5.3).
  *
  * `meetupId` is set when the refusal concerns a known meetup, so the client can show the error on
  * that meetup's screen.

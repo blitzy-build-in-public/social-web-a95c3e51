@@ -63,6 +63,12 @@ interface PairFactsRow {
   messageable: boolean;
 }
 
+/** One row of {@link pairFactsFor}'s page statement: the four facts, plus the id they belong to. */
+interface PagePairFactsRow extends PairFactsRow {
+  /** The target the row's facts are about, as PostgreSQL renders a uuid: lowercase and canonical. */
+  target_id: string;
+}
+
 /**
  * Maps a pair's facts onto its disclosure tier (AAP 0.5.7).
  *
@@ -173,6 +179,99 @@ export async function pairFacts(
     sharedLockedBothHeld: row.shared_locked_both_held,
     messageable: row.messageable,
   };
+}
+
+/**
+ * Reads the four facts of a whole page of viewer-and-target pairs in one round trip (AAP 0.5.7).
+ *
+ * The batched form of {@link pairFacts}, for the counterpart of every row of a meetup page: one
+ * statement over `unnest(${ids}::uuid[])` computing, per requested id, exactly the four facts
+ * `pairFacts` computes for one pair — the same `EXISTS` block subquery, the same `pair_history`
+ * count and the same two meetup `EXISTS` tests — so a page costs one statement instead of one per
+ * row. Callers that then group the ids by tier and load each group in one `user` read keep a page's
+ * query count independent of the number of rows (AAP 0.12.2).
+ *
+ * The `pair_history` key is rebuilt here with `LEAST`/`GREATEST` because one statement cannot call
+ * {@link pairOrder}: stored ids are lowercase canonical uuids and `LEAST` over `uuid` follows the
+ * same order, so both name the same row. The meetups are still matched with an explicit `OR` over
+ * `initiator_id` and `recipient_id`, so the ordinary indexes on those two columns serve the lookup,
+ * and the status words stay in the SQL text for the reason {@link pairFacts} gives.
+ *
+ * Read-only: it opens no transaction and takes no lock, so it is safe inside a caller's transaction.
+ * A self id must not be passed — a pair of one user against themselves has no row in either table to
+ * read, so its facts would come back as "no block, no history, nothing shared" and `tierFrom` would
+ * answer 0 where the user's own view is 3 — and every caller short-circuits self before it gets here.
+ *
+ * @param db - The guarded client, or the transaction's client when the caller is already in one.
+ * @param viewerId - The id of the user doing the looking.
+ * @param targetIds - The ids being looked at; duplicates are collapsed and an empty list queries
+ *   nothing at all.
+ * @returns One entry per distinct requested id, keyed by the id as PostgreSQL renders it (a
+ *   lowercase canonical uuid), each read fresh and never cached: a block, a completion or a lock
+ *   changes the answer at once, and a stale tier is a disclosure decision taken on old facts.
+ * @throws Error when the statement leaves out an id it was asked for, which its `unnest` shape makes
+ *   impossible: a tier is never invented for a pair we could not measure, so the request fails
+ *   instead of disclosing on a guess.
+ */
+export async function pairFactsFor(
+  db: RawSqlClient,
+  viewerId: string,
+  targetIds: readonly string[],
+): Promise<Map<string, PairFacts>> {
+  const facts = new Map<string, PairFacts>();
+  const wanted = [...new Set(targetIds.map((id) => id.toLowerCase()))];
+
+  if (wanted.length === 0) {
+    return facts;
+  }
+
+  const rows = await db.$queryRaw<PagePairFactsRow[]>(Prisma.sql`
+    SELECT t."target_id"::text AS "target_id",
+      EXISTS (
+        SELECT 1 FROM "block"
+        WHERE ("blocker_id" = ${viewerId}::uuid AND "blocked_id" = t."target_id")
+           OR ("blocker_id" = t."target_id" AND "blocked_id" = ${viewerId}::uuid)
+      ) AS "blocked",
+      COALESCE((
+        SELECT "completed_count" FROM "pair_history"
+        WHERE "user_low_id" = LEAST(${viewerId}::uuid, t."target_id")
+          AND "user_high_id" = GREATEST(${viewerId}::uuid, t."target_id")
+      ), 0) AS "completed_count",
+      EXISTS (
+        SELECT 1 FROM "meetup" m
+        WHERE ((m."initiator_id" = ${viewerId}::uuid AND m."recipient_id" = t."target_id")
+            OR (m."initiator_id" = t."target_id" AND m."recipient_id" = ${viewerId}::uuid))
+          AND m."status" = 'locked'
+          AND (
+            SELECT count(*) FROM "deposit" d
+            WHERE d."meetup_id" = m."id" AND d."status" = 'held'
+          ) = 2
+      ) AS "shared_locked_both_held",
+      EXISTS (
+        SELECT 1 FROM "meetup" m
+        WHERE ((m."initiator_id" = ${viewerId}::uuid AND m."recipient_id" = t."target_id")
+            OR (m."initiator_id" = t."target_id" AND m."recipient_id" = ${viewerId}::uuid))
+          AND m."status" IN ('locked', 'completed')
+      ) AS "messageable"
+      FROM unnest(${wanted}::uuid[]) AS t("target_id")
+  `);
+
+  for (const row of rows) {
+    facts.set(row.target_id, {
+      blocked: row.blocked,
+      // `COALESCE` over an `integer` column arrives as a number, but a bigint-typed driver result is
+      // converted rather than trusted, as in {@link pairFacts}.
+      completedCount: Number(row.completed_count),
+      sharedLockedBothHeld: row.shared_locked_both_held,
+      messageable: row.messageable,
+    });
+  }
+
+  if (facts.size !== wanted.length) {
+    throw new Error('disclosure pair facts returned no entry for a requested id');
+  }
+
+  return facts;
 }
 
 /**

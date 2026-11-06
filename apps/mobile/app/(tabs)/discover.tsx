@@ -30,6 +30,7 @@ import { isApiError, userMessageFor } from '../../src/api/errors';
 import type { ClientErrorCode } from '../../src/api/errors';
 import { DISCOVERY_EMPTY, IMPORT_BANNER, formatCalendarDate } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
+import { useSession } from '../../src/state/session-store';
 import { Avatar, Banner, Button, ListItem, Screen, announce } from '../../src/ui';
 
 /**
@@ -126,14 +127,23 @@ function travelerSubtitle(profile: Tier0Profile): string {
 /**
  * Traveler discovery for the city the caller's valid proof names, with the city picker beneath it.
  *
- * The travelers request is made only for a city a valid proof names; the picker is public, so an
- * unverified traveler still reaches each city's partner venues. Every control carries a visible label
- * and its role, the page's reading and focus order is its source order, and each failure is both
- * rendered in an error banner and spoken through `announce` (AAP 0.5.8).
+ * The travelers request is made only for a city a valid proof names; the picker is
+ * bearer-authenticated (the traveler guard requires the access token, and it needs no proof), so a
+ * traveler whose proof is missing or expired still reaches each city's partner venues. Every control
+ * carries a visible label and its role, the page's reading and focus order is its source order, and
+ * each failure is both rendered in an error banner and spoken through `announce` (AAP 0.5.8).
  */
 export default function DiscoverScreen(): ReactElement {
+  const signedIn = useSession().status === 'signed_in';
   const me = useMe();
-  const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
+  const cities = useQuery({
+    queryKey: queryKeys.cities,
+    queryFn: () => apiClient.listCities(),
+    // Enabled only for a signed-in session, as every other screen-owned read is: with no access
+    // token the request would be refused `401 token_invalid`, and the recovery that follows ends
+    // the session locally, discarding the sign-in a deep link is still completing (AAP 0.3.3).
+    enabled: signedIn,
+  });
 
   const proof = me.data?.proof;
   const proofCityId = proof !== undefined && hasValidProof(proof.status) ? proof.cityId : undefined;

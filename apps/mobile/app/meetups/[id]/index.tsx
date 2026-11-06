@@ -60,7 +60,7 @@ import type { BannerTone } from '../../../src/ui';
 
 // --- Fixed values -------------------------------------------------------------------------------
 
-/** The page's heading, and the navigator header's title. */
+/** The navigator header's title, which is the page's only level-one heading. */
 const SCREEN_TITLE = 'Meetup';
 
 /**
@@ -997,7 +997,7 @@ export default function MeetupDetailScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
-      <Screen edges={SCREEN_EDGES} title={SCREEN_TITLE} testID="meetup-detail">
+      <Screen edges={SCREEN_EDGES} testID="meetup-detail">
         {/* The notices come first, so the live region stands at the top of the reading order. */}
         {errorMessage === null ? null : (
           <Banner tone="error" message={errorMessage} testID="meetup-error" />

@@ -286,7 +286,7 @@ async function applyLateCancellation(
       throw error;
     }
     services.logger.warn(
-      { event: 'late_cancel_unavailable', meetupId, err: error },
+      { event: 'late_cancel_unavailable', meetupId, code: failureToken(error) },
       'late_cancel_unavailable',
     );
     throw new AppError('payment_unavailable');
@@ -345,7 +345,7 @@ async function runCancellationOperations(services: AppServices, meetupId: string
     await runOperationsFor(services, { meetupId });
   } catch (error) {
     services.logger.warn(
-      { event: 'cancel_operations_deferred', meetupId, err: error },
+      { event: 'cancel_operations_deferred', meetupId, code: failureToken(error) },
       'cancel_operations_deferred',
     );
   }
@@ -385,4 +385,31 @@ function isSettlementUnavailable(error: unknown): boolean {
   const name = error instanceof Error ? error.name : '';
 
   return name === 'PaymentUnavailableError' || name === 'SettlementReconcileError';
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its `code` (`P2028`, `resource_missing`) or its class
+ * name (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack — and the whole cause chain with them — as strings that
+ * key-based redaction cannot rewrite, and a provider failure's message can quote the `PaymentIntent`
+ * id it concerns, which is a value the log lines of this module are forbidden to carry. A token that
+ * is not a plain short identifier becomes `Error`, so nothing a thrown value happens to say reaches
+ * a log through this path.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

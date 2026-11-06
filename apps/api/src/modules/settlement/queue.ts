@@ -129,6 +129,9 @@ const SETTLEMENT_CONCURRENCY = 4;
  */
 const REMINDER_KIND: UserNotificationKind = NotificationKind.enum.meetup_reminder;
 
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
 /*
  * The worker (AAP 0.3.2, 0.5.6)
  */
@@ -163,19 +166,21 @@ export function startSettlementWorker(services: AppServices): () => Promise<void
     { connection, concurrency: SETTLEMENT_CONCURRENCY },
   );
 
-  // Both listeners log names and ids only. The `error` listener is not optional: an 'error' event with
-  // no listener is thrown, and a Redis outage must never take the API process down (AAP 0.3.2).
+  // The `failed` listener logs the job's name and id, the attempts made and the failure's own short
+  // token; the `error` listener logs that token alone, because no job is in hand. Neither logs an
+  // error message or a stack. The `error` listener is not optional: an 'error' event with no listener
+  // is thrown, and a Redis outage must never take the API process down (AAP 0.3.2).
   worker.on('failed', (job: SettlementJob | undefined, error: Error) => {
     services.logger.warn({
       event: 'settlement_job_failed',
       job: job?.name,
       jobId: job?.id,
       attemptsMade: job?.attemptsMade,
-      err: error,
+      code: failureToken(error),
     });
   });
   worker.on('error', (error: Error) => {
-    services.logger.error({ event: 'settlement_worker_error', err: error });
+    services.logger.error({ event: 'settlement_worker_error', code: failureToken(error) });
   });
 
   let stopping: Promise<void> | null = null;
@@ -385,12 +390,49 @@ async function stopWorker(
   try {
     await worker.close();
   } catch (error) {
-    services.logger.warn({ event: 'settlement_worker_close_failed', err: error });
+    services.logger.warn({ event: 'settlement_worker_close_failed', code: failureToken(error) });
   }
 
   try {
     await connection.quit();
   } catch (error) {
-    services.logger.warn({ event: 'settlement_connection_close_failed', err: error });
+    services.logger.warn({
+      event: 'settlement_connection_close_failed',
+      code: failureToken(error),
+    });
   }
+}
+
+/*
+ * Logging (AAP 0.11.1)
+ */
+
+/**
+ * A failure's own short token, for a log line: its driver code (`P2028`) or its class name
+ * (`QueuePayloadError`), and never its message or stack (AAP 0.11.1).
+ *
+ * A message and a stack are written by pino as strings, which key-based redaction cannot rewrite, and
+ * the error a settlement job or a Redis outage throws may quote what it concerns: a provider failure
+ * carries its own text as the cause, so its message can name the `PaymentIntent` id, and a driver
+ * error's message quotes the statement that failed. Both are values these lines are forbidden to
+ * carry. A token that is not a plain short identifier becomes `Error`, so nothing a thrown value
+ * happens to say can reach a log through this path.
+ *
+ * The copy lives here rather than in `./sweeper.ts` because this file imports only the modules its
+ * settlement work names (`./settle.ts`, `./timers.ts`, `../payments/operations.ts`,
+ * `../meetups/queries.ts`, `../outbox/write.ts`, `../notifications/enqueue.ts`) — the same course
+ * `./timers.ts` took with its own `errorTokenOf`.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

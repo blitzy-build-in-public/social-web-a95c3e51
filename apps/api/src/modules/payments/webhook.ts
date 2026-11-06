@@ -26,9 +26,11 @@
  *     runs them after the commit, with the settlement sweeper as the backstop.
  *
  * The meetup row is locked before any change to it or to a deposit, so this handler serializes with
- * cancellation, check-in, dispute filing, settlement and an operator resolution (AAP 0.5.3). The log
- * lines carry an event id, a type, a deposit id and a status word, and never a payload, a client
- * secret, a customer id or a card detail (AAP 0.11.1).
+ * cancellation, check-in, dispute filing, settlement and an operator resolution (AAP 0.5.3). Every
+ * line is written through the request's own logger, so it carries that request's id (AAP 0.11.1),
+ * and the lines carry an event id, a type, a deposit id, a status word and a failure's own short
+ * token, and never a payload, a client secret, a customer id, a card detail, an error message or a
+ * stack.
  *
  * @see AAP 0.3.2 for idempotency, the durable operations and the hold-loss rules, 0.3.3 for the
  *   event list and the signature check, 0.5.3 for the lifecycles this drives, and 0.5.4 for the route.
@@ -126,6 +128,9 @@ const OUTCOME_LOGS: Readonly<Record<WebhookOutcome['result'], string>> = {
 /** The HTTP status every accepted delivery answers with; Stripe retries anything else. */
 const OK = 200;
 
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
 /**
  * What one delivery decided. `applied` wrote an effect, `ignored` found nothing the event could
  * move (a late authorization, a backwards deposit move, a superseded attempt), `duplicate` replayed
@@ -166,10 +171,18 @@ interface Correlation {
   readonly holdOp: PaymentOperation | null;
 }
 
-/** What every effect of this file is given: the transaction, the providers and the locked rows. */
+/**
+ * What every effect of this file is given: the transaction, the providers, the request's logger and
+ * the locked rows.
+ */
 interface EffectContext {
   readonly tx: DbTx;
   readonly services: AppServices;
+  /**
+   * The request's own logger, so every line written after the response — the effect-level lines and
+   * the recovery paths — still carries this delivery's request id (AAP 0.11.1).
+   */
+  readonly log: App['log'];
   readonly after: AfterCommit;
   readonly event: VerifiedWebhookEvent;
   readonly intent: IntentState;
@@ -239,10 +252,10 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
         return;
       }
 
-      const intent = await intentFor(services, event);
+      const intent = await intentFor(services, request.log, event);
 
       const outcome = await transact(services, (tx, after) =>
-        applyDelivery(tx, services, after, event, intent, now),
+        applyDelivery(tx, services, request.log, after, event, intent, now),
       );
 
       // After the commit: a throw here answers `500` while the effects stand and the redelivery is
@@ -259,7 +272,11 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
         // Never awaited: the operations a delivery planned are carried out after the response, and
         // the 60-second sweeper is the backstop for anything that does not finish (AAP 0.3.2).
         void runOperationsFor(services, { meetupId: outcome.meetupId }).catch((error: unknown) => {
-          services.logger.error({ event: OPERATIONS_FAILED, eventId: event.id, err: error });
+          request.log.error({
+            event: OPERATIONS_FAILED,
+            eventId: event.id,
+            code: failureToken(error),
+          });
         });
       }
 
@@ -309,6 +326,7 @@ function verifySignature(
  */
 async function intentFor(
   services: AppServices,
+  log: App['log'],
   event: VerifiedWebhookEvent,
 ): Promise<IntentState | null> {
   const { object } = event;
@@ -318,13 +336,13 @@ async function intentFor(
       event.type === 'payment_intent.amount_capturable_updated' &&
       object.intent.captureBefore === null;
 
-    return needsDeadline ? retrieveIntent(services, event, object.intent.id) : object.intent;
+    return needsDeadline ? retrieveIntent(services, log, event, object.intent.id) : object.intent;
   }
 
   if (object.kind === 'charge') {
     return object.paymentIntentId === null
       ? null
-      : retrieveIntent(services, event, object.paymentIntentId);
+      : retrieveIntent(services, log, event, object.paymentIntentId);
   }
 
   // A setup intent is a saved card, not a hold: it concerns no deposit and is applied without one.
@@ -342,6 +360,7 @@ async function intentFor(
  */
 async function retrieveIntent(
   services: AppServices,
+  log: App['log'],
   event: VerifiedWebhookEvent,
   paymentIntentId: string,
 ): Promise<IntentState | null> {
@@ -352,7 +371,7 @@ async function retrieveIntent(
       throw new AppError('payment_unavailable', undefined, { cause: error });
     }
     if (error instanceof PaymentRejectedError) {
-      services.logger.warn(
+      log.warn(
         { event: OUTCOME_LOGS.unmatched, eventId: event.id, type: event.type },
         OUTCOME_LOGS.unmatched,
       );
@@ -401,6 +420,7 @@ async function recordUnapplied(
 async function applyDelivery(
   tx: DbTx,
   services: AppServices,
+  log: App['log'],
   after: AfterCommit,
   event: VerifiedWebhookEvent,
   intent: IntentState | null,
@@ -440,6 +460,7 @@ async function applyDelivery(
   const outcome = await applyEffect({
     tx,
     services,
+    log,
     after,
     event,
     intent,
@@ -632,11 +653,11 @@ async function applyEffect(ctx: EffectContext): Promise<WebhookOutcome> {
  * initiator's is `held` and the deadline has not passed.
  */
 async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
-  const { tx, services, after, event, intent, correlation, meetup, now } = ctx;
+  const { tx, services, log, after, event, intent, correlation, meetup, now } = ctx;
   const { deposit, attempt, holdOp } = correlation;
 
   if (await hasCaptureOrRelease(tx, deposit.id, attempt)) {
-    services.logger.info(
+    log.info(
       { event: LATE_AUTHORIZATION, eventId: event.id, depositId: deposit.id, attempt },
       LATE_AUTHORIZATION,
     );
@@ -659,7 +680,7 @@ async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
       await advanceDeposit(tx, { depositId: deposit.id, attempt }, 'released');
     }
 
-    services.logger.info(
+    log.info(
       {
         event: ORPHAN_AUTHORIZATION,
         eventId: event.id,
@@ -676,7 +697,7 @@ async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
   // shows an authorization means the attempt ended, and the cancellation's own event moves the
   // deposit (AAP 0.3.2).
   if (intent.status !== 'requires_capture') {
-    services.logger.info(
+    log.info(
       {
         event: INTENT_UNEXPECTED,
         eventId: event.id,
@@ -870,7 +891,7 @@ async function applyRefund(ctx: EffectContext): Promise<WebhookOutcome> {
 
 /** Write the one log line a hold loss produces, ids and a status word alone (AAP 0.11.1). */
 function logHoldLost(ctx: EffectContext): void {
-  ctx.services.logger.info(
+  ctx.log.info(
     {
       event: HOLD_LOST,
       eventId: ctx.event.id,
@@ -880,4 +901,32 @@ function logHoldLost(ctx: EffectContext): void {
     },
     HOLD_LOST,
   );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Failures on a log line (AAP 0.11.1)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A failure's own short token, for a log line: its string `code` (`payment_rejected`), else its
+ * class name (`PaymentUnavailableError`), and never its message or its stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack as strings, and a stack carries the whole cause chain, so
+ * key-based redaction cannot rewrite either: a provider failure's message can quote the `Customer`
+ * id (`No such customer: 'cus_…'`) or the `PaymentIntent` id it concerns — exactly the values this
+ * endpoint's log lines may not carry. Anything that is not a plain short identifier becomes
+ * `Error`, so nothing a thrown value happens to say can reach a log through this path.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

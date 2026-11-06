@@ -50,7 +50,7 @@ import type { HeldCode } from '../../../src/checkin/offline-code';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
 
-/** The page's heading, and the navigator header's title. */
+/** The navigator header's title, which is the page's only level-one heading. */
 const SCREEN_TITLE = 'Check in';
 
 /** The insets this pushed route claims: the navigator's header owns the top one. */
@@ -536,9 +536,7 @@ export default function CheckInScreen(): ReactElement {
   );
 
   return (
-    <Screen title={SCREEN_TITLE} edges={SCREEN_EDGES}>
-      {/* The header names the route; the Screen's title is the page's heading, which is what a web
-          heading structure and a screen reader's outline read. */}
+    <Screen edges={SCREEN_EDGES}>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
 
       {errorMessage === null ? null : (

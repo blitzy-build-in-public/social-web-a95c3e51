@@ -28,11 +28,13 @@
  *    the same row, so a mutation already in flight commits before the deletion and every mutation
  *    starting later is refused — nothing the erased account wrote can be recreated afterwards. It
  *    reads PostgreSQL, never the cache.
- *  - **The invalidation.** {@link dropCachedSessions} and {@link invalidateUserSessions} are what
- *    make the two writes above visible at once: the first drops cache entries after a logout, a
- *    refresh-reuse revocation, a consent change or a role change, and the second also publishes the
- *    `{ type: 'invalidate' }` control frame on the user's channel so every API instance closes that
- *    user's sockets (AAP 0.3.2, 0.5.3). Both are called after the revoking transaction commits.
+ *  - **The invalidation.** {@link dropCachedSessions}, {@link invalidateSession} and
+ *    {@link invalidateUserSessions} are what make the two writes above visible at once: the first
+ *    drops cache entries after a logout, a refresh-reuse revocation, a consent change or a role
+ *    change; the second also publishes the `{ type: 'invalidate' }` control frame naming the one
+ *    session that ended, so every API instance closes the sockets that session was admitted with;
+ *    and the third publishes it for an account that ended, so every socket of that user is closed
+ *    (AAP 0.3.2, 0.5.3). All three are called after the revoking transaction commits.
  *
  * Nothing in this module logs a token, an email address, an `Authorization` header or a
  * `Sec-WebSocket-Protocol` header: a refusal writes one `auth_rejected` line carrying its reason and
@@ -117,11 +119,14 @@ export interface SessionCacheCommands {
  * The control frame published when a session ends for every instance at once (AAP 0.3.2, 0.5.3).
  *
  * It is not a `ServerFrame` of `packages/shared/src/schemas/ws.ts`: it is never sent to a client.
- * Every API instance subscribed to the user's channel reads it and closes that user's sockets with
- * `WS_CLOSE.invalidated`.
+ * Every API instance subscribed to the user's channel reads it and closes the sockets it names with
+ * `WS_CLOSE.invalidated`: the sockets of the sessions in `sessionIds`, or every socket of the user
+ * when it names none, which is what an account that ended as a whole publishes.
  */
 export interface SessionInvalidationFrame {
   readonly type: 'invalidate';
+  /** The sessions that ended; absent when the whole account did. */
+  readonly sessionIds?: string[];
 }
 
 /** The one invalidation frame, frozen so no caller can mutate what every instance receives. */
@@ -531,11 +536,17 @@ export async function dropCachedSessions(
 /**
  * Drops the cache entries of a user's sessions and tells every API instance to close their sockets.
  *
- * Called only after the transaction that revoked the sessions committed — `DELETE /me` in
- * `modules/me/deletion.ts` — so an instance can never be told to drop a session that a rollback kept.
- * The publish is what reaches the instances that do not hold the user's cache entries, and a failure
- * to publish is logged and swallowed for the same reason a failed drop is: it costs at most
- * {@link SESSION_CACHE_SECONDS} of read-only staleness, and it can never let a write through.
+ * The whole-account form: the frame it publishes names no session, so every instance closes every
+ * socket of the user rather than the sockets of one session. Its callers are the paths that end all
+ * of the account's authority at once — `DELETE /me` in `modules/me/deletion.ts` and the
+ * reuse-detection revocation in `modules/auth/sessions.ts`; {@link invalidateSession} is the
+ * one-session form.
+ *
+ * Called only after the transaction that revoked the sessions committed, so an instance can never be
+ * told to drop a session that a rollback kept. The publish is what reaches the instances that do not
+ * hold the user's cache entries, and a failure to publish is logged and swallowed for the same reason
+ * a failed drop is: it costs at most {@link SESSION_CACHE_SECONDS} of read-only staleness, and it can
+ * never let a write through.
  *
  * @param services - The Redis connection, the logger and the pub/sub publisher.
  * @param userId - The account whose sessions ended; the frame is published on its own channel.
@@ -552,6 +563,46 @@ export async function invalidateUserSessions(
   try {
     await withTimeout(
       services.pubsub.publishUser(userId, SESSION_INVALIDATION_FRAME),
+      INVALIDATION_PUBLISH_TIMEOUT_MS,
+    );
+  } catch {
+    services.logger.warn(
+      { event: 'session_invalidation_publish_failed' },
+      'session_invalidation_publish_failed',
+    );
+  }
+}
+
+/**
+ * Ends one session for every API instance at once: the invalidation `POST /auth/logout` publishes.
+ *
+ * The one-session form of {@link invalidateUserSessions}, for the write that ends a single session
+ * while the account keeps its others: the cache entry of that session is dropped and the
+ * `{ type: 'invalidate' }` frame naming it is published on the user's channel, so every API instance
+ * closes the sockets that session was admitted with — the socket the caller is most likely still
+ * holding, on whichever instance admitted it — and every other session and socket of the account is
+ * left alone. The closed sockets are ended with `WS_CLOSE.invalidated` (AAP 0.5.3).
+ *
+ * Called only after the transaction that revoked the session committed, and a failure to publish is
+ * logged and swallowed for the same reason as in {@link invalidateUserSessions}: it costs at most
+ * {@link SESSION_CACHE_SECONDS} of read-only staleness, and a write can never ride a cached session,
+ * because every write re-reads its own session behind the fence.
+ *
+ * @param services - The Redis connection, the logger and the pub/sub publisher.
+ * @param userId - The account whose channel carries the frame.
+ * @param sessionId - The session that ended, and the only sockets the frame closes.
+ * @see AAP 0.5.3 for the invalidation and the cache's read-only role, 0.5.4 for the logout route.
+ */
+export async function invalidateSession(
+  services: Pick<AuthServices, 'redis' | 'logger' | 'pubsub'>,
+  userId: string,
+  sessionId: string,
+): Promise<void> {
+  await dropCachedSessions(services, [sessionId]);
+
+  try {
+    await withTimeout(
+      services.pubsub.publishUser(userId, { type: 'invalidate', sessionIds: [sessionId] }),
       INVALIDATION_PUBLISH_TIMEOUT_MS,
     );
   } catch {
@@ -778,6 +829,51 @@ export async function assertWritable(tx: DbTx, userId: string): Promise<void> {
 
   const row = rows[0];
   if (row === undefined || row.deletion_requested_at !== null || row.deleted_at !== null) {
+    throw new AppError('token_invalid');
+  }
+}
+
+/**
+ * Refuses a write authenticated with a session that is no longer live, re-read from PostgreSQL.
+ *
+ * **Called first inside the transaction of every WebSocket write**, before any other check: a chat
+ * socket is authenticated once, at its upgrade, and kept alive by its heartbeat for as long as the
+ * client answers, so the session behind it can end long after the handshake admitted it — `POST
+ * /auth/logout` and `DELETE /me` both revoke the row, and a refresh rotation revokes it too. The row
+ * named by the session id the handshake carried is read here, and the write proceeds only when it
+ * exists, belongs to the acting user, is unrevoked and is unexpired by the injected clock. A socket
+ * the client keeps open therefore never outlives the authority it was admitted with (AAP 0.5.3).
+ *
+ * The row is read from PostgreSQL and never from the session cache: the cache may lag a revocation by
+ * up to {@link SESSION_CACHE_SECONDS}, which is tolerable for a read and never for a write. The row
+ * is not locked: {@link assertWritable} already orders this write against `DELETE /me`, and the
+ * commit of the transaction that revoked the session is what this read sees.
+ *
+ * @param services - The injected clock, which decides expiry as it does for every other check.
+ * @param tx - The caller's open transaction, so the check and the write it guards commit together.
+ * @param session - The acting user and the session the write was authenticated with, taken from
+ *   `request.auth` at the upgrade and carried by the socket.
+ * @throws AppError `token_invalid` (401) when the row is absent, belongs to another account, is
+ *   revoked or has expired by the injected clock.
+ * @see AAP 0.5.3 for the cache's read-only role and the write fence, 0.5.4 for the logout route.
+ */
+export async function assertLiveSession(
+  services: Pick<AuthServices, 'clock'>,
+  tx: DbTx,
+  session: { readonly userId: string; readonly sessionId: string },
+): Promise<void> {
+  const row = await tx.session.findUnique({
+    where: { id: session.sessionId },
+    select: { userId: true, revokedAt: true, expiresAt: true },
+  });
+
+  const now = services.clock.now();
+  if (
+    row === null ||
+    row.userId !== session.userId ||
+    row.revokedAt !== null ||
+    row.expiresAt.getTime() <= now.getTime()
+  ) {
     throw new AppError('token_invalid');
   }
 }

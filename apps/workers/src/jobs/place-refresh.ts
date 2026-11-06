@@ -547,7 +547,7 @@ export async function process(
     // A city dropped by a reseed can still have a scheduler or an onboarding job queued behind it
     // (AAP 0.5.6). There is nothing to refresh and nothing a retry would change, so the run reports
     // the skip: the city slug is configuration, not personal data, and it is what an operator needs.
-    ctx.logger.warn({ event: 'place_refresh_skipped', reason: 'unknown_city', cityId });
+    ctx.logger.warn({ event: 'place_refresh_skipped', skipReason: 'unknown_city', cityId });
     return { skipped: 'unknown_city' };
   }
 

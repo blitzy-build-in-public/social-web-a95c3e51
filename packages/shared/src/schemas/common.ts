@@ -153,6 +153,260 @@ export const DomainParams = z.strictObject({ domain: Domain });
 export type DomainParams = z.infer<typeof DomainParams>;
 
 /*
+ * Keyset cursors.
+ */
+
+/**
+ * How a keyset cursor's instant is rendered, in the statement that writes it and on the wire: UTC,
+ * ISO 8601, microseconds, `Z` suffix (AAP 0.3.3, 0.5.4).
+ *
+ * Every keyset reader renders its boundary row with
+ * `to_char("created_at" AT TIME ZONE 'UTC', CURSOR_INSTANT_FORMAT)` and passes that text back as the
+ * next page's bound. It is the statement's own rendering rather than a `Date`, because `created_at`
+ * is `timestamptz(6)` and a `Date` holds milliseconds: a bound truncated to the millisecond would
+ * hand back the row the previous page ended on, and every row sharing that millisecond with it.
+ */
+export const CURSOR_INSTANT_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
+
+/**
+ * The only instant form a cursor carries: exactly what {@link CURSOR_INSTANT_FORMAT} writes, with
+ * each field captured so {@link isRealUtcInstant} can check it against the instant it builds.
+ */
+const CURSOR_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/;
+
+/**
+ * The earliest year a cursor instant may name. The four-digit form admits `0000` and `Date` has a
+ * year zero, but PostgreSQL's `timestamptz` does not: it raises `date/time field value out of range`
+ * for that literal (and writes 1 BC as `0001-01-01 BC`), so `0001` is the start of the range a keyset
+ * statement can write and read.
+ */
+const CURSOR_INSTANT_FIRST_YEAR = 1;
+
+/**
+ * Whether `text` is an instant in the cursor's form that names a real UTC instant, rather than a
+ * merely well-formed one.
+ *
+ * `2026-02-30T00:00:00.000000Z` and a `99` in any field are timestamps PostgreSQL refuses, so a
+ * cursor carrying one would turn a bad request into `500`. Rebuilding the instant from its fields and
+ * reading every component back is what rejects it: an overflowing field carries into a larger one, so
+ * the field that overflowed no longer matches what it was given. A trailing second of 60 (a real leap
+ * second) is refused as well, because no statement writes one.
+ *
+ * The year is applied with `setUTCFullYear`, not through `Date.UTC`, which reads `0001` as `1901` and
+ * would refuse a cursor for a genuine instant at the start of the column's range.
+ *
+ * The year of `0000` is refused for the opposite reason: the rebuilt instant round-trips, because
+ * `Date` has a year zero, but the `timestamptz` the readers bind it to has none, so PostgreSQL would
+ * raise on the literal and answer a bad request with a `500` instead of the `400` this check exists
+ * to give it. Every year from `0001` to `9999` is accepted, and `to_char` writes the same four digits
+ * for each, so bounding the field is what keeps the check in step with the column.
+ *
+ * @param text - The value a cursor carries as its instant.
+ * @returns True when `text` is an instant a keyset statement could have written.
+ */
+function isRealUtcInstant(text: string): boolean {
+  const match = CURSOR_INSTANT_RE.exec(text);
+
+  if (match === null) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  const at = new Date(0);
+  at.setUTCFullYear(year, month - 1, day);
+  at.setUTCHours(hour, minute, second, 0);
+
+  return (
+    year >= CURSOR_INSTANT_FIRST_YEAR &&
+    at.getUTCFullYear() === year &&
+    at.getUTCMonth() === month - 1 &&
+    at.getUTCDate() === day &&
+    at.getUTCHours() === hour &&
+    at.getUTCMinutes() === minute &&
+    at.getUTCSeconds() === second
+  );
+}
+
+/**
+ * A keyset cursor's instant: the exact form {@link CURSOR_INSTANT_FORMAT} writes, naming a real UTC
+ * instant (AAP 0.3.3, 0.5.4). A cursor is client-supplied text, so what reaches a statement as a
+ * bound `timestamptz` is checked here rather than trusted.
+ */
+export const CursorInstant = z.string().regex(CURSOR_INSTANT_RE).refine(isRealUtcInstant);
+export type CursorInstant = z.infer<typeof CursorInstant>;
+
+/**
+ * The one payload shape of a keyset cursor: the boundary row's creation instant and its id
+ * (AAP 0.5.4).
+ *
+ * A strict object, so a cursor carrying a third key — or a payload of any other shape — is refused
+ * rather than interpreted, and the two fields are named `t` and `i` to keep the encoded form short.
+ */
+export const KeysetCursor = z.strictObject({ t: CursorInstant, i: Uuid });
+export type KeysetCursor = z.infer<typeof KeysetCursor>;
+
+/**
+ * A decoded keyset position: where one page ended and the next one continues (AAP 0.5.4).
+ *
+ * `createdAt` stays text and does not become a `Date`, because the microseconds of the
+ * `timestamptz(6)` column are what make the bound exact (see {@link CURSOR_INSTANT_FORMAT}).
+ */
+export interface KeysetCursorPosition {
+  /** The boundary row's `created_at`, as {@link CURSOR_INSTANT_FORMAT} renders it. */
+  readonly createdAt: string;
+  /** The boundary row's id, the tie-breaker under the creation instant. */
+  readonly id: string;
+}
+
+/**
+ * Encodes a keyset position as the opaque cursor a client echoes back unchanged (AAP 0.5.4).
+ *
+ * The position goes through {@link KeysetCursor} first, so one the codec could not read back — a
+ * millisecond instant, say — is never issued. The payload is base64url text, so it survives a query
+ * string unmangled and stays well inside the contract's 200-character `Cursor`.
+ *
+ * @param position - The boundary row's instant, as the statement rendered it, and its id.
+ * @returns The cursor that continues after that row.
+ * @throws ZodError when the position is not one this codec could read back.
+ */
+export function encodeKeysetCursor(position: KeysetCursorPosition): string {
+  const payload = KeysetCursor.parse({ t: position.createdAt, i: position.id });
+
+  return encodeBase64Url(JSON.stringify(payload));
+}
+
+/**
+ * Decodes a keyset cursor, or answers `null` for anything that is not one (AAP 0.5.4).
+ *
+ * A cursor is client-supplied text, so every step is checked rather than trusted: canonical base64url
+ * over ASCII, the JSON object inside it, and a {@link KeysetCursor} payload — an instant in exactly
+ * the form a statement writes, and a UUID. The refusal is `null` rather than an error because each
+ * caller answers it in its own words, as the `400 invalid_field` the contract gives that route.
+ *
+ * @param value - The `cursor` query parameter, echoed back from a previous page.
+ * @returns The position to continue after, or null when `value` is not a cursor this codec wrote.
+ */
+export function decodeKeysetCursor(value: string): KeysetCursorPosition | null {
+  const decoded = decodeBase64Url(value);
+
+  if (decoded === null) {
+    return null;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded) as unknown;
+  } catch {
+    return null;
+  }
+
+  const parsed = KeysetCursor.safeParse(payload);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  return { createdAt: parsed.data.t, id: parsed.data.i };
+}
+
+/** The 64 characters of base64url, in encoding order (RFC 4648 §5), with no padding character. */
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Base64url-encodes ASCII `text`, unpadded.
+ *
+ * Written out over character codes rather than through a platform base-64 helper: the Node encoding
+ * and the DOM pair are both absent where this module also runs — under Hermes, and in a browser — and
+ * the shared barrel is what the mobile and web bundles import. For the {@link KeysetCursor} payloads
+ * this file encodes, the result is byte-identical to the unpadded base64url of the same ASCII text on
+ * a Node host.
+ *
+ * @param text - ASCII text, as `JSON.stringify` of a cursor payload produces.
+ * @returns Its unpadded base64url.
+ */
+function encodeBase64Url(text: string): string {
+  let encoded = '';
+
+  for (let index = 0; index < text.length; index += 3) {
+    const first = text.charCodeAt(index);
+    const second = index + 1 < text.length ? text.charCodeAt(index + 1) : -1;
+    const third = index + 2 < text.length ? text.charCodeAt(index + 2) : -1;
+
+    encoded += BASE64URL_ALPHABET.charAt(first >> 2);
+    encoded += BASE64URL_ALPHABET.charAt(((first & 0x03) << 4) | (second < 0 ? 0 : second >> 4));
+
+    if (second < 0) {
+      break;
+    }
+
+    encoded += BASE64URL_ALPHABET.charAt(((second & 0x0f) << 2) | (third < 0 ? 0 : third >> 6));
+
+    if (third < 0) {
+      break;
+    }
+
+    encoded += BASE64URL_ALPHABET.charAt(third & 0x3f);
+  }
+
+  return encoded;
+}
+
+/**
+ * Base64url-decodes `text`, or answers `null` when it is not the canonical base64url of ASCII text.
+ *
+ * Five things are refused, each because an encoder never writes it: an empty value, a length of one
+ * over a multiple of four (a lone trailing character carries six of the eight bits a byte needs), a
+ * character outside the alphabet, a padding bit set in the last character — the canonical form leaves
+ * those bits zero, so a value carrying one is not the decoding of the bytes underneath it — and a
+ * decoded byte above `0x7f`, because a cursor's payload is ASCII throughout.
+ *
+ * @param text - The value to decode.
+ * @returns The decoded ASCII text, or null when `text` is not canonical base64url of ASCII.
+ */
+function decodeBase64Url(text: string): string | null {
+  if (text.length === 0 || text.length % 4 === 1) {
+    return null;
+  }
+
+  let bits = 0;
+  let pending = 0;
+  let decoded = '';
+
+  for (let index = 0; index < text.length; index += 1) {
+    const value = BASE64URL_ALPHABET.indexOf(text.charAt(index));
+
+    if (value < 0) {
+      return null;
+    }
+
+    bits = (bits << 6) | value;
+    pending += 6;
+
+    if (pending < 8) {
+      continue;
+    }
+
+    pending -= 8;
+
+    const byte = (bits >> pending) & 0xff;
+
+    if (byte > 0x7f) {
+      return null;
+    }
+
+    decoded += String.fromCharCode(byte);
+  }
+
+  return (bits & ((1 << pending) - 1)) === 0 ? decoded : null;
+}
+
+/*
  * Health and test control.
  */
 

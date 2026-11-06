@@ -23,7 +23,8 @@
  *
  * {@link messageableMeetupIds} answers that same rule as a set, so the meetups the chat socket attaches
  * to when it opens and the meetups {@link requireMessaging} admits on each send can never disagree
- * (AAP 0.5.1); {@link canMessage} is the single decision both are built from.
+ * (AAP 0.5.1): {@link canMessage} is the single decision both are built from, and the set then grows
+ * past its bounded first read as the participant opens or writes in a chat, under that same rule.
  *
  * A leaf of the messaging module, and read-only: no transaction, no lock, no write, no clock and no
  * log. What it returns is a code its caller reports, never an id it logs. The only module file it
@@ -92,7 +93,7 @@ const MESSAGING_OPEN_STATUSES_SQL = Prisma.raw(
   MESSAGING_OPEN_STATUSES.map((status) => `'${status}'`).join(', '),
 );
 
-/** The meetup ids one attach carries unless the caller asks for another bound. */
+/** The most meetup ids one attach carries: the newest, not the whole of the socket's set (AAP 0.5.1). */
 const MESSAGEABLE_MEETUP_LIMIT = 200;
 
 /*
@@ -253,7 +254,7 @@ interface MeetupIdRow {
 }
 
 /**
- * The meetups one socket may carry for `userId`, newest first (AAP 0.5.1, 0.5.4).
+ * The meetups one socket attaches with for `userId`, newest first (AAP 0.5.1, 0.5.4).
  *
  * Every condition is the one {@link canMessage} applies, so the set a socket attaches to and the
  * per-send check agree by construction: the caller is a participant of the meetup, the meetup is
@@ -261,14 +262,17 @@ interface MeetupIdRow {
  * (AAP 0.5.3) — the counterpart's account is live, the pair has a `locked` or a `completed` meetup,
  * and there is no block in either direction.
  *
- * One statement, and the only bound is the limit: a socket's set is read once as it opens, so the
- * ceiling keeps the attachment bounded however long a pair's history grows.
+ * One statement, and the only bound is the limit: this is the set a socket carries as it opens, so the
+ * ceiling keeps that attachment bounded however long a pair's history grows. It is not the socket's set
+ * for the rest of its life: a chat the participant opens joins it through `pubsub.openChat` (the
+ * history route's "I opened this chat") and one they write in through `pubsub.attachMeetup`, so a
+ * meetup past this bound is not permanently outside the live fan-out (AAP 0.5.1, 0.5.4).
  *
  * @param db - The guarded client, or the transaction's client when the caller is already in one.
  * @param userId - The user whose socket is being attached.
  * @param limit - The most ids to return; default {@link MESSAGEABLE_MEETUP_LIMIT}, normalized to a
  *   whole number of at least 1 so a fractional or non-positive argument cannot reach PostgreSQL's
- *   `LIMIT`.
+ *   `LIMIT`. It bounds this read only, never the set the socket then carries.
  * @returns The meetup ids, newest first; an empty array for a user with nothing to message in.
  */
 export async function messageableMeetupIds(

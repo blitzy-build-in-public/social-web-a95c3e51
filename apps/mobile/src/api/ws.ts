@@ -271,12 +271,8 @@ async function openSocket(): Promise<void> {
  * from a socket that was already discarded cannot change the state or deliver a frame twice.
  */
 function attach(created: WebSocket): void {
-  /** Whether this socket reached `open`. A close before that is a handshake refusal (AAP 0.3.3). */
-  let opened = false;
-
   const handleOpen = (): void => {
     if (socket !== created) return;
-    opened = true;
     failedAttempts = 0;
     unauthorizedCloses = 0;
     refreshedSinceUnauthorized = false;
@@ -312,21 +308,22 @@ function attach(created: WebSocket): void {
       return;
     }
 
-    // An unauthorized-looking close: the code says so; a `token_invalid` frame arrived before it; or
-    // the socket never opened, because an authentication failure at the upgrade is only visible as a
-    // close before `open`, usually 1006 (AAP 0.3.3).
+    // A refusal the API itself labelled unauthorized: the close code says the session is not live, or
+    // a `token_invalid` frame arrived before the close. A close before `open` is deliberately not
+    // one: an upgrade refused for a spent token is answered as plain HTTP before the upgrade, which a
+    // browser reports exactly like an unreachable socket — a close, usually 1006 (AAP 0.3.3) — so it
+    // proves nothing about the session and is retried on the backoff below, session untouched.
     const unauthorized =
       event.code === CLOSE_UNAUTHORIZED ||
       event.code === CLOSE_INVALIDATED ||
-      refreshBeforeNextAttempt ||
-      !opened;
+      refreshBeforeNextAttempt;
 
     if (unauthorized) {
       unauthorizedCloses += 1;
       if (refreshedSinceUnauthorized && unauthorizedCloses >= 2) {
-        // A rotation has already run since the previous unauthorized close and the socket was refused
-        // anyway, so the session itself is gone — the refresh token was revoked, or the account was
-        // deleted (AAP 0.5.3). Reconnecting would only repeat the refusal.
+        // Both closes were the API's own unauthorized refusals, and a rotation has run in between —
+        // which only a live session permits — so the session itself is gone: the refresh token was
+        // revoked, or the account was deleted (AAP 0.5.3). Reconnecting would only repeat the refusal.
         void signOutAndStop();
         return;
       }

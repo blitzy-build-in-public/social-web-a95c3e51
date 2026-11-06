@@ -99,6 +99,18 @@ const BAR_MARKER_WIDTH = 2;
 const BAR_MARKER_CASING = 4;
 
 /**
+ * The responsive widths of the wrapping rows, named once: the date fields and the panel grow from
+ * their own basis up to a floor, while the headline's two columns carry a basis and no floor, so a
+ * row too narrow for its figures wraps them instead of squeezing them.
+ */
+const DATE_FIELD_BASIS = 180;
+const DATE_FIELD_MIN_WIDTH = 160;
+const PANEL_BASIS = 340;
+const PANEL_MIN_WIDTH = 280;
+const HEADLINE_MAIN_BASIS = 240;
+const HEADLINE_ASIDE_BASIS = 200;
+
+/**
  * React Native 0.76 declares no `outline` style, so on web the browser's own outline is turned off
  * and the border a control already paints is the ring a keyboard user sees (WCAG 2.4.7). Empty off
  * web, which never reads it.
@@ -831,7 +843,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.md,
   },
-  dateField: { flexBasis: 180, flexGrow: 1, minWidth: 160 },
+  dateField: { flexBasis: DATE_FIELD_BASIS, flexGrow: 1, minWidth: DATE_FIELD_MIN_WIDTH },
   filterGroup: { gap: spacing.xs },
   // `text` on `background` is a recorded pair at 17.21:1, and the size is a token, so the label
   // follows the reader's system font size (AAP 0.5.8).
@@ -864,10 +876,10 @@ const styles = StyleSheet.create({
   // Panels wrap rather than stack: on a wide window the figures read side by side, and below the
   // width of one panel every row becomes a single column with no change of markup.
   grid: { alignItems: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  panel: { flexBasis: 340, flexGrow: 1, minWidth: 280 },
+  panel: { flexBasis: PANEL_BASIS, flexGrow: 1, minWidth: PANEL_MIN_WIDTH },
   headline: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  headlineMain: { flexBasis: 240, flexGrow: 1, gap: spacing.xs },
-  headlineAside: { flexBasis: 200, gap: spacing.xs },
+  headlineMain: { flexBasis: HEADLINE_MAIN_BASIS, flexGrow: 1, gap: spacing.xs },
+  headlineAside: { flexBasis: HEADLINE_ASIDE_BASIS, gap: spacing.xs },
   // The headline is the one figure the pilot is judged by, so it takes the display size (AAP 0.1.1).
   rate: { ...typography.display, color: colors.text, fontWeight: fontWeights.bold },
   rateAside: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },

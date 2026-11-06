@@ -38,7 +38,12 @@
  */
 
 import { Prisma } from '@tablemate/db';
-import { PAGE_SIZE, Uuid } from '@tablemate/shared';
+import {
+  CURSOR_INSTANT_FORMAT,
+  decodeKeysetCursor,
+  encodeKeysetCursor,
+  PAGE_SIZE,
+} from '@tablemate/shared';
 import type { TravelersResponse } from '@tablemate/shared';
 
 import { AppError } from '../../plugins/errors.ts';
@@ -66,115 +71,44 @@ export interface DiscoveryKey {
   readonly id: string;
 }
 
-/** How the statement renders a cursor instant: UTC, ISO 8601, microseconds, `Z` suffix. */
-const CURSOR_INSTANT_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
-
-/**
- * The only form {@link decodeDiscoveryCursor} accepts: exactly what {@link CURSOR_INSTANT_FORMAT}
- * writes, with each field captured so that {@link isRealUtcInstant} can check it.
- */
-const CURSOR_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/;
-
-/**
- * Whether a matched cursor instant names a real UTC instant rather than merely a well-formed one.
- *
- * `2026-02-30T00:00:00.000000Z` and a `99` in any field are timestamps PostgreSQL refuses, so a
- * cursor carrying one would turn a bad request into `500`. Rebuilding the instant from its fields
- * and reading every component back is what rejects it: an overflowing field carries into a larger
- * one, so the field that overflowed no longer matches what it was given. A trailing second of 60 (a
- * real leap second) is refused as well, because the statement never writes one.
- *
- * @param match - A successful match of {@link CURSOR_INSTANT_RE}.
- * @returns True when every field of the instant is the field that was given.
- */
-function isRealUtcInstant(match: RegExpExecArray): boolean {
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const second = Number(match[6]);
-
-  const at = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-
-  return (
-    at.getUTCFullYear() === year &&
-    at.getUTCMonth() === month - 1 &&
-    at.getUTCDate() === day &&
-    at.getUTCHours() === hour &&
-    at.getUTCMinutes() === minute &&
-    at.getUTCSeconds() === second
-  );
-}
-
 /**
  * Encodes a keyset position as an opaque cursor (AAP 0.5.1).
  *
- * The payload is a two-key JSON object, base64url-encoded, so it survives a query string unmangled
- * and stays well inside the contract's 200-character `Cursor`. Clients echo it back unchanged: the
- * shape is internal, and only {@link decodeDiscoveryCursor} reads it.
+ * The wire form is the shared codec's, `@tablemate/shared`'s `encodeKeysetCursor`, so this reader and
+ * the messaging and meetup readers issue one payload shape and read it back by one set of rules
+ * (AAP 0.11.1). It is base64url text, so it survives a query string unmangled and stays well inside
+ * the contract's 200-character `Cursor`. Clients echo it back unchanged: the shape is internal, and
+ * only {@link decodeDiscoveryCursor} reads it.
  *
  * @param key - The instant and id of the page's last row, from the statement rather than a profile.
  * @returns The cursor for the next page.
  */
 export function encodeDiscoveryCursor(key: DiscoveryKey): string {
-  return Buffer.from(JSON.stringify({ t: key.createdAt, i: key.id }), 'utf8').toString('base64url');
+  return encodeKeysetCursor(key);
 }
 
 /**
  * Decodes a cursor {@link encodeDiscoveryCursor} produced, or refuses it as `400 invalid_field`.
  *
- * A cursor is client-supplied text, so every step is checked rather than trusted: the base64url
- * payload, the JSON object in it, the instant's exact form (a client could otherwise hand the
- * statement a timestamp PostgreSQL refuses, which would answer `500` for what is really a bad
- * request) and the id's UUID shape. A cursor is opaque — a client that edits one has no contract to
- * break, only a request to lose — so no diagnostic detail is returned.
+ * A cursor is client-supplied text, so every step is checked rather than trusted: the shared codec
+ * refuses anything that is not canonical base64url of a `{t,i}` JSON payload whose instant is in
+ * {@link CURSOR_INSTANT_FORMAT} and names a real UTC instant — a client could otherwise hand the
+ * statement a timestamp PostgreSQL refuses, which would answer `500` for what is really a bad request
+ * — and whose id is a UUID. A cursor is opaque, so a client that edits one has no contract to break,
+ * only a request to lose, and no diagnostic detail is returned.
  *
  * @param cursor - The `cursor` query parameter, echoed back from a previous page.
  * @returns The keyset position to continue after.
  * @throws AppError with code `invalid_field` for anything that is not a cursor this file wrote.
  */
 export function decodeDiscoveryCursor(cursor: string): DiscoveryKey {
-  const payload = decodeCursorJson(cursor);
+  const position = decodeKeysetCursor(cursor);
 
-  if (!isCursorPayload(payload)) {
+  if (position === null) {
     throw new AppError('invalid_field');
   }
 
-  const createdAt = payload.t;
-  const id = payload.i;
-
-  if (typeof createdAt !== 'string' || typeof id !== 'string' || !Uuid.safeParse(id).success) {
-    throw new AppError('invalid_field');
-  }
-
-  const match = CURSOR_INSTANT_RE.exec(createdAt);
-  if (match === null || !isRealUtcInstant(match)) {
-    throw new AppError('invalid_field');
-  }
-
-  return { createdAt, id };
-}
-
-/**
- * The JSON object inside a cursor, as `unknown`, or `400 invalid_field` when the text is not one.
- *
- * `Buffer.from(…, 'base64url')` never throws on malformed input — it ignores what it cannot decode —
- * so the check that matters happens on the parsed text, and every failure on the way answers the same
- * code. The parse result is asserted to `unknown` because `JSON.parse` is declared to return `any`,
- * which is what keeps untyped data out of the rest of the file (AAP 0.11.1).
- */
-function decodeCursorJson(cursor: string): unknown {
-  try {
-    return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
-  } catch {
-    throw new AppError('invalid_field');
-  }
-}
-
-/** Whether a decoded payload is a JSON object, the only container a cursor is ever written as. */
-function isCursorPayload(payload: unknown): payload is { t?: unknown; i?: unknown } {
-  return typeof payload === 'object' && payload !== null;
+  return position;
 }
 
 /**

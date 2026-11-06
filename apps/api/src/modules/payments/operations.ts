@@ -35,8 +35,11 @@
  * `compensateLostHold` (AAP 0.3.2 "No-forfeit compensation").
  *
  * Time comes only from `services.clock`, so a test-clock jump drives the two-minute reclaim and the
- * twelve-hour unresolved-hold rule (AAP 0.11.1). Log lines carry operation ids, kinds, statuses and
- * the provider's own state words, never a client secret, a customer id or a card field.
+ * twelve-hour unresolved-hold rule (AAP 0.11.1). Log lines carry operation ids, kinds, statuses, the
+ * provider's own state words and a failure's own short token ({@link failureToken}), never an error
+ * message, a stack, a client secret, a customer id or a card field: pino writes a message and a stack
+ * as strings that key-based redaction cannot rewrite, and a provider failure's message can quote the
+ * `PaymentIntent` id it concerns.
  *
  * @see AAP 0.3.2 for claim, ordering, fencing and reconciliation, 0.5.2 for the `PaymentOperation`
  *   and `Deposit` models, 0.5.3 for the deposit and meetup lifecycles and the row lock, 0.5.4 for the
@@ -316,6 +319,38 @@ function errorField(error: unknown, field: string): string | null {
   if (typeof error !== 'object' || error === null) return null;
   const value = (error as Record<string, unknown>)[field];
   return typeof value === 'string' ? value : null;
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its `code` when it carries one (`card_declined`, the
+ * driver's `P2028`), else its class name (`PaymentUnavailableError`) — never its message or stack.
+ *
+ * This is what keeps the header's promise. pino writes a message and a stack as strings, and
+ * key-based redaction rewrites object fields and never a string, so logging the thrown value itself
+ * carries the provider's own words into the line unaltered: a provider failure's message can quote
+ * the `PaymentIntent` id it concerns ("No such payment_intent: pi_…"), a value these lines may not
+ * carry. A token that is not a plain short identifier becomes `Error`, so nothing a thrown value
+ * happens to say reaches a log through this path.
+ *
+ * @param error - The thrown value.
+ * @returns The token to log in place of the error.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+
+  return token;
 }
 
 /**
@@ -1124,7 +1159,7 @@ async function holdFailure(
     event: 'payment_op_failed',
     operationId: claim.operation.id,
     kind: 'hold',
-    err: error,
+    code: failureToken(error),
   });
   throw error;
 }
@@ -1361,7 +1396,7 @@ async function executeRelease(
       event: 'payment_op_failed',
       operationId: operation.id,
       kind: 'release',
-      err: error,
+      code: failureToken(error),
     });
     throw error;
   }
@@ -1552,7 +1587,7 @@ async function executeCapture(
       event: 'payment_op_failed',
       operationId: operation.id,
       kind: 'capture',
-      err: error,
+      code: failureToken(error),
     });
     throw error;
   }
@@ -1751,7 +1786,7 @@ async function executeRefund(
       event: 'payment_op_failed',
       operationId: operation.id,
       kind: 'refund',
-      err: error,
+      code: failureToken(error),
     });
     throw error;
   }
@@ -1847,7 +1882,7 @@ async function executeDeleteCustomer(
       event: 'payment_op_failed',
       operationId: operation.id,
       kind: 'delete_customer',
-      err: error,
+      code: failureToken(error),
     });
     throw error;
   }
@@ -2037,7 +2072,7 @@ async function compensate(services: AppServices, evidence: Compensation): Promis
     services.logger.error({
       event: 'payment_operation_compensation_failed',
       meetupId: evidence.meetupId,
-      err: error,
+      code: failureToken(error),
     });
   }
 }
@@ -2131,7 +2166,7 @@ export async function executeHoldInline(
     services.logger.error({
       event: 'payment_hold_inline_failed',
       operationId,
-      err: error,
+      code: failureToken(error),
     });
     return { outcome: 'unavailable' };
   }
@@ -2166,7 +2201,10 @@ export async function runOperationsFor(
         take: DEFAULT_PENDING_LIMIT,
       });
     } catch (error) {
-      services.logger.error({ event: 'payment_operations_unreadable', err: error });
+      services.logger.error({
+        event: 'payment_operations_unreadable',
+        code: failureToken(error),
+      });
       return;
     }
 
@@ -2187,7 +2225,7 @@ export async function runOperationsFor(
           event: 'payment_op_failed',
           operationId: operation.id,
           kind: operation.kind,
-          err: error,
+          code: failureToken(error),
         });
       }
     }
@@ -2243,7 +2281,7 @@ export async function runPendingOperations(
         event: 'payment_op_failed',
         operationId: row.id,
         kind: row.kind,
-        err: error,
+        code: failureToken(error),
       });
     }
   }

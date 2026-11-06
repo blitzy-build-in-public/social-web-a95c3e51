@@ -46,7 +46,9 @@ import type { App } from '../app.ts';
  *   voice relay could not be attached to its call attempt (AAP 0.5.4, 0.5.6).
  * - `invalidated` (4409): the session itself ended — `DELETE /me` or logout published
  *   `{ type: 'invalidate' }` on `user:<id>`, and every API instance closes that user's sockets
- *   from `modules/messaging/pubsub.ts` (AAP 0.3.2, 0.5.3).
+ *   from `modules/messaging/pubsub.ts` (AAP 0.3.2, 0.5.3). A frame that names its sessions closes
+ *   the sockets those sessions were admitted with, which is what a logout publishes; one that names
+ *   none closes every socket of the user, which is what an account that ended as a whole publishes.
  * - `tooMany` (4429): the caller is over an allowance that ends the socket — the relay's
  *   `VOICE_RELAY_MAX_SESSIONS` cap of 10 concurrent sessions, or a chat socket whose per-minute
  *   message allowance is spent (AAP 0.3.2).

@@ -1125,7 +1125,7 @@ async function takePhoneFallback(
 ): Promise<PlaceIngestResult> {
   const queuedCall = await ensureMenuPricesTask(ctx.db, ctx, placeId, now);
 
-  ctx.logger.info({ event: 'menu_phone_fallback', placeId, reason });
+  ctx.logger.info({ event: 'menu_phone_fallback', placeId, fallbackReason: reason });
   logDrops(ctx, placeId, drops);
 
   return { pricedItems, queuedCall };

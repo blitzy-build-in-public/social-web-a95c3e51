@@ -447,9 +447,11 @@ export async function classifyUtterance(
     };
   } catch (error) {
     // A code and nothing else: the utterance, the window, the extracted values and the reply are
-    // absent from this line, as they are from every other (AAP 0.11.1, AAP 0.12.2).
+    // absent from this line, as they are from every other (AAP 0.11.1, AAP 0.12.2). The field is
+    // `code`, not `reason`: the logger's redaction list censors `reason` because a dispute or a
+    // report carries free text there, and a bare `code` is the error-code name it leaves free.
     services.logger.warn(
-      { event: 'voice_classification_failed', reason: failureCode(error) },
+      { event: 'voice_classification_failed', code: failureCode(error) },
       'voice_classification_failed',
     );
     throw error;

@@ -22,7 +22,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View, type TextProps } from 'react-native';
 import {
   MIN_TOUCH_TARGET,
   colors,
@@ -49,6 +49,17 @@ const SCREEN_EDGES = ['left', 'right'] as const;
 
 /** Side of the identity avatar, in points / CSS px, so the header block is recognisable at a glance. */
 const AVATAR_SIZE = 72;
+
+/**
+ * The handle's heading attributes. The tab navigator's header renders the page's level-one heading
+ * from the tab's title, so the identity this screen prints sits beneath it at level 2:
+ * `role="heading"` is the platform's header trait, and `aria-level` is what react-native-web 0.19
+ * reads to render a real `<h2>` rather than the `<h1>` an unlevelled heading role becomes.
+ */
+const HANDLE_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
+  role: 'heading',
+  'aria-level': 2,
+};
 
 /**
  * The four strings this screen owns. The empty state and the calendar-date formatter are the copy
@@ -240,7 +251,7 @@ export default function ProfileScreen(): JSX.Element {
           hasPhoto={profile.hasPhoto}
         />
         <View style={styles.identityText}>
-          <Text accessibilityRole="header" style={styles.handle}>
+          <Text {...HANDLE_HEADING} style={styles.handle}>
             {profile.handle}
           </Text>
           {nickname === null ? null : <Text style={styles.body}>{nickname}</Text>}

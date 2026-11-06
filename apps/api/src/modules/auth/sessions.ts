@@ -36,6 +36,7 @@ import { randomToken, sha256Hex } from '@tablemate/server-core';
 import {
   assertWritable,
   dropCachedSessions,
+  invalidateSession,
   invalidateUserSessions,
   signAccessToken,
 } from '../../plugins/auth.ts';
@@ -261,7 +262,13 @@ export async function refresh(
  * token whose account asked for deletion is refused with the same `401 token_invalid` every other
  * mutation answers (AAP 0.5.3).
  *
- * @param services - The database client, clock, logger, outbox and Redis of the app.
+ * Revoking the row is what ends the session for HTTP, which re-reads it on every request; the socket
+ * the session may still be holding is ended by `invalidateSession`, which drops its cache entry and
+ * publishes the session-scoped invalidation after the commit, so every API instance closes that
+ * session's sockets with `WS_CLOSE.invalidated` and the account's other sessions keep theirs
+ * (AAP 0.5.3, 0.5.4).
+ *
+ * @param services - The database client, clock, logger, outbox, Redis and pub/sub of the app.
  * @param session - `userId` and `sessionId` from `request.auth`, filled by the bearer guard.
  * @throws AppError `token_invalid` (401) when the account has requested deletion or was deleted.
  */
@@ -279,7 +286,7 @@ export async function logout(
         data: { revokedAt: now },
       });
 
-      after(() => dropCachedSessions(services, [session.sessionId]));
+      after(() => invalidateSession(services, session.userId, session.sessionId));
     },
     { fenceUserId: session.userId },
   );

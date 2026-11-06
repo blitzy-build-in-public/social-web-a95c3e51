@@ -74,13 +74,15 @@ const SELECTED_HINT = 'Selected';
 const NO_CITY = 'The lodgings query was enabled without a city.';
 
 /**
- * The heading's attributes. `accessibilityRole="header"` is the whole contract on native; the
- * `aria-level` is what react-native-web 0.19 reads to render the `<h1>` this screen's only heading
- * takes, asserted here because React Native's `TextProps` does not list it.
+ * The heading's attributes. The tab navigator's header renders the page's level-one heading from
+ * the tab's title, so the sentence this screen prints sits beneath it at level 2: `role="heading"`
+ * is the platform's header trait, and `aria-level` is what react-native-web 0.19 reads to render a
+ * real `<h2>` rather than an unlevelled span, asserted here because React Native's `TextProps` does
+ * not list it.
  */
 const HEADING_ATTRIBUTES: TextProps & Readonly<{ 'aria-level': number }> = {
-  accessibilityRole: 'header',
-  'aria-level': 1,
+  role: 'heading',
+  'aria-level': 2,
 };
 
 /** The sentence a failed read shows: the API code's copy, or the fallback for an unknown failure. */

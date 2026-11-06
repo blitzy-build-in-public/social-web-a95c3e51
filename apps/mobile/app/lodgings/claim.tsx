@@ -29,7 +29,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { StyleSheet, Switch, Text, View } from 'react-native';
+import { StyleSheet, Switch, Text, View, type TextProps } from 'react-native';
 import {
   BOOKING_NAME_MAX_CHARS,
   BOOKING_REFERENCE_MAX_CHARS,
@@ -56,6 +56,17 @@ import type { ScreenProps } from '../../src/ui';
 
 /** The route's header title (AAP 0.5.8). */
 const SCREEN_TITLE = "I'm staying here";
+
+/**
+ * The lodging's name in the page body. The header renders the route's own title as the page's only
+ * level-one heading, so the name this screen knows sits beneath it at level 2: `role="heading"` is
+ * the platform's header trait, and `aria-level` is what react-native-web 0.19 reads to render a real
+ * `<h2>` rather than the `<h1>` an unlevelled heading role becomes.
+ */
+const LODGING_NAME_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
+  role: 'heading',
+  'aria-level': 2,
+};
 
 /** The one proof state that reaches the claim routes; every other answers `403 no_valid_proof`. */
 const VALID_PROOF_STATUS = 'valid' satisfies ProofStatus;
@@ -523,13 +534,11 @@ export default function LodgingClaimScreen(): ReactElement {
 
   // --- Render -------------------------------------------------------------------------------------
 
-  // The lodging's name is the heading once it is known; before that the screen has no heading of its
-  // own, because the header already names the route. `children` is omitted from the type because the
-  // content is passed as the element's child.
-  const screenProps: Omit<ScreenProps, 'children'> =
-    lodgingName === undefined
-      ? { edges: SCREEN_EDGES }
-      : { title: lodgingName, edges: SCREEN_EDGES };
+  // The header names the route and is the page's only level-one heading, so the screen itself
+  // carries none; the name of the lodging it was opened for is rendered in the body at level 2, and
+  // is absent until that read answers. `children` is omitted from the type because the content is
+  // passed as the element's child.
+  const screenProps: Omit<ScreenProps, 'children'> = { edges: SCREEN_EDGES };
 
   const goneBanner = claimGone ? (
     <Banner tone="info" message={CLAIM_GONE} testID="claim-gone" />
@@ -758,7 +767,14 @@ export default function LodgingClaimScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
-      <Screen {...screenProps}>{content}</Screen>
+      <Screen {...screenProps}>
+        {lodgingName === undefined ? null : (
+          <Text {...LODGING_NAME_HEADING} style={styles.lodgingName}>
+            {lodgingName}
+          </Text>
+        )}
+        {content}
+      </Screen>
     </>
   );
 }
@@ -768,6 +784,8 @@ const styles = StyleSheet.create({
   body: { ...typography.body, color: colors.text },
   statusBlock: { gap: spacing.xs },
   status: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
+  // The lodging's name keeps the type the Screen's own heading painted it in.
+  lodgingName: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },
   consentRow: {
     // The row is the labelled switch's full touch target, with the switch at its reading end.
     minHeight: MIN_TOUCH_TARGET,

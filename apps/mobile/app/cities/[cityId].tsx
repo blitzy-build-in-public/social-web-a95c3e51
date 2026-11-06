@@ -41,7 +41,8 @@ const SCREEN_EDGES = ['left', 'right', 'bottom'] as const;
 /**
  * The section headings' platform attributes: `role="heading"` is what iOS maps to its header trait
  * and Android to its heading role, and `aria-level` is what react-native-web reads to render a real
- * `<h2>` beneath the page title at level 1, which `Screen` asserts itself (AAP 0.5.8).
+ * `<h2>` beneath the page's level-one heading, which the navigator's header renders from this
+ * route's title, so the page owns no heading of its own (AAP 0.5.8).
  */
 const SECTION_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
   role: 'heading',
@@ -119,8 +120,9 @@ function venueMapUrl(venue: VenueDto): string {
  *
  * Reads made, in order: the configured cities (usually already cached by the Discover picker), this
  * city's active partner venues, and the caller's own account. The traveler list is never requested
- * here. Reading and focus order is source order — page title, traveler access, venue heading, rows —
- * every control carries a visible label with its role, and each failure is rendered and announced.
+ * here. Reading and focus order is source order — traveler access, venue heading, rows — with the
+ * header's own title as the page's level-one heading above them, every control carries a visible
+ * label with its role, and each failure is rendered and announced.
  *
  * @returns The city page.
  */
@@ -233,9 +235,7 @@ export default function CityScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: cityName }} />
-      <Screen title={cityName} edges={SCREEN_EDGES}>
-        {content}
-      </Screen>
+      <Screen edges={SCREEN_EDGES}>{content}</Screen>
     </>
   );
 }

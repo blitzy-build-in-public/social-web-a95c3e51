@@ -10,9 +10,10 @@
  * tomorrow cannot reach a response by accident, and a field above the viewer's tier is never loaded,
  * let alone returned (AAP 0.3.2, 0.12.2, criterion 5).
  *
- * {@link loadProfile} is one target for one viewer, {@link tier0Profiles} a page of strangers.
- * Neither writes: no transaction, no lock, and the instant they reason about arrives as the `now`
- * argument from the caller's injected clock, never from the process (AAP 0.11.1).
+ * {@link loadProfile} is one target for one viewer, {@link loadProfiles} a page of targets each at its
+ * own pair's tier, and {@link tier0Profiles} a page of strangers. None writes: no transaction, no
+ * lock, and the instant they reason about arrives as the `now` argument from the caller's injected
+ * clock, never from the process (AAP 0.11.1).
  *
  * @see AAP 0.5.4 for the tier fields and the gates they feed, 0.5.7 for the tier and reputation
  *   rules, 0.5.2 for the tier-3 ciphertext and the tombstone, 0.8.1 for this file.
@@ -42,7 +43,7 @@ import { currentProof, currentProofsFor } from '../../proofs/validity.ts';
 import type { ProofSummary } from '../../proofs/validity.ts';
 import { selectForTier } from './select.ts';
 import type { ProfileRow } from './select.ts';
-import { canMessageFrom, pairFacts, tierFrom } from './tier.ts';
+import { canMessageFrom, pairFacts, pairFactsFor, tierFrom } from './tier.ts';
 import type { PairFacts } from './tier.ts';
 
 import type { AppServices } from '../../../app.ts';
@@ -355,6 +356,141 @@ export async function loadProfile(
       canMessage: canMessageFrom(facts, viewerId, targetId),
     }),
   };
+}
+
+/**
+ * The facts of a self pair, stated rather than read (AAP 0.5.7).
+ *
+ * A viewer looking at themselves has no row in `block`, `pair_history` or `meetup` to measure, which
+ * is why {@link pairFacts} refuses such a pair; the tier follows from the self check alone and
+ * `canMessageFrom` is false for a self pair whatever these facts say.
+ */
+const SELF_PAIR_FACTS: PairFacts = {
+  blocked: false,
+  completedCount: 0,
+  sharedLockedBothHeld: false,
+  messageable: false,
+};
+
+/**
+ * Loads a page of targets' profiles for one viewer, each at the tier between them (AAP 0.5.1, 0.5.4).
+ *
+ * The batched form of {@link loadProfile}, for every counterpart of a meetup page. It applies the
+ * same rules in the same order — a self id is tier 3 with stated facts and no pair query, every
+ * other id takes its facts from `pairFactsFor` and `tierFrom`, a `'blocked'` result is tier 0 under
+ * `blocked: 'tier0'` and is left out entirely otherwise, and an id with no row, or with the `handle`
+ * or `avatarSeed` account erasure nulled, is not served — but pays them once for the whole page
+ * rather than once per id: one pair-facts statement, one `user` read per tier the page actually
+ * holds (at most four, each carrying its own `selectForTier`), one counters call and one
+ * current-proof read, whatever the page's length (AAP 0.12.2). Batching widens nothing: a tier's
+ * columns are still the only columns loaded for the ids of that tier, and {@link serializeProfile}
+ * still builds each profile from its tier's allowlist.
+ *
+ * @param services - The database, keyring and logger.
+ * @param viewerId - The id of the user doing the looking.
+ * @param targetIds - The ids being looked at, in the order the answer must hold them; duplicates ask
+ *   for the same profile twice, and an empty request queries nothing.
+ * @param now - The instant proof validity is judged at; from `request.receivedAt` or
+ *   `services.clock.now()`, never from the process.
+ * @param opts - `blocked: 'tier0'` answers tier 0 for a blocked target instead of `null`, for the
+ *   counterparts shown inside the viewer's own meetups, exactly as {@link loadProfile} does.
+ * @returns One entry per requested id, in request order: the tier and its profile, or `null` for a
+ *   target that must not be served at all — a block under the default `'hide'`, an unknown id, a
+ *   deleted or deletion-requested user, or a tombstone whose `handle` and `avatarSeed` account
+ *   erasure nulled (AAP 0.5.2, 0.5.4).
+ * @throws ZodError when a built field does not satisfy its tier's schema.
+ */
+export async function loadProfiles(
+  services: ReaderServices,
+  viewerId: string,
+  targetIds: readonly string[],
+  now: Date,
+  opts?: { blocked?: 'hide' | 'tier0' },
+): Promise<(LoadedProfile | null)[]> {
+  const selfKey = viewerId.toLowerCase();
+  const wanted = [...new Set(targetIds.map((id) => id.toLowerCase()))];
+
+  if (wanted.length === 0) {
+    return [];
+  }
+
+  // Every id but the viewer's own, in one statement; the self id never reaches it, as `loadProfile`
+  // never reaches `pairFacts` with a self pair.
+  const factsByKey = await pairFactsFor(
+    services.db,
+    viewerId,
+    wanted.filter((key) => key !== selfKey),
+  );
+
+  /** The ids that are served, with the tier each earned and the facts that decided it. */
+  const served = new Map<string, { tier: DisclosureTier; facts: PairFacts }>();
+
+  if (wanted.includes(selfKey)) {
+    served.set(selfKey, { tier: 3, facts: SELF_PAIR_FACTS });
+  }
+
+  for (const [key, facts] of factsByKey) {
+    const result = tierFrom(facts);
+
+    if (result === 'blocked' && opts?.blocked !== 'tier0') {
+      continue;
+    }
+
+    served.set(key, { tier: result === 'blocked' ? 0 : result, facts });
+  }
+
+  const byTier = new Map<DisclosureTier, string[]>();
+  for (const [key, entry] of served) {
+    const ids = byTier.get(entry.tier);
+    if (ids === undefined) {
+      byTier.set(entry.tier, [key]);
+    } else {
+      ids.push(key);
+    }
+  }
+
+  const rowByKey = new Map<string, ProfileRow<DisclosureTier>>();
+
+  for (const [tier, ids] of byTier) {
+    const rows = await services.db.user.findMany({
+      where: { id: { in: ids }, deletedAt: null, deletionRequestedAt: null },
+      select: selectForTier(tier),
+    });
+
+    for (const row of rows) {
+      rowByKey.set(row.id, row);
+    }
+  }
+
+  const servedKeys = [...served.keys()];
+  const [counters, proofs] = await Promise.all([
+    countersForMany(services.db, servedKeys, now),
+    currentProofsFor(services.db, servedKeys, now),
+  ]);
+
+  return targetIds.map((targetId) => {
+    const key = targetId.toLowerCase();
+    const entry = served.get(key);
+
+    if (entry === undefined) {
+      return null;
+    }
+
+    const row = rowByKey.get(key);
+
+    if (row === undefined || row.handle === null || row.avatarSeed === null) {
+      return null;
+    }
+
+    return {
+      tier: entry.tier,
+      profile: serializeProfile(services, row, entry.tier, {
+        reputation: counters.get(key) ?? EMPTY_REPUTATION,
+        currentProof: proofs.get(key) ?? null,
+        canMessage: canMessageFrom(entry.facts, viewerId, targetId),
+      }),
+    };
+  });
 }
 
 /**

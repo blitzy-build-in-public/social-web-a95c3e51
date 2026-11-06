@@ -30,17 +30,11 @@ import { Banner, Button, Screen, announce } from '../../src/ui';
  */
 type VerifyPhase = 'missing' | 'choose' | 'verifying' | 'error';
 
-/** The header title of the route, which is the sign-in landing. */
+/**
+ * The route's header title, which is the page's only level-one heading: the navigator renders it
+ * from here, so this screen passes `Screen` no title of its own (AAP 0.5.8).
+ */
 const HEADER_TITLE = 'Sign in';
-
-/** The page heading while the link is being checked or a failure is shown. */
-const SIGN_IN_TITLE = 'Sign in';
-
-/** The page heading while the token is being exchanged. */
-const SIGNING_IN_TITLE = 'Signing in';
-
-/** The page heading on a mobile browser, where the traveler picks where to sign in. */
-const CHOOSE_TITLE = 'Where would you like to sign in?';
 
 /** A link that carries no token: nothing was requested, and a fresh one is what is needed. */
 const INCOMPLETE_LINK = 'This sign-in link is incomplete.';
@@ -116,12 +110,6 @@ function appLink(token: string): string {
 function failureMessage(error: unknown): string {
   if (isApiError(error) && error.code === 'token_invalid') return EXPIRED_LINK;
   return isApiError(error) ? userMessageFor(error.code) : userMessageFor('network_error');
-}
-
-/** The page heading for a state: the choice where there is one, the exchange, else the landing. */
-function titleFor(phase: VerifyPhase): string {
-  if (phase === 'choose') return CHOOSE_TITLE;
-  return phase === 'verifying' ? SIGNING_IN_TITLE : SIGN_IN_TITLE;
 }
 
 /**
@@ -287,7 +275,7 @@ export default function VerifyMagicLinkScreen(): ReactElement {
   }, [phase, routeToken]);
 
   return (
-    <Screen title={titleFor(phase)} testID="verify-screen">
+    <Screen testID="verify-screen">
       <Stack.Screen options={{ title: HEADER_TITLE }} />
 
       {phase === 'missing' ? (

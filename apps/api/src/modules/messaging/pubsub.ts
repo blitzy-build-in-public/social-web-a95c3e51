@@ -1,6 +1,6 @@
 /**
  * Redis pub/sub fan-out and the in-process socket registry behind the chat socket (AAP 0.3.2, 0.5.1,
- * 0.5.3, 0.8.1).
+ * 0.5.3, 0.5.4, 0.8.1).
  *
  * A socket belongs to exactly one API instance, so a frame written on one instance reaches a socket
  * held by another only through Redis. Two channels carry that traffic, named by the shared helpers
@@ -8,9 +8,13 @@
  *
  * - `chat:<meetupId>` ({@link chatChannel}) carries one committed chat message to both participants'
  *   sockets — the sender's own included, where it doubles as delivery confirmation (AAP 0.5.4).
- * - `user:<userId>` ({@link userChannel}) carries that user's meetup-status pushes, and the
- *   account-deletion invalidation every API instance reads to close the user's sockets and drop the
- *   cached entries of the sessions that ended (AAP 0.5.3).
+ * - `user:<userId>` ({@link userChannel}) carries that user's meetup-status pushes, the invalidation
+ *   every API instance reads to drop the cached entries of the sessions that ended and close the
+ *   sockets they were admitted with — the sockets of the sessions the frame names, or every socket of
+ *   the user when it names none, which is what an account that ended as a whole publishes
+ *   (AAP 0.5.3) — and the attach signal an instance reads to add one meetup to that user's sockets,
+ *   which is how a chat a participant opens or writes in reaches their open socket live (AAP 0.5.1,
+ *   0.5.4).
  *
  * **Delivery happens only through the subscription.** A publisher never hands a frame to its own
  * local sockets: it publishes, its own pattern subscription receives the message back, and the
@@ -23,13 +27,14 @@
  * without a subscription costs is local delivery of the frames published inside it, never state: a
  * client reads `GET /meetups/:id` for the truth about a meetup (AAP 0.5.4).
  *
- * The invalidation frame is defined here and only here. It travels between API instances and is never
- * sent to a client.
+ * Both internal frames — the invalidation and the attach — are defined here and only here. They
+ * travel between API instances and are never sent to a client.
  *
  * @see AAP 0.3.2 for the stateless-API fan-out, the channel-name convention (`:` here, `-` in BullMQ
  *   job ids) and the rule that no Redis call runs inside a domain transaction; 0.5.1 for this file's
  *   place in the messaging component; 0.5.3 for the invalidation and the session-cache drop it
- *   triggers; 0.8.1 for this file.
+ *   triggers; 0.5.4 for the chat the attach signal makes live on a socket that already opened; 0.8.1
+ *   for this file.
  */
 
 import { z } from 'zod';
@@ -128,12 +133,14 @@ export interface PubSubServices {
 }
 
 /**
- * The account-deletion invalidation every API instance reads on `user:<userId>` (AAP 0.3.2, 0.5.3).
+ * The invalidation every API instance reads on `user:<userId>` (AAP 0.3.2, 0.5.3).
  *
- * Published by `plugins/auth.ts`'s `invalidateUserSessions` after `DELETE /me` committed, as the
- * frozen `{ type: 'invalidate' }` frame; a publisher that knows the ended sessions may add them, and
- * each instance then drops their cache entries beside closing the sockets. It is not a
- * `ServerFrame`: it never reaches a client, which is why its schema is a strict object of its own.
+ * Published by `plugins/auth.ts` after the transaction that revoked sessions committed: as the frozen
+ * `{ type: 'invalidate' }` frame for an account that ended as a whole, or as the same frame carrying
+ * the `sessionIds` of the one session `POST /auth/logout` revoked. Each instance drops the named
+ * sessions' cache entries beside closing their sockets, and a frame that names none closes every
+ * socket of the user. It is not a `ServerFrame`: it never reaches a client, which is why its schema is
+ * a strict object of its own.
  */
 export const InvalidateSignal = z.strictObject({
   type: z.literal('invalidate'),
@@ -142,19 +149,39 @@ export const InvalidateSignal = z.strictObject({
 export type InvalidateSignal = z.infer<typeof InvalidateSignal>;
 
 /**
- * Every message the user channel may carry: a client-facing {@link ServerFrame}, or the internal
- * {@link InvalidateSignal}.
+ * The attach every API instance reads on `user:<userId>`: one meetup joins that user's sockets
+ * (AAP 0.3.2, 0.5.1, 0.5.4).
+ *
+ * Published by {@link PubSub.openChat}, which has already attached the meetup on the instance that
+ * served the request, so the addition reaches a user's sockets whoever holds them. It exists because
+ * a socket's meetup set is read once as it opens and bounded, so a chat the participant opens or
+ * writes in later would otherwise never be delivered to their open socket (AAP 0.5.1). Like the
+ * invalidation it is not a `ServerFrame`: it never reaches a client, which is why its schema is a
+ * strict object of its own.
  */
-export type UserChannelMessage = ServerFrame | InvalidateSignal;
+export const AttachMeetupSignal = z.strictObject({
+  type: z.literal('attach_meetup'),
+  meetupId: Uuid,
+});
+export type AttachMeetupSignal = z.infer<typeof AttachMeetupSignal>;
+
+/**
+ * Every message the user channel may carry: a client-facing {@link ServerFrame}, or one of the two
+ * internal signals the API instances send each other — {@link InvalidateSignal} and
+ * {@link AttachMeetupSignal}.
+ */
+export type UserChannelMessage = ServerFrame | InvalidateSignal | AttachMeetupSignal;
 
 /**
  * Redis pub/sub fan-out and the local socket registry, as `apps/api/src/app.ts` holds it on
  * `services.pubsub` (AAP 0.3.2, 0.5.1).
  *
  * The publishing methods are the whole cross-instance surface: they are what `modules/messaging`
- * calls after a message commits, and what the meetup state machine calls on a transition. The three
- * registry methods are local to the instance that owns the socket, so a route attaches its socket
- * here and nothing about that socket crosses the process boundary.
+ * calls after a message commits, and what the meetup state machine calls on a transition.
+ * {@link PubSub.openChat} publishes as well, because the chat it makes live may be held by any
+ * instance, and it attaches on this one first. The three registry methods are local to the instance
+ * that owns the socket, so a route attaches its socket here and nothing about that socket crosses the
+ * process boundary.
  */
 export interface PubSub {
   /**
@@ -175,10 +202,11 @@ export interface PubSub {
    * Publishes one frame to a user's own sockets, on `user:<userId>` (AAP 0.5.1).
    *
    * Call it after the transaction that decided the frame committed, never inside one: no Redis call
-   * belongs in a domain transaction (AAP 0.3.2). It never throws. A frame that satisfies neither
-   * {@link ServerFrame} nor {@link InvalidateSignal} is a programming error, logged as
-   * `ws_frame_invalid` and not published; a publish that fails is logged as `pubsub_publish_failed`
-   * and dropped, because the frame's state is read back from the route that owns it.
+   * belongs in a domain transaction (AAP 0.3.2). It never throws. A frame that is none of
+   * {@link ServerFrame}, {@link InvalidateSignal} or {@link AttachMeetupSignal} is a programming
+   * error, logged as `ws_frame_invalid` and not published; a publish that fails is logged as
+   * `pubsub_publish_failed` and dropped, because the frame's state is read back from the route that
+   * owns it.
    */
   publishUser(userId: string, message: UserChannelMessage): Promise<void>;
   /**
@@ -190,28 +218,56 @@ export interface PubSub {
    */
   publishChat(meetupId: string, frame: MessageFrame): Promise<void>;
   /**
-   * Publishes the account-deletion invalidation on a user's channel, with the sessions that ended.
+   * Publishes an invalidation on a user's channel, naming the sessions it ends (AAP 0.5.3).
    *
-   * The frame is what every instance closes the user's sockets from; the session ids are what each
-   * instance drops from its own cache beside it (AAP 0.5.3). An empty or absent list publishes the
-   * bare frame, since a cache drop of no keys is already a no-op where it happens.
+   * The frame is what every instance closes the sockets of those sessions from, and the session ids
+   * are also what each instance drops from its own cache beside it. An empty or absent list publishes
+   * the bare frame, which closes every socket of the user: that is the whole-account end `DELETE /me`
+   * and a refresh-reuse revocation publish, since a cache drop of no keys is already a no-op where it
+   * happens.
    */
   publishInvalidate(userId: string, sessionIds?: readonly string[]): Promise<void>;
   /**
-   * Registers an open socket under its user and each of the meetups it carries (AAP 0.5.1).
+   * Registers an open socket under its user, the session it was admitted with, and each of the
+   * meetups it carries (AAP 0.5.1, 0.5.3).
    *
    * Called once by the chat route when a socket opens, with the meetups the caller may chat in. The
    * meetup set is what makes a message reach both participants: a socket in it is delivered to
-   * whatever the pair writes, on whichever instance wrote it.
+   * whatever the pair writes, on whichever instance wrote it. The session is what a session-scoped
+   * invalidation closes the socket from, so a logout ends the sockets it opened and no others
+   * (AAP 0.5.3).
    */
-  attach(socket: WebSocket, userId: string, meetupIds: readonly string[]): void;
+  attach(socket: WebSocket, userId: string, sessionId: string, meetupIds: readonly string[]): void;
   /**
    * Adds one meetup to every open socket of a user on this instance.
    *
-   * Called when a meetup locks during the life of a socket, so chat opens without a reconnect
-   * (AAP 0.5.3); a socket opened after the lock carries the meetup from {@link PubSub.attach}.
+   * Called when a meetup locks during the life of a socket, and by the write path for the meetup a
+   * send committed in, so chat opens without a reconnect (AAP 0.5.3, 0.5.4); a socket opened after
+   * the lock carries the meetup from {@link PubSub.attach}, and a chat beyond the bound that set was
+   * read with arrives through {@link PubSub.openChat}.
    */
   attachMeetup(userId: string, meetupId: string): void;
+  /**
+   * Makes one chat live for a user's open sockets, on every API instance (AAP 0.3.2, 0.5.1, 0.5.4).
+   *
+   * A socket's meetup set is read once as it opens and bounded to the newest chats the user may
+   * message in, so a chat the participant opens or writes in later would otherwise never reach their
+   * open socket while the history read still returns its messages (AAP 0.5.1). This is the addition
+   * that closes that window: the attach is the client's own use of the chat, and it reaches every
+   * instance holding one of the user's sockets.
+   *
+   * Called by the history route, whose read is the client's "I opened this chat"; the write path makes
+   * the same addition on its own instance through {@link PubSub.attachMeetup}, because the socket that
+   * just wrote in the meetup already holds it (AAP 0.5.4). Raise-only: a meetup is added and never
+   * removed, so a repeated call costs one lookup. Call it outside any transaction, as the publishing
+   * methods above are called: it publishes on `user:<userId>`, and no Redis call belongs in a domain
+   * transaction (AAP 0.3.2).
+   *
+   * It never throws: the attach is in process, and a publish that fails is logged as
+   * `pubsub_publish_failed` and dropped exactly as {@link PubSub.publishUser} drops one, because the
+   * frames it makes live are read back from the route that owns them (AAP 0.3.2).
+   */
+  openChat(userId: string, meetupId: string): Promise<void>;
   /**
    * Removes a socket from the registry: its user, every meetup it carried, and the registration
    * itself. Called by the chat route when the socket closes. Harmless for an unknown socket.
@@ -241,10 +297,19 @@ function decodeJson(payload: string): unknown {
  * The registry and the fan-out
  */
 
-/** One socket's membership: the user it belongs to, and every meetup it is delivered to. */
+/** One socket's membership: the account it belongs to, its session, and the meetups it carries. */
 interface SocketRegistration {
   readonly userId: string;
-  /** The meetups whose `chat:` channel reaches this socket; the set grows when a meetup locks. */
+  /**
+   * The session the upgrade authenticated with, which is what a session-scoped invalidation is
+   * matched against, so a logout closes that session's sockets and leaves the user's others open
+   * (AAP 0.5.3).
+   */
+  readonly sessionId: string;
+  /**
+   * The meetups whose `chat:` channel reaches this socket; the set grows as a meetup locks, or as the
+   * participant opens or writes in a chat ({@link PubSub.openChat}).
+   */
   readonly meetupIds: Set<string>;
 }
 
@@ -310,15 +375,27 @@ export function createPubSub(services: PubSubServices): PubSub {
     addSocket(meetupSockets, meetupId, socket);
   }
 
-  function attach(socket: WebSocket, userId: string, meetupIds: readonly string[]): void {
+  function attach(
+    socket: WebSocket,
+    userId: string,
+    sessionId: string,
+    meetupIds: readonly string[],
+  ): void {
     const existing = registrations.get(socket);
-    // A socket belongs to one user for its life. Should a route re-attach it as another user, the
-    // earlier registration is dropped first, so no frame can reach a socket under the wrong account.
-    if (existing !== undefined && existing.userId !== userId) detach(socket);
+    // A socket belongs to one user and one session for its life. Should a route re-attach it as
+    // another user, or under a session that replaced the one it was admitted with, the earlier
+    // registration is dropped first, so no frame can reach a socket under the wrong account and no
+    // invalidation names the wrong session.
+    if (
+      existing !== undefined &&
+      (existing.userId !== userId || existing.sessionId !== sessionId)
+    ) {
+      detach(socket);
+    }
 
     let registration = registrations.get(socket);
     if (registration === undefined) {
-      registration = { userId, meetupIds: new Set<string>() };
+      registration = { userId, sessionId, meetupIds: new Set<string>() };
       registrations.set(socket, registration);
       addSocket(userSockets, userId, socket);
     }
@@ -371,16 +448,28 @@ export function createPubSub(services: PubSubServices): PubSub {
   }
 
   /**
-   * Closes every socket of a user with {@link WS_CLOSE.invalidated} and forgets them (AAP 0.5.3).
+   * Closes and forgets the sockets an invalidation ends (AAP 0.5.3).
+   *
+   * The frame's `sessionIds` decide the scope: when it names sessions, the sockets that were admitted
+   * with one of them are the ones closed, which is what a logout ends and no more; when it names
+   * none, every socket of the user goes, which is what an account-wide end — `DELETE /me` and a
+   * refresh-reuse revocation — means.
    *
    * The close code is the client's signal that its session ended rather than a socket it should
    * reconnect: the token it holds was revoked, so it signs in again before opening another one.
    */
-  function closeUserSockets(userId: string): void {
+  function closeUserSockets(userId: string, sessionIds?: readonly string[]): void {
     const sockets = userSockets.get(userId);
     if (sockets === undefined) return;
 
+    const ended = sessionIds === undefined || sessionIds.length === 0 ? null : new Set(sessionIds);
+
     for (const socket of [...sockets]) {
+      const registration = registrations.get(socket);
+      if (ended !== null && (registration === undefined || !ended.has(registration.sessionId))) {
+        continue;
+      }
+
       try {
         socket.close(WS_CLOSE.invalidated, 'invalidated');
       } catch {
@@ -430,13 +519,13 @@ export function createPubSub(services: PubSubServices): PubSub {
     deliver(meetupSockets.get(meetupId), JSON.stringify(parsed.data));
   }
 
-  /** One user-channel frame: either the internal invalidation, or a client-facing server frame. */
+  /** One user-channel frame: one of the two internal signals, or a client-facing server frame. */
   function onUserFrame(userId: string, decoded: unknown): void {
     const invalidate = InvalidateSignal.safeParse(decoded);
     if (invalidate.success) {
-      closeUserSockets(userId);
-
       const { sessionIds } = invalidate.data;
+      closeUserSockets(userId, sessionIds);
+
       if (sessionIds !== undefined && sessionIds.length > 0) {
         // The publisher deleted the shared keys before publishing; this is the entry an instance of
         // its own wrote from an earlier request (AAP 0.5.3). Not awaited, so a socket listener never
@@ -445,6 +534,16 @@ export function createPubSub(services: PubSubServices): PubSub {
           logger.warn({ event: 'session_cache_drop_failed' }, 'session_cache_drop_failed');
         });
       }
+      return;
+    }
+
+    // The other internal frame: it announces that one meetup joins this user's sockets, and it is
+    // consumed here rather than delivered, so no client is ever sent a frame the contract does not
+    // define (AAP 0.5.1). The instance that published it attached the meetup before publishing, so
+    // this is the addition for every other instance (AAP 0.3.2).
+    const attach = AttachMeetupSignal.safeParse(decoded);
+    if (attach.success) {
+      attachMeetup(userId, attach.data.meetupId);
       return;
     }
 
@@ -472,6 +571,13 @@ export function createPubSub(services: PubSubServices): PubSub {
   function encodeUserMessage(message: UserChannelMessage): string | null {
     if (message.type === 'invalidate') {
       const parsed = InvalidateSignal.safeParse(message);
+      return parsed.success ? JSON.stringify(parsed.data) : null;
+    }
+
+    // The second internal frame, encoded the same way: it is not a `ServerFrame`, so it is written
+    // back from its own schema rather than handed to `ServerFrame` (AAP 0.5.1).
+    if (message.type === 'attach_meetup') {
+      const parsed = AttachMeetupSignal.safeParse(message);
       return parsed.success ? JSON.stringify(parsed.data) : null;
     }
 
@@ -523,6 +629,20 @@ export function createPubSub(services: PubSubServices): PubSub {
         : { type: 'invalidate', sessionIds: [...sessionIds] };
 
     await publishUser(userId, message);
+  }
+
+  /**
+   * Makes one chat live for a user's open sockets: on this instance at once, and on every other one
+   * through the user channel (AAP 0.3.2, 0.5.1, 0.5.4).
+   *
+   * The local attach runs first, because the instance serving the read or the write is the one most
+   * likely to hold a socket of that user, and its sockets are then carried without waiting for the
+   * frame published below to come back over the subscription. The attach is in process; only the
+   * publish is a round trip, and {@link publishUser} never throws.
+   */
+  async function openChat(userId: string, meetupId: string): Promise<void> {
+    attachMeetup(userId, meetupId);
+    await publishUser(userId, { type: 'attach_meetup', meetupId });
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -653,6 +773,7 @@ export function createPubSub(services: PubSubServices): PubSub {
     publishInvalidate,
     attach,
     attachMeetup,
+    openChat,
     detach,
   };
 }

@@ -76,10 +76,10 @@ import type { ClientErrorCode } from '../../src/api/errors';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
 
-/** The route's title, the navigation header's name and the page's own heading. */
+/** The route's title: the page's only heading, and what the navigator records for it. */
 const SCREEN_TITLE = 'Operator queues';
 
-/** The name of the tablist, and the sentence said after an action succeeded. */
+/** The name of the tablist, and the notice a successful action speaks on iOS and Android. */
 const TABLIST_LABEL = 'Operator queues';
 const SAVED_NOTICE = 'Saved.';
 
@@ -332,8 +332,11 @@ interface QueueActionHandle<TValues> {
 }
 
 /**
- * The one mutation every queue action of this screen runs: the request, the refresh of every queue it
- * reached, and `Saved.` said once. A failure is announced as it is shown.
+ * The one mutation every queue action of this screen runs: one request per press, a busy button
+ * meanwhile. A success clears the standing failure, invalidates every queue the action reached —
+ * the queue's own re-read is what confirms the action to the operator — and speaks `Saved.` on
+ * iOS and Android only, `announce` being a no-op on web. A failure is shown in the row's banner
+ * and announced with it: the banner's live region speaks it on web, `announce` on iOS and Android.
  */
 function useQueueAction<TValues>(action: QueueAction<TValues>): QueueActionHandle<TValues> {
   const [failure, setFailure] = useState<ClientErrorCode | null>(null);
@@ -1715,8 +1718,9 @@ export default function OpsQueuesScreen(): ReactElement {
 
   return (
     <Screen title={SCREEN_TITLE}>
-      {/* The header names the route; the Screen's own title is the page's heading, which is what a
-          web heading structure and a screen reader's outline read. */}
+      {/* The ops area's Stack mounts with `headerShown: false`, so no navigator header names this
+          route: the Screen's own title is the page's only heading, which is what a web heading
+          structure and a screen reader's outline read. This element records the route's title. */}
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
 
       <View

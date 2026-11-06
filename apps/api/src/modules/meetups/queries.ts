@@ -35,18 +35,17 @@
  *   file.
  */
 
-import { z } from 'zod';
-
 import {
   CHECK_IN_CLOSES_AFTER_MINUTES,
   CHECK_IN_OPENS_BEFORE_MINUTES,
+  CURSOR_INSTANT_FORMAT,
+  decodeKeysetCursor,
+  encodeKeysetCursor,
   HOUR_MS,
-  IsoDateTime,
   LATE_CANCEL_WINDOW_HOURS,
   MINUTE_MS,
   PAGE_SIZE,
   Tier0Profile,
-  Uuid,
 } from '@tablemate/shared';
 import type {
   AnyTierProfile,
@@ -60,11 +59,11 @@ import type {
   VenueDto,
 } from '@tablemate/shared';
 import { readPoints } from '@tablemate/db';
-import type { DbClient, DbTx, Deposit, Meetup, Prisma, Venue } from '@tablemate/db';
+import type { DbClient, DbTx, Deposit, Meetup, Prisma } from '@tablemate/db';
 
 import { AppError } from '../../plugins/errors.ts';
 import { holdView } from '../payments/holds.ts';
-import { loadProfile } from '../users/disclosure/serialize.ts';
+import { loadProfiles } from '../users/disclosure/serialize.ts';
 import type { LoadedProfile } from '../users/disclosure/serialize.ts';
 
 import type { AppServices } from '../../app.ts';
@@ -357,27 +356,48 @@ function deletedTraveler(id: string): Tier0Profile {
 /**
  * The counterpart's profile at the caller's tier, or the tombstone above (AAP 0.5.4, 0.5.7).
  *
- * `loadProfile` runs all three disclosure layers on its own: the pair's facts decide the tier, that
- * tier's select loads only its columns and its serializer builds the response, so the counterpart is
- * exactly as disclosed as `GET /users/:userId` would answer (criterion 5). `blocked: 'tier0'` is what
- * keeps the caller's own meetup readable when a block exists in either direction, at the minimum
- * disclosure the contract allows.
+ * `counterpartProfile` serializes every counterpart from the batched read of the page, which runs all
+ * three disclosure layers on its own: the pair's facts decide the tier, that tier's select loads only
+ * its columns and its serializer builds the response, so the counterpart is exactly as disclosed as
+ * `GET /users/:userId` would answer (criterion 5). `blocked: 'tier0'` is what keeps the caller's own
+ * meetup readable when a block exists in either direction, at the minimum disclosure the contract
+ * allows.
  */
 function counterpartProfile(loaded: LoadedProfile | null, counterpartId: string): AnyTierProfile {
   return loaded?.profile ?? deletedTraveler(counterpartId);
 }
 
 /**
+ * The venue columns `MeetupDto.venue` is built from (AAP 0.5.4).
+ *
+ * A venue carries the secret its console authenticates with, and a meetup read has no business
+ * loading one: the select holds no secret column, so `secretLookupHash`, `secretCiphertext` and
+ * `secretIssuedAt` never enter the process on this path. The coordinates are not in the select
+ * either, because `location` is `Unsupported` in the schema and comes from the PostGIS helper.
+ */
+const MEETUP_VENUE_SELECT = {
+  id: true,
+  cityId: true,
+  name: true,
+  address: true,
+  isActivePartner: true,
+} as const satisfies Prisma.VenueSelect;
+
+/** One row of {@link MEETUP_VENUE_SELECT}: the five columns above, and no secret (AAP 0.5.4). */
+type MeetupVenueRow = Prisma.VenueGetPayload<{ select: typeof MEETUP_VENUE_SELECT }>;
+
+/**
  * One venue as `MeetupDto.venue` carries it (AAP 0.5.4).
  *
- * `Venue.secretLookupHash` and `Venue.secretCiphertext` are not read here and never leave the
- * server: a console secret is shown once, by its issue route. `lat` and `lng` are the venue's own
- * place of business — what the client maps the meetup by and what the 150 m check-in geofence is
- * measured from (AAP 0.5.7) — never a user's coordinates.
+ * The row it is handed holds only the five columns {@link MEETUP_VENUE_SELECT} names, which is what
+ * keeps `secretLookupHash`, `secretCiphertext` and `secretIssuedAt` out of the process: a console
+ * secret is shown once, by its issue route, and never loaded on a meetup read. `lat` and `lng` are
+ * the venue's own place of business — what the client maps the meetup by and what the 150 m check-in
+ * geofence is measured from (AAP 0.5.7) — never a user's coordinates.
  *
  * @throws Error when the venue carries no location, since the DTO's `lat`/`lng` are required.
  */
-function venueDto(row: Venue, point: LatLng | undefined): VenueDto {
+function venueDto(row: MeetupVenueRow, point: LatLng | undefined): VenueDto {
   if (point === undefined) {
     throw new Error('Meetup venue has no location to serialize.');
   }
@@ -393,6 +413,25 @@ function venueDto(row: Venue, point: LatLng | undefined): VenueDto {
   };
 }
 
+/**
+ * The deposit columns a meetup page is built from (AAP 0.5.4).
+ *
+ * `meetupId` and `role` are the keys one side's deposit is filed under, and `status` is the whole of
+ * what a `MeetupDto` reads off the row: `holdView` renders it and {@link computeNextAction} compares
+ * it. The read therefore holds no amount, attempt counter, PaymentIntent id or capture instant.
+ */
+const MEETUP_DEPOSIT_SELECT = {
+  meetupId: true,
+  role: true,
+  status: true,
+} as const satisfies Prisma.DepositSelect;
+
+/**
+ * One row of {@link MEETUP_DEPOSIT_SELECT}: those three columns, which are all {@link DepositLike}
+ * and {@link holdView} need.
+ */
+type MeetupDepositRow = Prisma.DepositGetPayload<{ select: typeof MEETUP_DEPOSIT_SELECT }>;
+
 /** The key one side's deposit is filed under: a meetup has at most one deposit per side (AAP 0.5.2). */
 function depositSide(meetupId: string, role: ParticipantRole): string {
   return `${meetupId}:${role}`;
@@ -401,10 +440,13 @@ function depositSide(meetupId: string, role: ParticipantRole): string {
 /**
  * One page of `MeetupDto`s, in the order the rows arrived (AAP 0.5.4).
  *
- * The page costs a fixed number of queries however many rows it holds — the deposits, the caller's
- * passing check-ins, the open disputes, the venues, the venue coordinates and one counterpart load
- * per row, all issued in parallel — so a 20-metup page costs the same shape of work as a single-row
- * read, which is what lets the own-meetups list hold the read latency target (AAP 0.12.2).
+ * The page costs a fixed number of queries however many rows it holds, and not one of them is issued
+ * per row: the six reads of the `Promise.all` below — the deposits, the caller's passing check-ins,
+ * the open disputes, the venues, the venue coordinates and the page's counterpart profiles — over one
+ * pair-facts statement for every counterpart of the page, one `user` read per disclosure tier the
+ * page actually holds (at most four, each carrying its own `selectForTier`), one reputation-counters
+ * call and one current-proof read. A 20-meetup page therefore costs the same shape of work as a
+ * single-row read, which is what lets the own-meetups list hold the read latency target (AAP 0.12.2).
  *
  * Each field comes from the allowlist below rather than from a spread row, and nothing a DTO carries
  * can be a secret: no client secret, PaymentIntent id or card detail is read here, and a caller
@@ -452,7 +494,10 @@ export async function toMeetupDtos(
   const venueIds = [...new Set(prepared.map((entry) => entry.meetup.venueId))];
 
   const [deposits, passedCheckIns, openDisputes, venues, points, profiles] = await Promise.all([
-    services.db.deposit.findMany({ where: { meetupId: { in: meetupIds } } }),
+    services.db.deposit.findMany({
+      where: { meetupId: { in: meetupIds } },
+      select: MEETUP_DEPOSIT_SELECT,
+    }),
     services.db.checkIn.findMany({
       where: { meetupId: { in: meetupIds }, userId: viewerId, result: 'pass' },
       select: { meetupId: true },
@@ -461,16 +506,21 @@ export async function toMeetupDtos(
       where: { meetupId: { in: meetupIds }, status: 'open' },
       select: { meetupId: true },
     }),
-    services.db.venue.findMany({ where: { id: { in: venueIds } } }),
+    services.db.venue.findMany({
+      where: { id: { in: venueIds } },
+      select: MEETUP_VENUE_SELECT,
+    }),
     readPoints(services.db, 'venue', venueIds, services.env.APP_ENV),
-    Promise.all(
-      prepared.map((entry) =>
-        loadProfile(services, viewerId, entry.counterpartId, now, { blocked: 'tier0' }),
-      ),
+    loadProfiles(
+      services,
+      viewerId,
+      prepared.map((entry) => entry.counterpartId),
+      now,
+      { blocked: 'tier0' },
     ),
   ]);
 
-  const depositBySide = new Map<string, Deposit>();
+  const depositBySide = new Map<string, MeetupDepositRow>();
   for (const deposit of deposits) {
     depositBySide.set(depositSide(deposit.meetupId, deposit.role), deposit);
   }
@@ -548,14 +598,6 @@ export async function toMeetupDto(
  */
 
 /**
- * The JSON a cursor carries: the boundary row's `createdAt` as ISO 8601 text and its id.
- *
- * A strict object, so a cursor carrying a third key — or a value of the wrong shape — is refused
- * rather than interpreted, and the fields are named `c` and `i` to keep the encoded form short.
- */
-const MeetupCursorPayload = z.strictObject({ c: IsoDateTime, i: Uuid });
-
-/**
  * The exact stored `createdAt` of one meetup, as ISO 8601 in UTC.
  *
  * Why a string and not the row's own `Date`: Prisma answers a `timestamptz(6)` column as a `Date`,
@@ -563,9 +605,10 @@ const MeetupCursorPayload = z.strictObject({ c: IsoDateTime, i: Uuid });
  * raw-SQL insert does — keeps microseconds. A cursor built from a truncated value would make the
  * equality branch of {@link afterCursor} unable to match the boundary row at all, and every row
  * sharing its millisecond would be dropped from the middle of the list: exactly the case a page
- * boundary meets when several meetups were written in one statement. PostgreSQL therefore formats
- * the value, and Prisma receives it back as the ISO string its `DateTime` filters accept (AAP
- * 0.5.4).
+ * boundary meets when several meetups were written in one statement. PostgreSQL therefore formats the
+ * value with {@link CURSOR_INSTANT_FORMAT}, the one rendering the shared codec's instant accepts and
+ * the next page's bound is compared as, and Prisma receives it back as the ISO string its `DateTime`
+ * filters accept (AAP 0.5.4).
  *
  * @param db - The guarded client; a page is built outside any transaction.
  * @param id - The boundary row's id.
@@ -575,7 +618,7 @@ const MeetupCursorPayload = z.strictObject({ c: IsoDateTime, i: Uuid });
  */
 async function exactCreatedAt(db: DbClient | DbTx, id: string): Promise<string> {
   const rows = await db.$queryRaw<{ exact: string }[]>`
-    SELECT to_char("created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "exact"
+    SELECT to_char("created_at" AT TIME ZONE 'UTC', ${CURSOR_INSTANT_FORMAT}) AS "exact"
       FROM "meetup"
      WHERE "id" = ${id}::uuid
   `;
@@ -590,26 +633,26 @@ async function exactCreatedAt(db: DbClient | DbTx, id: string): Promise<string> 
 }
 
 /**
- * Encodes a keyset cursor as base64url JSON (AAP 0.5.4).
+ * Encodes a keyset cursor as the shared codec's opaque wire form (AAP 0.5.4).
  *
  * The cursor is opaque: the client echoes it back unchanged, and `MeetupListQuery.cursor` accepts it
- * as a bounded string. Encoding goes through the payload schema as well, so a position this file
- * could not read back is never issued.
+ * as a bounded string. Encoding goes through `@tablemate/shared`'s `encodeKeysetCursor`, so a position
+ * the codec could not read back is never issued, and this reader writes the same bytes as the
+ * discovery and messaging readers (AAP 0.11.1).
  *
  * @param position - The boundary row's exact `createdAt` and its id.
  * @returns The encoded cursor.
  */
 export function encodeMeetupCursor(position: MeetupCursorPosition): string {
-  const payload = MeetupCursorPayload.parse({ c: position.createdAt, i: position.id });
-
-  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  return encodeKeysetCursor(position);
 }
 
 /**
  * Decodes a cursor this file issued (AAP 0.5.4).
  *
- * A cursor is a value the client sends back, so it is parsed strictly: canonical base64url of JSON
- * that satisfies {@link MeetupCursorPayload}, and nothing else.
+ * A cursor is a value the client sends back, so the shared codec parses it strictly: canonical
+ * base64url of a `{t,i}` JSON payload that its `KeysetCursor` accepts — an instant in exactly the form
+ * {@link CURSOR_INSTANT_FORMAT} writes, and a UUID — and nothing else.
  *
  * @param value - The `cursor` query parameter.
  * @returns The position it names.
@@ -617,28 +660,13 @@ export function encodeMeetupCursor(position: MeetupCursorPosition): string {
  *   malformed cursor (AAP 0.5.4).
  */
 export function decodeMeetupCursor(value: string): MeetupCursorPosition {
-  const malformed = (): AppError => new AppError('invalid_field', 'The cursor is malformed.');
+  const position = decodeKeysetCursor(value);
 
-  const decoded = Buffer.from(value, 'base64url');
-
-  if (decoded.toString('base64url') !== value) {
-    throw malformed();
+  if (position === null) {
+    throw new AppError('invalid_field', 'The cursor is malformed.');
   }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(decoded.toString('utf8'));
-  } catch {
-    throw malformed();
-  }
-
-  const parsed = MeetupCursorPayload.safeParse(payload);
-
-  if (!parsed.success) {
-    throw malformed();
-  }
-
-  return { createdAt: parsed.data.c, id: parsed.data.i };
+  return position;
 }
 
 /*

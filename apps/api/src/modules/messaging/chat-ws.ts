@@ -18,15 +18,20 @@
  *    every failure it can meet into a frame and resolves.
  *  - **The access check runs inside the transaction that writes the message**, behind the
  *    account-deletion write fence (AAP 0.5.3). `transact(..., { fenceUserId })` takes `SELECT … FOR
- *    SHARE` on the sender's row first, and `canMessage` then reads the block, the pair's lock and the
- *    counterpart's account from the tables, so a block, a settlement or a deletion that committed
- *    first is visible here and a refusal writes nothing.
+ *    SHARE` on the sender's row first, the session the upgrade authenticated with is then re-resolved
+ *    from PostgreSQL (`assertLiveSession`, never from the 30-second session cache), and `canMessage`
+ *    reads the block, the pair's lock and the counterpart's account from the tables, so a logout, a
+ *    revocation, a block, a settlement or a deletion that committed first is visible here and a
+ *    refusal writes nothing — a socket the client holds open never outlives the session it was
+ *    admitted with.
  *  - **No Redis call runs inside the transaction.** The message is published to both participants
  *    after the commit, through `after`: Redis is never a condition of the write, and a publish that
  *    fails costs only the live frame — the message is in the pair's history either way (AAP 0.3.2).
  *  - **Delivery is the pub/sub echo.** The sender's confirmation is the same `MessageFrame` the other
  *    participant receives, delivered by subscription rather than by this handler, so the two see one
- *    frame each and this file acknowledges nothing separately (AAP 0.5.4).
+ *    frame each and this file acknowledges nothing separately (AAP 0.5.4). The meetup joins the
+ *    writer's own socket before that frame is published, so a chat beyond the set the socket attached
+ *    with is live for its sender too (AAP 0.5.1).
  *  - **A socket is bounded and is always given up.** Sixty accepted sends per rolling minute per
  *    socket, a 30-second ping/pong heartbeat that ends a socket which stopped answering, and a close
  *    or an error that stops the heartbeat and detaches the socket from the fan-out (AAP 0.3.2).
@@ -45,7 +50,7 @@
 import { ClientFrame, MINUTE_MS } from '@tablemate/shared';
 import type { ChatSend, Message, ServerFrame } from '@tablemate/shared';
 
-import { requireWebSocketBearer } from '../../plugins/auth.ts';
+import { assertLiveSession, requireWebSocketBearer } from '../../plugins/auth.ts';
 import { AppError, errorFrame, isAppError } from '../../plugins/errors.ts';
 import { WS_CLOSE } from '../../plugins/websocket.ts';
 import { transact } from '../outbox/write.ts';
@@ -53,6 +58,8 @@ import { canMessage, messageableMeetupIds } from './access.ts';
 
 import type { FastifyRequest } from 'fastify';
 import type { RawData, WebSocket } from 'ws';
+
+import type { AuthContext } from '../../plugins/auth.ts';
 
 // Type-only, so this file holds no run-time edge back to the module that registers it: `App` and
 // `AppServices` are the plan's one declaration of the instance and of what it hands its modules,
@@ -129,6 +136,11 @@ interface ChatConnection {
   readonly socket: WebSocket;
   /** The authenticated caller, read from `request.auth` once the upgrade hook admitted it. */
   readonly userId: string;
+  /**
+   * The session that upgrade was authenticated with, carried for the life of the socket so every
+   * write can re-resolve it inside its own transaction (AAP 0.5.3).
+   */
+  readonly sessionId: string;
   /** The request's own logger, which already carries the request id (AAP 0.11.1). */
   readonly log: FastifyRequest['log'];
   /** Writes one server frame to this socket, when it is still open. */
@@ -269,25 +281,37 @@ function sendFrame(socket: WebSocket, frame: ServerFrame, log: FastifyRequest['l
 /**
  * Stores one chat message and announces it to both participants (AAP 0.5.3, 0.5.4).
  *
- * The access check and the insert share one transaction behind the sender's write fence, so a block
- * or a deletion that committed first is refused with nothing written and no message can be recreated
- * for an erased account. The publish is registered through `after` and therefore runs after the
- * commit: no Redis call belongs inside a domain transaction (AAP 0.3.2).
+ * The access check and the insert share one transaction behind the sender's write fence, and the
+ * sender's session is re-resolved in it as well, so a logout, a revocation, a block or a deletion
+ * that committed first is refused with nothing written and no message can be recreated for an erased
+ * account. The meetup joins the writer's own socket through that transaction's commit chain, ahead of
+ * the publish, so the frame that confirms the write reaching the client is not also the moment the
+ * socket first carries the chat (AAP 0.5.1). The publish itself is registered through `after` and
+ * therefore runs after the commit: no Redis call belongs inside a domain transaction (AAP 0.3.2).
  *
  * @param services - The app's services, of which the database, the clock and the outbox are used.
  * @param senderId - The authenticated sender, checked against the meetup inside the transaction.
+ * @param sessionId - The session the socket was admitted with, re-resolved inside the transaction.
  * @param frame - The parsed `ChatSend`, whose trimmed body is the text stored.
  * @throws AppError `not_participant`, `messaging_locked` or `blocked` when the pair may not message,
- *   and `token_invalid` when the write fence refused the sender (AAP 0.5.3, 0.5.4).
+ *   and `token_invalid` when the write fence or the live-session check refused the sender, which is
+ *   a deletion or a revocation that committed first (AAP 0.5.3, 0.5.4).
  */
 async function persistMessage(
   services: ChatServices,
   senderId: string,
+  sessionId: string,
   frame: ChatSend,
 ): Promise<void> {
   await transact(
     services,
     async (tx, after) => {
+      // Before the message is judged and before anything is written: the socket holds the authority
+      // it was admitted with, so a logout, a rotation or a deletion that committed since then refuses
+      // the frame here. Read from PostgreSQL, never from the session cache, which may lag a
+      // revocation by up to its 30-second life (AAP 0.5.3).
+      await assertLiveSession(services, tx, { userId: senderId, sessionId });
+
       const access = await canMessage(tx, frame.meetupId, senderId);
       if (!access.ok) {
         throw new AppError(access.code);
@@ -300,6 +324,16 @@ async function persistMessage(
           body: frame.body,
           createdAt: services.clock.now(),
         },
+      });
+
+      // The socket that just wrote in this meetup carries it from now on, on this instance: a send is
+      // the client's own use of the chat, and it is what makes a meetup outside the set that socket
+      // attached with live for the sender (AAP 0.5.1, 0.5.4). Registered before the publish below,
+      // because delivery is the subscription's: the frame coming back is what confirms the write, so
+      // the registration has to exist before the frame is announced. The attach is in process and runs
+      // after the commit, so no Redis call joins the transaction (AAP 0.3.2).
+      after(() => {
+        services.pubsub.attachMeetup(senderId, frame.meetupId);
       });
 
       // The sender's confirmation is this same frame: `publishChat` reaches every instance holding a
@@ -325,9 +359,10 @@ async function persistMessage(
 function refuseSend(connection: ChatConnection, frame: ChatSend, error: unknown): void {
   if (isAppError(error)) {
     if (error.code === 'token_invalid') {
-      // The write fence refused the message: `DELETE /me` committed first, so this session is gone
-      // and the socket cannot continue. The frame is answered before the close, so a client that
-      // never observes the close code still learns why the message was not stored (AAP 0.5.3).
+      // The session is not live — the write fence saw a `DELETE /me` commit first, or the session
+      // the socket was admitted with was revoked or rotated away — so the socket cannot continue.
+      // The frame is answered before the close, so a client that never observes the close code still
+      // learns why the message was not stored (AAP 0.5.3).
       connection.send(errorFrame('token_invalid'));
       connection.socket.close(WS_CLOSE.unauthorized, 'token_invalid');
       return;
@@ -370,7 +405,7 @@ async function receiveFrame(
   }
 
   try {
-    await persistMessage(connection.services, connection.userId, frame);
+    await persistMessage(connection.services, connection.userId, connection.sessionId, frame);
     connection.log.debug(
       { event: 'chat_message_sent', meetupId: frame.meetupId },
       'chat_message_sent',
@@ -388,28 +423,33 @@ async function receiveFrame(
  * Serves one accepted socket for its whole life: attach it, keep it alive, and hand it its frames.
  *
  * The attach query is what makes a message reach both participants — the socket is registered under
- * the caller and under each meetup they may chat in — and a failure there closes the socket with
- * `1011` rather than leaving one open that no frame would ever reach (AAP 0.3.2, 0.5.1).
+ * the caller, under the session the upgrade carried and under each meetup they may chat in — and a
+ * failure there closes the socket with `1011` rather than leaving one open that no frame would ever
+ * reach (AAP 0.3.2, 0.5.1).
  */
 async function serveSocket(
   services: ChatServices,
   socket: WebSocket,
   request: FastifyRequest,
 ): Promise<void> {
-  const userId = request.auth?.userId;
+  const auth: AuthContext | null | undefined = request.auth;
 
   // `requireWebSocketBearer` admitted this upgrade, so a missing context is impossible; reading it
   // rather than asserting it keeps a hook that were moved or shadowed from surfacing as a socket
-  // nobody answers (the same choice `modules/cities/routes.ts` makes on its own handler).
-  if (userId === undefined) {
+  // nobody answers (the same choice `modules/cities/routes.ts` makes on its own handler). The session
+  // travels with the socket, because every write is re-checked against it (AAP 0.5.3).
+  if (auth === null || auth === undefined) {
     socket.close(WS_CLOSE.unauthorized, 'token_invalid');
     return;
   }
+
+  const userId = auth.userId;
 
   const connection: ChatConnection = {
     services,
     socket,
     userId,
+    sessionId: auth.sessionId,
     log: request.log,
     send: (frame) => sendFrame(socket, frame, request.log),
     sendTimes: [],
@@ -418,7 +458,7 @@ async function serveSocket(
 
   try {
     const meetupIds = await messageableMeetupIds(services.db, userId);
-    services.pubsub.attach(socket, userId, meetupIds);
+    services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
   } catch (error) {
     request.log.warn(
       { event: 'chat_attach_failed', err: { name: errorName(error) } },

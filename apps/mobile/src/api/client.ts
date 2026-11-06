@@ -526,9 +526,12 @@ export const apiClient = {
 
   // --- Cities and discovery ------------------------------------------------------------------
 
-  /** `GET /cities` (public) — the configured launch cities. */
+  /**
+   * `GET /cities` — the configured launch cities; the traveler guard requires the bearer, and no
+   * proof is required of it.
+   */
   listCities: (): Promise<CitiesResponse> =>
-    request('GET', '/cities', { response: CitiesResponse, auth: false }),
+    request('GET', '/cities', { response: CitiesResponse }),
 
   /** `GET /cities/:cityId/venues` — active partner venues, reachable without a proof. */
   listVenues: (cityId: string): Promise<VenuesResponse> =>

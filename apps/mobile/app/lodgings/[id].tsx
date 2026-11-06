@@ -79,12 +79,6 @@ const SECTION_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
   'aria-level': 2,
 };
 
-/** The page's single top-level heading, the lodging's name. */
-const PAGE_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
-  role: 'heading',
-  'aria-level': 1,
-};
-
 /**
  * The Enter activation a `Text` link needs on web.
  *
@@ -308,7 +302,7 @@ export default function LodgingDetailScreen(): ReactElement {
     <Screen testID="lodging-detail">
       {header}
       <Card testID="lodging-summary">
-        <Text {...PAGE_HEADING} style={styles.name}>
+        <Text {...SECTION_HEADING} style={styles.name}>
           {detail.name}
         </Text>
         <Text style={styles.note}>{KIND_LABELS[detail.kind]}</Text>
