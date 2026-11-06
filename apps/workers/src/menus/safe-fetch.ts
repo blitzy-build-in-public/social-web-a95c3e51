@@ -10,19 +10,20 @@
  *
  * - **The address is pinned before the connection is opened.** The host is resolved once, every answer
  *   is checked against {@link isBlockedAddress}, and the request then connects to that validated
- *   address through a `lookup` override, so a second DNS answer cannot point the connection at a
- *   private address after validation (DNS rebinding).
+ *   address itself — the name is never resolved a second time, at connect time or by a redirect, so no
+ *   later DNS answer can point the connection at a private address (DNS rebinding).
  * - **Every hop re-runs every check.** A redirect target is validated exactly like the entry URL, so
  *   an allowed page cannot hand the crawler a review site, a domain nobody approved or an internal
  *   address through a 30x before its subrequests even begin.
  * - **The work is bounded.** {@link FETCH_LIMITS} caps one response and a {@link FetchBudget} caps a
  *   whole place: 50 requests and 30 MiB across the page, its subrequests, its PDFs and its images.
  *
- * No request is made without a slot from the per-domain throttle, so a host sees at most one request
- * per second (AAP 0.3.3, AAP 0.12.2). A refusal is a {@link SafeFetchError} naming its reason, and the
- * caller takes the phone fallback: no price is guessed and no page without permission is read. Log
- * lines carry a host, a kind, a status, a byte count or a reason, and never a body, page text, a price
- * or a URL with its query (AAP 0.11.1).
+ * No request is made without a slot from the per-domain throttle, so a domain sees at most one
+ * request per second — a site and its subdomains share one slot, because the slot is taken on the
+ * request host's registrable domain (AAP 0.3.3, AAP 0.12.2). A refusal is a {@link SafeFetchError}
+ * naming its reason, and the caller takes the phone fallback: no price is guessed and no page without
+ * permission is read. Log lines carry a host, a kind, a status, a byte count or a reason, and never a
+ * body, page text, a price or a URL with its query (AAP 0.11.1).
  *
  * The crawl runs in `apps/workers` alone, so a refused fetch cannot delay proposing, locking, checking
  * in or settling (AAP 0.3.2).
@@ -45,6 +46,7 @@ import type { Clock, Logger } from '@tablemate/server-core';
 
 import { domainKey, isBlocklisted } from './blocklist.ts';
 import type { Blocklist } from './blocklist.ts';
+import { registrableDomain } from './crawl-policy.ts';
 import { ThrottleTimeoutError } from './domain-throttle.ts';
 import { createRobotsChecker } from './robots.ts';
 import type { RobotsCache } from './robots.ts';
@@ -254,8 +256,12 @@ export interface SafeFetchDeps {
   policy: (host: string) => Promise<CrawlDecision>;
   /** Where a fetched `robots.txt` is kept for its 24-hour lifetime. */
   robotsCache: RobotsCache;
-  /** The per-domain slot, from `./domain-throttle.ts` `createDomainThrottle`. */
-  throttle: (domainKey: string) => Promise<void>;
+  /**
+   * The per-domain slot, from `./domain-throttle.ts` `createDomainThrottle`, called with the
+   * request host's registrable domain — `registrableDomain(domainKey(host))` — so one site and all
+   * its subdomains contend for the same slot.
+   */
+  throttle: (domain: string) => Promise<void>;
   /** The `User-Agent` every request sends, from `./robots.ts` `crawlerUserAgent`. */
   userAgent: string;
   /** Where a fetch and its refusals are recorded. */
@@ -378,8 +384,18 @@ function ipv6Groups(address: string): number[] | null {
 /**
  * Whether an IPv6 address is one no request may reach (AAP 0.5.6): the unspecified and loopback
  * addresses, unique-local, link-local, multicast, documentation and discard-only space, and the
- * addresses that embed an IPv4 address — IPv4-mapped, IPv4-compatible and NAT64 — which are blocked
- * whenever the IPv4 address they carry is.
+ * addresses that carry an IPv4 address inside them, which are blocked whenever the IPv4 address they
+ * carry is.
+ *
+ * Four kinds of prefix carry an IPv4 address, and each is read the way the RFC that lays it out
+ * defines it. An IPv4-mapped or IPv4-compatible address and the well-known NAT64 prefix
+ * `64:ff9b::/96` hold it in the last 32 bits. A 6to4 `2002::/16` address holds the tunnel endpoint's
+ * own IPv4 address there, so decoding it is exact rather than conservative (RFC 3056, §2). A
+ * local-use NAT64 `64:ff9b:1::/48` address spreads it over the 16 bits after the prefix and the two
+ * octets around the reserved `u` octet (RFC 6052, §2.2; the prefix is assigned by RFC 8215, §3), and
+ * a literal that does not follow that layout is refused outright, because no address can be decoded
+ * from it. Teredo `2001:0000::/32` is refused outright too: it holds the Teredo server's IPv4 address
+ * and the client's obfuscated one rather than a destination the filter can judge (RFC 4380, §4).
  */
 function ipv6Blocked(groups: readonly number[]): boolean {
   const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = groups;
@@ -391,6 +407,26 @@ function ipv6Blocked(groups: readonly number[]): boolean {
   // 64:ff9b::/96, the well-known NAT64 prefix.
   if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
     return ipv4BlockedValue(embedded);
+  }
+  // 2002::/16, 6to4: bits 16-47 are the IPv4 address of the 6to4 endpoint itself (RFC 3056, §2), so
+  // a literal built on a blocked address is refused and one built on a public address is not.
+  if (g0 === 0x2002) return ipv4BlockedValue(g1 * 65536 + g2);
+  // 2001:0000::/32, Teredo (RFC 4380, §4): it carries the Teredo server's IPv4 address and the
+  // client's obfuscated (one's-complemented) one, and a relay chosen by the routing system finishes
+  // the path, so no value decodable from the literal establishes which IPv4 address a request to it
+  // reaches. Refusing the whole prefix is the only answer that closes the hole. This is not the
+  // 2001:db8::/32 documentation range checked below: `g1` separates the two (`0x0000` against
+  // `0x0db8`).
+  if (g0 === 0x2001 && g1 === 0x0000) return true;
+  // 64:ff9b:1::/48, the local-use NAT64 prefix (RFC 8215, §3). RFC 6052, §2.2 lays a /48 prefix out
+  // with IPv4 bits 0-15 in `g3`, the reserved `u` octet in `g4`'s high half, IPv4 bits 16-31 in
+  // `g4`'s low byte and `g5`'s high byte, and reserved zero bits from `g5`'s low byte on. A literal
+  // that departs from that layout carries no IPv4 address this filter can decode, so it is refused
+  // rather than trusted.
+  if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0x0001) {
+    const wellFormed = (g4 & 0xff00) === 0 && (g5 & 0x00ff) === 0 && g6 === 0 && g7 === 0;
+
+    return !wellFormed || ipv4BlockedValue(g3 * 65536 + ((g4 & 0xff) << 8) + (g5 >> 8));
   }
   if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
   if ((g0 & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
@@ -406,9 +442,12 @@ function ipv6Blocked(groups: readonly number[]): boolean {
  *
  * True for every private, loopback, link-local, carrier-grade NAT, multicast, reserved, documentation
  * and benchmarking range of IPv4; for the unspecified, loopback, unique-local, link-local, multicast,
- * documentation and discard-only ranges of IPv6; for the IPv4-mapped, IPv4-compatible and NAT64
- * addresses that carry a blocked IPv4 address; for an address carrying a zone id; and — failing
- * closed — for anything that does not parse as an address at all.
+ * documentation and discard-only ranges of IPv6; for an IPv6 address that embeds a blocked IPv4
+ * address — IPv4-mapped, IPv4-compatible, both NAT64 prefixes and 6to4, each decoded as its own RFC
+ * lays the embedded address out — and for one that reaches an IPv4 address through a transition
+ * prefix whose embedded address cannot be decoded, Teredo and a malformed local-use NAT64 address,
+ * which are refused outright; for an address carrying a zone id; and — failing closed — for anything
+ * that does not parse as an address at all.
  *
  * @param ip The address from a {@link LookupFn} answer or from an IP-literal host.
  * @returns True when no request may be made to it.
@@ -515,22 +554,6 @@ function resolveLocation(base: URL, location: string): string {
   } catch {
     throw new SafeFetchError('invalid_url', hostOf(base));
   }
-}
-
-/**
- * A `lookup` that ignores DNS and answers with the address already validated (AAP 0.5.6): the
- * DNS-rebinding defence, since `net` calls this instead of the resolver and the connection can then
- * only reach the address {@link isBlockedAddress} approved. Node 22 asks once per connection with
- * `{ all: true }`; the single-answer shape is honoured too.
- */
-function pinnedLookup(address: string, family: 4 | 6): NonNullable<RequestOptions['lookup']> {
-  return (_hostname, options, callback) => {
-    if (options.all === true) {
-      callback(null, [{ address, family }]);
-      return;
-    }
-    callback(null, address, family);
-  };
 }
 
 /** One answer of a redirect chain, before any status decision (AAP 0.5.6). */
@@ -662,7 +685,11 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     budget.reserveRequest();
 
     try {
-      await deps.throttle(hostKey);
+      // The slot is scoped to the site, not to the host spelling the request happens to use, so
+      // `a.example.com` and `b.example.com` cannot each make a request a second to `example.com`
+      // (AAP 0.5.6, 0.3.3). The full host stays on the refusal line below and in the policy call
+      // above, where the exact name the crawler reached is what the log and the decision are about.
+      await deps.throttle(registrableDomain(hostKey));
     } catch (error) {
       if (error instanceof ThrottleTimeoutError) {
         throw new SafeFetchError('throttle_timeout', host);
@@ -671,15 +698,25 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     }
 
     const secure = url.protocol === 'https:';
+    // The connection is opened to the address itself, so no name is resolved at connect time and no
+    // second answer can point the socket somewhere the check above refused. A connect this address
+    // cannot serve (an IPv6 address on a host without one, say) is then the request's own error and
+    // reaches the caller as a `SafeFetchError`; asked for by name it would be an unhandled socket
+    // error instead, because `net` fails it before the HTTP layer can attach its listener.
+    const defaultPort = secure ? 443 : 80;
+    // The name as a `Host` header carries it: an IPv6 literal is bracketed, an IPv4 one is not.
+    const authority = literal === 6 ? `[${host}]` : host;
     const options: RequestOptions = {
       protocol: url.protocol,
-      hostname: host,
+      hostname: target.address,
       port,
       path: `${url.pathname}${url.search}`,
       method,
-      headers,
+      // The header Node derives for the original host: the name, with the port only when it differs
+      // from the scheme's own, so the site still answers as itself though the socket went to the
+      // literal. `buildHeaders` drops a caller-supplied `host`, so no caller can override it.
+      headers: { ...headers, host: port === defaultPort ? authority : `${authority}:${port}` },
       agent: false,
-      lookup: pinnedLookup(target.address, target.family),
     };
     // SNI carries a name, never an IP literal.
     if (secure && literal === 0) options.servername = host;

@@ -1,22 +1,31 @@
 /**
  * The per-domain request throttle (AAP 0.5.6).
  *
- * The menu pipeline may fetch a host only once per second or less often, so `safe-fetch` takes a
- * slot for the host before every request it makes: the entry URL, each redirect hop, each followed
- * menu link, each browser subrequest and that host's `robots.txt` (AAP 0.3.3, AAP 0.12.2). The slot
- * is one Redis key holding a {@link THROTTLE_INTERVAL_MS} TTL, set with `NX`, so the grant is atomic
- * and shared across every `workers` process and the menu evaluation, and the winner's key expires on
- * its own — that expiry, not any local bookkeeping, is what spaces the requests. A caller that
- * cannot take the slot waits out the key's remaining lifetime and tries again, bounded by
- * `maxWaitMs`, so contention delays a fetch rather than hanging it.
+ * The menu pipeline may fetch a domain only once per second or less often, so `safe-fetch` takes the
+ * domain's slot before every request it makes: the entry URL, each redirect hop, each followed menu
+ * link, each browser subrequest and that host's `robots.txt` (AAP 0.3.3, AAP 0.12.2). The slot is one
+ * Redis key holding a {@link THROTTLE_INTERVAL_MS} TTL, set with `NX`, so the grant is atomic and
+ * shared across every `workers` process and the menu evaluation, and the winner's key expires on its
+ * own — that expiry, not any local bookkeeping, is what spaces the requests. A caller that cannot
+ * take the slot waits out the key's remaining lifetime and tries again, bounded by `maxWaitMs`, so
+ * contention delays a fetch rather than hanging it.
+ *
+ * The key is the *registrable domain* of the request's host — `registrableDomain(domainKey(host))`
+ * from `./crawl-policy.ts` — which is what makes the limit a per-domain one rather than a per-host
+ * spelling one. `domainKey` gives every spelling of one host one key: lower case, with a port, a
+ * trailing dot, IPv6 brackets and a leading `www.` normalised away. `registrableDomain` then shortens
+ * that key to the site an operator decision is taken on, so a site and all its subdomains share one
+ * slot — `a.example.com` and `b.example.com` cannot make one request each to `example.com` inside a
+ * second — and a redirect to `www.example.com` contends with the first request to `example.com`
+ * instead of opening a second slot beside it.
  *
  * Time is never read from the wall clock. The elapsed wait is exactly the sum of the sleeps
  * performed, and the sleep itself is injectable, so a suite drives a minute of contention in
- * microseconds of test time. Nothing is logged, and a host is not personal data.
+ * microseconds of test time. Nothing is logged, and a domain is not personal data.
  *
  * A Redis outage fails the fetch closed: `set` rejects, the error propagates out of
  * {@link acquireDomainSlot}, and no request is sent without the slot. An unavailable lock cannot be
- * assumed to be free, because the host would then see unmetered traffic.
+ * assumed to be free, because the domain would then see unmetered traffic.
  *
  * The injected `redis` is the two commands the throttle needs, `Pick<Redis, 'set' | 'pttl'>`. A real
  * ioredis `Redis` satisfies it — for instance the `client` connection from
@@ -44,11 +53,12 @@ const DEFAULT_MAX_WAIT_MS = 30_000;
 const MIN_WAIT_MS = 50;
 
 /**
- * The Redis key holding `domain`'s slot. Callers pass the host key from `domainKey(host)` in
- * `./blocklist.ts`, so every spelling of one host — a `www.` prefix, a port, letter case —
- * contends for the same lock.
+ * The Redis key holding `domain`'s slot. Callers pass the registrable domain of the request's host —
+ * `registrableDomain(domainKey(host))` from `./crawl-policy.ts` — so a site and every subdomain of it
+ * contend for one lock, and every spelling of one host (a `www.` prefix, a port, letter case) reaches
+ * that same lock, because `domainKey` normalises each of those away.
  *
- * @param domain - the host key the lock is scoped to.
+ * @param domain - the registrable domain the lock is scoped to.
  * @returns the key, `throttle:<domain>`.
  */
 export function throttleKey(domain: string): string {
@@ -56,17 +66,17 @@ export function throttleKey(domain: string): string {
 }
 
 /**
- * Thrown when a host's slot could not be taken within `maxWaitMs` (AAP 0.5.6). `safe-fetch` lets it
+ * Thrown when a domain's slot could not be taken within `maxWaitMs` (AAP 0.5.6). `safe-fetch` lets it
  * fail the fetch, so an over-subscribed domain drops out of the crawl instead of running unthrottled.
  *
- * The message names the host, which is not personal data, and {@link domain} carries the same value
+ * The message names the domain, which is not personal data, and {@link domain} carries the same value
  * so a caller can classify the refusal without parsing the message.
  */
 export class ThrottleTimeoutError extends Error {
-  /** The host key whose slot was never taken. */
+  /** The registrable domain whose slot was never taken. */
   readonly domain: string;
 
-  /** @param domain - the host key whose slot was never taken. */
+  /** @param domain - the registrable domain whose slot was never taken. */
   constructor(domain: string) {
     super(`throttle wait exceeded for ${domain}`);
     this.name = 'ThrottleTimeoutError';
@@ -85,7 +95,7 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /**
- * Take `domain`'s slot, waiting for the previous request to that host to age out (AAP 0.5.6).
+ * Take `domain`'s slot, waiting for the previous request to that domain to age out (AAP 0.5.6).
  *
  * Resolves as soon as a `set ... PX <THROTTLE_INTERVAL_MS> NX` creates the key, which is the whole
  * grant: the key's TTL is the throttle, so a second caller is served no earlier than one interval
@@ -93,8 +103,9 @@ function defaultSleep(ms: number): Promise<void> {
  * {@link MIN_WAIT_MS}, never past the remaining budget — and retries.
  *
  * @param redis - the shared connection the lock lives on.
- * @param domain - the host key from `domainKey(host)`. Hosts are throttled independently, so one
- * busy domain delays neither another domain nor the rest of the crawl.
+ * @param domain - the registrable domain of the request's host, `registrableDomain(domainKey(host))`.
+ *   Domains are throttled independently, so one busy site delays neither another site nor the rest of
+ *   the crawl.
  * @param opts - `maxWaitMs` bounds the total wait ({@link DEFAULT_MAX_WAIT_MS}); `sleep` replaces the
  * timer-backed wait, which is how a suite runs contention without real time.
  * @returns once the slot is held. The key expires by itself; nothing releases it.
@@ -136,19 +147,20 @@ export async function acquireDomainSlot(
  * Bind the throttle to one connection and one wait budget, producing the `throttle` dependency
  * `createSafeFetch` takes (wired in `apps/workers/src/queues.ts`).
  *
- * The returned function is called with the host key of the request being made — `domainKey(host)`,
- * so redirects, followed menu links and browser subrequests are throttled against the host they
- * actually reach (AAP 0.5.6).
+ * The returned function is called with the registrable domain of the request being made —
+ * `registrableDomain(domainKey(host))`, the way `./safe-fetch.ts` derives it — so redirects, followed
+ * menu links and browser subrequests contend for the slot of the site they actually reach instead of
+ * taking one slot per host spelling (AAP 0.5.6).
  *
  * @param redis - the shared connection the lock lives on.
  * @param opts - `maxWaitMs` bounds each acquisition ({@link DEFAULT_MAX_WAIT_MS}).
- * @returns the per-request throttle, which rejects with `ThrottleTimeoutError` when a host stays
+ * @returns the per-request throttle, which rejects with `ThrottleTimeoutError` when a domain stays
  * busy past the budget and with the Redis error when the lock cannot be reached at all.
  */
 export function createDomainThrottle(
   redis: Pick<Redis, 'set' | 'pttl'>,
   opts?: { maxWaitMs?: number },
-): (domainKey: string) => Promise<void> {
+): (domain: string) => Promise<void> {
   const maxWaitMs = opts?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-  return (domainKey: string) => acquireDomainSlot(redis, domainKey, { maxWaitMs });
+  return (domain: string) => acquireDomainSlot(redis, domain, { maxWaitMs });
 }

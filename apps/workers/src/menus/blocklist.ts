@@ -1,8 +1,8 @@
 /**
  * Crawl blocklist and host normalization (AAP 0.5.6): the aggregator, delivery and review sites
- * whose menus the price pipeline never fetches, the host key every crawl decision is taken on, and
- * the suffixes that let one entry cover a host's subdomains without letting `notyelp.com` pass as
- * `yelp.com`.
+ * whose menus the price pipeline never fetches, the host key every crawl decision is taken on —
+ * lower case, without a port, a trailing dot or IPv6 brackets — and the suffixes that let one entry
+ * cover a host's subdomains without letting `notyelp.com` pass as `yelp.com`.
  *
  * A blocklisted domain is recorded `prohibited` with reason `blocklist`, and its places take the
  * phone fallback instead, so no price is ever taken from a review site (AAP 0.5.6, 0.12.2). Every
@@ -44,18 +44,53 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export type Blocklist = { readonly domains: ReadonlySet<string> };
 
 /**
- * The host key every crawl decision is taken on (AAP 0.5.6): lower case, at most one trailing dot
- * removed, IPv6 brackets removed, and a leading `www.` removed only while at least two labels
- * remain so a host whose registrable name *is* `www.com` keeps it.
+ * A host with the port of a `host:port` spelling cut (AAP 0.5.6).
  *
- * IP literals and `localhost` are returned unchanged apart from lower casing, and the function is
- * idempotent, so a host read back from the review queue keys the same way as a freshly parsed one.
+ * A caller holding a URL's `host` rather than its `hostname` passes the port, which is not part of
+ * the name a crawl decision or a throttle slot is about: `example.com:8080` and `example.com` are
+ * one host, and must take one key. The port is cut at its colon, and only where everything after
+ * that colon is digits, so a name is never truncated into a different one:
  *
- * @param host A host name, a registrable domain or an IP literal, with or without brackets.
+ * - A bracketed IPv6 literal loses the port alone — `[::1]:8080` yields `[::1]`, whose brackets
+ *   {@link domainKey} removes next.
+ * - A host without brackets keeps every label unless exactly one colon remains, so a bare IPv6
+ *   address (`2001:db8::1`, no port at all) is untouched.
+ * - A tail that is not a number is left alone (`example.com:`).
+ *
+ * @param key The host, already lower cased.
+ * @returns The same host without its port.
+ */
+function withoutPort(key: string): string {
+  const colon = key.lastIndexOf(':');
+
+  if (colon === -1 || !/^[0-9]+$/.test(key.slice(colon + 1))) {
+    return key;
+  }
+
+  if (key.startsWith('[')) {
+    return colon > key.lastIndexOf(']') ? key.slice(0, colon) : key;
+  }
+
+  return key.indexOf(':') === colon ? key.slice(0, colon) : key;
+}
+
+/**
+ * The host key every crawl decision is taken on (AAP 0.5.6): lower case, a `host:port` spelling's
+ * port cut ({@link withoutPort}), at most one trailing dot removed, IPv6 brackets removed, and a
+ * leading `www.` removed only while at least two labels remain so a host whose registrable name *is*
+ * `www.com` keeps it. Cutting the port is what makes every spelling of one host — a `www.` prefix, a
+ * port, letter case — reach one key, which is the guarantee `./domain-throttle.ts`'s lock rests on.
+ *
+ * IP literals and `localhost` are returned unchanged apart from lower casing and that port, and the
+ * function is idempotent, so a host read back from the review queue keys the same way as a freshly
+ * parsed one.
+ *
+ * @param host A host name, a registrable domain or an IP literal, with or without brackets, or a
+ *   `host:port` spelling of any of them.
  * @returns The key other helpers of this module compare and match on.
  */
 export function domainKey(host: string): string {
-  let key = host.toLowerCase();
+  let key = withoutPort(host.toLowerCase());
 
   if (key.startsWith('[') && key.endsWith(']')) {
     key = key.slice(1, -1);
