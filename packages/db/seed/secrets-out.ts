@@ -14,8 +14,9 @@
  * {@link encryptField} and {@link decryptField} are the single implementations of that format, so
  * what this module writes is exactly what the API's console-secret lookup (AAP 0.3.2) can find and
  * decrypt. A reseed must not rotate a console out from under a running demo, so an existing secret
- * is kept whenever it can still be read back — including one an operator rotated through
- * `POST /admin/venues/:id/secret` — and a fresh secret is issued only when no usable one exists.
+ * is kept whenever it can still be read back — the row's own, or the one an operator rotated through
+ * `POST /admin/venues/:id/secret` — and so is the local file's entry for a row a wipe re-created,
+ * because a wipe is not a rotation. A fresh secret is issued only when no usable one exists.
  *
  * Plaintext secrets live in memory and in the local file the caller names, nowhere else: nothing
  * here logs, and no message this module raises carries a secret (AAP 0.12.2).
@@ -205,7 +206,11 @@ export async function readFixtureSecrets(filePath: string): Promise<FixtureSecre
  * 2. **Previous file.** The entry `options.previous` holds for the same id hashes to the row's stored
  *    digest: that secret is kept and only its ciphertext is rewritten, so a rotated
  *    `FIELD_ENCRYPTION_KEY` re-encrypts the value without changing it, and `secretIssuedAt` — the
- *    moment the secret was first issued — is left untouched.
+ *    moment the secret was first issued — is left untouched. The same entry is taken by id when the
+ *    row carries no stored digest at all, which is the row the seed re-created after the schema was
+ *    dropped, or on a fresh database: a wipe is not a rotation, so the secret the local file already
+ *    holds survives, and the row records the re-storage instant, `secretIssuedAt` from
+ *    `options.clock.now()`, beside that secret's digest.
  * 3. **Issue.** Otherwise `randomSecret(32)` mints a new secret, and the row receives its digest, its
  *    ciphertext and `secretIssuedAt` from `options.clock.now()`.
  *
@@ -300,6 +305,10 @@ async function issueKind(
 /**
  * Decides one target's secret (AAP 0.5.2): keep the stored one, keep the previous file's, or issue a
  * new one. Each branch, and why the order matters, is documented on {@link issueFixtureSecrets}.
+ * The file's entry is taken by digest when the row carries one and by id when it carries none — the
+ * row a wipe re-created — because a wipe is not a rotation; only that second row is re-stamped with
+ * the instant the surviving secret was stored again, while a matching digest leaves `secretIssuedAt`
+ * exactly as it stands.
  *
  * @param delegate - The model delegate holding the row.
  * @param target - The fixture row being issued.
@@ -325,11 +334,23 @@ async function secretFor(
     return stored; // Readable and matching, so nothing is written and `secretIssuedAt` stands.
   }
 
-  if (
-    previous !== undefined &&
-    row.secretLookupHash !== null &&
-    secretLookupHash(previous.secret) === row.secretLookupHash
-  ) {
+  // A wipe is not a rotation: a row the seed re-created carries no stored digest at all, so the
+  // entry the file holds for its id is the secret this console already has. The row is re-stored
+  // with it, digest and issue instant included, because there is nothing stored to compare against.
+  if (previous !== undefined && row.secretLookupHash === null) {
+    await delegate.update({
+      where: { id: target.id },
+      data: {
+        secretLookupHash: secretLookupHash(previous.secret),
+        secretCiphertext: encryptField(context.keyring, previous.secret),
+        secretIssuedAt: context.clock.now(),
+      },
+    });
+    return previous.secret;
+  }
+
+  if (previous !== undefined && secretLookupHash(previous.secret) === row.secretLookupHash) {
+    // The digest matches, so only a re-encryption happened: the digest and `secretIssuedAt` stand.
     await delegate.update({
       where: { id: target.id },
       data: { secretCiphertext: encryptField(context.keyring, previous.secret) },

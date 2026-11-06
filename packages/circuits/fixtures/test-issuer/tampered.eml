@@ -1,9 +1,9 @@
-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=DjmDJlleTlMA3FmdOk25Sp0K3qARgGHr0BNUOJL0mvw=; b=kDfHfwdd246s9JmAqFUvIP4PajX+1ncs4mKi/3ZWmSlLIggZ+s8vCud1dORhctb7gr8hvkx5Lv3esCYi8S0NL3JQdnxBuRbpa9oUdPziXvkTUrsq6/vNwAmqGurLCtBF3jjAYcTmKHMqyqj+AiuPpFrSb7o4D7fqbQIEN2F3dDxu7rbMXfI+so1b7SFYPU7OaoAFekfYEZTLpM+9JrUL7suycZxNh0eR1p00u6tPRajgDJJMifzH77G4IGyGCOohY06fw6refMMnEEvlv1BSQVfu4XeMerG1pckVjEIY998w6gI4ID9/BFf0mJR3xOPfKHLOwoB+i5UROyNz+ftfUQ==
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=DjmDJlleTlMA3FmdOk25Sp0K3qARgGHr0BNUOJL0mvw=; b=vwRE/KAUbL9Yin6x01ObnT4jBoVxaAcobFOklpr/OT9Ei0k4Pa/ZJ2wPucKett1ClnuAFn9V5gErE7+bUasU2pHWiGVKAoBsgR+ZRArWh67lDjQijUtC993rTinGL4HTC/EjH0U0RbujyotYFB2VXv2ILh03lKTxPOTXiBOFNHmUEbun7nFAJbYhBOER3XyZDLdGdB54TP1gB1KKqt1Vs0DikDkuO5eJBL08LQUJcEyUDAia/Nat5tyWGivZT1FpHHFBQ0HRJ3YWzmhCHlnMKxZLD5AFYasp8Yc8fjHWv4bt53gd7LJDIhJPD1kQrikcbPTbqx2QwXOvqTWKOPsaKA==
 From: Fixture Stays <bookings@tablemate.test>
 To: Fixture Marlow Quenby <guest@example.test>
 Subject: Fixture booking confirmation
 Date: Wed, 04 Nov 2026 10:00:00 +0000
-Message-ID: <fixture-valid@tablemate.test>
+Message-ID: <fixture-tampered@tablemate.test>
 MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: quoted-printable

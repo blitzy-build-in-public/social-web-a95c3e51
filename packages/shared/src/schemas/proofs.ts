@@ -53,7 +53,11 @@ export type PublicSignalName = (typeof PUBLIC_SIGNAL_NAMES)[number];
 export const G1Point = z.tuple([FieldElement, FieldElement, FieldElement]);
 export type G1Point = z.infer<typeof G1Point>;
 
-/** A G2 point of BN254 as snarkjs writes it — `[[x0, x1], [y0, y1], [1, 0]]` (AAP 0.5.5). */
+/**
+ * A G2 point of BN254 as snarkjs writes it — `[[x0, x1], [y0, y1], [1, 0]]` (AAP 0.5.5). The inner
+ * pairs are the Fp2 coefficients in the order snarkjs's verifier reads them; snarkjs's Solidity
+ * exporter is what reverses them.
+ */
 export const G2Point = z.tuple([
   z.tuple([FieldElement, FieldElement]),
   z.tuple([FieldElement, FieldElement]),

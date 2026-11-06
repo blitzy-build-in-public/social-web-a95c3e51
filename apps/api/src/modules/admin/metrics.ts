@@ -32,9 +32,11 @@
  * `meetupsByVenue` counts committed (locked) meetups; `neighborhoodsCoveredShare` is null when the
  * city has no active partner venue and is otherwise the share whose 2 km neighbourhood holds
  * {@link NEIGHBORHOOD_COVERAGE_PLACES} freshly priced places; `placesOpened` ignores the variant
- * filter, because a client-reported event carries no pairing; and `medianResolveSeconds` is
- * PostgreSQL's `percentile_cont` (AAP 0.5.7), with {@link medianOf} stating the same rule in one
- * place for tests.
+ * filter, because a client-reported event carries no pairing; `signups` is global by design —
+ * neither filter reaches it, because `account_created` is emitted with no city and is not a
+ * deposit-funnel event, so its row carries no `city_id` and no `variant` — and {@link MetricsDto}
+ * labels that for the operator; and `medianResolveSeconds` is PostgreSQL's `percentile_cont`
+ * (AAP 0.5.7), with {@link medianOf} stating the same rule in one place for tests.
  *
  * Nothing here returns a user id, a handle, an email address, a coordinate or a row that was not
  * named field by field, and no log line carries a row, a reason or any other value (AAP 0.11.1).
@@ -801,9 +803,12 @@ function lodgingClaimsStatement(
 /**
  * Signups over the range, from `account_created` (AAP 0.5.7).
  *
- * Neither filter applies: an account is created before any city is claimed or any meetup exists, so
- * a signup has no city and no pairing. The figure is a secondary measure and never the headline
- * (AAP 0.1.1).
+ * The dashboard's one global figure, labelled as such in {@link MetricsDto} for the operator:
+ * neither filter applies, because an account is created before any city is claimed or any meetup
+ * exists, so a signup has no city and no pairing and its row carries both columns null — a city
+ * predicate would answer 0 for every city filter rather than count these rows. The range runs on
+ * `occurred_at`, the column the event carries, not on a meetup's `starts_at`. The figure is a
+ * secondary measure and never the headline (AAP 0.1.1).
  */
 function signupsStatement(start: Date, endExclusive: Date): Prisma.Sql {
   return Prisma.sql`

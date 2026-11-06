@@ -157,9 +157,22 @@ const BlockedReasonCounts = z.object({
  *
  * `lodgingClaims` and `signups` come from the unlinked `account_created`,
  * `lodging_claim_submitted` and `lodging_claim_resolved` events, which survive account erasure, so
- * neither figure moves when a user is deleted (AAP 0.5.2). `signups` is last on purpose: the
- * hypothesis is tested on completion rate, and a signup count is never a headline number
- * (AAP 0.1.1).
+ * neither figure moves when a user is deleted (AAP 0.5.2). `signups` is the dashboard's one global
+ * figure: neither the city nor the variant filter of `MetricsQuery` reaches it, because an account
+ * is created in no city and under no pairing — `account_created` is emitted with no city and is
+ * not one of the deposit-funnel stages, so it carries no variant either. Its range falls on
+ * `occurred_at`, the column the event carries, not on a meetup's `startsAt`. The other figures take
+ * the filter's three parts one by one: the `cityId` filter narrows every per-city figure, the
+ * meetup measures through their venue's city; the variant filter reaches the meetup measures alone,
+ * through `Meetup.variantPairing`, and passing over `prices.placesOpened`, a client-reported event
+ * that carries no pairing, and the call panels is deliberate; and the range dates the meetup
+ * measures and the panels that carry their own date — `prices.placesOpened`, `calls.byOutcome`,
+ * `calls.perDay`, `calls.spend` and `lodgingClaims` — while `activeProofsByCity`,
+ * `prices.placesWithFreshPriceByCity`, `neighborhoodsCoveredShare`, `calls.lifecycle` with its
+ * `blockedByReason` and the fleet-wide `calls.llmSuspended` and `calls.llmCountMismatches` read the
+ * present state, and `thresholds` are the configuration's reference lines rather than a reading of
+ * the range. `signups` is last on purpose: the hypothesis is tested on completion rate, and a
+ * signup count is never a headline number (AAP 0.1.1).
  */
 export const MetricsDto = z.object({
   completion: z.object({

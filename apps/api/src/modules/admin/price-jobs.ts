@@ -55,7 +55,7 @@ export interface PriceJobServices {
   readonly db: Pick<DbClient, 'city' | 'callBudgetDay'>;
   /**
    * The BullMQ producers the app built, keyed by queue name. `undefined` for a queue no producer was
-   * created for, which is reported as `503 service_unavailable` rather than queueing nowhere.
+   * created for, which fails the request as an unexpected error rather than queueing nowhere.
    */
   readonly queues: { get(name: QueueName): Queue | undefined };
   /** The validated configuration, of which only the two daily caps are read. */
@@ -77,9 +77,10 @@ const PRICE_JOB_ENQUEUE_FAILED = 'price_job_enqueue_failed';
  * @param now - The current instant, from the request's received time — this module reads no clock
  *   of its own (AAP 0.11.1), and the cap is counted against the city's local day at `now`.
  * @returns The id of the job BullMQ created.
- * @throws {AppError} `city_not_found` for a city that is not configured, `daily_cap_reached` when
- *   the local day's calls or committed language-model spend has reached its cap, and
- *   `service_unavailable` when the job could not be queued.
+ * @throws {AppError} `city_not_found` for a city that is not configured, and `daily_cap_reached`
+ *   when the local day's calls or committed language-model spend has reached its cap. A job that
+ *   cannot be queued throws a plain `Error` instead, which the errors plugin answers as `500
+ *   internal_error` (AAP 0.11.1) — see {@link enqueueCityJob}.
  */
 export async function enqueuePriceJob(
   services: PriceJobServices,
@@ -192,9 +193,12 @@ async function assertUnderDailyCap(
  * @param kind - The requested kind, for the log line.
  * @param cityId - The city the fan-out covers, for the log line.
  * @returns The id of the job BullMQ created.
- * @throws {AppError} `service_unavailable`, with the underlying failure as its cause, when no
- *   producer exists for the queue, when the add fails (an unreachable Redis, most often) or when
- *   BullMQ returns a job without an id.
+ * @throws {Error} when no producer exists for the queue, when the `add` fails (an unreachable
+ *   Redis, most often) or when BullMQ returns a job without an id. Deliberately not an `AppError`:
+ *   the route's contract names three errors and nothing else (AAP 0.5.4), and an unreachable queue
+ *   is an unexpected failure, answered as `500 internal_error` with the request id while the
+ *   underlying cause reaches the log (AAP 0.11.1). The operator's own signal is the
+ *   `price_job_enqueue_failed` line, which carries the city and the kind and nothing else.
  */
 async function enqueueCityJob(
   services: PriceJobServices,
@@ -208,7 +212,7 @@ async function enqueueCityJob(
 
   if (queue === undefined) {
     services.logger.error({ event: PRICE_JOB_ENQUEUE_FAILED, cityId, kind });
-    throw new AppError('service_unavailable');
+    throw new Error('price_job_enqueue_failed: no producer for the queue');
   }
 
   let jobId: string | undefined;
@@ -218,14 +222,14 @@ async function enqueueCityJob(
     jobId = job.id;
   } catch (cause) {
     services.logger.error({ event: PRICE_JOB_ENQUEUE_FAILED, cityId, kind });
-    throw new AppError('service_unavailable', undefined, { cause });
+    throw new Error('price_job_enqueue_failed', { cause });
   }
 
   if (jobId === undefined) {
     // BullMQ assigns the id when it creates the job, and the contract answers one; without it the
     // caller would be handed an unusable id instead of learning that queueing failed.
     services.logger.error({ event: PRICE_JOB_ENQUEUE_FAILED, cityId, kind });
-    throw new AppError('service_unavailable');
+    throw new Error('price_job_enqueue_failed: the job carries no id');
   }
 
   services.logger.info({ event: PRICE_JOB_ENQUEUED, cityId, kind, jobId });

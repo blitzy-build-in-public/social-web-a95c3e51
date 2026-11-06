@@ -1,0 +1,14 @@
+{
+  "name": "yes",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    { "say": "Sim, temos essa reserva nessas datas.", "classify": { "label": "yes" } },
+    {
+      "say": "Sim, confirmo, o hóspede fica connosco nessas datas.",
+      "classify": { "label": "yes" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 45
+}

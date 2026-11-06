@@ -192,7 +192,10 @@ export async function handleTwilioRequest(
       return errorResponse(400, parsed.error);
     }
     const created = await target.startCall(parsed.params);
-    return jsonResponse(201, callResource(created.sid, route.accountSid, parsed.params));
+    return jsonResponse(
+      201,
+      callResource(created.sid, created.status, route.accountSid, parsed.params),
+    );
   }
 
   if (route.kind === 'fetch') {
@@ -296,11 +299,13 @@ function readCallParams(
 
 /**
  * A create response, as the SDK builds its call instance from it (AAP 0.5.6): the fields the product
- * reads, `status: 'queued'` because the call has not been answered, and no field the SDK would read
+ * reads, `status` as {@link SimCallTarget.startCall} reported it — never a value fixed here, so the
+ * create answer reports the state the target started the call in — and no field the SDK would read
  * as an error.
  */
 function callResource(
   sid: string,
+  status: TwilioCallStatus,
   accountSid: string,
   params: SimCallCreateParams,
 ): SimCallResource {
@@ -310,7 +315,7 @@ function callResource(
     account_sid: accountSid,
     to: params.to,
     from: params.from,
-    status: 'queued',
+    status,
     direction: 'outbound-api',
     answered_by: null,
     duration: null,

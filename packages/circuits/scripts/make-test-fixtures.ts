@@ -52,6 +52,7 @@ import {
   PKG_DIR,
   REPO_ROOT,
   TEST_ISSUER_STEM,
+  buildRegistries,
   loadCities,
   loadIssuers,
   writeRegistries,
@@ -100,7 +101,7 @@ const MAX_STAY_DAYS = 120;
 /** One day in milliseconds, the unit a stay's length is taken in. */
 const DAY_MS = 86_400_000;
 
-/** The footer words `tampered.eml` swaps, byte for byte, once `valid.eml` has been signed. */
+/** The footer words `tampered.eml` swaps, byte for byte, once that message has been signed. */
 const TAMPER_FROM = 'Example Bay';
 const TAMPER_TO = 'Example Day';
 
@@ -172,7 +173,10 @@ const SHORT_BOILERPLATE: readonly string[] = [
   'Thank you for booking with Fixture Stays. Your reservation is confirmed and the property has been notified of your dates. Keep this message for your own records.',
 ];
 
-/** The lines of `valid.eml` after its guest line, inside the window `tampered.eml` is cut from. */
+/**
+ * The lines after the guest line for the two long bodies `valid.eml` and `tampered.eml`, inside the
+ * 960-byte window the circuit hashes — which is where the word `tampered.eml` swaps has to sit.
+ */
 const LONG_FOOTER: readonly string[] = [
   'Fixture Stays Reservations, 1 Example Bay, Example Port',
   'This message was generated for a Tablemate circuit fixture and describes no real booking.',
@@ -723,13 +727,27 @@ async function main(): Promise<void> {
       ),
     );
 
-    // `tampered.eml` is the signed message with one footer letter changed: the header's signature still
-    // verifies, and the body no longer hashes to the `bh=` it commits to (AAP 0.5.5).
-    const validText = bytes('valid.eml').toString('latin1');
-    if (validText.split(TAMPER_FROM).length !== 2) {
-      throw new Error(`valid.eml must carry ${TAMPER_FROM} once, in its footer`);
+    // `tampered.eml` is a signed message of its own — its own `Message-ID`, its own signature over its own
+    // headers — with one footer word changed after it was signed: the header's signature still verifies,
+    // and the body no longer hashes to the `bh=` it commits to (AAP 0.5.5). The swap has to stay after the
+    // signing, because a header byte changed before it would move the tamper into the signature.
+    const tampered = renderMessage(template, signer, {
+      name: 'tampered',
+      path: 'tampered.eml',
+      stay: VALID,
+      boilerplate: LONG_BOILERPLATE,
+      footer: LONG_FOOTER,
+      city: alias,
+      subject: SUBJECT,
+    });
+    const tamperedText = tampered.toString('latin1');
+    if (tamperedText.split(TAMPER_FROM).length !== 2) {
+      throw new Error(`tampered.eml must carry ${TAMPER_FROM} once, in its footer`);
     }
-    generated.set('tampered.eml', Buffer.from(validText.replace(TAMPER_FROM, TAMPER_TO), 'latin1'));
+    generated.set(
+      'tampered.eml',
+      Buffer.from(tamperedText.replace(TAMPER_FROM, TAMPER_TO), 'latin1'),
+    );
 
     currentStep = 'checks';
     const issuer: IssuerConfig = IssuerConfig.parse({
@@ -794,9 +812,25 @@ async function main(): Promise<void> {
       expectCode(issuer, registry, name, bytes(name), code);
     }
 
+    // The one check that needs the registry builder runs here, while every input is still in memory and
+    // nothing has been written: it compares the test root the freshly generated record produces with the
+    // root of the registry the fixtures were just checked against. It passes that record in rather than
+    // letting the builder read the file, because the file on disk still holds the previous run's
+    // modulus and the test root is a function of that modulus, so a comparison against it would fail on
+    // every run.
+    const rebuilt = await buildRegistries({ testIssuer: issuer });
+    if (rebuilt.test.root !== registry.root) {
+      throw new Error(
+        `config/registry/test.json: the generated record builds test root ${rebuilt.test.root}, not the fixture registry's ${registry.root}`,
+      );
+    }
+
     currentStep = 'writes';
     const directory = path.join(PKG_DIR, 'fixtures', 'test-issuer');
     const files: readonly FixtureFile[] = [...generated].map(([name, eml]) => ({ name, eml }));
+    // Read before the writes for the reason the checks are: a message that cannot be summarised must not
+    // leave the tree already rewritten.
+    const summaries = files.map((file) => summaryOf(file));
 
     for (const file of files) {
       const target = path.join(directory, file.name);
@@ -811,11 +845,8 @@ async function main(): Promise<void> {
     );
 
     const written = await writeRegistries();
-    if (written.test.root !== registry.root) {
-      throw new Error('the written test registry does not match the fixture key');
-    }
 
-    for (const file of files) process.stdout.write(`${summaryOf(file)}\n`);
+    for (const line of summaries) process.stdout.write(`${line}\n`);
 
     const changed =
       written.changed.length === 0

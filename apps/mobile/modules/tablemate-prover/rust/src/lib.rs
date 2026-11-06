@@ -2,9 +2,18 @@
 //!
 //! One entry point, [`generate_tablemate_proof`], resolves the circuit witness natively with
 //! `rust-witness` and produces the Groth16 proof with rapidsnark, both through mopro's Circom
-//! adapter. The inputs, the witness and the proof live only in memory for the duration of that
-//! call: the module writes nothing to disk and nothing to any log stream, and no static or cache
-//! keeps any of them after it returns.
+//! adapter. The inputs, the witness and the proof live only in memory for the duration of that call
+//! and no static or cache keeps any of them after it returns, so nothing private is written to disk
+//! and nothing is logged.
+//!
+//! The call's own cleanup path (AAP 0.5.5) has no witness temporary to delete, because the proving
+//! path materialises none. `rust-witness` resolves the witness in memory; circom-prover 0.1.4 hands
+//! it to rust-rapidsnark 0.1.4, which passes it to rapidsnark's `groth16_prover_zkey_file` as a
+//! buffer — the entry point that writes the proof and the public signals into caller-owned buffers
+//! as well. The proving key at `zkey_path` is the only file the path opens, and it is opened
+//! read-only: this module never creates, truncates, renames or deletes it. A future proving backend
+//! that materialised a witness temporary instead would have to delete that file in this call's
+//! cleanup path before the call returns.
 
 // mopro's `app!()` expands a check on a `feature = "wasm"` that this crate has no reason to
 // declare — the branch it guards is only taken for a wasm32 build, which the native prover never
@@ -102,7 +111,10 @@ pub fn generate_tablemate_proof(
 
     let prove_started = Instant::now();
     // A native panic becomes `ProverFailed` instead of reaching uniffi as a panic message, which
-    // would carry library internals back to the caller.
+    // would carry library internals back to the caller. The call reaches rapidsnark's buffer entry
+    // point, which takes the witness as a buffer and writes the proof and the public signals into
+    // caller-owned buffers, so this call's cleanup path has no witness temporary to delete
+    // (AAP 0.5.5).
     let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         prove(
             ProofLib::Rapidsnark,
@@ -197,9 +209,13 @@ fn proof_json(circom_proof: &CircomProof) -> Result<Value, ProverError> {
         return Err(ProverError::ProverFailed);
     }
 
-    // The G2 limbs keep the order circom-prover parsed them in from rapidsnark's snarkjs-format
-    // output. `snarkjs groth16 verify` on the host is the arbiter of that order: a mismatch is
-    // corrected here, never in the check.
+    // snarkjs's JSON convention for a G2 point is `[[x0, x1], [y0, y1], ["1", "0"]]`, each
+    // coordinate's two Fp2 coefficients in that order; snarkjs's Solidity exporter is what reverses
+    // them. The round trip through circom-prover preserves that order — `Fq2::new(c0, c1)` in,
+    // `x = [c0, c1]` out, and only `G2::as_tuple` swaps — and the order was checked on the host
+    // through this same path: the proof verifies under `snarkjs groth16 verify`, while swapping the
+    // two limbs of each coordinate makes that verification fail. That verifier is the arbiter of the
+    // order, so a mismatch would be corrected here, never in the check.
     let pi_a = json!([dec(&proof.a.x), dec(&proof.a.y), "1"]);
     let pi_b = json!([
         [dec(&proof.b.x[0]), dec(&proof.b.x[1])],

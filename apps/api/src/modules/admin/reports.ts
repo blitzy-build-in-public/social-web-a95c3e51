@@ -11,7 +11,9 @@
  *   - either handle is null once that account has been erased, because erasure leaves a tombstone
  *     holding only the id and `deletedAt`, and `User.handle` is written null;
  *   - `reason` is null once the 180-day purge has taken the reporter's free text, which is kept
- *     that long for safety and payment-dispute handling and no longer;
+ *     that long for safety and payment-dispute handling and no longer. `Report.reason` is NOT
+ *     NULL, so the `data-expiry` job empties the text to an empty string rather than nulling it;
+ *     this queue reports an emptied reason as null, which is what the nullable DTO field means;
  *   - `meetupId` is null for a report that concerns no meetup.
  *
  * No row is ever spread into an answer: every field is copied by name, so a column added to
@@ -85,7 +87,7 @@ export async function listReports(
       id: row.id,
       reporterHandle: row.reporter.handle,
       reportedHandle: row.reported.handle,
-      reason: row.reason,
+      reason: row.reason === '' ? null : row.reason,
       meetupId: row.meetupId,
       createdAt: row.createdAt.toISOString(),
     })),

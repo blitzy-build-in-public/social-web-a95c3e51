@@ -298,7 +298,8 @@ export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
  * @returns The built registry and a proof of any populated leaf.
  * @throws {RangeError} When an `issuerId`, city slug or `circuitCityId` repeats, a `(domain,
  *   selector)` pair repeats across issuers, two cities register identical alias bytes, or the
- *   populated leaves exceed 256. A repeated key or alias names neither value in the message.
+ *   populated leaves exceed 256, named with the registry and the count it carries. A repeated key
+ *   or alias names neither value in the message.
  */
 export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
   const seenIssuerIds = new Set<number>();
@@ -381,7 +382,10 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
   }
 
   if (leaves.length > MAX_REGISTRY_LEAVES) {
-    throw new RangeError('buildRegistry: more than 256 leaves');
+    throw new RangeError(
+      `buildRegistry: the ${input.name} registry carries ${leaves.length} leaves, more than the ` +
+        `${MAX_REGISTRY_LEAVES} the depth-8 tree holds`,
+    );
   }
 
   const tree = buildMerkleTree(leaves);

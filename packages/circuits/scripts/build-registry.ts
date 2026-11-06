@@ -132,16 +132,24 @@ export async function loadCities(): Promise<CitiesFile> {
 /**
  * Builds both registries from the committed configuration (AAP 0.5.5).
  *
+ * @param sources - `testIssuer` stands in for the `config/issuers/tablemate-test.json` record that the
+ *   test registry adds. `make-test-fixtures.ts` passes the record it has just generated, so it can
+ *   compare the test root that key produces with its in-memory registry before it writes anything:
+ *   that run's record is not on disk yet, and the one that is holds the previous run's modulus, which
+ *   the test root is a function of.
  * @returns The two registries, each validated by {@link RegistryFile} and neither written anywhere.
- * @throws {Error} When the configuration cannot be loaded, when the `tablemate-test` record is
- *   missing, or when a repeated issuer id, key, city id or alias makes the tree ambiguous — the
- *   builder's own `RangeError` then propagates.
+ * @throws {Error} When the configuration cannot be loaded, when the `tablemate-test` record is missing
+ *   and no `testIssuer` was supplied, or when a repeated issuer id, key, city id or alias makes the
+ *   tree ambiguous — the builder's own `RangeError` then propagates.
  */
-export async function buildRegistries(): Promise<{ production: RegistryFile; test: RegistryFile }> {
+export async function buildRegistries(
+  sources: { readonly testIssuer?: IssuerConfig } = {},
+): Promise<{ production: RegistryFile; test: RegistryFile }> {
   const [issuers, cities] = await Promise.all([loadIssuers(), loadCities()]);
 
-  const testRecord = issuers.find((issuer) => issuer.stem === TEST_ISSUER_STEM);
-  if (testRecord === undefined) {
+  const record =
+    sources.testIssuer ?? issuers.find((issuer) => issuer.stem === TEST_ISSUER_STEM)?.config;
+  if (record === undefined) {
     throw new Error(`config/issuers/${TEST_ISSUER_STEM}.json: the test issuer record is missing`);
   }
 
@@ -156,7 +164,7 @@ export async function buildRegistries(): Promise<{ production: RegistryFile; tes
 
   return {
     production: build('production', productionIssuers),
-    test: build('test', [...productionIssuers, withUsableKeys(testRecord.config)]),
+    test: build('test', [...productionIssuers, withUsableKeys(record)]),
   };
 }
 
@@ -165,8 +173,9 @@ export async function buildRegistries(): Promise<{ production: RegistryFile; tes
  * without touching anything (AAP 0.5.5).
  *
  * A missing file counts as changed, an unchanged file is left alone so its modification time stays
- * put, and `changed` lists the stale files repository-relative. `make-test-fixtures.ts` calls this
- * after rotating the test key and compares the returned `test.root` with its in-memory registry.
+ * put, and `changed` lists the stale files repository-relative. `make-test-fixtures.ts` calls this to
+ * write the registries of the record it has just written, having compared their roots with its
+ * in-memory registry beforehand.
  *
  * @param options - `check` reports the stale files instead of writing them.
  * @returns The built registries and the repository-relative paths of the files that differ.

@@ -70,6 +70,13 @@ export function lodgingKindOf(
 const ID_CHUNK = 1_000;
 
 /**
+ * The three OSM element types, in the order {@link findExisting} builds its key branches from them
+ * (AAP 0.5.6). The type is the one `./overpass.ts` declares, and the list exists because each branch
+ * has to pin the `osmType` half of the pair by its literal.
+ */
+const OSM_TYPES = ['node', 'way', 'relation'] as const satisfies readonly OsmType[];
+
+/**
  * The tolerance within which two coordinates are the same point, in degrees: about a centimetre,
  * far above the round-trip error of a `double precision` geography and far below any real move, so
  * an untouched row is never rewritten for a rounding difference.
@@ -178,6 +185,12 @@ function samePoint(a: LatLng, b: LatLng): boolean {
  * in `config/cities.json`, so this only matters for a boundary element OSM moved between two
  * queries.
  *
+ * The predicate constrains both halves of the key, because `lodging_osm_type_osm_id_key` is a btree
+ * on (`osmType`, `osmId`) and PostgreSQL can seek such a key only when its leading column is
+ * constrained: filtering on `osmId` alone scans the whole `lodging` table — a table no city bbox
+ * bounds — once per chunk. The three branches cover every non-NULL `osmType` between them, so they
+ * return the rows the `osmId`-only filter returned (AAP 0.5.2, 0.5.6).
+ *
  * @param tx - The caller's transaction.
  * @param ids - The element ids to look for; deduplicated and chunked at {@link ID_CHUNK}.
  * @returns A map from `<osmType>/<osmId>` to the row, holding only the rows found. A row whose
@@ -192,8 +205,12 @@ async function findExisting(
   const wanted = [...new Set(ids)];
 
   for (let start = 0; start < wanted.length; start += ID_CHUNK) {
+    const chunk = wanted.slice(start, start + ID_CHUNK);
+    // One branch per osm_type: the unique key's leading column has to be constrained for the index
+    // to be seeked, and every branch pins it beside the same id chunk (AAP 0.5.2's Lodging unique
+    // key, AAP 0.5.6's upsert by the pair).
     const rows = await tx.lodging.findMany({
-      where: { osmId: { in: wanted.slice(start, start + ID_CHUNK) } },
+      where: { OR: OSM_TYPES.map((osmType) => ({ osmType, osmId: { in: chunk } })) },
       select: {
         id: true,
         osmType: true,

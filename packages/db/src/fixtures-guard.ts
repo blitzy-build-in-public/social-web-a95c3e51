@@ -3,9 +3,12 @@
  * environment refuses to write them and cannot read them (AAP 0.5.2 "Fixture environments").
  *
  * The seed calls {@link assertFixturesAllowed} before it writes any fixture; a client built with
- * {@link fixturesGuardExtension} narrows every operation of the four fixture-bearing models —
- * `venue`, `lodging`, `place` and `price_record` — to `isFixture: false`, and filters every relation
- * read reaching those tables from any model. Raw SQL needs {@link fixturePredicate}.
+ * {@link fixturesGuardExtension} refuses every write that would store a fixture row — on the four
+ * fixture-bearing models' own operations, however deeply a nested write nests the flag, and on the
+ * raw statements `$executeRaw` and `$executeRawUnsafe`; narrows every operation of those four models
+ * — `venue`, `lodging`, `place` and `price_record` — to `isFixture: false`, and filters every
+ * relation read reaching those tables from any model. A raw query that only reads still needs
+ * {@link fixturePredicate}.
  *
  * @see AAP 0.5.2 for the fixture policy, 0.5.1 for `assertFixturesAllowed()`, 0.8.1 for this file.
  */
@@ -64,10 +67,15 @@ export function assertFixturesAllowed(appEnv: AppEnv): void {
 export const SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
 
 /**
- * The predicate a raw query needs because `$queryRaw` and `$executeRaw` bypass Prisma query
- * extensions: outside `test` and `demo` every raw query over `venue`, `lodging`, `place` or
- * `price_record` must `AND` in `fixturePredicate(appEnv, '<alias>')` for each such table it reads
+ * The predicate a raw read over `venue`, `lodging`, `place` or `price_record` needs because
+ * `$queryRaw` and `$queryRawUnsafe` are reads the guard leaves alone: outside `test` and `demo` every
+ * such raw query must `AND` in `fixturePredicate(appEnv, '<alias>')` for each such table it reads
  * (AAP 0.5.2).
+ *
+ * A raw write carries it for the same reason and one more:
+ * {@link fixturesGuardExtension}'s raw-statement check recognises this predicate — the column
+ * constrained to `false` — as what keeps a statement away from a fixture row, so a raw write over a
+ * fixture table that omits it is refused.
  *
  * @param appEnv - The process's `APP_ENV`.
  * @param alias - The table alias, which must match {@link SQL_IDENTIFIER} because it is interpolated
@@ -125,19 +133,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** True when this write's payload sets `isFixture: true` on the row or on any row of a batch. */
+/**
+ * The deepest nesting {@link marksFixture} reads inside a write payload. A payload nested deeper is
+ * reported as a fixture write rather than walked, because a payload the guard cannot read in full is
+ * one it cannot vouch for.
+ */
+const MAX_WRITE_PAYLOAD_DEPTH = 8;
+
+/** True when this write's payload sets `isFixture: true` on the row it stores, or on any row a
+ * nested write inside that payload stores. */
 function writesFixture(operation: string, args: Record<string, unknown>): boolean {
   switch (operation) {
     case 'create':
+    case 'createMany':
+    case 'createManyAndReturn':
     case 'update':
     case 'updateMany':
     case 'updateManyAndReturn':
+      // `createMany` and `createManyAndReturn` hand their rows over as an array, the rest as one
+      // object; the walk reads either.
       return marksFixture(args['data']);
-    case 'createMany':
-    case 'createManyAndReturn': {
-      const data = args['data'];
-      return Array.isArray(data) ? data.some(marksFixture) : marksFixture(data);
-    }
     case 'upsert':
       return marksFixture(args['create']) || marksFixture(args['update']);
     default:
@@ -149,13 +164,42 @@ function writesFixture(operation: string, args: Record<string, unknown>): boolea
  * True when a write payload stores a fixture row: the literal `isFixture: true` and the operation
  * input `isFixture: { set: true }` that `update`, `updateMany`, `updateManyAndReturn` and `upsert`
  * take — a form the guard misses is a fixture row stored, so both are recognised.
+ *
+ * The whole payload is read, not only its top level, because a nested write stores rows of its own:
+ * `priceRecord.create({ data: { place: { create: { isFixture: true } }, isFixture: false } })` stores
+ * a fixture `place` although the `price_record` is not one. Prisma's nested forms take that flag at
+ * every level of the payload — `create`, `createMany: { data }`, `connectOrCreate: { create }`,
+ * `upsert: { create, update }`, `update`, `updateMany` — so reading every object and array in it is
+ * what covers each of them. The caller's `where` is a sibling of `data` rather than part of it, so it
+ * is never read here and the narrowing of `where` is unaffected.
+ *
+ * Reading the flag at any depth is safe for the four models whose payload this walks: `isFixture` is
+ * the column on each of them and the only key of that name their write inputs carry, so no nested
+ * name can be mistaken for the column. A JSON value a nested write can still reach (`city.bbox`) is
+ * the one place a key of that name stands for data rather than the column, and a payload carrying it
+ * is refused rather than stored — the safe direction for a check whose whole purpose is to keep a
+ * fixture row out.
+ *
+ * @param value - A write payload, or one level inside it.
+ * @param depth - How many levels deep `value` sits; the walk starts at 0.
+ * @returns True when a fixture row would be stored, and when `value` nests deeper than
+ *   {@link MAX_WRITE_PAYLOAD_DEPTH} levels.
  */
-function marksFixture(data: unknown): boolean {
-  if (!isRecord(data)) {
+function marksFixture(value: unknown, depth = 0): boolean {
+  if (depth > MAX_WRITE_PAYLOAD_DEPTH) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => marksFixture(entry, depth + 1));
+  }
+  if (!isRecord(value)) {
     return false;
   }
-  const value = data['isFixture'];
-  return value === true || (isRecord(value) && value['set'] === true);
+  const flag = value['isFixture'];
+  if (flag === true || (isRecord(flag) && flag['set'] === true)) {
+    return true;
+  }
+  return Object.values(value).some((entry) => marksFixture(entry, depth + 1));
 }
 
 /** One relation field of a model: where it points, whether it holds many rows, and whether it is
@@ -498,11 +542,116 @@ function judgeFixtureReturns(
   return result;
 }
 
+/** The `is_fixture` column as a statement's text names it: bare or double-quoted, in any case. */
+const FIXTURE_COLUMN = /is_fixture/i;
+
+/**
+ * A statement's text constraining that column to `false`: the predicate {@link fixturePredicate}
+ * emits outside `test` and `demo`, `"alias"."is_fixture" = false`, and the `IS FALSE` spelling a
+ * hand-written statement may use instead.
+ */
+const FIXTURE_COLUMN_CONSTRAINED = /is_fixture"?\s*(?:=\s*false|is\s+false)/i;
+
+/** A statement's text storing the flag itself: `is_fixture = true`, `IS TRUE` or `IS NOT FALSE`. */
+const FIXTURE_COLUMN_SET = /is_fixture"?\s*(?:=\s*true|is\s+true|is\s+not\s+false)/i;
+
+/**
+ * True when a raw statement is a write that would store a fixture row: its text names the
+ * `is_fixture` column without constraining it to `false`, or stores the flag itself.
+ *
+ * The check reads the statement's text, because a raw call is opaque to the guard beyond that text,
+ * and the text is all it judges: a statement that merely mentions the column — inside a string
+ * literal, say — is refused along with one that writes it, and a statement that constrains the column
+ * to `false` in one clause while storing `true` in another is refused too, because the constraint it
+ * carries filters rows rather than fix what it writes. Every delivered raw write over a fixture table
+ * (the spatial helpers and the workers' lodging and claim statements) carries the predicate
+ * {@link fixturePredicate} builds, so all of them run outside `test` and `demo`. What the check cannot
+ * see is a statement whose column name is built dynamically, so that `is_fixture` never appears in
+ * its text.
+ */
+function rawWritesFixture(text: string): boolean {
+  return (
+    FIXTURE_COLUMN.test(text) &&
+    (!FIXTURE_COLUMN_CONSTRAINED.test(text) || FIXTURE_COLUMN_SET.test(text))
+  );
+}
+
+/** The shape Prisma hands a raw-statement query handler: the call's own arguments, and the query the
+ * guard hands back to Prisma unchanged. */
+type RawStatementArgs = {
+  readonly args: unknown;
+  query: (args: unknown) => Promise<unknown>;
+};
+
+/**
+ * The text of a raw call, read from whichever shape Prisma hands the extension.
+ *
+ * `$executeRaw` passes the `Prisma.Sql` object the tagged template built, whose `sql` and `text`
+ * already carry every fragment the statement inlined — `{@link fixturePredicate}`'s own predicate
+ * among them — while `$executeRawUnsafe` passes the `[query, ...values]` tuple it was called with.
+ * A call whose text cannot be read yields null, which leaves it to run: the guard refuses a statement
+ * it can show would store a fixture row, and an unreadable one is a limit of the check rather than
+ * grounds for refusing an ordinary statement.
+ */
+function rawStatementText(args: unknown): string | null {
+  if (Array.isArray(args)) {
+    return templateText(args[0]);
+  }
+  if (!isRecord(args)) {
+    return templateText(args);
+  }
+  for (const key of ['sql', 'text', 'query'] as const) {
+    const text = args[key];
+    if (typeof text === 'string') {
+      return text;
+    }
+  }
+  return templateText(args['strings']);
+}
+
+/** The text of one template argument: a query string, or the parts of a tagged template joined. */
+function templateText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === 'string')
+    ? value.join('')
+    : null;
+}
+
+/**
+ * The `$executeRaw` and `$executeRawUnsafe` handler, registered beside the model operations because
+ * Prisma routes those two calls to their own keys rather than through `$allModels`.
+ *
+ * Outside `test` and `demo` it refuses a raw write whose text stores a fixture row — see
+ * {@link rawWritesFixture} for what that covers and what it cannot. `$queryRaw` and
+ * `$queryRawUnsafe` are reads: the guard registers neither, and they build their own
+ * {@link fixturePredicate}.
+ *
+ * @param appEnv - The process's `APP_ENV`.
+ * @returns The handler Prisma calls for a raw statement.
+ * @throws FixturesNotAllowedError when the statement's text stores a fixture row.
+ */
+function guardRawStatement(appEnv: AppEnv) {
+  return async function guardRaw({ args, query }: RawStatementArgs): Promise<unknown> {
+    // Where fixtures are permitted the handler is a pass-through: `test` and `demo` write fixture
+    // rows freely (AAP 0.5.2).
+    if (!fixturesAllowed(appEnv)) {
+      const text = rawStatementText(args);
+      if (text !== null && rawWritesFixture(text)) {
+        throw new FixturesNotAllowedError(appEnv);
+      }
+    }
+    return query(args);
+  };
+}
+
 /**
  * The `$allOperations` handler every model shares. Outside `test` and `demo` it refuses a write that
- * would store a fixture row, narrows every read, update and delete of a fixture table to non-fixture
- * rows, filters fixture rows out of every relation read that reaches those tables, and judges the
- * to-one fixture relations the row a create-family operation hands back carries (AAP 0.5.2).
+ * would store a fixture row — reading the write payload to any of its nesting levels, so a nested
+ * write counts — narrows every read, update and delete of a fixture table to non-fixture rows,
+ * filters fixture rows out of every relation read that reaches those tables, and judges the to-one
+ * fixture relations the row a create-family operation hands back carries (AAP 0.5.2).
  *
  * @param appEnv - The process's `APP_ENV`.
  * @returns The handler Prisma calls for every model operation.
@@ -526,8 +675,9 @@ function guardOperation(appEnv: AppEnv) {
     // `findMany()` and `count()` are called with no arguments at all.
     const operationArgs = args ?? {};
     const fixtureModel = graph.fixtureModels.has(model);
-    // The write check stands alone and comes first: a write that stores a fixture row is refused,
-    // never narrowed into a no-op (AAP 0.5.2).
+    // The write check stands alone and comes first: a write that stores a fixture row — its own row
+    // or the row of a nested write inside its payload — is refused, never narrowed into a no-op
+    // (AAP 0.5.2).
     if (fixtureModel && writesFixture(operation, operationArgs)) {
       throw new FixturesNotAllowedError(appEnv);
     }
@@ -548,11 +698,13 @@ function guardOperation(appEnv: AppEnv) {
 /**
  * Builds the fixture guard to pass to `client.$extends(...)`.
  *
- * Registered for every model, it acts on an operation in one of four ways (AAP 0.5.2):
+ * Registered for every model, it acts on an operation in one of five ways (AAP 0.5.2):
  *
  * - **A write that stores a fixture row is refused**, as {@link FixturesNotAllowedError}: `create`,
  *   `createMany`, `createManyAndReturn`, `update`, `updateMany`, `updateManyAndReturn` and `upsert`,
- *   in either input form Prisma takes for the field.
+ *   in either input form Prisma takes for the field, and at any level of a nested write, because a
+ *   nested write stores rows of its own — `data: { place: { create: { isFixture: true } } }` is
+ *   refused like a fixture row written on the operation's own row.
  * - **An operation over a fixture table is narrowed to non-fixture rows**: `findUnique`,
  *   `findUniqueOrThrow`, `findFirst`, `findFirstOrThrow`, `findMany`, `count`, `aggregate`,
  *   `groupBy`, `update`, `updateMany`, `updateManyAndReturn`, `delete`, `deleteMany` and `upsert`
@@ -569,23 +721,37 @@ function guardOperation(appEnv: AppEnv) {
  *   stored, because none of those four has a `where` to exclude the owning row with and Prisma
  *   filters no to-one relation read. The key the guard adds to a `select` to judge with is removed
  *   from the returned row again, and the caller's own args are never mutated.
+ * - **A raw statement that stores one is refused too**: `$executeRaw` and `$executeRawUnsafe` are
+ *   registered beside the model operations, because Prisma routes those two calls to keys of their
+ *   own, and outside `test` and `demo` a statement whose text names the `is_fixture` column without
+ *   constraining it to `false` — {@link fixturePredicate}'s predicate is that constraint, and every
+ *   raw write the spatial helpers and the workers issue over a fixture table carries it — or which
+ *   stores the flag itself is refused with {@link FixturesNotAllowedError} before it reaches the
+ *   database. `$queryRaw` and `$queryRawUnsafe` are reads, so the guard registers neither and they
+ *   keep {@link fixturePredicate} as their own way of filtering fixture rows.
  *
- * What stays outside the guard's reach: raw SQL bypasses query extensions and needs
- * {@link fixturePredicate}; and nested writes (`data: { venue: { create: ... } }`) are not inspected.
+ * What stays outside the guard's reach: a raw statement that builds the column name dynamically, so
+ * that `is_fixture` never appears in its text. Raw reads are left to their caller's own
+ * {@link fixturePredicate}, which the guard neither registers nor rewrites.
  *
  * @param appEnv - The process's `APP_ENV`.
  * @returns The Prisma extension to apply to the client.
- * @throws FixturesNotAllowedError when a write stores a fixture row, or when a created or upserted
- *   row carries a required relation into a fixture table.
+ * @throws FixturesNotAllowedError when a write stores a fixture row, when a raw statement would, or
+ *   when a created or upserted row carries a required relation into a fixture table.
  * @throws Error when `appEnv` forbids fixtures and Prisma's datamodel cannot be read.
  */
 export function fixturesGuardExtension(appEnv: AppEnv) {
   const guard = guardOperation(appEnv);
+  const guardRaw = guardRawStatement(appEnv);
 
   return Prisma.defineExtension({
     name: 'tablemate-fixtures-guard',
     query: {
       $allModels: { $allOperations: guard },
+      // `$executeRaw` and `$executeRawUnsafe` are keys of their own, not model operations, so a raw
+      // write reaches the guard only from here (AAP 0.5.2).
+      $executeRaw: guardRaw,
+      $executeRawUnsafe: guardRaw,
     },
   });
 }

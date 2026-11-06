@@ -87,8 +87,15 @@ export default function analyticsRoutes(app: App): Promise<void> {
       },
     },
     async (request, reply) => {
-      // The guard above admitted this request, so the context is set.
-      const userId = request.auth!.userId;
+      // Read the context rather than asserting it. The guard above admitted this request, so it is
+      // set — but that is a property of the registration two lines up, not of this handler: a hook
+      // that were moved, removed or shadowed would otherwise leave a `TypeError` to be answered as
+      // `500 internal_error` where the contract requires `401 token_invalid`, and no compiler check
+      // would catch it.
+      if (request.auth === null) {
+        throw new AppError('token_invalid');
+      }
+      const userId = request.auth.userId;
       const body = request.body;
 
       await transact(

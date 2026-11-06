@@ -27,10 +27,16 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createLogger, keyringFromEnv, loadSeedEnv, systemClock } from '@tablemate/server-core';
+import {
+  appEnvOrNull,
+  createLogger,
+  keyringFromEnv,
+  loadSeedEnv,
+  systemClock,
+} from '@tablemate/server-core';
 import type { Clock, FieldKeyring, Logger } from '@tablemate/server-core';
-import { AppEnv } from '@tablemate/shared';
 import type {
+  AppEnv,
   CityConfig,
   CityFixturesFile,
   FixturePriceItem,
@@ -42,6 +48,7 @@ import {
   assertFixturesAllowed,
   createPrismaClient,
   fixturesAllowed,
+  Prisma,
   refreshNearestPartnerDistances,
   setPoint,
 } from '../src/index.ts';
@@ -58,6 +65,13 @@ import type { FixtureSecretTarget, FixtureSecretsFile } from './secrets-out.ts';
 /** The name every seed log line carries (AAP 0.6.2). */
 const SERVICE_NAME = 'seed';
 
+/**
+ * The mode the seed's failure line is formatted for when the environment names none of the four. It
+ * only decides whether that line is pretty-printed, which `packages/server-core/src/logger.ts`
+ * already skips for `production`, so it cannot mislead anyone about what ran.
+ */
+const FAILURE_LINE_APP_ENV: AppEnv = 'demo';
+
 /** The text {@link fixtureUuid} hashes, so a fixture id cannot be read as a random one. */
 const ID_PREFIX = 'fixture';
 
@@ -69,8 +83,9 @@ const USAGE = 'usage: pnpm db:seed [--fixtures | --no-fixtures]';
 
 /**
  * One city's fixture writes run in a single interactive transaction, whose default 5-second timeout
- * is too short for a full city: it holds 10 venues, 10 lodgings, 30 places and 150 price records,
- * each with a `setPoint` beside it.
+ * is too short for a full city: beside the four batched row writes it holds a `setPoint` per venue,
+ * lodging and place — a `geography` column is `Unsupported`, so one row is as many as a statement can
+ * place — and the delete of each place's stale price records.
  */
 const FIXTURE_TRANSACTION_TIMEOUT_MS = 60_000;
 const FIXTURE_TRANSACTION_MAX_WAIT_MS = 10_000;
@@ -367,12 +382,22 @@ async function seedCities(db: DbClient, cities: readonly CityConfig[]): Promise<
  * Loads one city's fixture set in a single transaction (AAP 0.5.2): the partner venues, the
  * lodgings, the priced places with their price records, and then the priority distances.
  *
- * Every id is {@link fixtureUuid}, so a rerun updates the row it made. The update half of each
- * upsert carries only the fields the fixture file owns: `doNotCall`, the console-secret columns, a
- * place's `nearestPartnerDistanceM`, a venue's `placeId` and its `isActivePartner` flag are managed
- * by an operator or by the place refresh, and a fixture must never take them back (AAP 0.5.6). A
- * row dropped from a fixture file is left in place, because a meetup, a claim or a call task may
- * reference it.
+ * The four row writes are four statements — one batched insert-on-conflict per table, a `VALUES`
+ * list of one bound tuple per row followed by `ON CONFLICT ("id") DO UPDATE`, in place of one round
+ * trip per row. Only the row write is batched: a `geography` column is `Unsupported` and Prisma
+ * cannot write it, so each row's `setPoint` stays a statement of its own, and each place keeps its
+ * own delete of the price records its file dropped. Every value is a bound parameter with an
+ * explicit cast, and the text of a statement is this file's own SQL (AAP 0.11.2). Batching does not
+ * weaken the fixture gate: {@link assertFixturesAllowed} has already refused a forbidding
+ * environment, and `runSeed` loads no fixture file when fixtures are off, so these statements run
+ * only where a fixture row is exactly what the run is for (AAP 0.5.2).
+ *
+ * Every id is {@link fixtureUuid}, so a rerun conflicts on the primary key and updates the row it
+ * made. The conflict update list carries only the columns the fixture file owns: `doNotCall`, the
+ * console-secret columns, a place's `nearestPartnerDistanceM`, a venue's `placeId` and its
+ * `isActivePartner` flag are managed by an operator or by the place refresh, and a fixture must
+ * never take them back (AAP 0.5.6). A row dropped from a fixture file is left in place, because a
+ * meetup, a claim or a call task may reference it.
  *
  * A lodging is seeded with no `osmType` and no `osmId` and with `phoneSource = operator`, which is
  * what keeps `apps/workers/src/places/lodging-upsert.ts` from ever selecting it (AAP 0.5.6).
@@ -396,59 +421,89 @@ async function seedCityFixtures(
   const venueTargets: FixtureSecretTarget[] = [];
   const lodgingTargets: FixtureSecretTarget[] = [];
 
-  for (const venue of file.venues) {
-    const id = fixtureUuid('venue', cityId, venue.key);
-    await tx.venue.upsert({
-      where: { id },
-      create: {
-        id,
-        cityId,
-        name: venue.name,
-        address: venue.address,
-        isActivePartner: true,
-        isFixture: true,
-      },
-      update: { name: venue.name, address: venue.address },
-    });
+  const venueRows = file.venues.map((venue) => ({
+    id: fixtureUuid('venue', cityId, venue.key),
+    venue,
+  }));
+
+  await writeFixtureRows(
+    tx,
+    venueRows.map(
+      ({ id, venue }) =>
+        Prisma.sql`(${id}::uuid, ${cityId}, ${venue.name}, ${venue.address}, true, true, ${capturedAt}::timestamptz, ${capturedAt}::timestamptz)`,
+    ),
+    (tuples) => Prisma.sql`
+      INSERT INTO "venue"
+        ("id", "city_id", "name", "address", "is_active_partner", "is_fixture", "created_at",
+         "updated_at")
+      VALUES ${tuples}
+      ON CONFLICT ("id") DO UPDATE
+         SET "name" = EXCLUDED."name", "address" = EXCLUDED."address",
+             "updated_at" = EXCLUDED."updated_at"
+    `,
+  );
+
+  for (const { id, venue } of venueRows) {
     await setPoint(tx, 'venue', id, { lat: venue.lat, lng: venue.lng });
     venueTargets.push({ id, cityId, name: venue.name });
   }
 
-  for (const lodging of file.lodgings) {
-    const id = fixtureUuid('lodging', cityId, lodging.key);
-    const fields = {
-      name: lodging.name,
-      kind: lodging.kind,
-      address: lodging.address,
-      phone: lodging.phone,
-      phoneSource: 'operator' as const,
-    };
-    await tx.lodging.upsert({
-      where: { id },
-      create: { id, cityId, ...fields, isFixture: true },
-      update: fields,
-    });
+  const lodgingRows = file.lodgings.map((lodging) => ({
+    id: fixtureUuid('lodging', cityId, lodging.key),
+    lodging,
+  }));
+
+  await writeFixtureRows(
+    tx,
+    lodgingRows.map(
+      ({ id, lodging }) =>
+        Prisma.sql`(${id}::uuid, ${cityId}, ${lodging.name}, ${lodging.kind}::"lodging_kind", ${lodging.address}, ${lodging.phone}, 'operator'::"phone_source", true, ${capturedAt}::timestamptz, ${capturedAt}::timestamptz)`,
+    ),
+    (tuples) => Prisma.sql`
+      INSERT INTO "lodging"
+        ("id", "city_id", "name", "kind", "address", "phone", "phone_source", "is_fixture",
+         "created_at", "updated_at")
+      VALUES ${tuples}
+      ON CONFLICT ("id") DO UPDATE
+         SET "name" = EXCLUDED."name", "kind" = EXCLUDED."kind", "address" = EXCLUDED."address",
+             "phone" = EXCLUDED."phone", "phone_source" = EXCLUDED."phone_source",
+             "updated_at" = EXCLUDED."updated_at"
+    `,
+  );
+
+  for (const { id, lodging } of lodgingRows) {
     await setPoint(tx, 'lodging', id, { lat: lodging.lat, lng: lodging.lng });
     lodgingTargets.push({ id, cityId, name: lodging.name });
   }
 
+  const placeRows = file.places.map((place) => ({
+    id: fixtureUuid('place', cityId, place.key),
+    place,
+  }));
+
+  await writeFixtureRows(
+    tx,
+    placeRows.map(
+      ({ id, place }) =>
+        Prisma.sql`(${id}::uuid, ${cityId}, ${place.name}, ${place.category}::"place_category", ${place.website ?? null}, ${place.menuUrl ?? null}, ${place.phone ?? null}, ${place.openingHours}, true, ${capturedAt}::timestamptz, ${capturedAt}::timestamptz)`,
+    ),
+    (tuples) => Prisma.sql`
+      INSERT INTO "place"
+        ("id", "city_id", "name", "category", "website", "menu_url", "phone", "opening_hours",
+         "is_fixture", "created_at", "updated_at")
+      VALUES ${tuples}
+      ON CONFLICT ("id") DO UPDATE
+         SET "name" = EXCLUDED."name", "category" = EXCLUDED."category",
+             "website" = EXCLUDED."website", "menu_url" = EXCLUDED."menu_url",
+             "phone" = EXCLUDED."phone", "opening_hours" = EXCLUDED."opening_hours",
+             "updated_at" = EXCLUDED."updated_at"
+    `,
+  );
+
+  const priceTuples: Prisma.Sql[] = [];
   let priceRecords = 0;
 
-  for (const place of file.places) {
-    const placeId = fixtureUuid('place', cityId, place.key);
-    const fields = {
-      name: place.name,
-      category: place.category,
-      website: place.website ?? null,
-      menuUrl: place.menuUrl ?? null,
-      phone: place.phone ?? null,
-      openingHours: place.openingHours,
-    };
-    await tx.place.upsert({
-      where: { id: placeId },
-      create: { id: placeId, cityId, ...fields, isFixture: true },
-      update: fields,
-    });
+  for (const { id: placeId, place } of placeRows) {
     await setPoint(tx, 'place', placeId, { lat: place.lat, lng: place.lng });
 
     for (const url of [place.website, place.menuUrl]) {
@@ -459,9 +514,9 @@ async function seedCityFixtures(
 
     const pricedIds: string[] = [];
     for (const [index, item] of place.items.entries()) {
-      pricedIds.push(
-        await seedPriceRecord(tx, placeId, { cityId, place, index, item, capturedAt }),
-      );
+      const row = priceRecordRow(placeId, { cityId, place, index, item, capturedAt });
+      pricedIds.push(row.id);
+      priceTuples.push(row.tuple);
     }
 
     // Items removed from a fixture file go, unlike the places above: a price record is
@@ -471,6 +526,30 @@ async function seedCityFixtures(
     });
     priceRecords += pricedIds.length;
   }
+
+  await writeFixtureRows(
+    tx,
+    priceTuples,
+    (tuples) => Prisma.sql`
+      INSERT INTO "price_record"
+        ("id", "place_id", "capture_batch_id", "item_name", "normalized_name", "item_category",
+         "alcoholic", "per_person", "ticket_type", "price_text", "local_amount_minor", "currency",
+         "price_usd_cents", "source", "source_url", "captured_at", "fx_date", "confidence",
+         "review_status", "is_fixture")
+      VALUES ${tuples}
+      ON CONFLICT ("id") DO UPDATE
+         SET "capture_batch_id" = EXCLUDED."capture_batch_id", "item_name" = EXCLUDED."item_name",
+             "normalized_name" = EXCLUDED."normalized_name",
+             "item_category" = EXCLUDED."item_category", "alcoholic" = EXCLUDED."alcoholic",
+             "per_person" = EXCLUDED."per_person", "ticket_type" = EXCLUDED."ticket_type",
+             "price_text" = EXCLUDED."price_text",
+             "local_amount_minor" = EXCLUDED."local_amount_minor",
+             "currency" = EXCLUDED."currency", "price_usd_cents" = EXCLUDED."price_usd_cents",
+             "source" = EXCLUDED."source", "source_url" = EXCLUDED."source_url",
+             "captured_at" = EXCLUDED."captured_at", "fx_date" = EXCLUDED."fx_date",
+             "confidence" = EXCLUDED."confidence", "review_status" = EXCLUDED."review_status"
+    `,
+  );
 
   await refreshNearestPartnerDistances(tx, cityId, appEnv);
 
@@ -486,7 +565,30 @@ async function seedCityFixtures(
 }
 
 /**
- * Stores one fixture price item and returns its id (AAP 0.5.2, 0.5.7).
+ * Writes one table's fixture rows as one statement (AAP 0.11.2): the tuples are joined into a single
+ * `VALUES` list, and every value in them is a bound parameter with an explicit cast. Nothing at all
+ * is sent for an empty list, because a `VALUES` list holding no tuple is not valid SQL.
+ *
+ * @param tx The city's interactive transaction.
+ * @param rows One bound tuple per fixture row, in file order.
+ * @param statement The `INSERT … ON CONFLICT … DO UPDATE` the tuple list is built into.
+ * @throws Error when the database refuses the write.
+ */
+async function writeFixtureRows(
+  tx: DbTx,
+  rows: readonly Prisma.Sql[],
+  statement: (tuples: Prisma.Sql) => Prisma.Sql,
+): Promise<void> {
+  if (rows.length === 0) {
+    return;
+  }
+
+  await tx.$executeRaw(statement(Prisma.join(rows, ', ')));
+}
+
+/**
+ * Builds one fixture price item's id and its bound tuple, which `seedCityFixtures` collects into the
+ * city's single price-record statement (AAP 0.5.2, 0.5.7).
  *
  * The record is written the way the estimate and the source gate read it: `priceText` in the `$12.50`
  * form, the amount in USD cents, `reviewStatus = approved` so it is never held for review, and a
@@ -494,14 +596,11 @@ async function seedCityFixtures(
  * groups by. `itemName.normalize` is the same NFKC, lower-case, single-spaced form the extractor
  * writes (AAP 0.5.6), so a fixture item and an extracted one group together.
  *
- * @param tx The city's interactive transaction.
  * @param placeId The id of the place the record belongs to.
  * @param args The run's city, the place, the item's index in the place and the capture instant.
- * @returns The record's id.
- * @throws Error when the database refuses the write.
+ * @returns The record's id, and its tuple in the statement's column order.
  */
-async function seedPriceRecord(
-  tx: DbTx,
+function priceRecordRow(
   placeId: string,
   args: {
     readonly cityId: string;
@@ -510,7 +609,7 @@ async function seedPriceRecord(
     readonly item: FixturePriceItem;
     readonly capturedAt: Date;
   },
-): Promise<string> {
+): { readonly id: string; readonly tuple: Prisma.Sql } {
   const { cityId, place, index, item, capturedAt } = args;
   const [itemName, itemCategory, priceUsdCents, source, options] = item;
   const id = fixtureUuid('price', cityId, `${place.key}:${index}`);
@@ -529,18 +628,24 @@ async function seedPriceRecord(
     source,
     sourceUrl: sourceUrlOf(source, place, cityId),
     capturedAt,
+    // The UTC day of the capture instant, whatever the connection's TimeZone setting is: `fxDate` is
+    // midnight UTC, and reading it back through UTC alone keeps the FX date off a neighbouring day.
     fxDate: utcDateOf(capturedAt),
     confidence: null,
     reviewStatus: 'approved',
   } as const;
 
-  await tx.priceRecord.upsert({
-    where: { id },
-    create: { id, placeId, ...fields, isFixture: true },
-    update: fields,
-  });
+  const tuple = Prisma.sql`(
+    ${id}::uuid, ${placeId}::uuid, ${fields.captureBatchId}::uuid, ${fields.itemName},
+    ${fields.normalizedName}, ${fields.itemCategory}::"item_category", ${fields.alcoholic},
+    ${fields.perPerson}, ${fields.ticketType}::"ticket_type", ${fields.priceText},
+    ${fields.localAmountMinor}, ${fields.currency}::char(3), ${fields.priceUsdCents},
+    ${fields.source}::"price_source", ${fields.sourceUrl}, ${fields.capturedAt}::timestamptz,
+    (${fields.fxDate}::timestamptz AT TIME ZONE 'UTC')::date,
+    ${fields.confidence}::"confidence", ${fields.reviewStatus}::"review_status", true
+  )`;
 
-  return id;
+  return { id, tuple };
 }
 
 /**
@@ -742,19 +847,19 @@ async function runSeedCli(argv: readonly string[]): Promise<void> {
 function reportSeedFailure(error: unknown): void {
   const name = error instanceof Error ? error.name : 'Error';
   const message = error instanceof Error ? error.message : String(error);
-  const logger = createLogger({ name: SERVICE_NAME, level: 'info', appEnv: logAppEnv() });
+  // `appEnvOrNull` reads `APP_ENV` through the env module's own normalization and schema rather than
+  // as a raw value, and it never throws: this line is written before `loadSeedEnv` has validated
+  // anything, and the failure may be that environment itself. When the loader succeeded, this IS the
+  // mode it validated; when the environment names no mode at all, the constant above decides nothing
+  // but this line's formatting.
+  const logger = createLogger({
+    name: SERVICE_NAME,
+    level: 'info',
+    appEnv: appEnvOrNull() ?? FAILURE_LINE_APP_ENV,
+  });
 
   logger.error({ err: { name, message } }, 'seed failed');
   process.exitCode = 1;
-}
-
-/**
- * The mode the failure line is formatted for, before the environment has been validated: the raw
- * `APP_ENV` when it is a mode this workspace knows, and `demo` otherwise. It only decides whether
- * the line is pretty-printed, so an unusable value cannot mislead anyone about what ran.
- */
-function logAppEnv(): AppEnv {
-  return AppEnv.safeParse(process.env['APP_ENV']).data ?? 'demo';
 }
 
 /**

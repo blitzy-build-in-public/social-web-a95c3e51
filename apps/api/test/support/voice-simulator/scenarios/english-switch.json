@@ -1,0 +1,43 @@
+{
+  "name": "english-switch",
+  "answer": "human",
+  "language": "th-TH",
+  "turns": [
+    {
+      "say": "ขอโทษค่ะ ช่วยพูดภาษาอังกฤษได้ไหมคะ",
+      "lang": "th-TH",
+      "classify": { "label": "prefers_english" }
+    },
+    {
+      "say": "Our cheapest main course is pad kra pao with rice, it costs 60 baht.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "pad kra pao with rice", "priceAmount": 60, "priceText": "60 baht" }
+      }
+    },
+    { "say": "Yes, that is right.", "classify": { "label": "yes" } },
+    {
+      "say": "The most expensive main is grilled river prawns at 450 baht.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "grilled river prawns", "priceAmount": 450, "priceText": "450 baht" }
+      }
+    },
+    { "say": "Correct, that is the price.", "classify": { "label": "yes" } },
+    {
+      "say": "A Thai iced coffee costs 45 baht.",
+      "classify": {
+        "label": "price",
+        "values": {
+          "drink": "coffee",
+          "dish": "Thai iced coffee",
+          "priceAmount": 45,
+          "priceText": "45 baht"
+        }
+      }
+    },
+    { "say": "Yes, all of that is correct.", "classify": { "label": "yes" } }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 110
+}

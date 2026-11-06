@@ -4,8 +4,8 @@
   "language": "pt-PT",
   "turns": [
     {
-      "say": "Desculpe, prefiro falar com uma pessoa.",
-      "classify": { "label": "wants_human" }
+      "say": "Não, obrigado. Podem terminar a chamada, por favor.",
+      "classify": { "label": "stop" }
     }
   ],
   "finalStatus": "completed",

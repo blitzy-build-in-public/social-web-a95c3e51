@@ -121,6 +121,24 @@ export function normalizeRawEnv(raw: RawEnv): NormalizedEnv {
   return Object.freeze(env);
 }
 
+/**
+ * The deployment mode the environment names, or `null` when it names none of the four (AAP 0.6.2).
+ *
+ * This is not a loader: it is for a diagnostic path that must not throw, and it is never a substitute
+ * for {@link loadSeedEnv} or for the api and workers loaders of `./api.ts` and `./workers.ts`, which
+ * are the only reads a process may start on. The value goes through {@link normalizeRawEnv} and
+ * {@link AppEnv} like every loaded variable does, so an empty, differently cased or foreign `APP_ENV`
+ * comes back `null` rather than as an invented mode, and a process that reached its loader has already
+ * refused such a value.
+ *
+ * @param raw - the raw environment; `process.env` unless a caller supplies a record.
+ * @returns The `APP_ENV` value, or `null` when the environment names no mode.
+ */
+export function appEnvOrNull(raw: RawEnv = process.env): AppEnv | null {
+  const parsed = AppEnv.safeParse(normalizeRawEnv(raw).APP_ENV);
+  return parsed.success ? parsed.data : null;
+}
+
 /** The options every builder accepts, beyond the ones of its variable type (AAP 0.6.2). */
 export interface EnvFieldOptions {
   /**

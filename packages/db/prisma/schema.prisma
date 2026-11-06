@@ -400,6 +400,8 @@ model Session {
   user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  // Sessions are purged 24 h after expiry by data-expiry (AAP 0.5.2), as magic_link_token is by its own expires_at index.
+  @@index([expiresAt])
   @@map("session")
 }
 
@@ -533,6 +535,8 @@ model Meetup {
   @@index([initiatorId])
   @@index([recipientId])
   @@index([venueId])
+  // Every meetup metric range-filters starts_at alone (AAP 0.5.7); the composite above cannot be seeked without status.
+  @@index([startsAt])
   @@map("meetup")
 }
 
@@ -554,6 +558,8 @@ model Deposit {
   operations             PaymentOperation[]
 
   @@unique([meetupId, ownerId])
+  // The financial purge asks whether a deposit still references a user by owner_id (AAP 0.5.2); the unique above has it trailing.
+  @@index([ownerId])
   @@map("deposit")
 }
 
@@ -733,6 +739,8 @@ model Report {
   reported   User     @relation("ReportReported", fields: [reportedId], references: [id])
   meetup     Meetup?  @relation(fields: [meetupId], references: [id], onDelete: SetNull)
 
+  // The 180-day reason-text clearance ranges over created_at (AAP 0.5.2).
+  @@index([createdAt])
   @@map("report")
 }
 
@@ -797,6 +805,8 @@ model StripeEvent {
   receivedAt  DateTime          @map("received_at") @db.Timestamptz(6)
   processedAt DateTime?         @map("processed_at") @db.Timestamptz(6)
 
+  // The daily purge deletes stripe_event rows by received_at, the webhook dedupe clock (AAP 0.5.2).
+  @@index([receivedAt])
   @@map("stripe_event")
 }
 
@@ -865,6 +875,10 @@ model PriceRecord {
   isFixture        Boolean      @default(false) @map("is_fixture")
   place            Place        @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
+  // local_amount_minor and price_usd_cents carry the hand-written CHECK price_record_amount_nonnegative_chk in
+  // migration 20261106000000_index_and_money_check (AAP 0.11.1: money is always integer USD cents, never negative).
+  // Prisma 6.19.3 cannot model a check constraint, exactly as the init migration's hand-added block documents for
+  // call_task_one_target_chk.
   @@index([placeId, source, capturedAt])
   @@map("price_record")
 }
@@ -902,6 +916,8 @@ model OperatorAccessLog {
   purpose        OperatorAccessPurpose
   operator       User                  @relation(fields: [operatorId], references: [id])
 
+  // The 365-day audit purge ranges over accessed_at (AAP 0.5.2).
+  @@index([accessedAt])
   @@map("operator_access_log")
 }
 
@@ -940,6 +956,8 @@ model CallTask {
   @@index([status, nextAttemptAt])
   @@index([placeId])
   @@index([lodgingId])
+  // The 365-day call-metadata purge selects tasks by kind (AAP 0.5.2).
+  @@index([kind])
   @@map("call_task")
 }
 
