@@ -740,11 +740,14 @@ const snark = snarkjs as unknown as SnarkjsSubset;
  * The digest is what stands in for the other platforms' size, modification-time and app-version rule
  * here, and the reason is recorded on {@link verifyStored}: OPFS metadata cannot show a same-length
  * edit. A file that no longer holds up is `artifact_hash_mismatch`, which is the page's signal to run
- * `ensure` again rather than to prove against something unverified.
+ * `ensure` again rather than to prove against something unverified. A resolved set without a WASM is
+ * not that case: the page owns that refusal and answers `artifact_download_failed` before it posts a
+ * `prove` frame, so this guard reports the same code for the same condition.
  */
 async function runProve(request: ProveRequest): Promise<void> {
   const { wasm, zkey } = request.artifacts;
-  if (wasm === null) throw new WorkerError('artifact_hash_mismatch');
+  // The page owns this condition; the guard carries the page's own `artifact_download_failed` code.
+  if (wasm === null) throw new WorkerError('artifact_download_failed');
   assertDeclared(wasm);
   assertDeclared(zkey);
 

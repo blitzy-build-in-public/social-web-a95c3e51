@@ -357,12 +357,15 @@ async function resumeTokenFor(paths: Locations, zkey: ZkeyLink): Promise<string 
  * The transfer is driven by a loop rather than one awaited call, because a paused download answers
  * `undefined` instead of a result: the app-state listener pauses the task when the app leaves the
  * foreground and the loop resumes it on the next `active`. An abort pauses the task, records the
- * token and stops for good, so a cancelled download is still there to resume at the next attempt;
- * a transfer that has already finished is kept, and the caller's own abort check turns that into its
- * cancellation (AAP 0.5.5).
+ * token and stops for good, so a cancelled download is still there to resume at the next attempt.
+ * A transfer that has already finished is kept as it is, verified key included: the check that
+ * follows the transfer belongs to `./prover.ts`, which re-reads the signal in `prove()` once the
+ * artefacts are resolved and reports the attempt cancelled, while this file checks the signal
+ * before the download starts and not after the transfer (AAP 0.5.5).
  *
- * @throws A `ZkClientError`: `cancelled` when `signal` aborted, and `artifact_download_failed` for a
- *   refused request, a lost connection or any status other than 200 and 206.
+ * @throws A `ZkClientError`: `cancelled` when the loop below observes the abort — this function's
+ *   only throw of that code — and `artifact_download_failed` for a refused request, a lost
+ *   connection or any status other than 200 and 206.
  */
 async function runDownload(
   paths: Locations,

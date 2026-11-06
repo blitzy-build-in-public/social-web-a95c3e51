@@ -4,7 +4,7 @@
  * A dispatch is three steps, and the order of the first two is what makes a crash recoverable rather
  * than ambiguous:
  *
- * 1. **The dialogue budget is reserved**, outside any transaction and before anything else. A call
+ * 1. **The dialogue budget is reserved**, outside any transaction and before the claim. A call
  *    whose budget cannot be reserved is not dialed (AAP 0.5.6): the task keeps its status, moves
  *    `nextAttemptAt` to {@link capDeferral}'s 09:00 local the next day, and this returns
  *    `budget_refused`. No call slot is touched.
@@ -418,6 +418,10 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   // failure writes all describe the same moment (AAP 0.11.1).
   const now = deps.clock.now();
 
+  // Resolved before anything is read, reserved or claimed: a telephony configuration that names no
+  // caller id must fail the job outright, never leave an attempt, a call slot and a budget behind it.
+  const from = fromNumberFor(deps.env);
+
   const target = await readTargetCity(deps.db, taskId, now);
 
   if (target === null) {
@@ -461,7 +465,16 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
     );
   }
 
-  const claim = await claimTask(deps, taskId, now, reservation);
+  let claim: ClaimOutcome;
+  try {
+    claim = await claimTask(deps, taskId, now, reservation);
+  } catch (error) {
+    // The transaction rolled the attempt and the slot back, so step 1's reservation is the only
+    // charge it leaves behind: giving it back keeps the retrying job from reserving a second
+    // dialogue budget against the same city's day (AAP 0.5.6).
+    await deps.spend.releaseLlm(reservation);
+    throw error;
+  }
 
   if (claim.kind !== 'claimed') {
     await deps.spend.releaseLlm(reservation);
@@ -496,7 +509,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   try {
     const created = await deps.telephony.createCall({
       to: call.phone,
-      from: fromNumberFor(deps.env),
+      from,
       twimlUrl,
       statusCallbackUrl,
       timeLimitSeconds: deps.env.CAP_CALL_SECONDS,

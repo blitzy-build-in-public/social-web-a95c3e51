@@ -839,7 +839,9 @@ export type FinalizeReason = 'completed' | 'socket_closed' | 'superseded' | 'app
  * without Twilio. Four invariants hold it together:
  *
  *  - **One turn at a time.** Turns are chained, so a classification is never in flight while another
- *    begins, whatever order the socket delivers prompts in.
+ *    begins, whatever order the socket delivers prompts in, and the script's preparation runs on that
+ *    same chain, so a prompt delivered while `prepare` is still in flight waits for the first
+ *    question instead of meeting a call that has asked nothing.
  *  - **The task decides.** Before every turn the task's status and the attempt's `superseded` flag are
  *    re-read, so a task cancelled while the call runs ends the dialogue politely instead of talking to
  *    a caller nobody wants a result from (AAP 0.5.3).
@@ -910,12 +912,20 @@ export class DialogueSession {
   }
 
   /**
-   * The disclosure, first, then the first question (AAP 0.5.6).
+   * The call's opening as text: the disclosure, first, then the first question (AAP 0.5.6).
    *
    * The disclosure is always the first line, whatever the script. The question joins it once it can
    * be rendered: a menu question has no placeholder, so it is there before {@link start} has run,
    * while a stay question names the guest and the dates, which are known only after the script has
    * decrypted the claim.
+   *
+   * Nothing in production reads it, deliberately: the opening reaches the callee in two halves on two
+   * surfaces, `twiml.ts` speaking {@link disclosureFor} as the ConversationRelay `welcomeGreeting`
+   * and {@link start} speaking the first question alone, so this member is the one place the pair
+   * exists in process. The planned `apps/api/test/unit/voice-dialogue.test.ts` (AAP 0.8.1) asserts
+   * the disclosure-first rule AAP 0.12.2 records — the first utterance of a call is the disclosure,
+   * in each language — through it; `understanding.ts` names that suite as the one driving this
+   * module with fakes.
    */
   openingLines(): readonly string[] {
     const disclosure = disclosureFor(this.kind, this.language);
@@ -938,11 +948,25 @@ export class DialogueSession {
    * Prepare the script and ask its first question (AAP 0.5.6).
    *
    * Twilio has already spoken the disclosure as the `welcomeGreeting`, so this speaks the first
-   * question and nothing before it. A script that refuses the call — a claim that is gone, terminal
-   * or already erased — closes politely with `no_answer`, which leaves the task to retry where it can
-   * and to the operator queue where it cannot.
+   * question and nothing before it. The preparation runs on {@link onPrompt}'s own chain, so a prompt
+   * that arrives while `prepare` is still in flight waits for the first question rather than meeting
+   * a call that has asked nothing. The promise returned here still rejects to its caller — the
+   * socket's own failure path — while the chain keeps a settled one, so a preparation that threw
+   * leaves the turns after it runnable.
+   *
+   * A script that refuses the call — a claim that is gone, terminal or already erased — closes
+   * politely with `no_answer`, which leaves the task to retry where it can and to the operator queue
+   * where it cannot.
    */
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    // Enqueued on the turn chain, so no prompt is handled between this call and the first question.
+    const starting = this.chain.then(() => this.begin());
+    this.chain = starting.catch(() => undefined);
+    return starting;
+  }
+
+  /** The preparation {@link start} enqueues, chained like a turn (AAP 0.5.6). */
+  private async begin(): Promise<void> {
     let prepared: ScriptContext | null = null;
     try {
       prepared = await this.script.prepare(this.services, this.ctx);
@@ -1061,9 +1085,19 @@ export class DialogueSession {
       return;
     }
 
+    // The check order matters here. A refusal of the call belongs to `start`, which takes the
+    // preparation onto this same chain: by the time a turn runs, a refusal has already closed the
+    // session, and the `closed` check above returns on it. A null context therefore means the script
+    // is not ready — a session driven before `start` — and a turn must not end a call the script has
+    // not spoken into yet.
     const context = this.scriptContext;
+    if (context === null) {
+      return;
+    }
+
     const step = this.step();
-    if (context === null || step === undefined) {
+    if (step === undefined) {
+      // A script with no steps has nothing to ask, so the call is closed as kindly as it began.
       await this.close('closing.thanks', null, 'app_closing');
       return;
     }

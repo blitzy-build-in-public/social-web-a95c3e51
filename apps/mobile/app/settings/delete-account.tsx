@@ -79,6 +79,14 @@ const STEP_TWO_PROMPT = 'Press Permanently delete my account to confirm.';
 /** Spoken once the account is gone, before the sign-in screen takes its place. */
 const DELETED_NOTICE = 'Your account has been deleted.';
 
+/**
+ * Spoken for the refusal that says only that the session has ended, which the deletion's fence and a
+ * session that ran out both produce, so it claims neither and leaves the traveller a way back to the
+ * account if it still exists.
+ */
+const SESSION_ENDED_NOTICE =
+  'Your session ended. Sign in again and delete your account if it still exists.';
+
 /** The test ids the e2e flows use: one element carries the confirm id at a time (AAP 0.12.1). */
 const CONFIRM_TEST_ID = 'delete-account-confirm';
 const CANCEL_TEST_ID = 'delete-account-cancel';
@@ -117,11 +125,14 @@ function failureMessage(error: unknown): string {
 }
 
 /**
- * True for the `401 token_invalid` a deleted account receives (AAP 0.5.3, AAP 0.5.4): `DELETE /me`
- * sets `deletionRequestedAt`, which refuses every bearer route, so a retry after a response lost on
- * the way back arrives here with the deletion already applied.
+ * True for the `401 token_invalid` that ends a session — all the refusal proves. `DELETE /me` sets
+ * `deletionRequestedAt`, whose fence refuses every bearer route with that code (AAP 0.5.3), and a
+ * session that simply ran out is refused with it too (AAP 0.3.3, AAP 0.11.2). The client rotates once
+ * on the code and, when the rotation is refused, signs the traveller out and rethrows this same
+ * refusal (`../../src/api/client.ts`), so the two sources are indistinguishable here; only the
+ * accepted `202` of `DELETE /me` (AAP 0.5.4) proves the deletion applied.
  */
-function isAlreadyDeleted(error: unknown): boolean {
+function isSessionGone(error: unknown): boolean {
   return isApiError(error) && error.status === 401 && error.code === 'token_invalid';
 }
 
@@ -166,11 +177,12 @@ export default function DeleteAccountScreen(): ReactElement {
   /**
    * Sends the deletion once (AAP 0.5.4).
    *
-   * The local sign-out on success is deliberate: `DELETE /me` has already revoked every session and
-   * refresh token of the account (AAP 0.5.3), so `signOut({ remote: false })` clears this device
-   * without a `POST /auth/logout` that could only be refused. A failure leaves the confirmation open
-   * with the button armed again; the guard stays closed once the deletion has gone through, because
-   * the screen is on its way out.
+   * The route's `202` is the only proof it applied, so it alone announces `DELETED_NOTICE`; the
+   * refusal that means the session has ended leaves the same way without claiming the deletion
+   * (AAP 0.5.3). The local sign-out is deliberate: `DELETE /me` has already revoked every session and
+   * refresh token of the account, so `signOut({ remote: false })` clears this device without a
+   * `POST /auth/logout` that could only be refused. Any other failure leaves the confirmation open
+   * with the button armed again; the guard stays closed once the screen is on its way out.
    */
   async function sendDeletion(): Promise<void> {
     if (inFlight.current) return;
@@ -178,27 +190,28 @@ export default function DeleteAccountScreen(): ReactElement {
     setBusy(true);
     setError(null);
 
-    let deletionApplied = false;
+    let confirmed = false;
+    let sessionGone = false;
     try {
       await apiClient.deleteMe();
-      deletionApplied = true;
+      confirmed = true;
     } catch (caught) {
-      deletionApplied = isAlreadyDeleted(caught);
-      if (!deletionApplied) {
+      sessionGone = isSessionGone(caught);
+      if (!sessionGone) {
         const message = failureMessage(caught);
         setError(message);
         announce(message);
       }
     }
 
-    if (!deletionApplied) {
+    if (!confirmed && !sessionGone) {
       inFlight.current = false;
       setBusy(false);
       return;
     }
 
     await signOut({ remote: false });
-    announce(DELETED_NOTICE);
+    announce(confirmed ? DELETED_NOTICE : SESSION_ENDED_NOTICE);
     router.replace(SIGN_IN_ROUTE);
   }
 
