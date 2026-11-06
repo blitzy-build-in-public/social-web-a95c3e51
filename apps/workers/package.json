@@ -42,6 +42,7 @@
     "ioredis": "6.0.0"
   },
   "devDependencies": {
-    "@tablemate/api": "workspace:*"
+    "@tablemate/api": "workspace:*",
+    "@types/luxon": "3.7.6"
   }
 }

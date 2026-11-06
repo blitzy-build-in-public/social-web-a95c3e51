@@ -732,6 +732,14 @@ async function readLodgingFacts(
  * points always sum to the score. The rank comes from the cached board, and the guest count from
  * {@link guestCountFor}, which is why those two can trail a change by up to the cache's life.
  *
+ * `rank` is read from the activity board rather than counted by a statement of its own, so that
+ * this console and the directory answer with one number: the position has to be the one the
+ * board's own order gives it, from the single implementation of the ranking rule
+ * ({@link scoreFacts}' pair chain and {@link compareForLeaderboard}'s `en` name order), and a
+ * second implementation in SQL could drift from either and place the console out of step with
+ * the directory. The cost is bounded by the cache: a warm city costs a cache read, and a cold
+ * one at most one recomputation of a board the directory asks for anyway.
+ *
  * @param services - The app's services, narrowed to what this module uses.
  * @param lodgingId - The lodging whose standings are wanted.
  * @returns The console's DTO, built field by field.

@@ -2,8 +2,9 @@
  * The daily USD FX table and the conversion built on it (AAP 0.3.3; conversion 0.5.6): `fx-refresh`
  * stores what {@link fetchUsdTable} returns through {@link toFxRows}, and the menu and call
  * pipelines convert a local price with {@link fxRateFor} and {@link toUsdCents}, keeping the rate's
- * date as `fxDate`. The endpoint, the date and the client arrive as arguments — no environment, no
- * clock, no query of this module's own — and each failure carries a code, never a response body.
+ * date as `fxDate`. The endpoint arrives as an argument and a row's date is the provider's own, so
+ * this module reads no environment, no clock and no query of its own — and each failure carries a
+ * code, never a response body.
  */
 
 import { z } from 'zod';
@@ -23,11 +24,18 @@ export const FX_CURRENCIES = ['USD', 'EUR', 'MXN', 'COP', 'THB', 'IDR'] as const
 /** One currency {@link FX_CURRENCIES} covers. */
 export type FxCurrency = (typeof FX_CURRENCIES)[number];
 
-/** The provider's table for one UTC day (AAP 0.3.3): USD per one unit of each currency. */
+/**
+ * The provider's table for one UTC day (AAP 0.3.3), in the direction the provider quotes it: units
+ * of each currency per 1 USD, which {@link toFxRows} inverts before storing anything.
+ */
 export type UsdTable = {
-  /** The UTC calendar date the table belongs to, `YYYY-MM-DD`. */
+  /**
+   * The UTC day the provider's rates belong to, `YYYY-MM-DD`, from its own `time_last_update_unix`.
+   * It is what {@link toFxRows} stores as `FxRate.date`, so a table served late keys the day it
+   * belongs to rather than the day the job happened to run.
+   */
   date: string;
-  /** USD per one unit, by currency code. */
+  /** Units of the quoted currency per 1 USD, by currency code — the provider's direction. */
   rates: Readonly<Record<string, number>>;
 };
 
@@ -60,9 +68,9 @@ const UsdTableResponse = z.looseObject({
  * @param opts An optional deadline, `30_000` ms by default.
  * @returns The table and the UTC date of its last update.
  * @throws Error with no body in the message — `fx_fetch_failed` on a transport failure or a non-2xx
- * answer, `fx_response_invalid` on a body outside the envelope above. `fx-refresh` lets it out to
- * have BullMQ retry, and the rows already stored keep serving conversions ("the last good table
- * stays in use").
+ * answer, `fx_response_invalid` on a body outside the envelope above or on a timestamp no `Date` can
+ * represent. `fx-refresh` lets it out to have BullMQ retry, and the rows already stored keep serving
+ * conversions ("the last good table stays in use").
  */
 export async function fetchUsdTable(
   url: string,
@@ -97,31 +105,38 @@ export async function fetchUsdTable(
     throw new Error('fx_response_invalid', { cause: parsed.error });
   }
 
+  // Built once, before any getter reads it: an unrepresentable timestamp yields an invalid `Date`
+  // whose `toISOString` throws an untyped RangeError, which the envelope's positive integer alone
+  // does not rule out.
+  const updatedAt = new Date(parsed.data.time_last_update_unix * 1_000);
+
+  if (Number.isNaN(updatedAt.getTime())) {
+    throw new Error('fx_response_invalid');
+  }
+
   return {
-    date: new Date(parsed.data.time_last_update_unix * 1_000).toISOString().slice(0, 10),
+    date: updatedAt.toISOString().slice(0, 10),
     rates: parsed.data.rates,
   };
 }
 
 /**
- * Turns a fetched table into the `FxRate` rows of one date: one per {@link FX_CURRENCIES} entry, in
- * that order, ready for `createMany` or for `upsert({ where: { date_currency: … } })`.
+ * Turns a fetched table into the `FxRate` rows of the table's own date: one per {@link FX_CURRENCIES}
+ * entry, in that order, ready for `createMany` or for `upsert({ where: { date_currency: … } })`.
  *
- * The row holds the reciprocal of the provider's rate — both are USD per one unit — rounded to the
- * column's own scale, so a conversion made from the value computed here and one made from the value
- * the database returns agree (AAP 0.5.6).
+ * The provider quotes units of a currency per 1 USD, and the row stores the USD one unit of that
+ * currency buys: `FxRate.usdPerUnit = 1 / rates[currency]`, rounded to the column's own scale, so a
+ * conversion made from the value computed here and one made from the value the database returns
+ * agree (AAP 0.5.6).
  *
  * @param table A table from {@link fetchUsdTable}.
- * @param date The UTC date to store it under, `YYYY-MM-DD`: the day the job ran, so a retry writes
- * the same rows.
- * @throws Error naming the currency when the table omits one; RangeError on a date that is not
+ * @throws Error naming the currency when the table omits one; RangeError on a table date that is not
  * `YYYY-MM-DD`.
  */
 export function toFxRows(
   table: UsdTable,
-  date: string,
 ): { date: Date; currency: FxCurrency; usdPerUnit: Prisma.Decimal }[] {
-  const day = utcDate(date);
+  const day = utcDate(table.date);
 
   return FX_CURRENCIES.map((currency) => {
     const rate = table.rates[currency];

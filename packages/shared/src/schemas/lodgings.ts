@@ -77,9 +77,12 @@ export function toGuestCount(n: number): GuestCount {
  * One lodging in the city directory or on the leaderboard (AAP 0.5.4).
  *
  * `phone` is the lodging's own business number, which the directory must show, and never a
- * traveler's. `rank` is the position in the ranking the query asked for: on `sort=activity`,
- * lodgings ordered by `activityScore` with ties broken by current verified guest count and then by
- * name, lodgings scoring 0 following alphabetically; on `sort=name`, the alphabetical position.
+ * traveler's. `rank` is always the lodging's position in its city's witnessed-meetup ranking —
+ * the standing AAP 0.5.7 defines: ordered by `activityScore`, ties broken by current verified
+ * guest count and then by name, lodgings scoring 0 following alphabetically. It is never the
+ * position in the order a query asked for: `sort` changes only the order in which the items are
+ * listed, so a client printing `rank` shows the same standing for a lodging under `sort=activity`
+ * and `sort=name`, and the same number the lodging's own console reports (AAP 0.5.4).
  */
 export const LodgingSummary = z.object({
   id: Uuid,
