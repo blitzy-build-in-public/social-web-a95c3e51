@@ -66,9 +66,6 @@ const MAX_ANCHORS = 500;
 /** Characters of anchor text kept per anchor: enough for a menu label, never a link description. */
 const MAX_ANCHOR_TEXT = 200;
 
-/** Menu PDFs reported per page. `./pdf-text.ts` reads at most the first 20 pages of each. */
-const MAX_MENU_PDFS = 5;
-
 /** Menu images reported per page (AAP 0.5.6: at most 20 images per place). */
 const MAX_MENU_IMAGES = 20;
 
@@ -360,7 +357,10 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
         return;
       }
 
-      const kind: FetchKind = 'html';
+      // The kind is the document's own, read by `menuUrlKind` from its URL — the pipeline's single
+      // reading of a URL's kind, which `./menu-ingest.ts` picks its fetch path with. A PDF a frame
+      // asks for is bounded by the PDF limit `safeFetch` applies to that kind, not by the page's own.
+      const kind: FetchKind = menuUrlKind(request.url());
       const answer = await deps.safeFetch(request.url(), {
         kind,
         budget: deps.budget,
@@ -505,9 +505,15 @@ async function visibleText(page: Page): Promise<string | null> {
 }
 
 /**
- * The same-domain menu documents the page links to: at most {@link MAX_MENU_PDFS} PDFs and
- * {@link MAX_MENU_IMAGES} images, each absolute, deduplicated without its fragment, and each still
- * to be fetched through `safeFetch` by the caller.
+ * The same-domain menu documents the page links to: every menu PDF, and {@link MAX_MENU_IMAGES}
+ * images, each absolute, deduplicated without its fragment, and each still to be fetched through
+ * `safeFetch` by the caller.
+ *
+ * The PDFs carry no count of their own: AAP 0.5.6 bounds one place by 50 requests and 30 MiB, names
+ * a count for images alone, and says same-domain links to menu documents "are followed", so a site
+ * that splits its menu across several cards is reported in full rather than up to a fixed number of
+ * documents. How many of them are read is bounded by the place's own shared `FetchBudget`, which
+ * `safeFetch` enforces on the page, on its subrequests and on every document the caller follows.
  *
  * @param page The rendered page.
  * @param pageUrl The main document's final URL, which decides what counts as the same domain.
@@ -531,11 +537,12 @@ async function collectMenuLinks(
     if (target === null) continue;
 
     (kind === 'pdf' ? pdfs : images).add(target);
-    if (pdfs.size >= MAX_MENU_PDFS && images.size >= MAX_MENU_IMAGES) break;
   }
 
   return {
-    pdfs: [...pdfs].slice(0, MAX_MENU_PDFS),
+    // No count bounds the PDFs: the place's own shared `FetchBudget` (50 requests, 30 MiB) is what
+    // bounds how many documents the caller follows. Images are the one kind AAP 0.5.6 caps.
+    pdfs: [...pdfs],
     images: [...images].slice(0, MAX_MENU_IMAGES),
   };
 }
