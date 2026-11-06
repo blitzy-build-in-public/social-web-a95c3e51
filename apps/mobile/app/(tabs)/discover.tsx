@@ -1,29 +1,14 @@
 /**
  * The Discover tab: traveler discovery for the city a valid proof names, and the city picker that
- * works with and without one (AAP 0.5.8, AAP 0.7.1 row 3).
- *
- * The proof gate is binding. `GET /cities/:cityId/travelers` answers `403 no_valid_proof` to a caller
- * without a valid proof for that city, so this screen unlocks the travelers read from `MeDto.proof`
- * alone — the status has to be the shared enum's valid value and its `cityId` is the city read — and
- * a proof that expires between the two reads is caught by that answer, which drops the own-profile
- * read and returns the screen to the unverified state instead of retrying a request the API refuses.
- * Without a valid proof the import banner stands where the travelers list would be and the city
- * picker remains, because the partner venues behind it need no proof.
- *
- * Every row renders the fields its payload carries and nothing else: discovery is serialized at tier
- * 0 and disclosure is enforced at field level by the API, so the client neither filters a field nor
- * derives one (AAP 0.3.2, criterion 5). A `Tier0Profile` has no photo field, so a row's avatar is
- * always the pattern generated from its seed.
+ * works with or without one (AAP 0.5.8, AAP 0.7.1 row 3).
  */
-import { useEffect } from 'react';
-import type { ReactElement } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import type { TextProps } from 'react-native';
+import { useEffect, type ReactElement } from 'react';
+import { StyleSheet, Text, View, type TextProps } from 'react-native';
 import { router } from 'expo-router';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
 import { colors, fontWeights, spacing, typography } from '@tablemate/shared';
-import type { CityDto, ProofStatus, Tier0Profile } from '@tablemate/shared';
+import type { CityDto, Tier0Profile } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
@@ -33,271 +18,137 @@ import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
 import { useSession } from '../../src/state/session-store';
 import { Avatar, Banner, Button, ListItem, Screen, announce } from '../../src/ui';
 
-/**
- * The safe-area edges this screen insets by. The tab header and the tab bar own the vertical
- * insets, so claiming them here as well would double-count them (AAP 0.5.8).
- */
 const SCREEN_EDGES = ['left', 'right'] as const;
-
-/**
- * The section headings' platform attributes: `role="heading"` is what iOS maps to its header trait
- * and Android to its heading role, and `aria-level` is what react-native-web reads to render a real
- * `<h2>` beneath the tab header's `<h1>` rather than an unlevelled span. `Screen` asserts the same
- * pair for the page title at level 1, so the two levels stay ordered (AAP 0.5.8).
- */
-const SECTION_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
-  role: 'heading',
-  'aria-level': 2,
-};
-
-/** Shown while a read this screen needs has not answered yet. */
+type Heading = TextProps & Readonly<{ 'aria-level': number }>;
+const SECTION_HEADING: Heading = { role: 'heading', 'aria-level': 2 };
 const LOADING = 'Loading…';
-
-/** The section heading for a city picker the traveler reaches without a valid proof. */
-const CITIES_HEADING = 'Browse cities';
-
-/** The section heading for the same picker once the travelers list stands above it. */
-const CITIES_HEADING_BELOW_TRAVELERS = 'Browse other cities';
-
-/**
- * The city the travelers read is keyed under while no valid proof names one. The read is disabled in
- * that state, so the key is never fetched; a stable value is what lets the hook run unconditionally,
- * as the rules of hooks require.
- */
 const NO_CITY = '';
-
-/**
- * True only for the `ProofStatus` value that means a currently valid proof (AAP 0.5.5).
- *
- * The comparison is made against the inferred `ProofStatus` type, so a renamed or removed value in
- * `packages/shared/src/enums.ts` fails this file at compile time rather than leaving the gate
- * silently closed forever.
- */
-function hasValidProof(status: ProofStatus): boolean {
-  return status === 'valid';
-}
-
-/**
- * The code of a failed read, for {@link userMessageFor}. The client raises no error type other than
- * `ApiError`, and an answer that is not the error envelope is reported as `invalid_response`, so
- * neither the server's prose nor any part of the body ever reaches a screen (AAP 0.5.4, AAP 0.11.1).
- */
+const IMPORT_ACTION = { label: 'Verify my stay', onPress: () => router.push('/proof/import') };
+const LOAD_MORE = { variant: 'secondary' as const, label: 'Show more travelers' };
 function errorCodeOf(error: unknown): ClientErrorCode {
   return isApiError(error) ? error.code : 'invalid_response';
 }
-
-/** `1 witnessed meetup` for one, `N witnessed meetups` otherwise (AAP 0.5.8). */
 function witnessedMeetupsText(count: number): string {
   return count === 1 ? '1 witnessed meetup' : `${count} witnessed meetups`;
 }
-
-/**
- * The configured name of a city, or `undefined` while the cities read has not answered. The slug the
- * profile carries is the fallback, so a heading still names the city if that read failed.
- */
-function configuredCityName(
-  cities: readonly CityDto[] | undefined,
-  cityId: string,
-): string | undefined {
-  return cities?.find((city) => city.id === cityId)?.name;
-}
-
-/**
- * One row's second line: the counters, then the interest tags, then the proof's dates.
- *
- * Only fields the tier-0 payload carries are shown — a tag is rendered with its `_` written as a
- * space, because the vocabulary is snake_case identifiers rather than labels — and the proof dates
- * are the only stay dates any viewer sees (AAP 0.5.4, AAP 0.5.8).
- */
 function travelerSubtitle(profile: Tier0Profile): string {
   const parts = [witnessedMeetupsText(profile.reputation.witnessedMeetups)];
   const tags = profile.interestTags.map((tag) => tag.replace(/_/g, ' '));
   if (tags.length > 0) parts.push(tags.join(', '));
-
-  const dates = profile.proofDates;
-  if (dates !== null) {
-    const from = formatCalendarDate(dates.arrivalDate);
-    const to = formatCalendarDate(dates.departureDate);
-    parts.push(`${from} – ${to}`);
+  const { proofDates } = profile;
+  if (proofDates !== null) {
+    const { arrivalDate, departureDate } = proofDates;
+    parts.push(`${formatCalendarDate(arrivalDate)} – ${formatCalendarDate(departureDate)}`);
   }
-
   return parts.join(' · ');
 }
-
-/**
- * Traveler discovery for the city the caller's valid proof names, with the city picker beneath it.
- *
- * The travelers request is made only for a city a valid proof names; the picker is
- * bearer-authenticated (the traveler guard requires the access token, and it needs no proof), so a
- * traveler whose proof is missing or expired still reaches each city's partner venues. Every control
- * carries a visible label and its role, the page's reading and focus order is its source order, and
- * each failure is both rendered in an error banner and spoken through `announce` (AAP 0.5.8).
- */
+function travelerRow(profile: Tier0Profile) {
+  return {
+    testID: `traveler-${profile.id}`,
+    role: 'link' as const,
+    label: profile.handle,
+    subtitle: travelerSubtitle(profile),
+    leading: <Avatar avatarSeed={profile.avatarSeed} handle={profile.handle} decorative />,
+    onPress: () => router.push(`/users/${profile.id}`),
+  };
+}
+function cityRow(city: CityDto) {
+  return {
+    testID: `city-${city.id}`,
+    role: 'link' as const,
+    label: city.name,
+    subtitle: city.countryCode,
+    onPress: () => router.push(`/cities/${city.id}`),
+  };
+}
 export default function DiscoverScreen(): ReactElement {
-  const signedIn = useSession().status === 'signed_in';
   const me = useMe();
+  const signedIn = useSession().status === 'signed_in';
   const cities = useQuery({
     queryKey: queryKeys.cities,
     queryFn: () => apiClient.listCities(),
-    // Enabled only for a signed-in session, as every other screen-owned read is: with no access
-    // token the request would be refused `401 token_invalid`, and the recovery that follows ends
-    // the session locally, discarding the sign-in a deep link is still completing (AAP 0.3.3).
+    // Enabled only for a signed-in session: with no access token the read is refused, and the
+    // recovery that follows would end the sign-in a deep link is still completing (AAP 0.3.3).
     enabled: signedIn,
   });
-
   const proof = me.data?.proof;
-  const proofCityId = proof !== undefined && hasValidProof(proof.status) ? proof.cityId : undefined;
-
+  const proofCityId = proof !== undefined && proof.status === 'valid' ? proof.cityId : undefined;
   const travelers = useInfiniteQuery({
-    // A city the profile does not name is never fetched, so the sentinel key stays inert.
     queryKey: queryKeys.travelers(proofCityId ?? NO_CITY),
-    // React Query 5 requires an explicit first page parameter; the API's first page is the one read
-    // without a cursor, so an absent cursor is what starts the list (AAP 0.5.4).
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => {
-      // `enabled` is what keeps this from running without a city; the guard is what makes the city
-      // non-null for the request instead of asserting it.
       if (proofCityId === undefined) return Promise.reject(new Error('no valid proof city'));
       return apiClient.listTravelers(proofCityId, pageParam);
     },
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     enabled: proofCityId !== undefined,
   });
-
   const meMessage = me.error === null ? undefined : userMessageFor(errorCodeOf(me.error));
-  const citiesMessage =
-    cities.error === null ? undefined : userMessageFor(errorCodeOf(cities.error));
+  const cityNote = cities.error === null ? undefined : userMessageFor(errorCodeOf(cities.error));
   const travelersCode = travelers.error === null ? undefined : errorCodeOf(travelers.error);
   const travelersMessage = travelersCode === undefined ? undefined : userMessageFor(travelersCode);
-
-  // The proof expired between `GET /me` and this read: dropping the own-profile read returns the
-  // screen to the unverified state, which is the only state from which the request may be made.
+  const retryMe = { label: 'Try again', onPress: () => void me.refetch() };
+  const loadMore = () => void travelers.fetchNextPage();
   useEffect(() => {
-    if (travelersCode === 'no_valid_proof') {
+    if (travelersCode === 'no_valid_proof')
       void queryClient.invalidateQueries({ queryKey: queryKeys.me });
-    }
   }, [travelersCode]);
-
-  // Every message this screen renders is spoken once: iOS has no live region for a banner, and the
-  // sentence spoken is the app's own copy for the code, never server text (AAP 0.5.8).
-  const announcement = meMessage ?? citiesMessage ?? travelersMessage;
+  const announcement = meMessage ?? cityNote ?? travelersMessage;
   useEffect(() => {
     if (announcement !== undefined) announce(announcement);
   }, [announcement]);
-
-  if (meMessage !== undefined) {
+  if (meMessage !== undefined || me.data === undefined)
     return (
       <Screen edges={SCREEN_EDGES}>
-        <Banner
-          tone="error"
-          message={meMessage}
-          action={{ label: 'Try again', onPress: () => void me.refetch() }}
-        />
+        {meMessage === undefined ? (
+          <Text style={styles.body}>{LOADING}</Text>
+        ) : (
+          <Banner tone="error" message={meMessage} action={retryMe} />
+        )}
       </Screen>
     );
-  }
-
-  if (me.data === undefined) {
-    return (
-      <Screen edges={SCREEN_EDGES}>
-        <Text style={styles.body}>{LOADING}</Text>
-      </Screen>
-    );
-  }
-
-  const cityLabel =
-    proofCityId === undefined
-      ? undefined
-      : (configuredCityName(cities.data?.items, proofCityId) ?? proofCityId);
-  const pages = travelers.data?.pages ?? [];
-  const rows = pages.flatMap((page) => page.items);
+  const travelersHeading = { ...SECTION_HEADING, style: styles.heading } as const;
+  const cityName = (cities.data?.items ?? []).find((city) => city.id === proofCityId)?.name;
+  const cityLabel = proofCityId === undefined ? undefined : (cityName ?? proofCityId);
+  const retryTravelers = { label: 'Try again', onPress: () => void travelers.refetch() };
+  const retryCities = { label: 'Try again', onPress: () => void cities.refetch() };
+  const rows = travelers.data?.pages.flatMap((page) => page.items) ?? [];
   const citiesItems = cities.data?.items ?? [];
-
+  const venuesLabel = `See partner venues in ${cityLabel ?? NO_CITY}`;
+  const openVenues = () => router.push(`/cities/${proofCityId ?? NO_CITY}`);
   return (
     <Screen edges={SCREEN_EDGES}>
       {cityLabel === undefined ? (
-        <Banner
-          testID="proof-banner"
-          tone="info"
-          message={IMPORT_BANNER}
-          action={{ label: 'Verify my stay', onPress: () => router.push('/proof/import') }}
-        />
-      ) : null}
-
-      {cityLabel === undefined ? null : (
+        <Banner testID="proof-banner" tone="info" message={IMPORT_BANNER} action={IMPORT_ACTION} />
+      ) : (
         <View style={styles.section}>
-          <Text {...SECTION_HEADING} style={styles.heading}>{`Travelers in ${cityLabel}`}</Text>
-
-          {travelersMessage !== undefined && travelersCode !== 'no_valid_proof' ? (
-            <Banner
-              tone="error"
-              message={travelersMessage}
-              action={{ label: 'Try again', onPress: () => void travelers.refetch() }}
-            />
-          ) : null}
-
+          <Text {...travelersHeading}>{`Travelers in ${cityLabel}`}</Text>
+          {travelersMessage !== undefined && travelersCode !== 'no_valid_proof' && (
+            <Banner tone="error" message={travelersMessage} action={retryTravelers} />
+          )}
           {travelers.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
-
           {rows.map((profile) => (
-            <ListItem
-              key={profile.id}
-              testID={`traveler-${profile.id}`}
-              role="link"
-              label={profile.handle}
-              subtitle={travelerSubtitle(profile)}
-              leading={
-                <Avatar avatarSeed={profile.avatarSeed} handle={profile.handle} decorative />
-              }
-              onPress={() => router.push(`/users/${profile.id}`)}
-            />
+            <ListItem key={profile.id} {...travelerRow(profile)} />
           ))}
-
-          {travelers.hasNextPage ? (
-            <Button
-              variant="secondary"
-              label="Show more travelers"
-              busy={travelers.isFetchingNextPage}
-              onPress={() => void travelers.fetchNextPage()}
-            />
-          ) : null}
-
-          {travelers.isSuccess && rows.length === 0 ? (
+          {travelers.hasNextPage && (
+            <Button {...LOAD_MORE} busy={travelers.isFetchingNextPage} onPress={loadMore} />
+          )}
+          {travelers.isSuccess && rows.length === 0 && (
             <>
               <Text style={styles.body}>{DISCOVERY_EMPTY}</Text>
-              <ListItem
-                role="link"
-                label={`See partner venues in ${cityLabel}`}
-                onPress={() => router.push(`/cities/${proofCityId ?? NO_CITY}`)}
-              />
+              <ListItem role="link" label={venuesLabel} onPress={openVenues} />
             </>
-          ) : null}
+          )}
         </View>
       )}
-
       <View style={styles.section}>
         <Text {...SECTION_HEADING} style={styles.heading}>
-          {cityLabel === undefined ? CITIES_HEADING : CITIES_HEADING_BELOW_TRAVELERS}
+          {cityLabel === undefined ? 'Browse cities' : 'Browse other cities'}
         </Text>
-
-        {citiesMessage !== undefined ? (
-          <Banner
-            tone="error"
-            message={citiesMessage}
-            action={{ label: 'Try again', onPress: () => void cities.refetch() }}
-          />
-        ) : null}
-
+        {cityNote !== undefined && <Banner tone="error" message={cityNote} action={retryCities} />}
         {cities.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
-
         {citiesItems.map((city) => (
-          <ListItem
-            key={city.id}
-            testID={`city-${city.id}`}
-            role="link"
-            label={city.name}
-            subtitle={city.countryCode}
-            onPress={() => router.push(`/cities/${city.id}`)}
-          />
+          <ListItem key={city.id} {...cityRow(city)} />
         ))}
       </View>
     </Screen>
@@ -305,20 +156,7 @@ export default function DiscoverScreen(): ReactElement {
 }
 
 const styles = StyleSheet.create({
-  // One gap step inside a section, under the larger step `Screen` puts between the sections.
-  section: {
-    gap: spacing.sm,
-  },
-  // `text` on `background` is a recorded pair at 17.21:1, and the size is a token rather than a
-  // literal, so the heading follows the reader's system font size (AAP 0.5.8).
-  heading: {
-    ...typography.title,
-    color: colors.text,
-    fontWeight: fontWeights.bold,
-  },
-  // `textMuted` on `background` is a recorded pair at 7.07:1.
-  body: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
+  section: { gap: spacing.sm },
+  heading: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
+  body: { ...typography.body, color: colors.textMuted },
 });

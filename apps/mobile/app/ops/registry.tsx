@@ -1,30 +1,5 @@
-/**
- * Operator registry — venue and lodging onboarding, console secrets and price jobs
- * (`/ops/registry`, AAP 0.5.4, AAP 0.5.6, AAP 0.8.1, requirements 10, 14 and 15).
- *
- * Three sections over the `/admin/*` routes: the venue registry with operator-led onboarding, the
- * lodging registry with manual entry, and one row per city that queues its menu ingestion or its
- * phone fallback. Every one of those routes answers `403 operator_only` to a caller whose role is
- * not `operator` (AAP 0.5.4). The `/ops` layout above this route is the gate; the API's answer is
- * the authority, and nothing here decides who may read a registry.
- *
- * The screen holds one rule of its own: a console secret is shown once and lives only in this
- * component's state (AAP 0.3.2). It is issued with a plain `await` rather than through React Query,
- * because a mutation keeps its `variables` and its answer in the cache; it is never logged, never
- * put in a URL and never persisted, it leaves with the screen's focus, and the issue route answers
- * `Cache-Control: no-store`. The console at `/venue` or `/lodging` keeps the secret a person types
- * into it in `sessionStorage` alone.
- *
- * Everything rendered is the API's own serialization: which venues and lodgings exist, each row's
- * fixture, phone and secret state, and each city's price-job answer. The two city selectors filter
- * their list for display only and never drop a field a row carries. Creating a venue, activating
- * one, or issuing a lodging's console secret enqueues the server-side place refresh (AAP 0.5.6),
- * and a price job runs in `workers`, where its failure cannot reach the meetup flow (AAP 0.3.2).
- *
- * @see AAP 0.5.2 for the fixture rows only `test` and `demo` carry, 0.5.4 for the routes and their
- * errors, 0.5.6 for the crawl policy a job's work obeys, and 0.5.8 for the token-only styling, the
- * fixed copy and the WCAG 2.1 AA rules.
- */
+/** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
+ * venue and lodging onboarding, console secrets and price jobs. */
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import {
   Platform,
@@ -35,7 +10,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import type { SwitchProps, TextProps, ViewStyle } from 'react-native';
+import type { SwitchProps, ViewStyle } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -59,330 +34,238 @@ import { isApiError, userMessageFor } from '../../src/api/errors';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
 
-// --- Constants ---------------------------------------------------------------------------------
-
-/** The route's title, and the page's only heading: the `/ops` Stack renders no header of its own. */
 const SCREEN_TITLE = 'Operator registry';
-
-/** From this window width up, a section's cards sit side by side; below it they stack. */
-const WIDE_LAYOUT_MIN_WIDTH = 900;
-
-/** The narrowest a card grows in the wide layout, and the share of the row it claims. */
-const CARD_MIN_WIDTH = 340;
-
-/** The first segment of a Zod issue path, for the field message a rejected form shows. */
-const FIELD_ERROR = 'Check this value.';
-
-/** No field of a form carries a message; shared so the common case allocates nothing. */
 const NO_FIELD_ERRORS: FieldErrors = {};
-
-/** The sentence a body the route would refuse is answered with, before the request is sent. */
-const INVALID_FIELDS = 'Check the highlighted fields.';
-
-/**
- * The five codes these routes answer with that deserve this screen's own wording (AAP 0.5.4).
- * Every other code falls back to the client's map in `src/api/errors.ts`, which covers
- * `service_unavailable` and `network_error`.
- */
 const REGISTRY_MESSAGES: Readonly<Record<string, string>> = {
   operator_only: 'Operator access required.',
   city_not_found: 'City not found.',
   not_found: 'Not found.',
-  invalid_field: INVALID_FIELDS,
+  invalid_field: 'Check the highlighted fields.',
   daily_cap_reached: "Today's cap for this city is used up.",
 };
-
-const LOADING_TEXT = 'Loading…';
-const RETRY_LABEL = 'Try again';
-const ALL_CITIES_LABEL = 'All cities';
 const VENUES_HEADING = 'Venues';
 const LODGINGS_HEADING = 'Lodgings';
-const PRICE_JOBS_HEADING = 'Price jobs';
 const NAME_LABEL = 'Name';
 const ADDRESS_LABEL = 'Address';
 const LAT_LABEL = 'Latitude';
 const LNG_LABEL = 'Longitude';
-const PHONE_LABEL = 'Phone (E.164)';
 const PHONE_HINT = 'For example +351… Leave it empty when the lodging has no callable number.';
 const CITY_LABEL = 'City';
 const KIND_LABEL = 'Kind';
 const ACTIVE_PARTNER_LABEL = 'Active partner';
 const FIXTURE_BADGE = 'Fixture';
-const DO_NOT_CALL_BADGE = 'Do not call';
-const NO_SECRET = 'No console secret';
-const SECRET_LABEL = 'Console secret';
-const SECRET_ONCE_HINT =
-  'This secret is shown only once. The console keeps it in this browser session only.';
 const SECRET_COPIED = 'Secret copied.';
+const LODGINGS_EMPTY = 'No lodgings in this city. Add one below, or wait for the weekly refresh.';
 const SECRET_COPY_FAILED = 'Copy failed. Select the text and copy it yourself.';
-const DONE_LABEL = 'Done';
-const COPY_LABEL = 'Copy';
-const EDIT_LABEL = 'Edit';
-const CANCEL_LABEL = 'Cancel';
-const SAVE_LABEL = 'Save changes';
-const ISSUE_SECRET_LABEL = 'Issue console secret';
-const REISSUE_SECRET_LABEL = 'Reissue console secret';
-const REISSUE_CONFIRM_LABEL = 'Issue new secret';
-const KEEP_SECRET_LABEL = 'Keep current secret';
+const VENUES_EMPTY = 'No venues in this city. Add one below.';
+const LODGING_CREATE_ID = 'ops-lodging-create';
 const REISSUE_WARNING =
   'Issuing a new secret replaces the current one; the console must sign in again.';
-const NEW_VENUE_LABEL = 'New venue';
-const NEW_LODGING_LABEL = 'New lodging';
-const CREATE_VENUE_LABEL = 'Create venue';
-const CREATE_LODGING_LABEL = 'Create lodging';
-const VENUE_CREATED = 'Venue created.';
-const VENUE_UPDATED = 'Venue updated.';
-const LODGING_CREATED = 'Lodging created.';
-const VENUES_EMPTY = 'No venues in this city. Add one below.';
-const LODGINGS_EMPTY = 'No lodgings in this city. Add one below, or wait for the weekly refresh.';
-const NO_ADDRESS = 'No address';
-const NO_PHONE = 'No phone';
 const LODGING_SECRET_HINT =
   'Issuing a console secret makes this lodging a partner and adds nearby places to the price pipeline.';
-const MENU_JOB_LABEL = 'Run menu ingestion';
-const CALL_JOB_LABEL = 'Run price calls';
-const JOB_RUNNING = 'Running…';
-
-/**
- * The three kinds a lodging may be, in the words a person reads. A complete record of the contract's
- * own enum, so a kind added to `LodgingKind` fails the type check here instead of rendering nothing.
- */
-const LODGING_KIND_LABEL: Readonly<Record<AdminLodgingDto['kind'], string>> = {
-  guesthouse: 'Guest house',
-  hostel: 'Hostel',
-  hotel: 'Hotel',
-};
-
-/** The switch's two track colours, each a token whose recorded pair covers where it is painted. */
-const TRACK_COLOR = { false: colors.border, true: colors.primary } as const;
-
-/** A section heading at level 2: the platform's header trait, and the `<h2>` the web build renders. */
-const SECTION_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
-  'aria-level': 2,
-  role: 'heading',
-};
-
-/** Keeps the browser's own focus outline off a focused chip, so the reserved band is the ring. */
+const LODGING_KIND_LABEL = { guesthouse: 'Guest house', hostel: 'Hostel', hotel: 'Hotel' };
+const SECTION_HEADING = { 'aria-level': 2, role: 'heading' } as const;
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
+const BLANK_DRAFT = { address: '', cityId: '', lat: '', lng: '', name: '' };
+const EMPTY_VENUE_DRAFT: VenueDraft = { ...BLANK_DRAFT, isActivePartner: true };
+const EMPTY_LODGING_DRAFT: LodgingDraft = { ...BLANK_DRAFT, kind: 'hostel', phone: '' };
+const VENUE_FIELDS = [
+  { input: { inputMode: 'text' }, key: 'name', label: NAME_LABEL },
+  { input: { inputMode: 'text' }, key: 'address', label: ADDRESS_LABEL },
+  { input: { inputMode: 'decimal' }, key: 'lat', label: LAT_LABEL },
+  { input: { inputMode: 'decimal' }, key: 'lng', label: LNG_LABEL },
+] as const;
+const LODGING_FIELDS = [
+  { input: { inputMode: 'text' }, key: 'name', label: NAME_LABEL },
+  { input: { inputMode: 'text' }, key: 'address', label: ADDRESS_LABEL },
+  { input: { hint: PHONE_HINT, inputMode: 'tel' }, key: 'phone', label: 'Phone (E.164)' },
+  { input: { inputMode: 'decimal' }, key: 'lat', label: LAT_LABEL },
+  { input: { inputMode: 'decimal' }, key: 'lng', label: LNG_LABEL },
+] as const;
+const ISSUED_DATE = { day: 'numeric', month: 'short', year: 'numeric' } as const;
+const ISSUED_TIME = { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' } as const;
+const ISSUED_AT_FORMAT: Intl.DateTimeFormatOptions = { ...ISSUED_DATE, ...ISSUED_TIME };
+const CHIP_GROUPS = {
+  lodgingCity: { all: true, label: `${LODGINGS_HEADING} city filter`, prefix: 'ops-lodging-city' },
+  lodgingNew: { label: CITY_LABEL, prefix: 'ops-lodging-new-city' },
+  venueCity: { all: true, label: `${VENUES_HEADING} city filter`, prefix: 'ops-venue-city' },
+  venueNew: { label: CITY_LABEL, prefix: 'ops-venue-new-city' },
+} as const;
 
-/** The three fields of a `keydown` event this screen reads; React Native declares no key event. */
-interface WebKeyEvent {
-  readonly key?: string;
-  readonly repeat?: boolean;
-  readonly preventDefault?: () => void;
-}
+const LODGINGS_QUERY = { queryFn: apiClient.admin.listLodgings, queryKey: queryKeys.adminLodgings };
 
-/**
- * Takes Space as an activation the responder withholds: react-native-web answers Enter for any
- * element but Space only for a native `button` or a `role="button"`, and every chip of this
- * screen — city, lodging kind and filter — is a radio. Enter is left to the responder, which would
- * otherwise fire a press twice.
- */
-function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
-  if (Platform.OS !== 'web') return {};
-  return {
-    onKeyDown: (event) => {
-      if (event.repeat === true) return;
-      if (event.key !== ' ' && event.key !== 'Spacebar') return;
-      // Space would otherwise scroll the page behind the chip.
-      event.preventDefault?.();
-      activate();
-    },
-  };
-}
-
-// --- Helpers -----------------------------------------------------------------------------------
-
-/** One inline message per field, keyed by the first segment of the issue's path. */
+type ChipGroup = { readonly all?: boolean; readonly label: string; readonly prefix: string };
+type ChipOption = { readonly id: string | null; readonly name: string };
+const ALL_CITIES: ChipOption = { id: null, name: 'All cities' };
 type FieldErrors = Readonly<Record<string, string>>;
+type FieldName = 'address' | 'lat' | 'lng' | 'name' | 'phone';
+type FieldDraft = Partial<Record<FieldName, string>>;
+type FieldSpec = (typeof VENUE_FIELDS)[number] | (typeof LODGING_FIELDS)[number];
+type FieldWiring = readonly [FieldErrors, IdOf, FieldDraft, WriteField];
+type IdOf = (field: string) => string;
+type WriteField = (field: string, value: string) => void;
+type CitySelect = (cityId: string | null) => void;
+type SecretTarget = Readonly<{ id: string; kind: 'venue' | 'lodging'; name: string }>;
+type VenueEdit = { draft: VenueDraft; errors: FieldErrors; id: string; original: VenueDraft };
+type SecretReveal = { kind: SecretTarget['kind']; name: string; secret: string };
+type VenueDraft = Readonly<typeof BLANK_DRAFT & { isActivePartner: boolean }>;
+type LodgingDraft = Readonly<typeof BLANK_DRAFT & { kind: LodgingKind; phone: string }>;
 
-/**
- * The sentence this screen shows for a failure: the code's own wording for the five codes above,
- * and the client's map for anything else. The server's `message` text is never shown (AAP 0.11.1).
- */
 function messageFor(error: unknown): string {
   const code = isApiError(error) ? error.code : 'invalid_response';
   return REGISTRY_MESSAGES[code] ?? userMessageFor(code);
 }
-
-/** Maps a rejected body's issues onto the fields a form shows them under. */
-function fieldErrorsFrom(
-  issues: readonly { readonly path: readonly PropertyKey[] }[],
-): FieldErrors {
-  const errors: Record<string, string> = {};
-  for (const issue of issues) {
-    const field = issue.path[0];
-    if (typeof field === 'string' && errors[field] === undefined) errors[field] = FIELD_ERROR;
-  }
-  return errors;
+function failFields(errors: FieldErrors, setErrors: (errors: FieldErrors) => void): void {
+  setErrors(errors);
+  announce('Check the highlighted fields.');
 }
-
-/** `2027-03-12T09:31:00.000Z` -> `12 Mar 2027, 09:31 UTC`. Anything else reads as it arrived. */
-function formatIssuedAt(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return iso;
-  return `${new Intl.DateTimeFormat('en-GB', ISSUED_AT_FORMAT).format(at)} UTC`;
+const isFieldKey = (key: PropertyKey | undefined): key is string => typeof key === 'string';
+function fieldErrorsFrom(issues: readonly { path: readonly PropertyKey[] }[]): FieldErrors {
+  const keys = issues.map((issue) => issue.path[0]).filter(isFieldKey);
+  return Object.fromEntries(keys.map((key) => [key, 'Check this value.'] as const));
 }
-
-const ISSUED_AT_FORMAT: Intl.DateTimeFormatOptions = {
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  month: 'short',
-  timeZone: 'UTC',
-  year: 'numeric',
-};
-
-/** A coordinate to five decimals, the precision the seeded venues are laid out on. */
-function coordinate(value: number): string {
-  return value.toFixed(5);
-}
-
-/** A row's secret state, in one sentence. */
 function secretStatus(secretIssuedAt: string | null): string {
-  return secretIssuedAt === null
-    ? NO_SECRET
-    : `Console secret issued ${formatIssuedAt(secretIssuedAt)}`;
+  if (secretIssuedAt === null) return 'No console secret';
+  const at = new Date(secretIssuedAt);
+  if (Number.isNaN(at.getTime())) return `Console secret issued ${secretIssuedAt}`;
+  return `Console secret issued ${new Intl.DateTimeFormat('en-GB', ISSUED_AT_FORMAT).format(at)} UTC`;
 }
-
-/** The city's name, or its slug while the list is still in flight. */
 function cityLabel(cities: readonly CityDto[], cityId: string): string {
   return cities.find((city) => city.id === cityId)?.name ?? cityId;
 }
-
-/** The web clipboard, or null where the platform has none — Hermes on iOS and Android has none. */
 function clipboardWriter(): { writeText(text: string): Promise<void> } | null {
-  const writer: { writeText?(text: string): Promise<void> } | undefined =
-    typeof navigator === 'undefined' ? undefined : navigator.clipboard;
-  return writer !== undefined && typeof writer.writeText === 'function'
-    ? (writer as { writeText(text: string): Promise<void> })
-    : null;
+  const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
+  return typeof clip?.writeText === 'function' ? clip : null;
 }
-
-/** The read-only secret field's change handler: `TextField` requires one and never edits it here. */
 function ignoreText(): void {}
-
-/**
- * A native `Switch`'s role and state, stated for VoiceOver and TalkBack and withheld on web.
- *
- * `react-native-web` 0.19 forwards both onto the wrapper element it draws around the control, where
- * they add a nameless, non-activatable `role="switch"` ahead of the real input in the tab order
- * (WCAG 2.1.1, 2.4.3); the input it renders already carries the role, the checked state and the
- * visible label as its accessible name.
- */
-function switchProps(checked: boolean, disabled: boolean): Partial<SwitchProps> {
-  if (Platform.OS === 'web') return {};
-  return { accessibilityRole: 'switch', accessibilityState: { checked, disabled } };
+type SwitchWiring = readonly [boolean, boolean, string, (next: boolean) => void, string];
+function switchProps([on, busy, label, set, id]: SwitchWiring): Partial<SwitchProps> {
+  const look = {
+    ios_backgroundColor: colors.border,
+    thumbColor: colors.onPrimary,
+    trackColor: { false: colors.border, true: colors.primary },
+  };
+  const control = { accessibilityLabel: label, onValueChange: set, testID: id, value: on };
+  if (Platform.OS === 'web') return { ...look, ...control, disabled: busy };
+  return {
+    ...look,
+    ...control,
+    disabled: busy,
+    accessibilityRole: 'switch',
+    accessibilityState: { checked: on, disabled: busy },
+  };
+}
+function venueDraftOf(venue: AdminVenueDto): VenueDraft {
+  const { address, cityId, isActivePartner, name } = venue;
+  return { address, cityId, isActivePartner, lat: String(venue.lat), lng: String(venue.lng), name };
 }
 
-// --- Shared pieces -----------------------------------------------------------------------------
+function changedVenueFields(prior: VenueDraft, draft: VenueDraft) {
+  const numbers = { lat: Number.parseFloat(draft.lat), lng: Number.parseFloat(draft.lng) };
+  const before = { lat: Number.parseFloat(prior.lat), lng: Number.parseFloat(prior.lng) };
+  const texts = (['name', 'address'] as const).filter((field) => draft[field] !== prior[field]);
+  const changed = Object.fromEntries(texts.map((field) => [field, draft[field]] as const));
+  const moved = numbers.lat !== before.lat || numbers.lng !== before.lng;
+  return moved ? { ...changed, ...numbers } : changed;
+}
+function venuePayload(draft: VenueDraft): CreateVenueRequest {
+  const numbers = { lat: Number.parseFloat(draft.lat), lng: Number.parseFloat(draft.lng) };
+  const trimmed = { address: draft.address.trim(), name: draft.name.trim() };
+  const { cityId, isActivePartner } = draft;
+  return { ...trimmed, ...numbers, cityId, isActivePartner };
+}
+function lodgingPayload(draft: LodgingDraft): CreateLodgingRequest {
+  const numbers = { lat: Number.parseFloat(draft.lat), lng: Number.parseFloat(draft.lng) };
+  const trimmed = { address: draft.address.trim(), name: draft.name.trim() };
+  const { cityId, kind, phone } = draft;
+  const dial = phone.trim();
+  return { ...trimmed, ...numbers, cityId, kind, phone: dial === '' ? null : dial };
+}
+function fieldWriter<T extends object>(set: (update: (draft: T) => T) => void) {
+  return (field: string, value: string): void => set((draft) => ({ ...draft, [field]: value }));
+}
+function idOf(prefix: string): IdOf {
+  return (field: string) => `${prefix}-${field}`;
+}
+function button(variant: 'primary' | 'secondary') {
+  return (label: string, onPress: () => void, busy: boolean) => ({ busy, label, onPress, variant });
+}
+const primary = button('primary');
+const secondary = button('secondary');
+function fieldRow(spec: FieldSpec, wiring: FieldWiring): ReactElement {
+  const [errors, id, values, write] = wiring;
+  const props = {
+    error: errors[spec.key],
+    label: spec.label,
+    onChangeText: (text: string) => write(spec.key, text),
+    testID: id(spec.key),
+    value: values[spec.key] ?? '',
+  };
+  return <TextField key={spec.key} {...props} {...spec.input} />;
+}
+type WebKeyEvent = Readonly<{ key?: string; repeat?: boolean; preventDefault?: () => void }>;
+/** react-native-web answers Space only for a native button or role="button", so a radio takes it. */
+function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
+  if (Platform.OS !== 'web') return {};
+  const onKeyDown = (event: WebKeyEvent): void => {
+    if (event.repeat === true || (event.key !== ' ' && event.key !== 'Spacebar')) return;
+    event.preventDefault?.();
+    activate();
+  };
+  return { onKeyDown };
+}
+type ChipProps = { label: string; onPress: () => void; selected: boolean; testID: string };
 
-/**
- * One selectable chip. `role="radio"` with `aria-checked` is the pair both platforms understand:
- * React Native maps it onto the native radio role and react-native-web onto the DOM attribute. The
- * responder answers Enter for any element but withholds Space from one that is neither a native
- * `button` nor `role="button"`, so this chip takes Space itself and leaves Enter to the responder
- * (AAP 0.5.8).
- */
-function Chip({
-  label,
-  selected,
-  onPress,
-  testID,
-}: {
-  readonly label: string;
-  readonly selected: boolean;
-  readonly onPress: () => void;
-  readonly testID: string;
-}): ReactElement {
+function Chip({ label, selected, onPress, testID }: ChipProps): ReactElement {
   const [focused, setFocused] = useState(false);
-
+  const aria = { 'aria-checked': selected, 'aria-label': label, role: 'radio' as const };
+  const focus = { onBlur: () => setFocused(false), onFocus: () => setFocused(true) };
+  const base = [styles.chip, webFocusRingReset];
+  const look = [...base, selected && styles.chipSelected, focused && styles.chipFocused];
   return (
     <Pressable
+      {...aria}
       {...spaceActivates(onPress)}
-      aria-checked={selected}
-      aria-label={label}
-      onBlur={() => setFocused(false)}
-      onFocus={() => setFocused(true)}
+      {...focus}
       onPress={onPress}
-      role="radio"
-      style={[
-        styles.chip,
-        selected && styles.chipSelected,
-        focused && styles.chipFocused,
-        webFocusRingReset,
-      ]}
+      style={look}
       testID={testID}
     >
       <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{label}</Text>
     </Pressable>
   );
 }
-
-/**
- * One labelled radio group over the configured cities. `includeAll` adds the list filter's "All
- * cities" radio; the two create forms leave it out, because a new venue or lodging names a city.
- */
-function CityChips({
-  label,
-  cities,
-  selected,
-  onSelect,
-  includeAll,
-  testIDPrefix,
-}: {
-  readonly label: string;
+type CityChipsProps = {
+  readonly all?: boolean;
   readonly cities: readonly CityDto[];
-  readonly selected: string | null;
+  readonly label: string;
   readonly onSelect: (cityId: string | null) => void;
-  readonly includeAll: boolean;
-  readonly testIDPrefix: string;
-}): ReactElement {
+  readonly prefix: string;
+  readonly selected: string | null;
+};
+function CityChips(props: CityChipsProps): ReactElement {
+  const { label, cities, selected, onSelect, all = false, prefix } = props;
+  const options: readonly ChipOption[] = all ? [ALL_CITIES, ...cities] : cities;
   return (
     <View aria-label={label} role="radiogroup" style={styles.chips}>
-      {includeAll ? (
+      {options.map((option) => (
         <Chip
-          label={ALL_CITIES_LABEL}
-          onPress={() => onSelect(null)}
-          selected={selected === null}
-          testID={`${testIDPrefix}-all`}
-        />
-      ) : null}
-      {cities.map((city) => (
-        <Chip
-          key={city.id}
-          label={city.name}
-          onPress={() => onSelect(city.id)}
-          selected={selected === city.id}
-          testID={`${testIDPrefix}-${city.id}`}
+          key={option.id ?? 'all'}
+          label={option.name}
+          onPress={() => onSelect(option.id)}
+          selected={selected === option.id}
+          testID={`${prefix}-${option.id ?? 'all'}`}
         />
       ))}
     </View>
   );
 }
-
-/** The issued secret and the row it belongs to, held in the screen's own state (AAP 0.3.2). */
-interface SecretReveal {
-  readonly targetKind: 'venue' | 'lodging';
-  readonly targetId: string;
-  readonly targetName: string;
-  readonly secret: string;
-}
-
-/**
- * The one-time console secret: a read-only field a person can select, a copy action where the
- * platform has a clipboard, and nothing that outlives the screen's focus.
- */
-function SecretCard({
-  reveal,
-  onDone,
-}: {
-  readonly reveal: SecretReveal;
-  readonly onDone: () => void;
-}): ReactElement {
+type SecretCardProps = { readonly reveal: SecretReveal; readonly onDone: () => void };
+function SecretCard({ reveal, onDone }: SecretCardProps): ReactElement {
   const writer = clipboardWriter();
   const [copyNote, setCopyNote] = useState<string | null>(null);
-
+  const subtitle = reveal.kind === 'venue' ? 'Venue' : 'Lodging';
+  const copyButton = { ...secondary('Copy', () => void copy(), false), testID: 'ops-secret-copy' };
   async function copy(): Promise<void> {
     if (writer === null) return;
     try {
@@ -394,16 +277,11 @@ function SecretCard({
       announce(SECRET_COPY_FAILED);
     }
   }
-
   return (
-    <Card
-      subtitle={reveal.targetKind === 'venue' ? 'Venue' : 'Lodging'}
-      testID="ops-secret"
-      title={reveal.targetName}
-    >
+    <Card subtitle={subtitle} testID="ops-secret" title={reveal.name}>
       <TextField
-        hint={SECRET_ONCE_HINT}
-        label={SECRET_LABEL}
+        hint={'This secret is shown only once. The console keeps it in this browser session only.'}
+        label={'Console secret'}
         onChangeText={ignoreText}
         readOnly
         selectTextOnFocus
@@ -412,36 +290,13 @@ function SecretCard({
       />
       {copyNote === null ? null : <Text style={styles.meta}>{copyNote}</Text>}
       <View style={styles.actions}>
-        {writer === null ? null : (
-          <Button
-            label={COPY_LABEL}
-            onPress={() => void copy()}
-            testID="ops-secret-copy"
-            variant="secondary"
-          />
-        )}
-        <Button label={DONE_LABEL} onPress={onDone} testID="ops-secret-done" />
+        {writer === null ? null : <Button {...copyButton} />}
+        <Button {...primary('Done', onDone, false)} testID="ops-secret-done" />
       </View>
     </Card>
   );
 }
-
-/**
- * The console-secret control both registry rows share.
- *
- * A first secret is issued on the press; a reissue replaces the secret the console is signed in
- * with, so it waits for the inline warning's own confirm action, and the row's button becomes the
- * way back out. The value itself is never held here — only the screen's state holds it (AAP 0.3.2).
- */
-function SecretControls({
-  confirming,
-  issued,
-  busy,
-  onIssue,
-  onStartReissue,
-  onKeep,
-  testID,
-}: {
+type SecretControlsProps = {
   readonly confirming: boolean;
   readonly issued: boolean;
   readonly busy: boolean;
@@ -449,194 +304,42 @@ function SecretControls({
   readonly onStartReissue: () => void;
   readonly onKeep: () => void;
   readonly testID: string;
-}): ReactElement {
+};
+function SecretControls(props: SecretControlsProps): ReactElement {
+  const { busy, confirming, issued, onIssue, onKeep, onStartReissue, testID } = props;
+  const issueLabel = issued ? 'Reissue console secret' : 'Issue console secret';
+  const issue = { ...secondary(issueLabel, issued ? onStartReissue : onIssue, busy), testID };
+  const keep = { ...secondary('Keep current secret', onKeep, false), testID: `${testID}-keep` };
+  const action = { label: 'Issue new secret', onPress: onIssue, testID: `${testID}-confirm` };
+  const warning = { action, message: REISSUE_WARNING, tone: 'warning' as const };
   return (
     <View style={styles.actions}>
-      {confirming ? (
-        <Button
-          label={KEEP_SECRET_LABEL}
-          onPress={onKeep}
-          testID={`${testID}-keep`}
-          variant="secondary"
-        />
-      ) : (
-        <Button
-          busy={busy}
-          label={issued ? REISSUE_SECRET_LABEL : ISSUE_SECRET_LABEL}
-          onPress={issued ? onStartReissue : onIssue}
-          testID={testID}
-          variant="secondary"
-        />
-      )}
-      {confirming ? (
-        <Banner
-          action={{ label: REISSUE_CONFIRM_LABEL, onPress: onIssue, testID: `${testID}-confirm` }}
-          message={REISSUE_WARNING}
-          testID={`${testID}-warning`}
-          tone="warning"
-        />
-      ) : null}
+      {confirming ? <Button {...keep} /> : <Button {...issue} />}
+      {confirming ? <Banner {...warning} testID={`${testID}-warning`} /> : null}
     </View>
   );
 }
-
-/**
- * What a section's own read shows above its rows: a loading line while it is in flight, and the
- * retry notice once it has failed. The section's rows render only what the API returned.
- */
-function ReadState({
-  error,
-  pending,
-  retry,
-  testID,
-}: {
-  readonly error: unknown;
-  readonly pending: boolean;
-  readonly retry: () => void;
-  readonly testID: string;
-}): ReactElement {
-  if (error === null) {
-    return <>{pending ? <Text style={styles.meta}>{LOADING_TEXT}</Text> : null}</>;
-  }
+type ReadProps = Readonly<{ error: unknown; pending: boolean; retry: () => void; testID: string }>;
+function announceIf(message: string | null): void {
+  if (message !== null) announce(message);
+}
+function ReadState({ error, pending, retry, testID }: ReadProps): ReactElement {
+  const action = { label: 'Try again', onPress: retry, testID: `${testID}-retry` };
+  if (error === null) return <>{pending ? <Text style={styles.meta}>{'Loading…'}</Text> : null}</>;
   return (
-    <Banner
-      action={{ label: RETRY_LABEL, onPress: retry, testID: `${testID}-retry` }}
-      message={messageFor(error)}
-      testID={`${testID}-error`}
-      tone="error"
-    />
+    <Banner action={action} message={messageFor(error)} testID={`${testID}-error`} tone="error" />
   );
 }
+const errorBanner = (message: string | null, testID: string): ReactElement | null =>
+  message === null ? null : <Banner message={message} testID={testID} tone="error" />;
 
-// --- The screen (AAP 0.5.4, AAP 0.5.6) ---------------------------------------------------------
-
-/** The venue form's draft. An inline edit reuses the same fields, so one shape carries both. */
-interface VenueDraft {
-  readonly cityId: string;
-  readonly name: string;
-  readonly address: string;
-  readonly lat: string;
-  readonly lng: string;
-  readonly isActivePartner: boolean;
-}
-
-const EMPTY_VENUE_DRAFT: VenueDraft = {
-  address: '',
-  cityId: '',
-  isActivePartner: true,
-  lat: '',
-  lng: '',
-  name: '',
-};
-
-/** The lodging form's draft; `kind` is one of the three kinds the contract names. */
-interface LodgingDraft {
-  readonly cityId: string;
-  readonly name: string;
-  readonly kind: AdminLodgingDto['kind'];
-  readonly address: string;
-  readonly phone: string;
-  readonly lat: string;
-  readonly lng: string;
-}
-
-const EMPTY_LODGING_DRAFT: LodgingDraft = {
-  address: '',
-  cityId: '',
-  // The first of the three kinds, and the one a pilot's shared housing is entered as most often.
-  kind: 'hostel',
-  lat: '',
-  lng: '',
-  name: '',
-  phone: '',
-};
-
-/** An open inline edit: which venue, what it held, what it holds now, and its field messages. */
-interface VenueEdit {
-  readonly id: string;
-  readonly original: VenueDraft;
-  readonly draft: VenueDraft;
-  readonly errors: FieldErrors;
-}
-
-/** A row's editable text, as the fields take it: `String(number)` parses back to the same number. */
-function venueDraftOf(venue: AdminVenueDto): VenueDraft {
-  return {
-    address: venue.address,
-    cityId: venue.cityId,
-    isActivePartner: venue.isActivePartner,
-    lat: String(venue.lat),
-    lng: String(venue.lng),
-    name: venue.name,
-  };
-}
-
-/**
- * The keys an edit sends: only those whose value differs from the row it started from, with `lat`
- * and `lng` travelled together, because a venue moved half-way would leave the 150 m check-in
- * geofence measured from a point that is not the venue any more (AAP 0.5.4, 0.5.7).
- */
-function changedVenueFields(
-  original: VenueDraft,
-  draft: VenueDraft,
-): Record<string, string | number> {
-  const changed: Record<string, string | number> = {};
-  if (draft.name !== original.name) changed.name = draft.name;
-  if (draft.address !== original.address) changed.address = draft.address;
-  const lat = Number.parseFloat(draft.lat);
-  const lng = Number.parseFloat(draft.lng);
-  if (lat !== Number.parseFloat(original.lat) || lng !== Number.parseFloat(original.lng)) {
-    changed.lat = lat;
-    changed.lng = lng;
-  }
-  return changed;
-}
-
-/** The four text fields of a venue form, in reading order. */
-const VENUE_FIELDS = [
-  { key: 'name', label: NAME_LABEL },
-  { key: 'address', label: ADDRESS_LABEL },
-  { key: 'lat', label: LAT_LABEL },
-  { key: 'lng', label: LNG_LABEL },
-] as const;
-
-/** The five text fields of a lodging form, in reading order. */
-const LODGING_FIELDS = [
-  { key: 'name', label: NAME_LABEL },
-  { key: 'address', label: ADDRESS_LABEL },
-  { key: 'phone', label: PHONE_LABEL },
-  { key: 'lat', label: LAT_LABEL },
-  { key: 'lng', label: LNG_LABEL },
-] as const;
-
-/** A field of either form that takes a number rather than text. */
-function isNumericField(key: string): boolean {
-  return key === 'lat' || key === 'lng';
-}
-
-/**
- * The operator registry.
- *
- * @returns The venue and lodging registries with their console-secret controls, and one price-job
- * row per city (AAP 0.5.4, AAP 0.5.6, AAP 0.8.1).
- */
 export default function OperatorRegistryScreen(): ReactElement {
-  const wide = useWindowDimensions().width >= WIDE_LAYOUT_MIN_WIDTH;
-
-  // Three reads, each under the key its own mutations invalidate. None is gated on a session: the
-  // `/ops` layout has already established an operator session before this route renders, and an
-  // answer of `403 operator_only` is what tells the truth about any of them (AAP 0.5.4).
+  const wide = useWindowDimensions().width >= 900;
+  const cardsStyle = [styles.cards, wide ? styles.cardsRow : null];
   const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
-  const venues = useQuery({
-    queryKey: queryKeys.adminVenues,
-    queryFn: () => apiClient.admin.listVenues(),
-  });
-  const lodgings = useQuery({
-    queryKey: queryKeys.adminLodgings,
-    queryFn: () => apiClient.admin.listLodgings(),
-  });
+  const venues = useQuery({ queryFn: apiClient.admin.listVenues, queryKey: queryKeys.adminVenues });
+  const lodgings = useQuery(LODGINGS_QUERY);
   const cityList: readonly CityDto[] = cities.data?.items ?? [];
-
   const [venueFilter, setVenueFilter] = useState<string | null>(null);
   const [lodgingFilter, setLodgingFilter] = useState<string | null>(null);
   const [reveal, setReveal] = useState<SecretReveal | null>(null);
@@ -651,91 +354,63 @@ export default function OperatorRegistryScreen(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<Readonly<Record<string, string>>>({});
   const [jobBusy, setJobBusy] = useState<string | null>(null);
-
-  // The two lists as their chips show them: a display filter over the API's own rows, which never
-  // drops a field a row carries (AAP 0.5.4).
+  const writeVenue = fieldWriter(setVenueDraft);
+  const writeLodging = fieldWriter(setLodgingDraft);
   const venueRows: readonly AdminVenueDto[] = venues.data?.items ?? [];
   const lodgingRows: readonly AdminLodgingDto[] = lodgings.data?.items ?? [];
-  const visibleVenues =
-    venueFilter === null ? venueRows : venueRows.filter((venue) => venue.cityId === venueFilter);
-  const visibleLodgings =
-    lodgingFilter === null
-      ? lodgingRows
-      : lodgingRows.filter((lodging) => lodging.cityId === lodgingFilter);
-  // The empty sentence belongs to a list that has loaded and holds nothing, not to one still in
-  // flight or one that failed: `ReadState` above already speaks for those two.
-  const venuesSettled = !venues.isPending && venues.error === null;
-  const lodgingsSettled = !lodgings.isPending && lodgings.error === null;
-
-  // The secret leaves with the screen's focus, whether the operator navigates away or the component
-  // unmounts (AAP 0.3.2).
-  useFocusEffect(
-    useCallback(() => {
-      return () => setReveal(null);
-    }, []),
+  const venueShown = venueRows.filter((row) => venueFilter === null || row.cityId === venueFilter);
+  const lodgingShown = lodgingRows.filter(
+    (row) => lodgingFilter === null || row.cityId === lodgingFilter,
   );
-
+  const venuesEmpty = !venues.isPending && venues.error === null && venueShown.length === 0;
+  const lodgingsEmpty = !lodgings.isPending && lodgings.error === null && lodgingShown.length === 0;
+  // The secret leaves with the screen's focus, whether the operator navigates away or the component unmounts (AAP 0.3.2).
+  useFocusEffect(useCallback(() => () => setReveal(null), []));
   const createVenue = useMutation({
     mutationFn: (body: CreateVenueRequest) => apiClient.admin.createVenue(body),
     onSuccess: () => {
       setVenueDraft(EMPTY_VENUE_DRAFT);
       setVenueErrors(NO_FIELD_ERRORS);
-      succeed(VENUE_CREATED);
-      // The API enqueues the place refresh for a new venue (AAP 0.5.6); the list shows it at once.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.adminVenues });
+      succeed('Venue created.', queryKeys.adminVenues);
     },
   });
-
   const updateVenue = useMutation({
     mutationFn: (input: { readonly id: string; readonly body: UpdateVenueRequest }) =>
       apiClient.admin.updateVenue(input.id, input.body),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.adminVenues });
-    },
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.adminVenues }),
   });
-
   const createLodging = useMutation({
     mutationFn: (body: CreateLodgingRequest) => apiClient.admin.createLodging(body),
     onSuccess: () => {
       setLodgingDraft(EMPTY_LODGING_DRAFT);
       setLodgingErrors(NO_FIELD_ERRORS);
-      succeed(LODGING_CREATED);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.adminLodgings });
+      succeed('Lodging created.', queryKeys.adminLodgings);
     },
   });
-
   const venueFailure = createVenue.error ?? updateVenue.error ?? null;
   const venueFailureMessage = venueFailure === null ? null : messageFor(venueFailure);
   const lodgingFailureMessage =
     createLodging.error === null ? null : messageFor(createLodging.error);
-
-  // Each failure is spoken once: a re-render over the same failed request repeats nothing. On web
-  // the error banner's own live region speaks it and `announce` is a no-op there (AAP 0.5.8).
-  useEffect(() => {
-    if (venueFailureMessage !== null) announce(venueFailureMessage);
-  }, [venueFailureMessage]);
-
-  useEffect(() => {
-    if (lodgingFailureMessage !== null) announce(lodgingFailureMessage);
-  }, [lodgingFailureMessage]);
-
-  /** Shows a success sentence and speaks it: the banner's live region carries it on web. */
-  function succeed(message: string): void {
+  useEffect(() => announceIf(venueFailureMessage), [venueFailureMessage]);
+  useEffect(() => announceIf(lodgingFailureMessage), [lodgingFailureMessage]);
+  function succeed(message: string, refresh?: readonly unknown[], reset?: () => void): void {
+    reset?.();
     setNotice(message);
     announce(message);
+    if (refresh !== undefined) void queryClient.invalidateQueries({ queryKey: refresh });
   }
-
-  /**
-   * Issues a console secret and shows it once.
-   *
-   * A plain `await` on purpose: a React Query mutation keeps its `variables` and its answer in the
-   * cache, and the secret is the one value that may live only in this component's state (AAP 0.3.2).
-   */
-  async function issueSecret(target: {
-    readonly kind: 'venue' | 'lodging';
-    readonly id: string;
-    readonly name: string;
-  }): Promise<void> {
+  const edited = (): void => succeed('Venue updated.', undefined, () => setEdit(null));
+  const refetchLodgings = (): void => void lodgings.refetch();
+  const secretControls = (row: AdminVenueDto | AdminLodgingDto, kind: SecretTarget['kind']) => ({
+    busy: secretBusyId === row.id,
+    confirming: reissueFor === row.id,
+    issued: row.secretIssuedAt !== null,
+    onIssue: () => void issueSecret({ id: row.id, kind, name: row.name }),
+    onKeep: () => setReissueFor(null),
+    onStartReissue: () => setReissueFor(row.id),
+    testID: `ops-${kind}-secret-${row.id}`,
+  });
+  async function issueSecret(target: SecretTarget): Promise<void> {
     setSecretError(null);
     setReveal(null);
     setSecretBusyId(target.id);
@@ -744,17 +419,10 @@ export default function OperatorRegistryScreen(): ReactElement {
         target.kind === 'venue'
           ? await apiClient.admin.issueVenueSecret(target.id)
           : await apiClient.admin.issueLodgingSecret(target.id);
-      setReveal({
-        secret: issued.secret,
-        targetId: target.id,
-        targetKind: target.kind,
-        targetName: target.name,
-      });
+      setReveal({ kind: target.kind, name: target.name, secret: issued.secret });
       setReissueFor(null);
-      // The row's `secretIssuedAt` is what moved, so the list it came from is read again.
-      await queryClient.invalidateQueries({
-        queryKey: target.kind === 'venue' ? queryKeys.adminVenues : queryKeys.adminLodgings,
-      });
+      const secretKey = target.kind === 'venue' ? queryKeys.adminVenues : queryKeys.adminLodgings;
+      await queryClient.invalidateQueries({ queryKey: secretKey });
     } catch (error) {
       const message = messageFor(error);
       setSecretError(message);
@@ -763,360 +431,173 @@ export default function OperatorRegistryScreen(): ReactElement {
       setSecretBusyId(null);
     }
   }
-
-  /** Queues a city's menu ingestion or its phone fallback, and reports the answer on that row. */
   async function runPriceJob(cityId: string, kind: PriceJobKind): Promise<void> {
     const parsed = PriceJobRequest.safeParse({ cityId, kind });
-    if (!parsed.success) {
-      setJobStatus((previous) => ({ ...previous, [cityId]: INVALID_FIELDS }));
-      announce(INVALID_FIELDS);
-      return;
-    }
-
+    if (!parsed.success) return setCityStatus(cityId, 'Check the highlighted fields.');
     setJobBusy(cityId);
-    setJobStatus((previous) => ({ ...previous, [cityId]: JOB_RUNNING }));
+    setCityStatus(cityId, 'Running…');
     try {
       const queued = await apiClient.admin.enqueuePriceJob(parsed.data);
-      const message = `Queued (job ${queued.jobId})`;
-      setJobStatus((previous) => ({ ...previous, [cityId]: message }));
-      announce(message);
+      setCityStatus(cityId, `Queued (job ${queued.jobId})`);
     } catch (error) {
-      const message = messageFor(error);
-      setJobStatus((previous) => ({ ...previous, [cityId]: message }));
-      announce(message);
+      setCityStatus(cityId, messageFor(error));
     } finally {
       setJobBusy(null);
     }
   }
-
-  /** Toggles a venue's partner flag: meetups are offered only at active partners (AAP 0.12.2). */
-  function toggleActivePartner(venue: AdminVenueDto, next: boolean): void {
-    updateVenue.mutate({ body: { isActivePartner: next }, id: venue.id });
+  function setCityStatus(cityId: string, status: string): void {
+    setJobStatus((previous) => ({ ...previous, [cityId]: status }));
+    announce(status);
   }
-
-  /** Opens or closes one row's inline edit, seeding its draft from the row the API returned. */
+  const newVenueCity = (cityId: string | null) => writeVenue('cityId', cityId ?? '');
+  const newLodgingCity = (cityId: string | null) => writeLodging('cityId', cityId ?? '');
   function toggleEdit(venue: AdminVenueDto): void {
     const draft = venueDraftOf(venue);
+    const open = edit !== null && edit.id === venue.id;
+    setEdit(open ? null : { draft, errors: NO_FIELD_ERRORS, id: venue.id, original: draft });
+  }
+  function writeEdit(field: string, value: string): void {
     setEdit((open) =>
-      open !== null && open.id === venue.id
-        ? null
-        : { draft, errors: NO_FIELD_ERRORS, id: venue.id, original: draft },
+      open === null ? null : { ...open, draft: { ...open.draft, [field]: value } },
     );
   }
-
-  /** Writes one field of the open edit. */
-  function patchEditField(field: 'name' | 'address' | 'lat' | 'lng', value: string): void {
-    setEdit((open) => {
-      if (open === null) return null;
-      if (field === 'name') return { ...open, draft: { ...open.draft, name: value } };
-      if (field === 'address') return { ...open, draft: { ...open.draft, address: value } };
-      if (field === 'lat') return { ...open, draft: { ...open.draft, lat: value } };
-      return { ...open, draft: { ...open.draft, lng: value } };
-    });
-  }
-
-  /** Writes one field of the new-venue form. */
-  function patchVenueDraft(field: 'name' | 'address' | 'lat' | 'lng', value: string): void {
-    setVenueDraft((draft) => {
-      if (field === 'name') return { ...draft, name: value };
-      if (field === 'address') return { ...draft, address: value };
-      if (field === 'lat') return { ...draft, lat: value };
-      return { ...draft, lng: value };
-    });
-  }
-
-  /** Writes one field of the new-lodging form. */
-  function patchLodgingDraft(
-    field: 'name' | 'address' | 'phone' | 'lat' | 'lng',
-    value: string,
-  ): void {
-    setLodgingDraft((draft) => {
-      if (field === 'name') return { ...draft, name: value };
-      if (field === 'address') return { ...draft, address: value };
-      if (field === 'phone') return { ...draft, phone: value };
-      if (field === 'lat') return { ...draft, lat: value };
-      return { ...draft, lng: value };
-    });
-  }
-
-  /** Sends an edit's changed keys, and closes the editor once the API has taken them. */
   function saveVenueEdit(): void {
     if (edit === null) return;
     const parsed = UpdateVenueRequest.safeParse(changedVenueFields(edit.original, edit.draft));
-    if (!parsed.success) {
-      setEdit({ ...edit, errors: fieldErrorsFrom(parsed.error.issues) });
-      announce(INVALID_FIELDS);
-      return;
-    }
+    const apply = (errors: FieldErrors): void => setEdit({ ...edit, errors });
+    if (!parsed.success) return failFields(fieldErrorsFrom(parsed.error.issues), apply);
     setEdit({ ...edit, errors: NO_FIELD_ERRORS });
-    updateVenue.mutate(
-      { body: parsed.data, id: edit.id },
-      {
-        onSuccess: () => {
-          setEdit(null);
-          succeed(VENUE_UPDATED);
-        },
-      },
-    );
+    updateVenue.mutate({ body: parsed.data, id: edit.id }, { onSuccess: edited });
   }
-
-  /** Validates the venue form with the route's own schema, so a refused body is never sent. */
   function submitVenue(): void {
-    const parsed = CreateVenueRequest.safeParse({
-      address: venueDraft.address.trim(),
-      cityId: venueDraft.cityId,
-      isActivePartner: venueDraft.isActivePartner,
-      lat: Number.parseFloat(venueDraft.lat),
-      lng: Number.parseFloat(venueDraft.lng),
-      name: venueDraft.name.trim(),
-    });
-    if (!parsed.success) {
-      setVenueErrors(fieldErrorsFrom(parsed.error.issues));
-      announce(INVALID_FIELDS);
-      return;
-    }
+    const parsed = CreateVenueRequest.safeParse(venuePayload(venueDraft));
+    if (!parsed.success) return failFields(fieldErrorsFrom(parsed.error.issues), setVenueErrors);
     setVenueErrors(NO_FIELD_ERRORS);
     createVenue.mutate(parsed.data);
   }
-
-  /** Validates the lodging form; an empty phone travels as `null`, which the contract requires. */
   function submitLodging(): void {
-    const phone = lodgingDraft.phone.trim();
-    const parsed = CreateLodgingRequest.safeParse({
-      address: lodgingDraft.address.trim(),
-      cityId: lodgingDraft.cityId,
-      kind: lodgingDraft.kind,
-      lat: Number.parseFloat(lodgingDraft.lat),
-      lng: Number.parseFloat(lodgingDraft.lng),
-      name: lodgingDraft.name.trim(),
-      phone: phone === '' ? null : phone,
-    });
-    if (!parsed.success) {
-      setLodgingErrors(fieldErrorsFrom(parsed.error.issues));
-      announce(INVALID_FIELDS);
-      return;
-    }
+    const parsed = CreateLodgingRequest.safeParse(lodgingPayload(lodgingDraft));
+    if (!parsed.success) return failFields(fieldErrorsFrom(parsed.error.issues), setLodgingErrors);
     setLodgingErrors(NO_FIELD_ERRORS);
     createLodging.mutate(parsed.data);
   }
-
-  /** One venue row: its facts, its partner switch, its inline edit and its console secret. */
+  const chips = (group: ChipGroup, selected: string | null, onSelect: CitySelect) => (
+    <CityChips {...group} cities={cityList} onSelect={onSelect} selected={selected} />
+  );
+  function readState(error: unknown, pending: boolean, retry: () => void, testID: string) {
+    return <ReadState error={error} pending={pending} retry={retry} testID={testID} />;
+  }
   function renderVenue(venue: AdminVenueDto): ReactElement {
     const editing = edit !== null && edit.id === venue.id ? edit : null;
-    const confirming = reissueFor === venue.id;
-    const issue = (): void => void issueSecret({ id: venue.id, kind: 'venue', name: venue.name });
-
+    const busy = updateVenue.isPending;
+    const on = venue.isActivePartner;
+    const id = (name: string): string => `ops-venue-${name}-${venue.id}`;
+    const label = `${ACTIVE_PARTNER_LABEL}: ${venue.name}`;
+    const change = (next: boolean) =>
+      void updateVenue.mutate({ body: { isActivePartner: next }, id: venue.id });
+    const toggle = (): void => toggleEdit(venue);
+    const editLabel = editing === null ? 'Edit' : 'Cancel';
+    const editButton = { ...secondary(editLabel, toggle, false), testID: id('edit') };
+    const save = { ...primary('Save changes', saveVenueEdit, busy), testID: id('save') };
+    const badge = venue.isFixture ? <Text style={styles.badge}>{FIXTURE_BADGE}</Text> : null;
+    const subtitle = `${cityLabel(cityList, venue.cityId)} · ${venue.address}`;
+    const card = { subtitle, testID: `ops-venue-${venue.id}`, title: venue.name, trailing: badge };
+    const meta = `${venue.lat.toFixed(5)}, ${venue.lng.toFixed(5)} · ${secretStatus(venue.secretIssuedAt)}`;
+    const editID = (field: string): string => `ops-venue-edit-${field}-${venue.id}`;
+    const editFields =
+      editing === null ? null : ([editing.errors, editID, editing.draft, writeEdit] as const);
     return (
       <View key={venue.id} style={wide ? styles.slot : null}>
-        <Card
-          subtitle={`${cityLabel(cityList, venue.cityId)} · ${venue.address}`}
-          testID={`ops-venue-${venue.id}`}
-          title={venue.name}
-          trailing={venue.isFixture ? <Text style={styles.badge}>{FIXTURE_BADGE}</Text> : null}
-        >
-          <Text style={styles.meta}>
-            {`${coordinate(venue.lat)}, ${coordinate(venue.lng)} · ${secretStatus(
-              venue.secretIssuedAt,
-            )}`}
-          </Text>
+        <Card {...card}>
+          <Text style={styles.meta}>{meta}</Text>
           <View style={styles.switchRow}>
             <Text style={styles.switchLabel}>{ACTIVE_PARTNER_LABEL}</Text>
-            <Switch
-              accessibilityLabel={`${ACTIVE_PARTNER_LABEL}: ${venue.name}`}
-              disabled={updateVenue.isPending}
-              ios_backgroundColor={colors.border}
-              onValueChange={(next) => toggleActivePartner(venue, next)}
-              testID={`ops-venue-active-${venue.id}`}
-              thumbColor={colors.onPrimary}
-              trackColor={TRACK_COLOR}
-              value={venue.isActivePartner}
-              {...switchProps(venue.isActivePartner, updateVenue.isPending)}
-            />
+            <Switch {...switchProps([on, busy, label, change, id('active')])} />
           </View>
-
-          {editing === null
-            ? null
-            : VENUE_FIELDS.map((field) => (
-                <TextField
-                  error={editing.errors[field.key]}
-                  inputMode={isNumericField(field.key) ? 'decimal' : 'text'}
-                  key={field.key}
-                  label={field.label}
-                  onChangeText={(value) => patchEditField(field.key, value)}
-                  testID={`ops-venue-edit-${field.key}-${venue.id}`}
-                  value={editing.draft[field.key]}
-                />
-              ))}
-
+          {editFields === null ? null : VENUE_FIELDS.map((field) => fieldRow(field, editFields))}
           <View style={styles.actions}>
-            <Button
-              label={editing === null ? EDIT_LABEL : CANCEL_LABEL}
-              onPress={() => toggleEdit(venue)}
-              testID={`ops-venue-edit-${venue.id}`}
-              variant="secondary"
-            />
-            {editing === null ? null : (
-              <Button
-                busy={updateVenue.isPending}
-                label={SAVE_LABEL}
-                onPress={saveVenueEdit}
-                testID={`ops-venue-save-${venue.id}`}
-              />
-            )}
+            <Button {...editButton} />
+            {editing === null ? null : <Button {...save} />}
           </View>
-
-          <SecretControls
-            busy={secretBusyId === venue.id}
-            confirming={confirming}
-            issued={venue.secretIssuedAt !== null}
-            onIssue={issue}
-            onKeep={() => setReissueFor(null)}
-            onStartReissue={() => setReissueFor(venue.id)}
-            testID={`ops-venue-secret-${venue.id}`}
-          />
+          <SecretControls {...secretControls(venue, 'venue')} />
         </Card>
       </View>
     );
   }
-
-  /** One lodging row: its facts, its phone and its console secret. */
   function renderLodging(lodging: AdminLodgingDto): ReactElement {
-    const confirming = reissueFor === lodging.id;
-    const issue = (): void =>
-      void issueSecret({ id: lodging.id, kind: 'lodging', name: lodging.name });
-    // The source is shown whether or not a number exists: a manually entered lodging with none is
-    // still the operator's own entry, which is what `phoneSource` distinguishes (AAP 0.5.6).
-    const phone = `${lodging.phone ?? NO_PHONE} (${lodging.phoneSource})`;
-
+    const subtitle = `${cityLabel(cityList, lodging.cityId)} · ${LODGING_KIND_LABEL[lodging.kind]}`;
+    const phone = `${lodging.phone ?? 'No phone'} (${lodging.phoneSource})`;
+    const badges = (
+      <View style={styles.badges}>
+        {lodging.isFixture ? <Text style={styles.badge}>{FIXTURE_BADGE}</Text> : null}
+        {lodging.doNotCall ? <Text style={styles.badge}>{'Do not call'}</Text> : null}
+      </View>
+    );
+    const id = `ops-lodging-${lodging.id}`;
+    const card = { subtitle, testID: id, title: lodging.name, trailing: badges };
     return (
       <View key={lodging.id} style={wide ? styles.slot : null}>
-        <Card
-          subtitle={`${cityLabel(cityList, lodging.cityId)} · ${LODGING_KIND_LABEL[lodging.kind]}`}
-          testID={`ops-lodging-${lodging.id}`}
-          title={lodging.name}
-          trailing={
-            <View style={styles.badges}>
-              {lodging.isFixture ? <Text style={styles.badge}>{FIXTURE_BADGE}</Text> : null}
-              {lodging.doNotCall ? <Text style={styles.badge}>{DO_NOT_CALL_BADGE}</Text> : null}
-            </View>
-          }
-        >
-          <Text style={styles.meta}>{lodging.address ?? NO_ADDRESS}</Text>
+        <Card {...card}>
+          <Text style={styles.meta}>{lodging.address ?? 'No address'}</Text>
           <Text style={styles.meta}>{`${phone} · ${secretStatus(lodging.secretIssuedAt)}`}</Text>
           <Text style={styles.meta}>{LODGING_SECRET_HINT}</Text>
-
-          <SecretControls
-            busy={secretBusyId === lodging.id}
-            confirming={confirming}
-            issued={lodging.secretIssuedAt !== null}
-            onIssue={issue}
-            onKeep={() => setReissueFor(null)}
-            onStartReissue={() => setReissueFor(lodging.id)}
-            testID={`ops-lodging-secret-${lodging.id}`}
-          />
+          <SecretControls {...secretControls(lodging, 'lodging')} />
         </Card>
       </View>
     );
   }
-
-  /** One city's price-job row: its two jobs, and the answer to whichever ran last. */
   function renderPriceJob(city: CityDto): ReactElement {
     const status = jobStatus[city.id];
-
+    const busy = jobBusy === city.id;
+    const id = (name: string): string => `ops-price-${name}-${city.id}`;
+    const run = (kind: PriceJobKind) => () => void runPriceJob(city.id, kind);
+    const subtitle = `${city.timezone} · ${city.currency}`;
     return (
       <View key={city.id} style={wide ? styles.slot : null}>
-        <Card
-          subtitle={`${city.timezone} · ${city.currency}`}
-          testID={`ops-price-${city.id}`}
-          title={city.name}
-        >
+        <Card subtitle={subtitle} testID={`ops-price-${city.id}`} title={city.name}>
           <View style={styles.actions}>
-            <Button
-              busy={jobBusy === city.id}
-              label={MENU_JOB_LABEL}
-              onPress={() => void runPriceJob(city.id, 'menus')}
-              testID={`ops-price-menus-${city.id}`}
-            />
-            <Button
-              busy={jobBusy === city.id}
-              label={CALL_JOB_LABEL}
-              onPress={() => void runPriceJob(city.id, 'calls')}
-              testID={`ops-price-calls-${city.id}`}
-              variant="secondary"
-            />
+            <Button {...primary('Run menu ingestion', run('menus'), busy)} testID={id('menus')} />
+            <Button {...secondary('Run price calls', run('calls'), busy)} testID={id('calls')} />
+            {status === undefined ? null : (
+              <Text aria-live="polite" style={styles.meta} testID={id('status')}>
+                {status}
+              </Text>
+            )}
           </View>
-          {status === undefined ? null : (
-            <Text aria-live="polite" style={styles.meta} testID={`ops-price-status-${city.id}`}>
-              {status}
-            </Text>
-          )}
         </Card>
       </View>
     );
   }
-
-  /** The new-venue form: the city, the four text fields and the partner flag. */
   function renderVenueForm(): ReactElement {
+    const busy = createVenue.isPending;
+    const create = { ...primary('Create venue', submitVenue, busy), testID: 'ops-venue-create' };
+    const on = venueDraft.isActivePartner;
+    const setActive = (isActivePartner: boolean): void => {
+      setVenueDraft((draft) => ({ ...draft, isActivePartner }));
+    };
+    const wire = [on, false, ACTIVE_PARTNER_LABEL, setActive, 'ops-venue-new-active'] as const;
+    const fields = [venueErrors, idOf('ops-venue-new'), venueDraft, writeVenue] as const;
     return (
-      <Card testID="ops-venue-form" title={NEW_VENUE_LABEL}>
-        <CityChips
-          cities={cityList}
-          includeAll={false}
-          label={CITY_LABEL}
-          onSelect={(cityId) => setVenueDraft((draft) => ({ ...draft, cityId: cityId ?? '' }))}
-          selected={venueDraft.cityId === '' ? null : venueDraft.cityId}
-          testIDPrefix="ops-venue-new-city"
-        />
-        {VENUE_FIELDS.map((field) => (
-          <TextField
-            error={venueErrors[field.key]}
-            inputMode={isNumericField(field.key) ? 'decimal' : 'text'}
-            key={field.key}
-            label={field.label}
-            onChangeText={(value) => patchVenueDraft(field.key, value)}
-            testID={`ops-venue-new-${field.key}`}
-            value={venueDraft[field.key]}
-          />
-        ))}
+      <Card testID="ops-venue-form" title={'New venue'}>
+        {chips(CHIP_GROUPS.venueNew, venueDraft.cityId || null, newVenueCity)}
+        {VENUE_FIELDS.map((field) => fieldRow(field, fields))}
         <View style={styles.switchRow}>
           <Text style={styles.switchLabel}>{ACTIVE_PARTNER_LABEL}</Text>
-          <Switch
-            accessibilityLabel={ACTIVE_PARTNER_LABEL}
-            ios_backgroundColor={colors.border}
-            onValueChange={(isActivePartner) =>
-              setVenueDraft((draft) => ({ ...draft, isActivePartner }))
-            }
-            testID="ops-venue-new-active"
-            thumbColor={colors.onPrimary}
-            trackColor={TRACK_COLOR}
-            value={venueDraft.isActivePartner}
-            {...switchProps(venueDraft.isActivePartner, false)}
-          />
+          <Switch {...switchProps(wire)} />
         </View>
         <View style={styles.actions}>
-          <Button
-            busy={createVenue.isPending}
-            label={CREATE_VENUE_LABEL}
-            onPress={submitVenue}
-            testID="ops-venue-create"
-          />
+          <Button {...create} />
         </View>
       </Card>
     );
   }
-
-  /** The new-lodging form: a manual entry, stored with `phoneSource = operator` (AAP 0.5.6). */
   function renderLodgingForm(): ReactElement {
+    const busy = createLodging.isPending;
+    const create = { ...primary('Create lodging', submitLodging, busy), testID: LODGING_CREATE_ID };
+    const fields = [lodgingErrors, idOf('ops-lodging-new'), lodgingDraft, writeLodging] as const;
     return (
-      <Card testID="ops-lodging-form" title={NEW_LODGING_LABEL}>
-        <CityChips
-          cities={cityList}
-          includeAll={false}
-          label={CITY_LABEL}
-          onSelect={(cityId) => setLodgingDraft((draft) => ({ ...draft, cityId: cityId ?? '' }))}
-          selected={lodgingDraft.cityId === '' ? null : lodgingDraft.cityId}
-          testIDPrefix="ops-lodging-new-city"
-        />
+      <Card testID="ops-lodging-form" title={'New lodging'}>
+        {chips(CHIP_GROUPS.lodgingNew, lodgingDraft.cityId || null, newLodgingCity)}
         <View aria-label={KIND_LABEL} role="radiogroup" style={styles.chips}>
           {LodgingKind.options.map((kind) => (
             <Chip
@@ -1128,128 +609,56 @@ export default function OperatorRegistryScreen(): ReactElement {
             />
           ))}
         </View>
-        {LODGING_FIELDS.map((field) => (
-          <TextField
-            error={lodgingErrors[field.key]}
-            hint={field.key === 'phone' ? PHONE_HINT : undefined}
-            inputMode={
-              field.key === 'phone' ? 'tel' : isNumericField(field.key) ? 'decimal' : 'text'
-            }
-            key={field.key}
-            label={field.label}
-            onChangeText={(value) => patchLodgingDraft(field.key, value)}
-            testID={`ops-lodging-new-${field.key}`}
-            value={lodgingDraft[field.key]}
-          />
-        ))}
+        {LODGING_FIELDS.map((field) => fieldRow(field, fields))}
         <View style={styles.actions}>
-          <Button
-            busy={createLodging.isPending}
-            label={CREATE_LODGING_LABEL}
-            onPress={submitLodging}
-            testID="ops-lodging-create"
-          />
+          <Button {...create} />
         </View>
       </Card>
     );
   }
-
   return (
     <>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
       <Screen testID="ops-registry" title={SCREEN_TITLE}>
         {reveal === null ? null : <SecretCard onDone={() => setReveal(null)} reveal={reveal} />}
-        {secretError === null ? null : (
-          <Banner message={secretError} testID="ops-secret-error" tone="error" />
-        )}
+        {errorBanner(secretError, 'ops-secret-error')}
         {notice === null ? null : <Banner message={notice} testID="ops-notice" tone="success" />}
-        <ReadState
-          error={cities.error}
-          pending={cities.isPending}
-          retry={() => void cities.refetch()}
-          testID="ops-cities"
-        />
-
+        {readState(cities.error, cities.isPending, () => void cities.refetch(), 'ops-cities')}
         <View style={styles.section}>
-          <Text {...SECTION_HEADING} style={styles.sectionTitle}>
-            {VENUES_HEADING}
-          </Text>
-          <CityChips
-            cities={cityList}
-            includeAll
-            label={`${VENUES_HEADING} city filter`}
-            onSelect={setVenueFilter}
-            selected={venueFilter}
-            testIDPrefix="ops-venue-city"
-          />
-          <ReadState
-            error={venues.error}
-            pending={venues.isPending}
-            retry={() => void venues.refetch()}
-            testID="ops-venues"
-          />
-          {venueFailureMessage === null ? null : (
-            <Banner message={venueFailureMessage} testID="ops-venues-failure" tone="error" />
-          )}
-          <View style={[styles.cards, wide ? styles.cardsRow : null]}>
-            {visibleVenues.map(renderVenue)}
-          </View>
-          {venuesSettled && visibleVenues.length === 0 ? (
-            <Text style={styles.meta}>{VENUES_EMPTY}</Text>
-          ) : null}
+          <Text {...{ ...SECTION_HEADING, style: styles.sectionTitle }}>{VENUES_HEADING}</Text>
+          {chips(CHIP_GROUPS.venueCity, venueFilter, setVenueFilter)}
+          {readState(venues.error, venues.isPending, () => void venues.refetch(), 'ops-venues')}
+          {errorBanner(venueFailureMessage, 'ops-venues-failure')}
+          <View style={cardsStyle}>{venueShown.map(renderVenue)}</View>
+          {venuesEmpty ? <Text style={styles.meta}>{VENUES_EMPTY}</Text> : null}
           {renderVenueForm()}
         </View>
-
         <View style={styles.section}>
-          <Text {...SECTION_HEADING} style={styles.sectionTitle}>
-            {LODGINGS_HEADING}
-          </Text>
-          <CityChips
-            cities={cityList}
-            includeAll
-            label={`${LODGINGS_HEADING} city filter`}
-            onSelect={setLodgingFilter}
-            selected={lodgingFilter}
-            testIDPrefix="ops-lodging-city"
-          />
-          <ReadState
-            error={lodgings.error}
-            pending={lodgings.isPending}
-            retry={() => void lodgings.refetch()}
-            testID="ops-lodgings"
-          />
-          {lodgingFailureMessage === null ? null : (
-            <Banner message={lodgingFailureMessage} testID="ops-lodgings-failure" tone="error" />
-          )}
-          <View style={[styles.cards, wide ? styles.cardsRow : null]}>
-            {visibleLodgings.map(renderLodging)}
-          </View>
-          {lodgingsSettled && visibleLodgings.length === 0 ? (
-            <Text style={styles.meta}>{LODGINGS_EMPTY}</Text>
-          ) : null}
+          <Text {...{ ...SECTION_HEADING, style: styles.sectionTitle }}>{LODGINGS_HEADING}</Text>
+          {chips(CHIP_GROUPS.lodgingCity, lodgingFilter, setLodgingFilter)}
+          {readState(lodgings.error, lodgings.isPending, refetchLodgings, 'ops-lodgings')}
+          {errorBanner(lodgingFailureMessage, 'ops-lodgings-failure')}
+          <View style={cardsStyle}>{lodgingShown.map(renderLodging)}</View>
+          {lodgingsEmpty ? <Text style={styles.meta}>{LODGINGS_EMPTY}</Text> : null}
           {renderLodgingForm()}
         </View>
-
         <View style={styles.section}>
-          <Text {...SECTION_HEADING} style={styles.sectionTitle}>
-            {PRICE_JOBS_HEADING}
-          </Text>
-          <View style={[styles.cards, wide ? styles.cardsRow : null]}>
-            {cityList.map(renderPriceJob)}
-          </View>
+          <Text {...{ ...SECTION_HEADING, style: styles.sectionTitle }}>{'Price jobs'}</Text>
+          <View style={cardsStyle}>{cityList.map(renderPriceJob)}</View>
         </View>
       </Screen>
     </>
   );
 }
+const CENTERED_ROW = {
+  alignItems: 'center',
+  flexDirection: 'row',
+  minHeight: MIN_TOUCH_TARGET,
+} as const;
+const LABEL_STYLE = { ...typography.label, color: colors.text, fontWeight: fontWeights.medium };
 
 const styles = StyleSheet.create({
-  actions: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
+  actions: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   badge: {
     ...typography.caption,
     backgroundColor: colors.surface,
@@ -1263,7 +672,6 @@ const styles = StyleSheet.create({
   },
   badges: { alignItems: 'flex-end', gap: spacing.xs },
   cards: { gap: spacing.lg },
-  // The wide layout only: in the column layout these slots would size their height, not their width.
   cardsRow: { flexDirection: 'row', flexWrap: 'wrap' },
   chip: {
     alignItems: 'center',
@@ -1277,25 +685,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   chipFocused: { borderColor: colors.focusRing },
-  chipLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
+  chipLabel: LABEL_STYLE,
   chipLabelSelected: { color: colors.onPrimary },
   chipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   meta: { ...typography.body, color: colors.textMuted },
   section: { gap: spacing.lg },
   sectionTitle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
-  slot: { flexBasis: CARD_MIN_WIDTH, flexGrow: 1 },
-  switchLabel: {
-    ...typography.label,
-    color: colors.text,
-    flexShrink: 1,
-    fontWeight: fontWeights.medium,
-  },
-  switchRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.md,
-    justifyContent: 'space-between',
-    minHeight: MIN_TOUCH_TARGET,
-  },
+  slot: { flexBasis: 340, flexGrow: 1 },
+  switchLabel: { ...LABEL_STYLE, flexShrink: 1 },
+  switchRow: { ...CENTERED_ROW, gap: spacing.md, justifyContent: 'space-between' },
 });
