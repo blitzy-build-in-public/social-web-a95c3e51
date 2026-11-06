@@ -202,6 +202,9 @@ beforeAll(async () => {
   const databaseUrl = container.getConnectionUri();
   db = createPrismaClient({ databaseUrl, appEnv: 'test' });
   clock = createTestClock({ start: START });
+  // The expiry steps read the clock, the logger, the configuration and the database client, and no
+  // other collaborator of a worker context, so the suite builds those four and asserts the cast: the
+  // remaining fields are the ones no statement under test reaches.
   ctx = {
     env: loadWorkersEnv(environment(databaseUrl)),
     clock,
@@ -216,7 +219,7 @@ beforeAll(async () => {
       },
     }),
     db,
-  };
+  } as unknown as Parameters<typeof runHourlyExpiry>[0];
   stop = async () => {
     await db.$disconnect();
     await container.stop();
