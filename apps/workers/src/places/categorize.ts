@@ -85,6 +85,27 @@ function isCoordinate(value: number, min: number, max: number): boolean {
 }
 
 /**
+ * The guard that keeps the `amenity` switch exhaustive (AAP 0.5.2, 0.5.6). Every member of
+ * `PLACE_AMENITY_TAGS` has a `case`, so the value reaching the switch's `default` arm narrows to
+ * `never` and this call compiles only while that stays true. A tag added to the list without a
+ * category is therefore a compile error here instead of a place silently stored as a `bar`, which a
+ * comment alone cannot prevent.
+ *
+ * This does not conflict with the module's rule that OSM free text which cannot be read becomes
+ * `null` rather than an exception: an uncategorizable tag is an inconsistency between this module
+ * and the list it categorizes from, not unreadable OSM data, and the arm is unreachable once the
+ * build passes.
+ *
+ * @param value - The value the compiler has narrowed to `never`.
+ * @returns Never: the call always throws.
+ * @throws RangeError when a value reaches an arm the types say is unreachable, which only a cast
+ * out of `readonly string[]` at the call site could arrange at runtime.
+ */
+function assertNever(value: never): never {
+  throw new RangeError(`uncategorized place amenity: ${String(value)}`);
+}
+
+/**
  * The place category an element's tags describe (AAP 0.5.2, 0.5.6): `restaurant`, `cafe`, `bar` or
  * `activity`, or `null` when the element is no place this pipeline stores.
  *
@@ -105,9 +126,12 @@ export function categorizePlace(
         return 'restaurant';
       case 'cafe':
         return 'cafe';
-      default:
-        // `bar` and `pub`: the two remaining values of `PLACE_AMENITY_TAGS` are both a bar.
+      // `bar` and `pub` are both stored as `bar`, the two remaining members of `PLACE_AMENITY_TAGS`.
+      case 'bar':
+      case 'pub':
         return 'bar';
+      default:
+        return assertNever(amenity);
     }
   }
 
