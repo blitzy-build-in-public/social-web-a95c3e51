@@ -331,6 +331,29 @@ function platformImplementations(): PlatformImplementations {
 }
 
 /**
+ * This platform's proving engine, or undefined where the build has none (AAP 0.3.4, AAP 0.5.5).
+ *
+ * The generate screen asks {@link ProverEngine.available} through this accessor *before* it offers to
+ * prove, so a build without the native module — Expo Go, or a native build made before
+ * `pnpm circuits:native` — or a browser without a Worker states that as its own screen state instead
+ * of failing an attempt that has already read a booking email (AAP 0.2.4, AAP 0.5.8). Read lazily for
+ * the reason {@link platformImplementations} records, and never at module load.
+ */
+export function platformEngine(): ProverEngine | undefined {
+  return platformImplementations().engine;
+}
+
+/**
+ * This platform's artefact store, or undefined where the build has none. The generate screen reads
+ * {@link ArtifactStore.plan} through this accessor to show the download size and the Wi-Fi advice
+ * before anything is downloaded, and {@link importAndProve} downloads through the same store
+ * (AAP 0.5.5).
+ */
+export function platformArtifactStore(): ArtifactStore | undefined {
+  return platformImplementations().artifactStore;
+}
+
+/**
  * The clock the measured span is taken on, monotonic where the platform offers one so a device clock
  * change cannot distort a benchmark; `Date.now()` is the fallback. This is client code, so the
  * server's injected-clock rule does not apply (AAP 0.11.1).
