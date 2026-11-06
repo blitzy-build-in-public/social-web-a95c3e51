@@ -60,7 +60,6 @@ import {
   PaymentUnavailableError,
   type IntentState,
   type VerifiedWebhookEvent,
-  type WebhookObject,
 } from './gateway.ts';
 import {
   advanceDeposit,
@@ -111,7 +110,6 @@ const LATE_AUTHORIZATION = 'stripe_webhook_late_authorization';
 const ORPHAN_AUTHORIZATION = 'stripe_webhook_orphan_authorization';
 const HOLD_LOST = 'stripe_webhook_hold_lost';
 const INTENT_UNEXPECTED = 'stripe_webhook_intent_state_unexpected';
-const DEFAULT_CARD_FAILED = 'stripe_default_card_failed';
 const OPERATIONS_FAILED = 'stripe_webhook_operations_failed';
 
 /**
@@ -153,12 +151,6 @@ function ignored(meetupId: string): WebhookOutcome {
 /** {@link WebhookOutcome} for a PaymentIntent this application did not create. */
 function unmatched(): WebhookOutcome {
   return { result: 'unmatched' };
-}
-
-/** The card a `setup_intent.succeeded` saved, both halves present. */
-interface SavedCard {
-  readonly customerId: string;
-  readonly paymentMethodId: string;
 }
 
 /**
@@ -420,13 +412,10 @@ async function applyDelivery(
     return { result: 'duplicate' };
   }
 
+  // A saved card implies no call of ours: a hold authorizes against the customer's default card when
+  // one is set and otherwise the newest saved card, so the card just saved is the one a hold confirms
+  // against without this application re-pointing the provider's default.
   if (event.object.kind === 'setup_intent') {
-    const saved = savedCard(event.object);
-
-    if (saved !== null) {
-      defaultCard(services, after, saved);
-    }
-
     await markProcessed(tx, event, now);
     return { result: 'applied' };
   }
@@ -500,35 +489,6 @@ async function markProcessed(tx: DbTx, event: VerifiedWebhookEvent, now: Date): 
        SET "status" = 'processed', "processed_at" = ${now}::timestamptz
      WHERE "id" = ${event.id}
   `);
-}
-
-/** The card a `setup_intent.succeeded` saved, or null when the event names no usable pair. */
-function savedCard(object: WebhookObject): SavedCard | null {
-  if (object.kind !== 'setup_intent') {
-    return null;
-  }
-  if (object.customerId === null || object.paymentMethodId === null) {
-    return null;
-  }
-  return { customerId: object.customerId, paymentMethodId: object.paymentMethodId };
-}
-
-/**
- * Make the newest saved card the customer's default, after the commit (AAP 0.3.2). A hold confirms
- * from the customer's saved card, so the card just saved has to become the one a hold selects: that
- * is what makes a hold retried after a crash replay under its own idempotency key with byte-identical
- * parameters instead of being refused as a conflict. A failure here is logged and never thrown — the
- * card is saved either way, the event is already recorded, and the next hold selects the provider's
- * own default.
- */
-function defaultCard(services: AppServices, after: AfterCommit, saved: SavedCard): void {
-  after(async () => {
-    try {
-      await services.payments.setDefaultPaymentMethod(saved.customerId, saved.paymentMethodId);
-    } catch (error) {
-      services.logger.warn({ event: DEFAULT_CARD_FAILED, err: error }, DEFAULT_CARD_FAILED);
-    }
-  });
 }
 
 // ---------------------------------------------------------------------------------------------

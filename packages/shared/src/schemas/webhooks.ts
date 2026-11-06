@@ -13,6 +13,11 @@
  * carries only what the transport and the correlation need: the metadata every hold attempt
  * carries, the event types the handler applies, and our own cancellation reason.
  *
+ * It also holds the two call facts the API process and the workers process have to agree on: the
+ * parameter name that carries a `CallAttempt` id on every Twilio URL, and the rule that reads
+ * Twilio's machine-detection verdict, both of which only `packages/shared` can define once for the
+ * two processes (AAP 0.3.2, 0.5.3, 0.8.1).
+ *
  * Client-safe like the rest of the package — `zod` and two sibling modules, no Node built-in, no
  * DOM global, no top-level side effect — even though only server code imports it.
  *
@@ -112,16 +117,64 @@ export const TwilioTwimlRequest = z.looseObject({
 export type TwilioTwimlRequest = z.infer<typeof TwilioTwimlRequest>;
 
 /**
+ * The one spelling of the parameter that carries the `CallAttempt` id on all three surfaces of a
+ * call: the status callback's query string, the TwiML fetch's query string, and the relay
+ * WebSocket's `setup.customParameters`, whose value arrives from the TwiML `<Parameter>` of this
+ * name (AAP 0.3.2, AAP 0.3.3).
+ *
+ * It lives here because it is the single thing tying those three surfaces to one attempt and
+ * because `apps/workers`, which builds the two HTTP URLs, cannot import `apps/api`, which serves
+ * them: a name changed on one side alone would leave a relay socket attached to no call and a
+ * signed callback adopting nothing (AAP 0.8.1, AAP 0.11.1).
+ */
+export const VOICE_ATTEMPT_PARAMETER = 'attemptId' as const;
+
+/**
  * The query string of every Twilio URL that carries the `CallAttempt` id: the status callback, the
  * TwiML fetch and the relay WebSocket upgrade (AAP 0.3.2).
  *
  * A signed callback or TwiML fetch carrying the id of a `dispatch_unknown` attempt is the only
  * evidence that adopts it — a `calls.list` match may belong to another dispatch and an empty
  * listing proves nothing — so the id is required here, and the id rather than the `CallSid` is
- * what a handler resolves the attempt by.
+ * what a handler resolves the attempt by. Its one key is {@link VOICE_ATTEMPT_PARAMETER}, so the
+ * schema and the URL builders that feed it cannot spell the parameter differently.
  */
-export const VoiceCallbackQuery = z.looseObject({ attemptId: Uuid });
+export const VoiceCallbackQuery = z.looseObject({ [VOICE_ATTEMPT_PARAMETER]: Uuid });
 export type VoiceCallbackQuery = z.infer<typeof VoiceCallbackQuery>;
+
+/*
+ * Twilio's machine-detection vocabulary — the verdicts the API's TwiML route reads to decide
+ * whether to converse with the call it just answered, and that the workers' reconciliation reads on
+ * the call it fetched by its `CallSid` (AAP 0.3.2, AAP 0.5.3).
+ */
+
+/** Twilio's verdict for a machine that answered and is still speaking its greeting. */
+const MACHINE_VERDICT = 'machine_start';
+
+/** The prefix of the verdicts for a machine whose greeting has ended: beep, silence or other. */
+const MACHINE_END_PREFIX = 'machine_end_';
+
+/**
+ * Whether Twilio's machine detection found a machine rather than a person (AAP 0.5.3).
+ *
+ * `machine_start`, the three `machine_end_*` verdicts and `fax` are an answering machine, and
+ * AAP 0.5.3 gives an answering machine the `no_answer` outcome, which keeps the task's retry.
+ * `human`, `unknown`, a missing value and any other verdict read as a person, because treating a
+ * person as a machine throws a reachable call away — which is why the set is exact rather than a
+ * `machine`-prefix match, the one direction a broadening would silently move in. The value is
+ * normalized first, so a stray case or space cannot turn a machine into a person.
+ *
+ * One definition, read by both processes: the API's TwiML route hangs up on the call it answered,
+ * and the workers' reconciliation gives the call it fetched by its `CallSid` the same outcome, so
+ * one call cannot be a person in one process and a machine in the other (AAP 0.8.1, AAP 0.11.1).
+ *
+ * @param answeredBy - Twilio's `AnsweredBy`, if it sent one.
+ * @returns True for a machine, a fax or a machine-greeting-end verdict; false otherwise.
+ */
+export function isMachineAnswer(answeredBy?: string): boolean {
+  const verdict = answeredBy?.trim().toLowerCase() ?? '';
+  return verdict === MACHINE_VERDICT || verdict === 'fax' || verdict.startsWith(MACHINE_END_PREFIX);
+}
 
 /*
  * ConversationRelay, inbound — the frames Twilio sends over `WS /v1/webhooks/voice/relay`

@@ -49,7 +49,7 @@
 
 import { Prisma } from '@tablemate/db';
 import { localDateKey, parseOutboxPayload } from '@tablemate/server-core';
-import { CALL_DISPATCH_GRACE_MINUTES, MINUTE_MS } from '@tablemate/shared';
+import { CALL_DISPATCH_GRACE_MINUTES, MINUTE_MS, isMachineAnswer } from '@tablemate/shared';
 
 import { fromNumberFor, returnClaimToPending } from './dispatch-twilio.ts';
 
@@ -99,17 +99,6 @@ const RECONCILE_BATCH_SIZE = 20;
  * task its retry.
  */
 const INVALID_NUMBER_ERROR_CODES: ReadonlySet<string> = new Set(['13223', '21211', '21217']);
-
-/**
- * The prefix of every machine-detection verdict that reported a machine rather than a person:
- * `machine_start`, from a machine still playing its greeting, and `machine_end_*`, whose greeting
- * has ended. Twilio's `human`, `unknown` and every verdict outside this set read as a person, which
- * is the safe direction — a person treated as a machine throws a reachable call away.
- */
-const MACHINE_VERDICT_PREFIX = 'machine';
-
-/** The other verdict that means nobody answered: a fax machine picked the call up. */
-const FAX_VERDICT = 'fax';
 
 /** The outcome a fetched call produces, which is never `completed` or `refused` (AAP 0.5.3). */
 type FetchedOutcome = Extract<CallAttemptOutcome, 'no_answer' | 'unreachable' | 'needs_review'>;
@@ -284,22 +273,12 @@ export function mapFetchedFinalStatus(
   }
 }
 
-/**
- * Whether Twilio's machine detection found a machine rather than a person (AAP 0.5.3).
- *
- * The rule is `apps/api/src/modules/voice-agent/twiml.ts`'s `isMachineAnswer`: the verdict is
- * normalized first, so a stray case or a space cannot turn a machine into a person, and `machine_*`
- * together with `fax` is a machine. That process cannot be imported here (AAP 0.3.2), so the rule is
- * restated — and it stays equivalent, because `machine_start` and the `machine_end_*` verdicts are
- * the only verdicts Twilio prefixes with `machine`.
- *
- * @param answeredBy - Twilio's `AnsweredBy`, if the fetch reported one.
- * @returns True for a machine, a fax or a machine-greeting-end verdict; false otherwise.
+/*
+ * The machine-detection rule is not a local value here: `isMachineAnswer` comes from
+ * `@tablemate/shared`, the one definition this file shares with the API's TwiML route, which reads
+ * the same `AnsweredBy` on the call it answers. One call therefore cannot be a person in one process
+ * and a machine in the other (AAP 0.5.3, AAP 0.8.1, AAP 0.11.1).
  */
-function isMachineAnswer(answeredBy?: string): boolean {
-  const verdict = answeredBy?.trim().toLowerCase() ?? '';
-  return verdict.startsWith(MACHINE_VERDICT_PREFIX) || verdict === FAX_VERDICT;
-}
 
 /**
  * Whether a fetched call's error code says the destination number cannot exist (AAP 0.5.3).

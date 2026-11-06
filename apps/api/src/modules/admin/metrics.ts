@@ -736,6 +736,11 @@ function callLifecycleStatement(env: AdminMetricsEnv, cityId: string | undefined
  * The operator queue's blocked tasks by reason, over the statuses a block can hold a task in:
  * waiting, held for review, or unreachable (AAP 0.5.3).
  *
+ * The three labels are `CallTaskStatus` members written into the statement as literals, never bound
+ * as parameters: a bound JavaScript string arrives as `text`, and PostgreSQL has no `enum = text`
+ * operator, so the comparison is written enum-typed and `call_task_status_next_attempt_at_idx` can
+ * serve it rather than the table being scanned.
+ *
  * `WHERE TRUE` above and the `AND`-prefixed city fragment keep this statement readable: the filter
  * is optional, and the alternative would be a second copy of the joins.
  */
@@ -745,7 +750,7 @@ function blockedReasonsStatement(env: AdminMetricsEnv, cityId: string | undefine
       FROM "call_task" AS "t"
       ${callTaskJoins(env)}
      WHERE "t"."blocked_reason" IS NOT NULL
-       AND "t"."status"::text IN ('queued', 'needs_review', 'unreachable')
+       AND "t"."status" IN ('queued', 'needs_review', 'unreachable')
        ${callTaskCity(cityId)}
      GROUP BY "t"."blocked_reason"
   `;

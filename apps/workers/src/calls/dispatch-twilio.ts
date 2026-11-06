@@ -64,6 +64,7 @@ import {
   CALL_VENDOR_BACKOFF_BASE_SECONDS,
   CALL_VENDOR_BACKOFF_FACTOR,
   CALL_VENDOR_MAX_FAILURES,
+  VOICE_ATTEMPT_PARAMETER,
 } from '@tablemate/shared';
 
 import { capDeferral, releaseCall, reserveCall } from './caps.ts';
@@ -161,12 +162,11 @@ const TWIML_PATH = 'v1/webhooks/voice/twiml';
 /** The status-callback path, relative to `API_PUBLIC_URL` (`POST /v1/webhooks/voice`). */
 const STATUS_CALLBACK_PATH = 'v1/webhooks/voice';
 
-/** The query parameter both URLs carry: the `CallAttempt` id, the only evidence that adopts one. */
-const ATTEMPT_PARAMETER = 'attemptId';
-
 /**
- * The TwiML and status-callback URLs of one attempt (AAP 0.3.2, 0.3.3), each carrying `attemptId` in
- * its query string.
+ * The TwiML and status-callback URLs of one attempt (AAP 0.3.2, 0.3.3), each carrying the
+ * `CallAttempt` id under `packages/shared`'s {@link VOICE_ATTEMPT_PARAMETER} — the one definition of
+ * that parameter name, the same one the API's TwiML route reads its query with and the relay socket
+ * reads its `<Parameter>` back by.
  *
  * That id is the whole point: Twilio fetches the TwiML and posts every status change without a
  * bearer token, so a signed request carrying the attempt id is the only evidence accepted for a
@@ -200,7 +200,7 @@ export function callbackUrls(apiPublicUrl: string, attemptId: string): VoiceCall
  */
 function attemptUrl(apiPublicUrl: string, path: string, attemptId: string): string {
   const url = new URL(path, `${apiPublicUrl.replace(/\/+$/, '')}/`);
-  url.searchParams.set(ATTEMPT_PARAMETER, attemptId);
+  url.searchParams.set(VOICE_ATTEMPT_PARAMETER, attemptId);
   return url.toString();
 }
 

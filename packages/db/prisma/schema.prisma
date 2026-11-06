@@ -463,6 +463,8 @@ model Venue {
 
   @@index([location], type: Gist)
   @@index([cityId, isActivePartner])
+  // The suggestions candidate statement runs a correlated EXISTS on place_id per candidate place (AAP 0.5.7).
+  @@index([placeId])
   @@map("venue")
 }
 
@@ -537,6 +539,8 @@ model Meetup {
   @@index([venueId])
   // Every meetup metric range-filters starts_at alone (AAP 0.5.7); the composite above cannot be seeked without status.
   @@index([startsAt])
+  // The 7-year financial purge selects the batch it deletes by ranging over final_at (AAP 0.5.2).
+  @@index([finalAt])
   @@map("meetup")
 }
 
@@ -586,6 +590,8 @@ model PaymentOperation {
   @@index([depositId, seq])
   @@index([paymentIntentId])
   @@index([status])
+  // The tombstone reference checks and the executor's user scope read operations by user_id (AAP 0.5.2).
+  @@index([userId])
   @@map("payment_operation")
 }
 
@@ -614,6 +620,8 @@ model CheckIn {
   user           User            @relation(fields: [userId], references: [id])
 
   @@index([meetupId])
+  // The tombstone reference checks ask whether a check-in still references a user by user_id (AAP 0.5.2).
+  @@index([userId])
   @@map("check_in")
 }
 
@@ -692,6 +700,8 @@ model Message {
   sender    User     @relation(fields: [senderId], references: [id])
 
   @@index([meetupId, createdAt])
+  // The tombstone reference checks ask whether a message still references a user by sender_id (AAP 0.5.2).
+  @@index([senderId])
   @@map("message")
 }
 
@@ -713,6 +723,8 @@ model Dispute {
   filedBy        User                   @relation(fields: [filedById], references: [id])
 
   @@index([status, deadlineAt])
+  // The tombstone reference checks ask whether a dispute still references a user by filed_by_id (AAP 0.5.2).
+  @@index([filedById])
   @@map("dispute")
 }
 
@@ -741,6 +753,12 @@ model Report {
 
   // The 180-day reason-text clearance ranges over created_at (AAP 0.5.2).
   @@index([createdAt])
+  // The tombstone reference checks ask whether a report still names a user by reporter_id (AAP 0.5.2).
+  @@index([reporterId])
+  // The same checks ask it by reported_id, the other side of the same row (AAP 0.5.2).
+  @@index([reportedId])
+  // The financial purge nulls the meetup link on reports whose meetup it deletes (AAP 0.5.2).
+  @@index([meetupId])
   @@map("report")
 }
 
@@ -784,6 +802,8 @@ model AnalyticsEvent {
 
   @@index([name, occurredAt])
   @@index([actorHash])
+  // The metric ranges filter occurred_at alone, which the composite above cannot serve (AAP 0.5.7).
+  @@index([occurredAt])
   @@map("analytics_event")
 }
 
@@ -795,6 +815,8 @@ model PushToken {
   createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Notifications read push_token by user_id on every send (AAP 0.5.6).
+  @@index([userId])
   @@map("push_token")
 }
 
@@ -821,6 +843,8 @@ model VoiceCallbackEvent {
   callAttempt    CallAttempt @relation(fields: [callAttemptId], references: [id], onDelete: Cascade)
 
   @@unique([callSid, callStatus, sequenceNumber])
+  // The metadata strip deletes a call's callbacks by call_attempt_id (AAP 0.5.2).
+  @@index([callAttemptId])
   @@map("voice_callback_event")
 }
 
@@ -849,6 +873,8 @@ model Place {
   @@unique([osmType, osmId])
   @@index([location], type: Gist)
   @@index([cityId])
+  // A do-not-call reply looks up every place sharing the caller's number by phone (AAP 0.5.3, 0.5.6).
+  @@index([phone])
   @@map("place")
 }
 
@@ -904,6 +930,8 @@ model LodgingActivityFact {
 
   @@unique([lodgingId, meetupId])
   @@index([lodgingId, completedAt])
+  // The 120-day fact purge ranges over completed_at alone, which the composite above cannot serve (AAP 0.5.2).
+  @@index([completedAt])
   @@map("lodging_activity_fact")
 }
 
@@ -918,6 +946,8 @@ model OperatorAccessLog {
 
   // The 365-day audit purge ranges over accessed_at (AAP 0.5.2).
   @@index([accessedAt])
+  // The tombstone reference checks ask whether the log still references a user by operator_id (AAP 0.5.2).
+  @@index([operatorId])
   @@map("operator_access_log")
 }
 
@@ -958,6 +988,10 @@ model CallTask {
   @@index([lodgingId])
   // The 365-day call-metadata purge selects tasks by kind (AAP 0.5.2).
   @@index([kind])
+  // Both claim-resolution paths read call_task by lodging_claim_id (AAP 0.5.3).
+  @@index([lodgingClaimId])
+  // The outcome metric ranges over outcome_at and the operator queue orders by it (AAP 0.5.7).
+  @@index([outcomeAt])
   @@map("call_task")
 }
 
@@ -984,6 +1018,8 @@ model CallAttempt {
 
   @@index([callTaskId])
   @@index([state])
+  // The 30-day transcript clearance ranges over transcript_delete_at (AAP 0.5.2).
+  @@index([transcriptDeleteAt])
   @@map("call_attempt")
 }
 
@@ -1026,6 +1062,8 @@ model Lodging {
   @@unique([osmType, osmId])
   @@index([location], type: Gist)
   @@index([cityId])
+  // A do-not-call reply looks up every lodging sharing the caller's number by phone (AAP 0.5.3, 0.5.6).
+  @@index([phone])
   @@map("lodging")
 }
 
@@ -1062,5 +1100,7 @@ model LodgingVisibility {
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   lodgingClaim   LodgingClaim @relation(fields: [lodgingClaimId], references: [id], onDelete: Cascade)
 
+  // The claim read joins visibility by lodging_claim_id, and the strip step updates it by the same column (AAP 0.5.2, 0.5.7).
+  @@index([lodgingClaimId])
   @@map("lodging_visibility")
 }

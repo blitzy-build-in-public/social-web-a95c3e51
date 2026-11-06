@@ -3,8 +3,10 @@
  *
  * Twilio opens it once an outbound call answers and it has fetched the ConversationRelay TwiML that
  * `./twiml.ts` served: that TwiML's `url` attribute is this socket's public address, the attempt id
- * travels as a `<Parameter>`, and everything after the upgrade — the transcribed prompts, the lines
- * the agent speaks, the closing frame — happens on the connection itself (AAP 0.3.3).
+ * travels as a `<Parameter>` whose name is `packages/shared`'s {@link VOICE_ATTEMPT_PARAMETER} — the
+ * one definition of it `apps/workers`' dispatcher and `./twiml.ts` write with — and everything after
+ * the upgrade, the transcribed prompts, the lines the agent speaks and the closing frame, happens on
+ * the connection itself (AAP 0.3.3).
  *
  * This module is the transport half of the voice agent, and it is deliberately narrow:
  *
@@ -45,6 +47,7 @@ import {
   RelayInboundFrame,
   RelayOutboundFrame,
   Uuid,
+  VOICE_ATTEMPT_PARAMETER,
   type RelaySetupFrame,
 } from '@tablemate/shared';
 
@@ -66,13 +69,6 @@ import type { App, AppServices } from '../../app.ts';
  * over the public base — so the two cannot drift.
  */
 const RELAY_PATH = '/webhooks/voice/relay';
-
-/**
- * The name of the TwiML `<Parameter>` whose value arrives as `setup.customParameters.attemptId`:
- * the call attempt the socket belongs to, which is the only thing tying a relay connection to a call
- * (AAP 0.3.2). `./twiml.ts` writes it; the two ends must spell it the same way.
- */
-const ATTEMPT_PARAMETER = 'attemptId';
 
 /** RFC 6455's normal closure: the dialogue finished and closed the socket itself. */
 const CLOSE_NORMAL = 1000;
@@ -374,7 +370,7 @@ async function serveConnection(
    * conversation (AAP 0.3.2).
    */
   const start = async (frame: RelaySetupFrame): Promise<void> => {
-    const claimed = Uuid.safeParse(frame.customParameters?.[ATTEMPT_PARAMETER] ?? '');
+    const claimed = Uuid.safeParse(frame.customParameters?.[VOICE_ATTEMPT_PARAMETER] ?? '');
     if (!claimed.success) {
       refuse('bad_attempt_id');
       return;

@@ -29,7 +29,7 @@
  * Mode contract (AAP 0.6.2). `mock`, the local stack's default, points the client at the stateful
  * `stripe-proxy` given as `STRIPE_API_BASE` and authenticates with {@link STRIPE_MOCK_PLACEHOLDERS};
  * `test` and `live` use the three values the process's env guard already checked. The proxy must
- * therefore serve every endpoint called here — `customers` retrieve, create, update and delete;
+ * therefore serve every endpoint called here — `customers` retrieve, create and delete;
  * `customers/:id/payment_methods` list; `setup_intents` create; `ephemeral_keys` create;
  * `payment_intents` create, retrieve, cancel and capture; and `refunds` create — which is this file's
  * cross-folder contract with `apps/api/test/support/stripe-proxy`.
@@ -611,18 +611,6 @@ export function createStripeGateway(
     return toIntentState(intent);
   }
 
-  /** Make a payment method the customer's default (AAP 0.3.2). */
-  async function setDefaultPaymentMethod(
-    customerId: string,
-    paymentMethodId: string,
-  ): Promise<void> {
-    await timed('customer:set_default_payment_method', () =>
-      client.customers.update(customerId, {
-        invoice_settings: { default_payment_method: paymentMethodId },
-      }),
-    );
-  }
-
   /**
    * Verify a Stripe event's signature and normalize it (AAP 0.3.2, AAP 0.3.3).
    *
@@ -672,7 +660,6 @@ export function createStripeGateway(
     createSetup,
     deleteCustomer,
     retrievePaymentIntent,
-    setDefaultPaymentMethod,
     verifyWebhook,
   };
 }

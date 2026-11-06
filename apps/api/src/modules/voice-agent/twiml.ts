@@ -28,7 +28,9 @@
  *
  * The attempt id ties the three surfaces of one call together: it is this route's query parameter,
  * the `<Parameter>` the relay socket reads its attempt from, and the evidence that adopts a
- * `dispatch_unknown` attempt (AAP 0.3.2). This route therefore adopts the fetch's `CallSid` and
+ * `dispatch_unknown` attempt (AAP 0.3.2). Its name, and the name of the parameter `apps/workers`'
+ * dispatcher puts in both URLs, is `packages/shared`'s {@link VOICE_ATTEMPT_PARAMETER}: one
+ * definition, imported by both processes. This route therefore adopts the fetch's `CallSid` and
  * `./relay-ws.ts` refuses a socket whose `CallSid` is not the adopted one.
  *
  * A refusal is either the shared envelope — `400 bad_signature` from the signature hook, which runs
@@ -48,7 +50,9 @@ import formbody from '@fastify/formbody';
 import { isUniqueViolation, type CallAttempt, type DbTx } from '@tablemate/db';
 import {
   TwilioTwimlRequest,
+  VOICE_ATTEMPT_PARAMETER,
   VoiceCallbackQuery,
+  isMachineAnswer,
   type CallAttemptState,
   type CallLanguage,
 } from '@tablemate/shared';
@@ -84,13 +88,6 @@ const VOICE_TAG = 'webhooks';
 
 /** The media type a TwiML document is served as, rather than the JSON every other route answers. */
 const TWIML_CONTENT_TYPE = 'text/xml; charset=utf-8';
-
-/**
- * The name of the TwiML `<Parameter>` carrying the attempt id, which the relay socket reads back
- * from `setup.customParameters`. `./relay-ws.ts` declares the same name: a difference between the two
- * would leave a socket attached to no call.
- */
-const ATTEMPT_PARAMETER = 'attemptId';
 
 /** The XML declaration every document here opens with, encoding included. */
 const DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>';
@@ -181,7 +178,7 @@ export interface TwimlOptions {
   readonly language: CallLanguage;
   /** The disclosure sentence the call opens with, from `./dialogue.ts`'s `disclosureFor`. */
   readonly welcomeGreeting: string;
-  /** The `CallAttempt` id, which the socket hands back as `customParameters.attemptId`. */
+  /** The `CallAttempt` id, handed back under {@link VOICE_ATTEMPT_PARAMETER} in the relay's setup. */
   readonly attemptId: string;
 }
 
@@ -228,7 +225,7 @@ export function renderTwiml(options: TwimlOptions): string {
     ` speechModel="${xmlEscape(provider.speechModel)}"` +
     ' dtmfDetection="false">' +
     `\n  ${languages.join('\n  ')}` +
-    `\n  <Parameter name="${ATTEMPT_PARAMETER}" value="${xmlEscape(attemptId)}"/>` +
+    `\n  <Parameter name="${VOICE_ATTEMPT_PARAMETER}" value="${xmlEscape(attemptId)}"/>` +
     '\n</ConversationRelay></Connect></Response>'
   );
 }
@@ -245,30 +242,13 @@ export function renderHangup(): string {
   return `${DECLARATION}<Response><Hangup/></Response>`;
 }
 
-/** Twilio's verdict for a machine that answered and is still speaking its greeting. */
-const MACHINE_VERDICT = 'machine_start';
-
-/** The prefix of the verdicts for a machine whose greeting has ended: beep, silence or other. */
-const MACHINE_END_PREFIX = 'machine_end_';
-
 /**
- * Whether Twilio's machine detection found a machine rather than a person (AAP 0.5.3).
- *
- * Machine detection is requested synchronously with the dial, so its verdict arrives on this fetch as
- * `AnsweredBy`. `machine_start`, the three `machine_end_*` verdicts and `fax` all map to the
- * `no_answer` outcome AAP 0.5.3 gives an answering machine, which keeps the task's retry. `human`,
- * `unknown`, a missing value and any verdict outside that set read as a person: a call that reaches
- * someone is ended politely by the dialogue, while treating a person as a machine would throw a
- * reachable call away. The value is normalized first, so a stray case or space cannot turn a machine
- * into a person.
- *
- * @param answeredBy - Twilio's `AnsweredBy`, if it sent one.
- * @returns True for a machine, a fax or a machine-greeting-end verdict; false otherwise.
+ * The machine-detection rule this route hangs up by, re-exported unchanged so the file's public
+ * surface stays what it was: it is `packages/shared`'s {@link isMachineAnswer}, whose TSDoc carries
+ * the AAP 0.5.3 rationale. It has one definition there because `apps/workers`' reconciliation reads
+ * the same verdicts on the call it fetches and cannot import this process (AAP 0.8.1, AAP 0.11.1).
  */
-export function isMachineAnswer(answeredBy?: string): boolean {
-  const verdict = answeredBy?.trim().toLowerCase() ?? '';
-  return verdict === MACHINE_VERDICT || verdict === 'fax' || verdict.startsWith(MACHINE_END_PREFIX);
-}
+export { isMachineAnswer };
 
 // ---------------------------------------------------------------------------------------------
 // The route (AAP 0.3.2, 0.3.3, 0.5.4)

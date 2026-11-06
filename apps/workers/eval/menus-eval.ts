@@ -144,6 +144,19 @@ const FORMAT_BY_EXTENSION: Readonly<Record<string, (typeof FORMATS)[number] | un
   '.png': 'image',
   '.jpg': 'image',
 };
+/**
+ * The only shape a manifest entry's `file` may take, built from {@link LANGUAGES} and
+ * {@link FORMAT_BY_EXTENSION} so that those two stay the single list of languages and extensions: one
+ * language directory, one `/`, a name of `[a-z0-9]` groups joined by single `-`, and one known
+ * extension. This is the invariant that makes the three `join(MENUS_DIR, menu.file)` call sites safe —
+ * the value carries no `..` segment and no second separator, so it cannot name a file outside the
+ * labeled set — and every other shape is rejected as the manifest loads, before any of them.
+ */
+const MENU_FILE_PATTERN = new RegExp(
+  `^(?:${LANGUAGES.join('|')})/[a-z0-9]+(?:-[a-z0-9]+)*(?:${Object.keys(FORMAT_BY_EXTENSION)
+    .map((extension) => extension.replaceAll('.', '\\.'))
+    .join('|')})$`,
+);
 
 /** The city the whole run is metered against, the default cap, and the provider it evaluates. */
 const CITY_ID = 'eval';
@@ -175,7 +188,12 @@ type ManifestItem = z.infer<typeof ManifestItem>;
 
 /** One labeled menu: its fixture file, how it is read, and the items it is expected to yield. */
 const ManifestMenu = z.strictObject({
-  file: z.string().min(1),
+  file: z
+    .string()
+    .regex(
+      MENU_FILE_PATTERN,
+      `file must be <language>/<name>.<ext>, for example "en/en-01.html" — a directory from ${LANGUAGES.join(', ')}, a name of lowercase words joined by "-", and one of ${Object.keys(FORMAT_BY_EXTENSION).join(', ')}`,
+    ),
   language: z.enum(LANGUAGES),
   format: z.enum(FORMATS),
   textLayer: z.boolean().optional(),

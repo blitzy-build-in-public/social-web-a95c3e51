@@ -27,16 +27,23 @@
         margin: 0;
         padding: 0;
       }
+      /* A row keeps the dish and the price in one inline flow rather than a flex box: flex blockifies
+         the two spans, and the browser's visible text then puts the name and the price on separate
+         lines, while the menu extractor and the source gate read the "NAME PRICE" pairing there. */
       .menu li {
-        display: flex;
-        justify-content: space-between;
-        gap: 24px;
+        margin: 4px 0;
       }
       .dish {
+        display: inline-block;
+        width: 72%;
         text-align: left;
+        vertical-align: top;
       }
       .price {
+        display: inline-block;
+        width: 24%;
         text-align: right;
+        vertical-align: top;
         white-space: nowrap;
       }
       .note {

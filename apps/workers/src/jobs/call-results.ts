@@ -94,6 +94,19 @@ const LODGING_VERIFICATION_KIND: CallTaskKind = 'lodging_stay_verification';
 const RETRY_DELAY_MS = CALL_RETRY_SPACING_HOURS * HOUR_MS;
 
 /**
+ * How many places and how many lodgings one do-not-call reply may flag (AAP 0.5.3, 0.5.6).
+ *
+ * The flag belongs to the number, not to the row the call was dialed from, so every target sharing
+ * the caller's number is flagged — and that is exactly why a bound exists: a switchboard number
+ * shared by hundreds of rows in tables that grow with OSM ingestion would otherwise turn one reply
+ * into two unbounded scans. A call is answered by one business in one city, so a real share of a
+ * number is a handful of rows — a hotel, its restaurant, its bar — and this limit sits far above any
+ * of them. A lookup that reaches it is a data fault worth a warning, because the reply then flagged
+ * only part of the number.
+ */
+const DO_NOT_CALL_TARGET_LIMIT = 500;
+
+/**
  * The deadline on the one transaction this job opens: every statement in it touches a locked row, so
  * a stalled connection fails the job into BullMQ's retry instead of holding a lock indefinitely.
  */
@@ -968,7 +981,10 @@ async function retryOrUnreachable(tx: DbTx, result: ResultContext): Promise<Call
  *
  * The promise a `do_not_call` reply carries is about the number, not the row it was dialed from, so
  * the flag is set on the target *and* on every place and lodging that shares its phone: a business
- * whose line answered "don't call us again" must not be dialed through another record.
+ * whose line answered "don't call us again" must not be dialed through another record. Those two
+ * lookups are bounded by {@link DO_NOT_CALL_TARGET_LIMIT}, and one that returns every row the bound
+ * allows is logged: a number shared by far more rows than a business can own is a data fault, and
+ * the reply then flagged only part of it.
  *
  * Every other task still outstanding for those targets is cancelled, and each of their possibly live
  * attempts is marked `superseded` — the signal the API's relay reads, speaking its closing line and
@@ -998,18 +1014,38 @@ async function applyDoNotCall(
 
   if (target.phone !== null) {
     // The guarded client narrows both reads to non-fixture rows outside `test` and `demo`, so a
-    // production run can never block a fixture number (AAP 0.5.2).
+    // production run can never block a fixture number (AAP 0.5.2). The bound is the rule constant's
+    // and the order makes the rows a bounded read returns deterministic.
     const places = await tx.place.findMany({
       where: { phone: target.phone },
       select: { id: true },
+      orderBy: { id: 'asc' },
+      take: DO_NOT_CALL_TARGET_LIMIT,
     });
     const lodgings = await tx.lodging.findMany({
       where: { phone: target.phone },
       select: { id: true },
+      orderBy: { id: 'asc' },
+      take: DO_NOT_CALL_TARGET_LIMIT,
     });
 
     placeIds.push(...places.map((place) => place.id));
     lodgingIds.push(...lodgings.map((lodging) => lodging.id));
+
+    if (
+      places.length === DO_NOT_CALL_TARGET_LIMIT ||
+      lodgings.length === DO_NOT_CALL_TARGET_LIMIT
+    ) {
+      ctx.logger.warn(
+        {
+          event: 'do_not_call_targets_saturated',
+          taskId: byTaskId,
+          placeCount: places.length,
+          lodgingCount: lodgings.length,
+        },
+        'do_not_call_targets_saturated',
+      );
+    }
   }
 
   await tx.place.updateMany({ where: { id: { in: placeIds } }, data: { doNotCall: true } });

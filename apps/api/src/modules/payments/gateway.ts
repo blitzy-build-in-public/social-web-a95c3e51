@@ -237,7 +237,7 @@ export type WebhookObject =
       setupIntentId: string;
       /** The customer the card was saved for, or `null` when the event does not carry one. */
       customerId: string | null;
-      /** The saved payment method, which the handler makes the customer's default. */
+      /** The saved payment method, as the provider reports it. */
       paymentMethodId: string | null;
     }
   | {
@@ -402,21 +402,6 @@ export interface PaymentsGateway {
    *   absence of an effect.
    */
   retrievePaymentIntent(paymentIntentId: string): Promise<IntentState>;
-
-  /**
-   * Make a payment method the customer's default.
-   *
-   * Added to the operations AAP 0.5.1 lists, and called by `webhook.ts` when
-   * `setup_intent.succeeded` arrives: it makes the newest card the one a hold confirms against, so a
-   * hold retried after a crash selects the same card and a replay under the same idempotency key
-   * sends identical parameters instead of being refused as a conflict.
-   *
-   * @param customerId The customer the card was saved for.
-   * @param paymentMethodId The saved payment method to default to.
-   * @throws PaymentUnavailableError when the outcome is unknown; the webhook has already recorded
-   *   the saved card, and the next hold selects the provider's own default.
-   */
-  setDefaultPaymentMethod(customerId: string, paymentMethodId: string): Promise<void>;
 
   /**
    * Verify a Stripe event's signature and normalize it (AAP 0.3.2, AAP 0.3.3).

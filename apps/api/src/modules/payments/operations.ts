@@ -51,7 +51,7 @@ import {
   FINAL_MEETUP_STATUSES,
   OUR_CANCELLATION_REASON,
 } from '@tablemate/shared';
-import type { PaymentOperationStatus } from '@tablemate/shared';
+import type { DepositStatus, PaymentOperationStatus } from '@tablemate/shared';
 
 import { applyHoldOutcome, lockMeetup } from '../meetups/state-machine.ts';
 import { transact } from '../outbox/write.ts';
@@ -79,8 +79,10 @@ import type { AppServices } from '../../app.ts';
 /**
  * An `executing` row older than this is a call whose answer was lost, not a call that is running.
  *
- * Two minutes is longer than any provider call this API makes and shorter than the gap between two
- * sweeper passes, so an interrupted operation is picked up by the pass after the one that died.
+ * Two minutes is longer than any provider call this API makes, so a row still `executing` at that
+ * age is not a call in flight, and longer than one 60-second sweeper period (AAP 0.5.6), so the
+ * pass immediately after the one that died still counts it as live: the reclaim is taken by the
+ * first pass that finds the row older than this.
  */
 export const INTERRUPTED_AFTER_MS = 2 * 60_000;
 
@@ -93,7 +95,14 @@ export const INTERRUPTED_AFTER_MS = 2 * 60_000;
  */
 export const HOLD_UNRESOLVED_AFTER_MS = 12 * 3_600_000;
 
-/** How many operations {@link runPendingOperations} executes in one pass unless told otherwise. */
+/**
+ * How many operations one read takes: {@link runPendingOperations}'s pass, unless its caller names
+ * its own limit, and one scope read of {@link runOperationsFor}'s loop.
+ *
+ * 100 is far more than one 60-second window accumulates at pilot scale, and it bounds a scope
+ * whose deposits have collected retryable operations, so such a scope is worked through in batches
+ * instead of loading every one of them on each pass.
+ */
 const DEFAULT_PENDING_LIMIT = 100;
 
 /**
@@ -254,6 +263,21 @@ const FAILURE_BY_NAME: Readonly<Record<string, PaymentFailure>> = {
   PaymentDeclinedError: 'declined',
 };
 
+/**
+ * The word a definite refusal contributes to a recorded `lastError` when the provider names no code
+ * of its own (AAP 0.3.2).
+ *
+ * It is suffixed to the operation's kind, so the row says both what was refused and where:
+ * `release_refused`, `refund_declined`, `delete_customer_idempotency_error`. A provider that does
+ * name a code — `card_declined`, `resource_missing` — has that code recorded instead.
+ */
+const FAILURE_TOKEN: Readonly<Record<PaymentFailure, string>> = {
+  unavailable: 'unavailable',
+  rejected: 'refused',
+  declined: 'declined',
+  idempotency: 'idempotency_error',
+};
+
 /** Builds a {@link PendingOutcome}, leaving the optional keys out when they carry nothing. */
 function pendingOutcome(
   status: ExecutionStatus,
@@ -292,7 +316,7 @@ function errorField(error: unknown, field: string): string | null {
 }
 
 /** One operation row, or `null` when it no longer exists. */
-async function readOperation(
+function readOperation(
   services: AppServices,
   operationId: string,
 ): Promise<PaymentOperation | null> {
@@ -550,13 +574,19 @@ async function recordAlone(
  * attempt's hold was fenced before it was sent, its create was refused without an intent, or the
  * reversal found nothing left to reverse.
  *
+ * The deposit's move is judged rather than assumed: a deposit that refuses it — a superseded
+ * attempt's status, or one that contradicts what the provider reported — closes the row
+ * `failed_terminal` through {@link judgeDepositMove} instead of leaving a success that never
+ * happened on the record (AAP 0.3.2, AAP 0.5.3).
+ *
  * @param services - The app's services.
  * @param claim - The claim to record against.
  * @param deposit - The deposit the operation belongs to.
  * @param attempt - The hold attempt the operation concerns.
  * @param paymentIntentId - The PaymentIntent it resolved, or null when it resolved none.
  * @param effect - The deposit move the effect requires.
- * @returns The outcome, carrying compensation evidence when the hold turned out to be lost.
+ * @returns The outcome, carrying compensation evidence when the hold turned out to be lost, and
+ *   `failed_terminal` when the deposit refused the move the provider confirmed.
  */
 async function recordDepositSuccess(
   services: AppServices,
@@ -587,13 +617,34 @@ async function recordDepositSuccess(
     }
 
     let compensate: Compensation | null = null;
+    let target: DepositStatus | null = null;
 
     if (effect.kind === 'captured') {
+      target = 'captured';
       await advanceDeposit(tx, { depositId: deposit.id, attempt }, 'captured');
     } else if (effect.kind === 'refunded') {
+      target = 'refunded';
       await advanceDeposit(tx, { depositId: deposit.id, attempt }, 'refunded');
     } else if (effect.kind === 'canceled') {
+      target =
+        effect.intent.cancellationReason === OUR_CANCELLATION_REASON ? 'released' : 'expired';
       compensate = await applyCancellation(tx, deposit, attempt, effect.intent, now);
+    }
+
+    if (target !== null) {
+      const contradicted = await judgeDepositMove(
+        tx,
+        services,
+        claim,
+        deposit,
+        attempt,
+        target,
+        now,
+      );
+
+      if (contradicted !== null) {
+        return contradicted;
+      }
     }
 
     await completeSettlement(tx, deposit.meetupId, now);
@@ -604,6 +655,93 @@ async function recordDepositSuccess(
       compensate === null ? {} : { compensate },
     );
   });
+}
+
+/**
+ * Judges a guarded deposit move that did not happen, and closes the operation when the deposit's
+ * refusal contradicts what the provider reported (AAP 0.3.2, AAP 0.5.3).
+ *
+ * `advanceDeposit` refuses a move the deposit's status does not allow, and `applyCancellation` makes
+ * the same guarded move for a cancel, so a false result is ordinary — but recording it as a success
+ * would claim an effect that never happened and let {@link completeSettlement} close a settlement
+ * whose money never moved. The refusal is therefore read, and it is benign when:
+ *
+ * - the deposit's `currentAttempt` is no longer this operation's attempt, so a later attempt owns
+ *   this status and it is history (the rule `applyCancellation` applies before it moves anything);
+ * - the deposit already holds the status the move asked for, which is a replay of an effect a
+ *   webhook or an earlier pass applied;
+ * - a refused **cancel** leaves a deposit that is not the held authorization the cancel speaks to:
+ *   either no authorization exists at all (`pending`, `requires_action` and `failed`, which AAP
+ *   0.5.3's deposit table sends to `failed` when Stripe cancels on its own), or the deposit's money
+ *   question is already closed (`released`, `captured`, `refunded`, `expired`). Nothing is left
+ *   outstanding at the provider either way;
+ * - a **capture** the provider confirmed is refused by a deposit that is already `refunded`: the
+ *   charge was taken and given back.
+ *
+ * Everything else is the contradiction: a capture the provider confirmed (`succeeded`) that the
+ * deposit says was never taken (`released`, `expired`, `failed`, `pending`, `requires_action`), or a
+ * refund the provider holds that this deposit never recorded as captured. The row is closed exactly
+ * as {@link recordCancellation} closes a captured intent under a release plan — one error line, and
+ * the operation written `failed_terminal` in the same transaction, conditional on the row this pass
+ * just wrote (`succeeded` under this claim's token) so a concurrent path's result is never rewritten.
+ * The settlement then stays `applying`, because {@link completeSettlement} accepts only `succeeded`
+ * and `fenced`, which is what puts the contradiction in front of an operator.
+ *
+ * @param tx - The caller's transaction, holding the meetup row lock.
+ * @param services - The app's services.
+ * @param claim - The claim the successful record was written under.
+ * @param deposit - The deposit whose move was refused.
+ * @param attempt - The hold attempt the move concerned.
+ * @param target - The status the move asked the deposit to take.
+ * @param now - The instant, from the injected clock.
+ * @returns The outcome when the refusal contradicts the provider, or `null` for a benign one.
+ */
+async function judgeDepositMove(
+  tx: DbTx,
+  services: AppServices,
+  claim: ClaimedOperation,
+  deposit: Deposit,
+  attempt: number,
+  target: DepositStatus,
+  now: Date,
+): Promise<PendingOutcome | null> {
+  const current = await tx.deposit.findUnique({
+    where: { id: deposit.id },
+    select: { status: true, currentAttempt: true },
+  });
+
+  if (current === null) {
+    return null;
+  }
+
+  const benign =
+    current.currentAttempt !== attempt ||
+    current.status === target ||
+    (target === 'captured'
+      ? current.status === 'refunded'
+      : (target === 'released' || target === 'expired') && current.status !== 'held');
+
+  if (benign) {
+    return null;
+  }
+
+  services.logger.error({
+    event: 'payment_deposit_move_rejected',
+    operationId: claim.operation.id,
+    depositId: deposit.id,
+    target,
+    status: current.status,
+  });
+
+  const closed = await tx.paymentOperation.updateMany({
+    where: { id: claim.operation.id, status: 'succeeded', claimedAt: claim.claimedAt },
+    data: { status: 'failed_terminal', lastError: 'deposit_move_rejected', completedAt: now },
+  });
+
+  return pendingOutcome(
+    closed.count === 1 ? 'failed_terminal' : 'skipped',
+    await tx.paymentOperation.findUnique({ where: { id: claim.operation.id } }),
+  );
 }
 
 /**
@@ -854,7 +992,10 @@ async function executeHold(
  * sweeper replays the identical request under the same key, which either returns the stored result of
  * the first request or performs it once. `idempotency` means the replay's parameters changed, so
  * replaying cannot recover the attempt and it is left to the twelve-hour rule. `rejected` is a
- * definite refusal, so nothing was authorized.
+ * definite refusal, so nothing was authorized. `declined` is the card itself refusing the request:
+ * nothing was authorized either, so the attempt ends the way a returned decline ends it — the
+ * operation `failed_terminal` and the deposit `failed` (AAP 0.5.3). Every failure this rule knows
+ * therefore leaves a terminal or retryable row, never one for the reclaim to send again.
  *
  * @param services - The app's services.
  * @param claim - The claim to record against.
@@ -900,6 +1041,19 @@ async function holdFailure(
   if (failure === 'rejected') {
     return recordHoldFailure(services, claim, deposit, attempt, {
       lastError: errorField(error, 'code') ?? 'payment_rejected',
+      paymentIntentId: null,
+    });
+  }
+
+  if (failure === 'declined') {
+    // A card that refused the hold means nothing was authorized, so the deposit takes AAP 0.5.3's
+    // `pending → failed` row and the retry route stays open for the initiator exactly as a returned
+    // decline leaves it (`recordHoldResult`); leaving the row `executing` would instead let the
+    // two-minute reclaim retry a card the provider has already refused.
+    const declineCode = errorField(error, 'code') ?? 'card_declined';
+    return recordHoldFailure(services, claim, deposit, attempt, {
+      lastError: declineCode,
+      declineCode,
       paymentIntentId: null,
     });
   }
@@ -1050,6 +1204,12 @@ async function recordHoldResult(
  * is satisfied without a provider call: nothing is outstanding under that key, and the deposit's own
  * status was already decided by the planner that wrote this row.
  *
+ * Every failure the gateway classifies ends the row terminal or retryable: `unavailable` is the
+ * ambiguous call the same key replays, and any definite refusal — `rejected`, `declined`,
+ * `idempotency` — is read against the intent's real state ({@link reconcileRelease}) rather than
+ * against the refusal itself. Only an unclassifiable error leaves the row `executing` for the
+ * two-minute reclaim.
+ *
  * @param services - The app's services.
  * @param claim - The claimed `release` operation.
  * @returns The outcome.
@@ -1110,23 +1270,24 @@ async function executeRelease(
       });
     }
 
-    if (failure === 'rejected') {
-      // A definite refusal proves the request had no effect, but what to record still comes from the
-      // intent's real state rather than from the refusal (AAP 0.3.2).
+    if (failure === 'rejected' || failure === 'declined' || failure === 'idempotency') {
+      // A definite refusal — a rejected request, a card that refused the cancel, a reused key whose
+      // parameters changed — proves the request had no effect but does not say what the intent's
+      // state is, so the state decides: a cancellation that already happened is recorded, a captured
+      // intent is the contradiction `reconcileRelease` closes, and an intent still authorized is the
+      // retryable failure named here (AAP 0.3.2). The row therefore ends terminal or retryable,
+      // never `executing`, which the two-minute reclaim would otherwise retry forever.
+      const lastError = errorField(error, 'code') ?? `${operation.kind}_${FAILURE_TOKEN[failure]}`;
       const refused = await reconcileRelease(
         services,
         claim,
         deposit,
         attempt,
         paymentIntentId,
-        'release_refused',
+        lastError,
       );
       return (
-        refused ??
-        (await recordAlone(services, claim, {
-          status: 'failed_retryable',
-          lastError: 'release_refused',
-        }))
+        refused ?? (await recordAlone(services, claim, { status: 'failed_retryable', lastError }))
       );
     }
 
@@ -1205,6 +1366,10 @@ async function reconcileRelease(
  * records it, because the hold was lost before the settlement's own transaction could see it
  * (AAP 0.3.2 "No-forfeit compensation").
  *
+ * Every failure the gateway classifies ends the row terminal or retryable: `unavailable` is the
+ * ambiguous call the same key replays, a card refusal is the terminal failure a capture cannot
+ * recover from, and a definite refusal is read against the intent's real state.
+ *
  * @param services - The app's services.
  * @param claim - The claimed `capture` operation.
  * @returns The outcome.
@@ -1280,7 +1445,11 @@ async function executeCapture(
       });
     }
 
-    if (failure === 'rejected') {
+    if (failure === 'rejected' || failure === 'idempotency') {
+      // A definite refusal — a rejected request, or a reused key whose parameters changed — proves
+      // the capture did not run but does not say what the intent's state is, so the state decides:
+      // a gone authorization is the lost hold, a captured one is recorded, and one still authorized
+      // is the retryable failure named here (AAP 0.3.2). The row is never left `executing`.
       const intent = await retrieveOrNull(services, paymentIntentId);
 
       if (intent === null || intent.status === 'canceled') {
@@ -1294,7 +1463,7 @@ async function executeCapture(
 
       return recordAlone(services, claim, {
         status: 'failed_retryable',
-        lastError: errorField(error, 'code') ?? 'capture_refused',
+        lastError: errorField(error, 'code') ?? `${operation.kind}_${FAILURE_TOKEN[failure]}`,
       });
     }
 
@@ -1395,6 +1564,10 @@ async function captureExpired(
  * release a hold whose capture never ran, and what makes the operation safe to replay — an effect
  * that already happened is recorded, never repeated.
  *
+ * A charge the provider reports as already refunded is that same rule on the deposit: the money is
+ * back, so the deposit takes AAP 0.5.3's `captured → refunded` row whether the refund was sent by
+ * this pass or delivered by a webhook this pass never saw.
+ *
  * @param services - The app's services.
  * @param claim - The claimed `refund` operation.
  * @returns The outcome.
@@ -1434,8 +1607,11 @@ async function executeRefund(
 
     if (intent.status === 'succeeded') {
       if (intent.refunded) {
+        // The provider already holds the refund this operation planned, so the money is back and the
+        // deposit takes `refunded` exactly as it would have had this pass sent the call (AAP 0.5.3's
+        // `captured → refunded` row); `advanceDeposit` ignores it when the deposit never captured.
         return await recordDepositSuccess(services, claim, deposit, attempt, paymentIntentId, {
-          kind: 'none',
+          kind: 'refunded',
         });
       }
 
@@ -1479,20 +1655,29 @@ async function executeRefund(
       });
     }
 
-    if (failure === 'rejected') {
-      // The refusal could be about a charge that was never captured or about a refund that already
-      // exists, so the state is read again: both of those are satisfied reversals.
+    if (failure === 'rejected' || failure === 'declined' || failure === 'idempotency') {
+      // The refusal could be about a charge that was never captured, about a refund that already
+      // exists, or about a request the provider will refuse again, so the charge's state is read
+      // again rather than assumed (AAP 0.3.2): both of the first two are satisfied reversals — the
+      // money is back, so the deposit takes `refunded` — and the third is the retryable failure
+      // named here. A definite failure therefore ends terminal or retryable, never `executing`.
       const intent = await retrieveOrNull(services, paymentIntentId);
 
-      if (intent === null || intent.status === 'canceled' || intent.refunded) {
+      if (intent === null || intent.status === 'canceled') {
         return recordDepositSuccess(services, claim, deposit, attempt, paymentIntentId, {
           kind: 'none',
         });
       }
 
+      if (intent.refunded) {
+        return recordDepositSuccess(services, claim, deposit, attempt, paymentIntentId, {
+          kind: 'refunded',
+        });
+      }
+
       return recordAlone(services, claim, {
         status: 'failed_retryable',
-        lastError: errorField(error, 'code') ?? 'refund_refused',
+        lastError: errorField(error, 'code') ?? `${operation.kind}_${FAILURE_TOKEN[failure]}`,
       });
     }
 
@@ -1517,6 +1702,12 @@ async function executeRefund(
  * that must wait for the rest: `me/deletion.ts` plans it with its own copy of the customer id, and
  * the account's data is erased while it waits. A null copy is a satisfied no-op, which keeps "one
  * deletion operation per account" true for an account that never saved a card.
+ *
+ * A definite refusal is terminal rather than retryable: no retry can delete a customer the provider
+ * refused to delete, so the row records the provider's own code and stops looping, and the error
+ * line is what tells an operator the erasure still owes a customer deletion. `unavailable` stays
+ * retryable — the answer was lost, so the request may or may not have landed — and an unclassifiable
+ * error keeps the crash path.
  *
  * @param services - The app's services.
  * @param claim - The claimed `delete_customer` operation.
@@ -1562,11 +1753,28 @@ async function executeDeleteCustomer(
       return pendingOutcome(written.recorded ? 'succeeded' : 'skipped', written.operation);
     });
   } catch (error) {
-    if (classifyPaymentFailure(error) === 'unavailable') {
+    const failure = classifyPaymentFailure(error);
+
+    if (failure === 'unavailable') {
       return recordAlone(services, claim, {
         status: 'failed_retryable',
         lastError: errorField(error, 'reason') ?? 'unavailable',
       });
+    }
+
+    if (failure === 'rejected' || failure === 'declined' || failure === 'idempotency') {
+      // A customer delete cannot be recovered by retrying: the request the provider refused will be
+      // refused again, and a reused key whose parameters changed will never be honored. The row
+      // therefore stops looping and records the provider's own code, which is what the operator
+      // needs to finish the erasure by hand (AAP 0.5.3 "Payment reconciliation").
+      const code = errorField(error, 'code') ?? `${operation.kind}_${FAILURE_TOKEN[failure]}`;
+      services.logger.error({
+        event: 'payment_customer_delete_failed',
+        operationId: operation.id,
+        kind: operation.kind,
+        code,
+      });
+      return recordAlone(services, claim, { status: 'failed_terminal', lastError: code });
     }
 
     if (!sent) {
@@ -1893,6 +2101,7 @@ export async function runOperationsFor(
       open = await services.db.paymentOperation.findMany({
         where: { AND: [scopeOperations(scope), openOperations(services.clock.now())] },
         orderBy: [{ depositId: 'asc' }, { seq: 'asc' }, { createdAt: 'asc' }],
+        take: DEFAULT_PENDING_LIMIT,
       });
     } catch (error) {
       services.logger.error({ event: 'payment_operations_unreadable', err: error });
