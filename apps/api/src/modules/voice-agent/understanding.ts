@@ -22,6 +22,11 @@
  * {@link ClassificationContext} states what a turn needs structurally rather than importing the
  * session that satisfies it.
  *
+ * No redaction a session carries reaches the provider. A lodging call's booking name is decrypted
+ * only for that call (AAP 0.5.2), and the callee may repeat back the name the relay itself just
+ * spoke, so the window's lines and the latest utterance are both redacted in this module, where the
+ * request is assembled, rather than left to the relay's own window handling (AAP 0.5.6).
+ *
  * Nothing here logs, returns or throws anything of the callee's words: a failure is recorded as a
  * code, and the utterance, the window, the extracted values and the model's reply reach neither a
  * log line nor an answer (AAP 0.11.1, AAP 0.12.2).
@@ -207,8 +212,20 @@ export interface ClassificationContext {
   readonly reservation: LlmReservation;
   /** What is left of it, which a turn whose bound does not fit is refused against. */
   readonly remainingMicros: number;
-  /** The utterances so far, oldest first; only the most recent 2,000 bytes are sent. */
+  /**
+   * The utterances so far, oldest first; only the most recent 2,000 bytes are sent.
+   *
+   * Redacted again here against {@link redactions} before the window is trimmed and sent, so a line
+   * that still carries a name cannot reach the provider however the caller filled it.
+   */
   readonly window: readonly string[];
+  /**
+   * Every string that must never reach the provider: the script's `ScriptContext.redactions`, which
+   * is the booking name and its parts for a lodging call and an empty list for a menu call. Applied
+   * by this module to the lines of {@link window} and to the latest utterance, so the guarantee does
+   * not rest on the caller's own redaction of the window (AAP 0.5.2, AAP 0.5.6).
+   */
+  readonly redactions: readonly string[];
   /**
    * Aborts the count and the classification, for a relay connection that closed mid-turn. Optional,
    * and spread into the meter's options rather than assigned as `undefined`, which
@@ -257,29 +274,43 @@ const UNCLEAR: Classification = Object.freeze({
 /**
  * The request one classification turn sends (AAP 0.5.6).
  *
- * Pure and deterministic: the same window, expected answer and utterance serialize to the same
- * bytes, which is what lets the count and the send agree and what `call-dispatch`'s own copy of this
- * layout has to match. The window keeps its most recent lines while they fit
+ * Pure and deterministic: the same window, expected answer, utterance and redactions serialize to
+ * the same bytes, which is what lets the count and the send agree and what `call-dispatch`'s own copy
+ * of this layout has to match. The window keeps its most recent lines while they fit
  * {@link CLASSIFICATION_WINDOW_MAX_BYTES}, counting the newline between them; older lines are
  * dropped whole, and a single line too long to keep is truncated from its start, so the latest words
  * survive. The utterance itself travels whole: it is one sentence of a live call, and a turn that
  * outgrows the reservation is refused rather than sent.
  *
+ * Every line of the window and the latest utterance are redacted against `redactions` before the
+ * lines are joined and before the window is trimmed, so a guest's name — the one the relay spoke and
+ * the one the callee repeats back — is replaced by {@link REDACTION_PLACEHOLDER} here, in the request
+ * the provider receives, rather than left to the caller (AAP 0.5.2, AAP 0.5.6). Redacting before the
+ * trim keeps {@link CLASSIFICATION_WINDOW_MAX_BYTES} a bound on the bytes actually sent, and an empty
+ * list reproduces the layout byte for byte, which is the equivalence `apps/workers`' `calls/caps.ts`
+ * counts a call's dialogue budget over.
+ *
  * @param window - The dialogue so far, oldest first.
  * @param expected - What the assistant just asked for, which is what makes a bare number a price.
  * @param latest - The callee's latest utterance, as ConversationRelay transcribed it.
+ * @param redactions - Every string that must never reach the provider; applied literally and
+ *   longest-first to each line of `window` and to `latest`, and empty for a call that redacts none.
  * @returns The request to count, then send; `maxTokens` and the schema are the exported constants.
  */
 export function buildClassificationRequest(
   window: readonly string[],
   expected: ExpectedAnswer,
   latest: string,
+  redactions: readonly string[],
 ): LlmRequest {
   const lines = [
     'Expected: ' + expected,
     'Conversation:',
-    ...trimWindow(window, CLASSIFICATION_WINDOW_MAX_BYTES),
-    'Latest: ' + latest,
+    ...trimWindow(
+      window.map((line) => redactRedactions(line, redactions)),
+      CLASSIFICATION_WINDOW_MAX_BYTES,
+    ),
+    'Latest: ' + redactRedactions(latest, redactions),
   ];
   return {
     system: CLASSIFICATION_SYSTEM_PROMPT,
@@ -287,6 +318,39 @@ export function buildClassificationRequest(
     jsonSchema: CLASSIFICATION_JSON_SCHEMA,
     maxTokens: CLASSIFICATION_MAX_OUTPUT_TOKENS,
   };
+}
+
+/**
+ * The token a redacted value is replaced by (AAP 0.5.2, AAP 0.5.6): the one the relay's own window
+ * redaction writes, so one convention governs both places and a payload reads the same way whichever
+ * of them removed the name.
+ */
+const REDACTION_PLACEHOLDER = '<guest>';
+
+/**
+ * `text` with every occurrence of every entry of `redactions` replaced by
+ * {@link REDACTION_PLACEHOLDER}.
+ *
+ * The entries are taken longest first, over a copy, so a caller's own ordering cannot leave part of a
+ * name behind: the whole booking name is replaced before its parts are, because a part left in place
+ * carries the same guest to the provider. Each entry is replaced literally — `split` and `join`
+ * rather than a pattern — so a redaction value is never read as a regular expression, and an empty
+ * entry is skipped, since it would match everywhere.
+ *
+ * @param text - The window line or utterance to redact.
+ * @param redactions - The strings that must never reach the provider; empty for a call that redacts
+ *   nothing, which returns `text` unchanged.
+ * @returns `text` with every redaction replaced.
+ */
+function redactRedactions(text: string, redactions: readonly string[]): string {
+  let redacted = text;
+  for (const entry of [...redactions].sort((a, b) => b.length - a.length)) {
+    if (entry === '') {
+      continue;
+    }
+    redacted = redacted.split(entry).join(REDACTION_PLACEHOLDER);
+  }
+  return redacted;
 }
 
 /**
@@ -352,8 +416,10 @@ function tailWithinBytes(line: string, maxBytes: number): string {
  * either way.
  *
  * @param services - The app's services: the adapter, the meter and the logger.
- * @param context - The window and the reservation the turn draws on.
- * @param text - The callee's latest utterance, as the relay transcribed it.
+ * @param context - The window, its redactions and the reservation the turn draws on.
+ * @param text - The callee's latest utterance, as the relay transcribed it. Every entry of
+ *   `context.redactions` is applied to it before the request is built, so a callee who repeats the
+ *   booking name back cannot carry it to the model.
  * @param expected - What the assistant just asked for.
  * @returns The classification, with every value the callee did not say left null.
  * @throws LlmBudgetRefusedError when the turn does not fit the remaining dialogue budget, and
@@ -366,7 +432,7 @@ export async function classifyUtterance(
   text: string,
   expected: ExpectedAnswer,
 ): Promise<ClassificationResult> {
-  const request = buildClassificationRequest(context.window, expected, text);
+  const request = buildClassificationRequest(context.window, expected, text, context.redactions);
 
   try {
     const charge = await services.spend.runMeteredWithin(services.llm, request, {

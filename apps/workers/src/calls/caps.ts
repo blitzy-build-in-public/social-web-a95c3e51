@@ -333,9 +333,9 @@ export const DIALOGUE_BUDGET_WINDOW: string = windowOfBytes(
  * The request one classification turn is shaped like (AAP 0.5.6), built over the budget window.
  *
  * The layout is the API's, for the equivalence {@link dialogueBudgetMicros} rests on: this is what
- * `apps/api`'s `buildClassificationRequest(window, expected, latest)` produces for `latest = ''` —
- * the same `Expected: ` and `Conversation: ` labels, the same `Latest: ` trailer, the same system
- * prompt, the same schema and the same `maxTokens`.
+ * `apps/api`'s `buildClassificationRequest(window, expected, latest, redactions)` produces for
+ * `latest = ''` and an empty `redactions` — the same `Expected: ` and `Conversation: ` labels, the
+ * same `Latest: ` trailer, the same system prompt, the same schema and the same `maxTokens`.
  *
  * `Latest: ` is deliberately left empty. An utterance is unbounded, so no request built without one
  * could bound a real turn exactly; the window's dense bytes stand in for it, and the relay's own

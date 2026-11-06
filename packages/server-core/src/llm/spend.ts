@@ -445,9 +445,13 @@ export interface LlmSpend {
   /**
    * The counted bound of a request without reserving or sending it; the count endpoint is free.
    *
-   * That template is owned by the voice agent, and `apps/workers` cannot import `apps/api`: the
-   * classification template whose bound `call-dispatch` needs must live where both can reach it,
-   * which is not this file, so a call's dialogue budget cannot be computed until it is placed.
+   * The classification template is owned by the voice agent, and `apps/workers` cannot import
+   * `apps/api`: the template whose bound `call-dispatch` needs must live where both processes can
+   * reach it, which is not this file. It is placed in `apps/workers/src/calls/caps.ts`, whose
+   * `buildClassificationRequest` builds it and whose `dialogueBudgetMicros` turns the largest
+   * counted per-turn bound into a call's dialogue budget by multiplying it by
+   * `LLM_MAX_TURNS_PER_CALL` (AAP 0.5.6). The relay's own copy of that template is in
+   * `apps/api/src/modules/voice-agent/understanding.ts`.
    */
   countBound(
     adapter: LlmAdapter,

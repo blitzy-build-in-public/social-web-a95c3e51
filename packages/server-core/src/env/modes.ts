@@ -151,11 +151,12 @@ const STRIPE_CREDENTIAL_VARIABLES = [
 /**
  * Report what the configured `STRIPE_MODE` requires and forbids (AAP 0.6.2, 0.3.3, 0.12.2).
  *
- * The key-prefix rule holds in every mode: a key that is not a test key is refused outside production
- * (AAP 0.3.3), and `test` mode accepts nothing else in production either, while `live` mode under
- * production is exactly where a live key belongs. `mock` requires only `STRIPE_API_BASE`, so the
- * credential-free default stack starts with no key at all. A `STRIPE_MODE` outside
- * {@link ENV_STRIPE_MODES} is the shape's own finding and is left alone here.
+ * The key-prefix rule holds in every mode, in both directions: a key that does not carry
+ * {@link TEST_KEY_PREFIX} is refused outside production (AAP 0.3.3) and in production `test` mode, and
+ * a key that does carry it is refused in production `live` mode, which is exactly where a live key
+ * belongs (AAP 0.6.2). `mock` requires only `STRIPE_API_BASE`, so the credential-free default stack
+ * starts with no key at all. A `STRIPE_MODE` outside {@link ENV_STRIPE_MODES} is the shape's own
+ * finding and is left alone here.
  *
  * @param env - the normalized environment, complete whether or not a field parse failed.
  */
@@ -175,6 +176,11 @@ export function stripeIssues(env: NormalizedEnv): EnvIssue[] {
         reason: `must start with ${TEST_KEY_PREFIX} when STRIPE_MODE=test`,
       });
     }
+  } else if (secretKey !== undefined && env.APP_ENV === PRODUCTION && mode === 'live') {
+    issues.push({
+      variable: 'STRIPE_SECRET_KEY',
+      reason: 'must be a live key when STRIPE_MODE=live',
+    });
   }
   if (mode === 'mock') {
     if (!hasValue(env, 'STRIPE_API_BASE')) {
@@ -200,8 +206,8 @@ export function stripeIssues(env: NormalizedEnv): EnvIssue[] {
 
 /**
  * What the API's payment gateway is configured with (AAP 0.6.2): the proxy URL and the placeholders
- * for `mock`, the three real-mode values for `test` and `live`, whose environment has already been
- * decided to be a production one when the mode is `live`.
+ * for `mock`, the three real-mode values for `test` and `live`, whose environment {@link stripeIssues}
+ * has already accepted — production, and a live key rather than a test one, when the mode is `live`.
  */
 export type EnvStripeConfig =
   | {

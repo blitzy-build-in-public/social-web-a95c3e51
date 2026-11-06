@@ -86,11 +86,19 @@ export function deleteCustomerKey(userId: string): string {
  * The deposit lifecycle of AAP 0.5.3 as a table: the statuses each status may move to, and no others.
  * `released`, `captured`, `expired` and `refunded` are final. The two deliberate absences are what the
  * row "Forward-only" requires: `held` never returns to `pending`, and `captured` never to `held`.
+ *
+ * `failed → released` is the row the late-and-orphan-authorization rule supplies: "the current attempt
+ * of a meetup that reached a final state with no capture or release decided for it … marks the attempt
+ * `released`". It is what lets a declined attempt's deposit reach a final status, without which the
+ * `delete_customer` gate — which runs only once every one of the user's deposits is final — can never
+ * open and the Stripe customer is never erased (AAP 0.5.2). It closes a deposit's life and never
+ * revives one: `failed` still returns to `pending` for a retry only, `held` still never returns to
+ * `pending`, `captured` still never to `held`, and the four final statuses stay final.
  */
 export const DEPOSIT_TRANSITIONS: Readonly<Record<DepositStatus, readonly DepositStatus[]>> = {
   pending: ['held', 'requires_action', 'failed', 'released'],
   requires_action: ['held', 'failed', 'released'],
-  failed: ['pending'],
+  failed: ['pending', 'released'],
   held: ['released', 'captured', 'expired'],
   released: [],
   captured: ['refunded'],
@@ -105,6 +113,12 @@ const DEPOSIT_STATUSES: readonly DepositStatus[] = DepositStatus.options;
  * The deposit statuses {@link releaseAllOpen} acts on: every status that is not final, which is what
  * AAP 0.5.3 names as `pending`, `requires_action`, `held` and `failed`. Derived rather than spelled
  * out, so a status added to the domain enum is either final and excluded, or open and picked up.
+ *
+ * Every status this set holds can reach `released` in {@link DEPOSIT_TRANSITIONS}, which is what makes
+ * the {@link advanceDeposit} result {@link releaseAllOpen} discards unable to be false: an open deposit
+ * either has nothing left at Stripe for a release to cancel, or keeps the status it had until the
+ * executor or the webhook confirms that release. `failed` stays in the set because its release
+ * operation is still required — AAP 0.5.3: "Release operations for every non-final deposit attempt".
  */
 const RELEASABLE_DEPOSIT_STATUSES: ReadonlySet<DepositStatus> = new Set(
   DEPOSIT_STATUSES.filter(
@@ -614,9 +628,10 @@ async function fenceNeverSentHolds(tx: DbTx, depositId: string, now: Date): Prom
  * followed by a new authorization, and then plans one release per attempt that might hold one; a
  * release already planned under its attempt's key is a no-op, so a repeated call is safe.
  *
- * The deposit moves to `released` only for a fenced current attempt. Otherwise the executor or the
- * webhook confirms the cancel and {@link advanceDeposit} records it then, so a release that fails is
- * retried rather than believed.
+ * The deposit moves to `released` only when its current attempt has nothing left at Stripe for a
+ * release to cancel; a hold that was fenced as never sent is one way an attempt ends that way.
+ * Otherwise the executor or the webhook confirms the cancel and {@link advanceDeposit} records it then,
+ * so a release that fails is retried rather than believed.
  *
  * @param tx - The caller's transaction, already holding the meetup row lock.
  * @param meetupId - The meetup whose deposits are released.
@@ -637,8 +652,11 @@ export async function releaseAllOpen(
       continue;
     }
 
-    const fenced = await fenceNeverSentHolds(tx, deposit.id, now);
-    if (fenced.includes(deposit.currentAttempt)) {
+    // Fencing runs whichever way the decision below goes, so no authorization can follow the meetup's
+    // end; what it fenced is read back through the current attempt's hold row, not from its return.
+    await fenceNeverSentHolds(tx, deposit.id, now);
+    const currentHold = await findHoldOperation(tx, deposit.id, deposit.currentAttempt);
+    if (hasNoAuthorization(currentHold)) {
       await advanceDeposit(
         tx,
         { depositId: deposit.id, attempt: deposit.currentAttempt },
@@ -665,6 +683,29 @@ export async function releaseAllOpen(
   }
 
   return planned;
+}
+
+/**
+ * True when the attempt has no authorization at Stripe to cancel, so nothing will ever confirm a
+ * release of it and the deposit may be marked `released` at once.
+ *
+ * A PaymentIntent id can exist under an attempt's key only once a create was sent under that key, so a
+ * `hold` operation that records no id on a terminal row is proof that nothing is outstanding there. A
+ * definite rejection never creates an intent and ends the row terminal; {@link fenceNeverSentHolds}
+ * only fences a row that was never claimed and never tried, so a fenced row is the same proof. An
+ * ambiguous create is deliberately none of these: it stays `executing` or `failed_retryable` until its
+ * replay resolves it (AAP 0.3.2), and an attempt with no `hold` operation at all never had a create
+ * planned for it.
+ *
+ * A row that is not terminal is no proof, however few times it was tried: a claimed row may still
+ * reach Stripe, because claiming reserves the call and a replay under the same key performs it. Such a
+ * row is what {@link fenceNeverSentHolds} leaves alone, and the attempt it belongs to keeps the
+ * deposit's status until the executor or the webhook confirms the release. A `failed` deposit whose
+ * hold was never sent is still released at once, because the fence in this same transaction moves that
+ * row to `fenced`: terminal, and carrying no id.
+ */
+function hasNoAuthorization(hold: PaymentOperation | null): boolean {
+  return hold === null || (isTerminalOperation(hold.status) && hold.paymentIntentId === null);
 }
 
 /** What {@link fenceCaptures} found: what it fenced, and the capture a reversal must wait for. */
