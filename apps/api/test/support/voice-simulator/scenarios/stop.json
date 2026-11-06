@@ -1,0 +1,13 @@
+{
+  "name": "stop",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "Desculpe, prefiro falar com uma pessoa.",
+      "classify": { "label": "wants_human" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 15
+}
