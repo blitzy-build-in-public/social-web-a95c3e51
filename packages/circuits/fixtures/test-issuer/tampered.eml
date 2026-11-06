@@ -1,9 +1,9 @@
-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=DjmDJlleTlMA3FmdOk25Sp0K3qARgGHr0BNUOJL0mvw=; b=vwRE/KAUbL9Yin6x01ObnT4jBoVxaAcobFOklpr/OT9Ei0k4Pa/ZJ2wPucKett1ClnuAFn9V5gErE7+bUasU2pHWiGVKAoBsgR+ZRArWh67lDjQijUtC993rTinGL4HTC/EjH0U0RbujyotYFB2VXv2ILh03lKTxPOTXiBOFNHmUEbun7nFAJbYhBOER3XyZDLdGdB54TP1gB1KKqt1Vs0DikDkuO5eJBL08LQUJcEyUDAia/Nat5tyWGivZT1FpHHFBQ0HRJ3YWzmhCHlnMKxZLD5AFYasp8Yc8fjHWv4bt53gd7LJDIhJPD1kQrikcbPTbqx2QwXOvqTWKOPsaKA==
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=DjmDJlleTlMA3FmdOk25Sp0K3qARgGHr0BNUOJL0mvw=; b=cOFkA/EUts2w7ecZ2Ryvk8JG3/zm7Zn5tXx8F0XXNttzA+GGW79Q1N/jQeQahECmTyjgeCrMJCTPiiKZY/20+tCWQnB9/UjG7VlSQdAa5sNE9dS25S0OAmJLn9Xxm2a8vA5N9S8G9iUGrcBontBqmCRF0Woahr2nfObr8RUV4OJaWbEEJaB45ivQNOyuf2vX6YtiPc4L7qxQIrcAsN6vgnERHqOyre3KcG4vuilPhsKiIe+gFa3i6xEfmRDbHqM9VOOKgGnPmpbWbqozGhQVc6d4imyluFS6sqKjaQabkXM9f3TEIL9iJgb/i4SmcXCcdjHp9BfmICOPKcCIRA/wEQ==
 From: Fixture Stays <bookings@tablemate.test>
 To: Fixture Marlow Quenby <guest@example.test>
 Subject: Fixture booking confirmation
 Date: Wed, 04 Nov 2026 10:00:00 +0000
-Message-ID: <fixture-tampered@tablemate.test>
+Message-ID: <fixture-valid@tablemate.test>
 MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: quoted-printable
@@ -29,9 +29,9 @@ you leave. If your plans change, write to the address in the footer and a =
 member of the reservations team will answer within one working day.
 City: Lisbon
 Check-in: 2026-11-02
-Check-out: 2027-02-27
+Check-out: 2027-02-28
 Booking reference: FIXTURE-7Q4K9M2X
 Guest: Fixture Marlow Quenby
-Fixture Stays Reservations, 1 Example Day, Example Port
+Fixture Stays Reservations, 1 Example Bay, Example Port
 This message was generated for a Tablemate circuit fixture and describes =
 no real booking.

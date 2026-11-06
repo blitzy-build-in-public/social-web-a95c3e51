@@ -9,11 +9,13 @@
  * fixtures.
  *
  * The fixtures are the input side of the circuit statement (AAP 0.5.5). `valid.eml` and
- * `valid-second.eml` prove for two travellers staying in one city, `tampered.eml` fails its body hash,
- * `other-issuer.eml` is signed by a key the registry does not hold, and the five `adversarial/` bodies
- * are DKIM-honest messages only the circuit rejects: a repeated anchor, a field that lives only in a
- * signed header, and three dates no calendar has. Every body is rendered from the issuer's own
- * template, so a change to its anchors, terminators, charsets or date layout is carried into them.
+ * `valid-second.eml` prove for two travellers staying in one city; `tampered.eml` holds `valid.eml`'s
+ * own signed bytes with one byte of its departure date changed after the signature was made, so the
+ * header still verifies while the body no longer hashes to the `bh=` it commits to; `other-issuer.eml`
+ * is signed by a key the registry does not hold; and the five `adversarial/` bodies are DKIM-honest
+ * messages only the circuit rejects: a repeated anchor, a field that lives only in a signed header, and
+ * three dates no calendar has. Every other body is rendered from the issuer's own template, so a change
+ * to its anchors, terminators, charsets or date layout is carried into them.
  *
  * Every check runs before the first write, so a failure leaves the previous fixture set in place.
  *
@@ -101,9 +103,8 @@ const MAX_STAY_DAYS = 120;
 /** One day in milliseconds, the unit a stay's length is taken in. */
 const DAY_MS = 86_400_000;
 
-/** The footer words `tampered.eml` swaps, byte for byte, once that message has been signed. */
-const TAMPER_FROM = 'Example Bay';
-const TAMPER_TO = 'Example Day';
+/** The ten digits, in the order `tampered.eml` walks them when it moves the departure day's last one. */
+const DIGITS = '0123456789'.split('');
 
 /** The month names, the month abbreviations and the weekdays of `date_parse.circom`, in table order. */
 const MONTH_NAMES =
@@ -174,8 +175,8 @@ const SHORT_BOILERPLATE: readonly string[] = [
 ];
 
 /**
- * The lines after the guest line for the two long bodies `valid.eml` and `tampered.eml`, inside the
- * 960-byte window the circuit hashes — which is where the word `tampered.eml` swaps has to sit.
+ * The lines after the guest line of the long body `valid.eml` carries, and so of `tampered.eml`, which
+ * shares its bytes: they sit inside the 960-byte window the circuit hashes.
  */
 const LONG_FOOTER: readonly string[] = [
   'Fixture Stays Reservations, 1 Example Bay, Example Port',
@@ -342,6 +343,59 @@ function calendarInstant(date: Exclude<StayDate, string>): number | null {
   if (landed.getUTCMonth() !== date.month - 1 || landed.getUTCDate() !== date.day) return null;
 
   return instant;
+}
+
+/**
+ * A rendered stay date as a UTC instant, or `null` for text in another layout or a day no month has.
+ * Only the `ISO_YMD` layout the test template must use reaches a date: `main` refuses any other, and a
+ * value of any other shape is refused here rather than read as a date it does not spell.
+ */
+function renderedInstant(value: string): number | null {
+  const parts = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
+  if (parts === null) return null;
+
+  return calendarInstant({
+    year: Number(at(parts, 1, 'year digits')),
+    month: Number(at(parts, 2, 'month digits')),
+    day: Number(at(parts, 3, 'day digits')),
+  });
+}
+
+/** The length of a stay whose departure is a rendered value, or `null` when either date is not. */
+function renderedStayDays(arrival: StayDate, departure: string): number | null {
+  if (typeof arrival === 'string') return null;
+
+  const start = calendarInstant(arrival);
+  const end = renderedInstant(departure);
+
+  return start === null || end === null ? null : (end - start) / DAY_MS;
+}
+
+/**
+ * The departure value `tampered.eml` carries: the rendered one with its last digit advanced, one digit
+ * at a time and wrapping past nine, to the first that still names a real calendar date with a stay of
+ * 1-120 days. A digit the field's charset or the calendar would refuse, or a stay the API would answer
+ * `422 stay_out_of_range` for, would leave the fixture failing a check other than its body hash, and
+ * would no longer show that the circuit's body-hash binding is what rejects it (AAP 0.5.5).
+ *
+ * @throws {Error} When the rendered value ends in no digit, or no digit keeps the stay a real date.
+ */
+function tamperedDepartureValue(stay: StaySpec, format: DateFormat): string {
+  const value = renderDate(stay.departure, format);
+  const start = DIGITS.indexOf(value.slice(-1));
+  if (start < 0) throw new Error('the departure value ends in no digit');
+
+  for (let step = 1; step < DIGITS.length; step += 1) {
+    const digit = at(DIGITS, (start + step) % DIGITS.length, 'digits');
+    const candidate = `${value.slice(0, -1)}${digit}`;
+    const days = renderedStayDays(stay.arrival, candidate);
+
+    if (days !== null && days >= 1 && days <= MAX_STAY_DAYS) return candidate;
+  }
+
+  throw new Error(
+    `no last digit keeps the departure a real date with a stay of 1-${MAX_STAY_DAYS} days`,
+  );
 }
 
 /**
@@ -573,6 +627,61 @@ function checkWindow(
   }
 }
 
+/**
+ * Checks what makes `tampered.eml` the fixture criterion 3 needs (AAP 0.5.5): it is `valid.eml` byte for
+ * byte except one, that byte lies inside the departure value, the value it changed sits inside the body
+ * window the circuit hashes, and the signature the two files share still verifies. Nothing but the body
+ * hash can then separate a proof of one message from a proof of the other, and the change cannot be
+ * hidden in the precomputed SHA-256 prefix, which is a private input.
+ *
+ * @throws {Error} When any of those properties does not hold.
+ */
+function checkTampered(
+  template: IssuerTemplate,
+  valid: Buffer,
+  tampered: Buffer,
+  publicKey: KeyObject,
+  window: Uint8Array,
+): void {
+  if (valid.length !== tampered.length) {
+    throw new Error(`tampered.eml is ${tampered.length} bytes, not valid.eml's ${valid.length}`);
+  }
+
+  const changed: number[] = [];
+  for (let index = 0; index < valid.length; index += 1) {
+    if (valid[index] !== tampered[index]) changed.push(index);
+  }
+
+  if (changed.length !== 1) {
+    throw new Error(`tampered.eml differs from valid.eml in ${changed.length} bytes, not one`);
+  }
+
+  const anchor = Buffer.from(template.fields.departure.anchor, 'latin1');
+  const anchorIndex = indexOfBytes(valid, anchor);
+  if (anchorIndex < 0) throw new Error('valid.eml carries no departure anchor');
+
+  const valueStart = anchorIndex + anchor.length;
+  const valueEnd = valid.indexOf(template.fields.departure.terminator, valueStart);
+  if (valueEnd < 0) throw new Error('valid.eml: the departure value carries no terminator');
+
+  const index = at(changed, 0, 'changed bytes');
+  if (index < valueStart || index >= valueEnd) {
+    throw new Error('tampered.eml: the changed byte is outside the departure value');
+  }
+
+  if (indexOfBytes(window, valid.subarray(valueStart, valueEnd)) < 0) {
+    throw new Error(
+      'tampered.eml: the departure value is outside the body window the circuit hashes',
+    );
+  }
+
+  const parsed = parseEml(tampered);
+  const signature = at(parsed.signatures, 0, 'DKIM signatures');
+  if (!verify('sha256', canonicalSignedHeader(parsed, signature), publicKey, signature.b)) {
+    throw new Error('tampered.eml: the signature the two files share no longer verifies');
+  }
+}
+
 /** Checks that the input generator refuses a fixture for the reason the circuit's tests expect. */
 function expectCode(
   issuer: IssuerConfig,
@@ -727,26 +836,32 @@ async function main(): Promise<void> {
       ),
     );
 
-    // `tampered.eml` is a signed message of its own — its own `Message-ID`, its own signature over its own
-    // headers — with one footer word changed after it was signed: the header's signature still verifies,
-    // and the body no longer hashes to the `bh=` it commits to (AAP 0.5.5). The swap has to stay after the
-    // signing, because a header byte changed before it would move the tamper into the signature.
-    const tampered = renderMessage(template, signer, {
-      name: 'tampered',
-      path: 'tampered.eml',
-      stay: VALID,
-      boilerplate: LONG_BOILERPLATE,
-      footer: LONG_FOOTER,
-      city: alias,
-      subject: SUBJECT,
-    });
-    const tamperedText = tampered.toString('latin1');
-    if (tamperedText.split(TAMPER_FROM).length !== 2) {
-      throw new Error(`tampered.eml must carry ${TAMPER_FROM} once, in its footer`);
+    // `tampered.eml` is the signed `valid.eml` bytes with one byte of the departure date changed after
+    // that signature was made: nothing else differs, so the header still verifies under the test key and
+    // the body no longer hashes to the `bh=` it commits to (AAP 0.5.5, criterion 3). Deriving it from
+    // `valid.eml`'s own bytes rather than signing a second message is what makes the pair a one-byte
+    // counterexample, and the changed byte has to sit inside the 960-byte tail the circuit hashes,
+    // because the precomputed SHA-256 prefix state is a private input a prover may state dishonestly.
+    const departureLine = fieldLine(
+      template,
+      'departure',
+      renderDate(VALID.departure, template.dateFormat),
+    );
+    const signedValid = bytes('valid.eml').toString('latin1');
+
+    if (signedValid.split(departureLine).length !== 2) {
+      throw new Error('valid.eml must carry its departure line exactly once');
     }
+
     generated.set(
       'tampered.eml',
-      Buffer.from(tamperedText.replace(TAMPER_FROM, TAMPER_TO), 'latin1'),
+      Buffer.from(
+        signedValid.replace(
+          departureLine,
+          fieldLine(template, 'departure', tamperedDepartureValue(VALID, template.dateFormat)),
+        ),
+        'latin1',
+      ),
     );
 
     currentStep = 'checks';
@@ -800,6 +915,17 @@ async function main(): Promise<void> {
     ] as const) {
       checkWindow(template, name, bytes(name), [issuer, outsideIssuer], precomputed);
     }
+
+    // `tampered.eml` is checked outside that loop because it is not a message of its own: it keeps
+    // `valid.eml`'s signature, so what has to hold is that one byte differs, inside the departure value,
+    // inside the window the circuit hashes (AAP 0.5.5).
+    checkTampered(
+      template,
+      bytes('valid.eml'),
+      bytes('tampered.eml'),
+      test.publicKey,
+      buildEmailVerifierInputs(bytes('valid.eml'), [issuer, outsideIssuer]).emailBody,
+    );
 
     // The three date fixtures parse, pass DKIM and build EmailVerifier inputs; what refuses them is the
     // circuit's own date parse, so no code is asserted for them (AAP 0.5.5).
