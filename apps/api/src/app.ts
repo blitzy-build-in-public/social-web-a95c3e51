@@ -56,6 +56,7 @@ import {
   createTelephonyClient,
   keyringFromEnv,
   systemClock,
+  waitForRedisReady,
 } from '@tablemate/server-core';
 import { HealthResponse } from '@tablemate/shared';
 
@@ -721,7 +722,8 @@ export function buildApp(deps: AppDeps): App {
   // resolved before the OpenAPI plugin had loaded and would never reach the emitted document, which
   // AAP 0.11.2 requires every route to appear in. Its checks are bounded by their own timers rather
   // than by the clock, so a database that accepts a connection and never answers still answers this
-  // route.
+  // route; the Redis check waits for the client connection's first `ready` inside that same bound,
+  // because a fail-fast connection rejects a command issued before it.
   app.register(
     (instance) => {
       const scope = instance.withTypeProvider<ZodTypeProvider>();
@@ -737,7 +739,19 @@ export function buildApp(deps: AppDeps): App {
         },
         async (_request, reply) => {
           const database = await probe(() => db.$queryRaw`SELECT 1`, HEALTH_DATABASE_TIMEOUT_MS);
-          const redisCheck = await probe(() => redis.client.ping(), HEALTH_REDIS_TIMEOUT_MS);
+          // The readiness wait is what makes the Redis answer mean "this process cannot reach
+          // Redis" rather than "the connection has not finished connecting": the `client`-role
+          // connection rejects a command issued before its first `ready` (server-core's own
+          // contract for it), so a straight `PING` would report `fail` on the very first probe
+          // after every start — the probe compose gates the whole stack's readiness on. Once a
+          // probe has answered, that connection is ready for every later command.
+          const redisCheck = await probe(
+            () =>
+              waitForRedisReady(redis.client, HEALTH_REDIS_TIMEOUT_MS).then(() =>
+                redis.client.ping(),
+              ),
+            HEALTH_REDIS_TIMEOUT_MS,
+          );
 
           if (database === 'ok' && redisCheck === 'ok') {
             reply
