@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>Fixture Tasca do Teste</title>
+</head>
+<body>
+<h1>Fixture Tasca do Teste</h1>
+<p>Menu do dia</p>
+<h2>Entradas</h2>
+<ul class="menu">
+<li><span class="dish">Caldo verde</span> <span class="price">3,50 €</span></li>
+</ul>
+<!-- The no-break space entity and the split price span below are deliberate, not
+     sloppy markup: the renderer's visible text keeps the no-break space and
+     collapses the newline inside the price to one space, so the source gate's
+     whitespace normalization is exercised on both before any item is kept. -->
+<h2>Pratos principais</h2>
+<ul class="menu">
+<li><span class="dish">Bitoque</span> <span class="price">12,50&nbsp;€</span></li>
+<li><span class="dish">Bacalhau à Brás</span> <span class="price">14,50
+€</span></li>
+<li><span class="dish">Arroz de pato</span> <span class="price">13,00 €</span></li>
+</ul>
+<h2>Sobremesas</h2>
+<ul class="menu">
+<li><span class="dish">Arroz doce</span> <span class="price">4,00 €</span></li>
+</ul>
+<h2>Bebidas</h2>
+<ul class="menu">
+<li><span class="dish">Água</span> <span class="price">1,50 €</span></li>
+<li><span class="dish">Café</span> <span class="price">0,90 €</span></li>
+<li><span class="dish">Imperial</span> <span class="price">2,50 €</span></li>
+</ul>
+<p>Menu fictício para testes automatizados.</p>
+</body>
+</html>
