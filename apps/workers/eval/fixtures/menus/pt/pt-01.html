@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pt-PT">
+  <head>
+    <meta charset="utf-8">
+    <title>Fixture Tasca do Rio</title>
+    <style>
+      /* A row keeps its dish and its price in one inline flow rather than a flex box:
+         Chromium drops the whitespace between flex items from the visible text, and
+         the menu extractor and the source gate read the "NAME PRICE" pairing there. */
+      body {
+        margin: 0;
+        padding: 2rem 1rem;
+        background: #ffffff;
+        color: #000000;
+        font-family: "DejaVu Sans", "Noto Sans", Arial, sans-serif;
+        font-size: 19px;
+        line-height: 1.5;
+      }
+      main {
+        max-width: 34rem;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 1.25rem;
+        font-size: 1.6rem;
+        text-align: center;
+      }
+      h2 {
+        margin: 1.75rem 0 0.5rem;
+        font-size: 1.15rem;
+      }
+      ul.menu {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      li {
+        margin: 0.3rem 0;
+      }
+      .dish {
+        display: inline-block;
+        width: 72%;
+        vertical-align: top;
+      }
+      .price {
+        display: inline-block;
+        width: 24%;
+        text-align: right;
+        vertical-align: top;
+        white-space: nowrap;
+      }
+      footer {
+        max-width: 34rem;
+        margin: 2.5rem auto 0;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Fixture Tasca do Rio</h1>
+
+      <section>
+        <h2>Pratos</h2>
+        <ul class="menu">
+          <li><span class="dish">Bacalhau à Brás</span> <span class="price">14,50 €</span></li>
+          <li><span class="dish">Bife à Portuguesa</span> <span class="price">16,00 €</span></li>
+          <li><span class="dish">Arroz de Pato</span> <span class="price">15,50 €</span></li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Entradas</h2>
+        <ul class="menu">
+          <li><span class="dish">Caldo Verde</span> <span class="price">4,50 €</span></li>
+          <li><span class="dish">Azeitonas Marinadas</span> <span class="price">3,50 €</span></li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Sobremesas</h2>
+        <ul class="menu">
+          <li><span class="dish">Pastel de Nata</span> <span class="price">2,80 €</span></li>
+          <li><span class="dish">Arroz Doce</span> <span class="price">3,20 €</span></li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Bebidas</h2>
+        <ul class="menu">
+          <li><span class="dish">Água com Gás</span> <span class="price">2,50 €</span></li>
+          <li><span class="dish">Sumo de Laranja</span> <span class="price">3,90 €</span></li>
+          <li><span class="dish">Café Expresso</span> <span class="price">1,30 €</span></li>
+          <li><span class="dish">Vinho Verde</span> <span class="price">4,80 €</span></li>
+          <li><span class="dish">Cerveja de Pressão</span> <span class="price">2,20 €</span></li>
+        </ul>
+      </section>
+    </main>
+    <footer>
+      <p>Menu fictício para testes automáticos</p>
+    </footer>
+  </body>
+</html>
