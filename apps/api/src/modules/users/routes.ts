@@ -285,6 +285,10 @@ export default function usersRoutes(app: App): Promise<void> {
           401: ErrorEnvelope,
           403: ErrorEnvelope,
           404: ErrorEnvelope,
+          // The two answers the mutating limiter adds to every route that spreads it: `429` past the
+          // allowance and `503` while its Redis store is unreachable (AAP 0.5.4).
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
         },
       },
     },
@@ -312,6 +316,9 @@ export default function usersRoutes(app: App): Promise<void> {
           401: ErrorEnvelope,
           403: ErrorEnvelope,
           404: ErrorEnvelope,
+          // As on the block route, and for the same reason: a report is a mutating route (AAP 0.5.4).
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
         },
       },
     },
