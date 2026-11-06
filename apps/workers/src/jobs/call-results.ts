@@ -9,7 +9,7 @@
  * transaction. Nothing here calls a third party — the call is over by the time this runs, so
  * PostgreSQL is the only I/O.
  *
- * Four rules shape it:
+ * Five rules shape it:
  *
  *   - **A result is applied once.** The transaction locks the attempt, the task and, for a
  *     `lodging_stay_verification` task, the claim, and refuses to apply anything unless the task is
@@ -21,6 +21,12 @@
  *     their capture day; a covered currency with no row reaching back to that day raises
  *     {@link FxRateUnavailableError} so the queue retries, and no price is converted through a rate
  *     nobody published (AAP 0.5.6).
+ *   - **The last delivery never leaves a task `in_progress`.** The delivery the queue will not retry
+ *     has nothing to hand a failure to, so a result it could not apply joins the operator queue as
+ *     `needs_review` instead. A task left `in_progress` there has no route back: nothing re-delivers
+ *     the outbox row, `reconcile` reads only an attempt with no outcome, the operator route accepts
+ *     only `needs_review` and `unreachable`, and no dispatch dials it again — while it blocks every
+ *     later call for its place (AAP 0.5.3).
  *   - **A claim and its task move together.** A confirmed answer sets the task `completed` and the
  *     claim `verified` or `rejected` in one transaction, through `lodging-claims.ts`'s
  *     `resolveClaim`; anything less returns the claim to `pending_call`, so the claimant sees it
@@ -92,6 +98,13 @@ const LODGING_VERIFICATION_KIND: CallTaskKind = 'lodging_stay_verification';
 
 /** How much later an unanswered call is retried: 24 h after the attempt ended (AAP 0.5.3). */
 const RETRY_DELAY_MS = CALL_RETRY_SPACING_HOURS * HOUR_MS;
+
+/**
+ * The event a result the job could not apply is reported under (AAP 0.11.1): the last delivery hands
+ * its task to the operator queue and reports the decision rather than failing the delivery, so the
+ * line is the operator's record of why the task arrived there.
+ */
+const CALL_RESULT_UNAPPLIED = 'call_result_unapplied';
 
 /**
  * How many places and how many lodgings one do-not-call reply may flag (AAP 0.5.3, 0.5.6).
@@ -194,7 +207,8 @@ export class FxRateUnavailableError extends Error {
 /**
  * The `call-results` job as a processor receives it: a structural subset of BullMQ's `Job`, so a
  * test can call {@link process} with a plain object. Its data is `{ outboxId, callAttemptId }`, of
- * which the attempt is the only field read here.
+ * which the attempt is the only field read here; its two retry fields are what
+ * {@link isFinalDelivery} reads to tell a delivery the queue will retry from the last one it will not.
  */
 export interface CallResultsJob {
   /** BullMQ's job id — `outbox-<outboxId>`, the stable id of AAP 0.3.2. */
@@ -203,6 +217,13 @@ export interface CallResultsJob {
   readonly name: string;
   /** The job's data, held by the queue's schema to the attempt to apply. */
   readonly data: unknown;
+  /**
+   * How many times the job has been started, counted up after each run: the first delivery carries
+   * `0`, and the last one carries one less than the retry allowance.
+   */
+  readonly attemptsMade?: number;
+  /** The options the job was added with, of which only the retry allowance is read here. */
+  readonly opts?: { readonly attempts?: number };
 }
 
 /**
@@ -297,14 +318,22 @@ interface ResultContext {
  * the outcome is logged with the task and attempt ids, never with a phone number, a dish, a summary
  * or a transcript (AAP 0.11.1).
  *
- * @param job - The `call-results` / `apply` job, whose data names the attempt to apply.
+ * A failure on a delivery the queue will retry is thrown as it always was, which is what a throw is
+ * for (AAP 0.5.6). On the last delivery that throw would leave the task `in_progress` for good — no
+ * retry, no dispatch, no operator route and no reconciliation reads it there again — so that delivery
+ * reports the decision instead: it hands the task to the operator queue through
+ * {@link handResultToOperator} and returns `{ applied: true, taskStatus: 'needs_review' }`.
+ *
+ * @param job - The `call-results` / `apply` job, whose data names the attempt to apply and whose
+ *   retry policy says whether this run is the one that has to decide the task's state.
  * @param ctx - The worker context: the injected clock, the logger and the client the transaction runs
  *   on. This job reads no configuration of its own.
- * @returns `{ applied: true, taskStatus }` once the result decided the task's status, and
- *   `{ applied: false, reason }` when it was refused.
+ * @returns `{ applied: true, taskStatus }` once the result decided the task's status — `needs_review`
+ *   included, for a last delivery that could not apply it — and `{ applied: false, reason }` when it
+ *   was refused.
  * @throws QueuePayloadError when the job name is not this queue's `apply`, or when its data is not
  *   `{ outboxId, callAttemptId }`. {@link FxRateUnavailableError} when a collected price cannot be
- *   converted yet, which the queue retries.
+ *   converted yet, on a delivery the queue still has a retry for.
  * @see AAP 0.5.3 for every mapping, 0.5.6 for the queue.
  */
 export async function process(job: CallResultsJob, ctx: WorkerContext): Promise<CallResultsResult> {
@@ -318,10 +347,123 @@ export async function process(job: CallResultsJob, ctx: WorkerContext): Promise<
 
   const { callAttemptId } = parseJobData(queue, job.name, job.data);
 
-  return await ctx.db.$transaction(async (tx) => await applyResult(tx, ctx, callAttemptId), {
-    isolationLevel: 'ReadCommitted',
-    timeout: TRANSACTION_TIMEOUT_MS,
-  });
+  try {
+    return await ctx.db.$transaction(async (tx) => await applyResult(tx, ctx, callAttemptId), {
+      isolationLevel: 'ReadCommitted',
+      timeout: TRANSACTION_TIMEOUT_MS,
+    });
+  } catch (error) {
+    // A delivery with a retry left fails, and the next one tries the same application again. The last
+    // delivery cannot: throwing here would leave the task `in_progress` with nothing that could ever
+    // move it, so what could not be applied becomes the operator's to resolve (AAP 0.5.3).
+    if (!isFinalDelivery(job)) {
+      throw error;
+    }
+
+    return await handResultToOperator(ctx, callAttemptId, error);
+  }
+}
+
+/**
+ * Whether this run is the last delivery BullMQ will start for the job.
+ *
+ * `attemptsMade` counts up after each run — after a failure, with the retry already decided, and
+ * after a success — so the first delivery is started with `0` and BullMQ asks for a retry only while
+ * `attemptsMade + 1 < opts.attempts` (`shouldRetryJob` in BullMQ's `Job`). A run whose `attemptsMade`
+ * is one short of the allowance is therefore the one no retry follows, and the one that has to end
+ * the task's state itself.
+ *
+ * A job whose retry policy is not readable reads as retryable. Every job this queue carries is added
+ * through `jobOptionsFor`, which always sets `attempts`, so an absent one means the caller built the
+ * job outside the queue — and leaving the state to a retry that may never come is the reading that
+ * changes nothing about how such a job already behaves.
+ *
+ * @param job - The job this run is processing.
+ * @returns `true` when no retry follows this run.
+ */
+function isFinalDelivery(job: CallResultsJob): boolean {
+  const attempts = job.opts?.attempts;
+
+  return attempts !== undefined && (job.attemptsMade ?? 0) + 1 >= attempts;
+}
+
+/**
+ * Hands a result that could not be applied to the operator queue (AAP 0.5.3, 0.5.7).
+ *
+ * `needs_review` is the one status a `menu_prices` task is resolved from by an operator, and clearing
+ * `blocked_reason` is what puts it in that queue rather than the blocked panel: the task is not
+ * blocked, it is waiting for a person. `outcomeAt` is dated by the attempt's own end, as it is on
+ * every other status a call result reaches.
+ *
+ * The guards are the ones {@link applyResult} applies, in the same order, and each refusal writes
+ * nothing: an attempt or task that is gone, or a task an operator or the claim's resolution already
+ * moved off `in_progress`, is a state this hand-off must not overwrite.
+ *
+ * @param ctx - The worker context: the logger the failure is reported through and the transaction's
+ *   client.
+ * @param attemptId - The attempt the job names, which the hand-off locks and reads for its task.
+ * @param error - The failure that stopped the application; only its short token is logged.
+ * @returns `{ applied: true, taskStatus: 'needs_review' }`, or why the task was not there to hand over.
+ */
+async function handResultToOperator(
+  ctx: WorkerContext,
+  attemptId: string,
+  error: unknown,
+): Promise<CallResultsResult> {
+  ctx.logger.error(
+    { event: CALL_RESULT_UNAPPLIED, attemptId, code: failureToken(error) },
+    CALL_RESULT_UNAPPLIED,
+  );
+
+  return await ctx.db.$transaction(
+    async (tx): Promise<CallResultsResult> => {
+      const attempt = await lockAttempt(tx, attemptId);
+
+      if (attempt === null) {
+        return refuse('attempt_missing');
+      }
+
+      const task = await lockTask(tx, attempt.call_task_id);
+
+      if (task === null) {
+        return refuse('task_missing');
+      }
+
+      if (task.status !== 'in_progress') {
+        return refuse('task_not_in_progress');
+      }
+
+      await setTaskStatus(tx, attempt.call_task_id, {
+        status: 'needs_review',
+        blockedReason: null,
+        // An attempt the relay never stamped an end on is treated as having ended now, exactly as
+        // {@link applyResult} dates its own `outcomeAt` (AAP 0.5.7).
+        outcomeAt: attempt.ended_at ?? ctx.clock.now(),
+      });
+
+      return { applied: true, taskStatus: 'needs_review' };
+    },
+    { isolationLevel: 'ReadCommitted', timeout: TRANSACTION_TIMEOUT_MS },
+  );
+}
+
+/**
+ * The short token one unapplied result is logged by (AAP 0.11.1): the failure's own name, which names
+ * the class of failure, and never its message, which a driver or a provider can fill with a number, a
+ * URL or a query. A name that is not a plain identifier — some libraries set one from their input —
+ * reads as `unknown` rather than reaching a log line as it stands.
+ *
+ * `calls/reconcile.ts`'s `errorName` narrows a failure the same way for the reconciliation pass. The
+ * two stay separate rather than shared, because neither is exported and neither module may import the
+ * other's internals.
+ *
+ * @param error - The value that was thrown.
+ * @returns The name, or `unknown` when it is absent or not an identifier.
+ */
+function failureToken(error: unknown): string {
+  const name = error instanceof Error ? error.name : '';
+
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'unknown';
 }
 
 /**

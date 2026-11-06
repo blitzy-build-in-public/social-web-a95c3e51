@@ -688,7 +688,7 @@ export const apiClient = {
     listReports: (): Promise<AdminReportsResponse> =>
       request('GET', '/admin/reports', { response: AdminReportsResponse }),
 
-    /** `GET /admin/call-tasks` — the automated-call queue in its priority order. */
+    /** `GET /admin/call-tasks` — the operator's queue, oldest outcome first (AAP 0.5.4). */
     listCallTasks: (): Promise<AdminCallTasksResponse> =>
       request('GET', '/admin/call-tasks', { response: AdminCallTasksResponse }),
 

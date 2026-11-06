@@ -13,7 +13,9 @@
  *   2. A partial call stores what it collected as `needs_review`, and a payload that is not a
  *      readable extraction stores nothing and sends the task to the operator queue.
  *   3. A price in a currency the FX table does not cover is dropped; a covered currency with no rate
- *      raises `FxRateUnavailableError` and leaves the task untouched for the queue to retry.
+ *      raises `FxRateUnavailableError` and leaves the task untouched for the queue to retry, and the
+ *      last delivery of the same failure hands the task to the operator queue as `needs_review`
+ *      instead of leaving it `in_progress` (AAP 0.5.3).
  *   4. The four outcomes that collect nothing: the retry after 24 hours, the second `no_answer`, the
  *      invalid number and the refusal (AAP 0.5.3).
  *   5. `do_not_call` blocks the number everywhere, cancels the other tasks of those targets and
@@ -42,6 +44,7 @@ import { Prisma, createPrismaClient, type DbClient } from '@tablemate/db';
 import {
   JOB,
   QUEUE,
+  QUEUE_JOB_OPTIONS,
   QueuePayloadError,
   createLogger,
   createTestClock,
@@ -76,6 +79,12 @@ const CAPTURE_DAY = '2026-11-04';
 /** The number a menu call is dialed from, and the EUR/USD rate the expected cents are built on. */
 const MENU_PHONE = '+12025550100';
 const EUR_USD = '1.1';
+
+/**
+ * How many deliveries BullMQ gives one `call-results` job: the queue's own policy (AAP 0.5.6), read
+ * rather than hard-coded, so the case that runs the last delivery cannot drift from it.
+ */
+const CALL_RESULTS_ATTEMPTS = QUEUE_JOB_OPTIONS[QUEUE.callResults].attempts ?? 1;
 
 // Every row this suite seeds is named, and the names are the assertions' vocabulary.
 const CITY = 'lisbon';
@@ -327,6 +336,22 @@ async function runApply(attemptId: string): Promise<CallResultsResult> {
     {
       name: JOB[QUEUE.callResults].apply,
       data: { outboxId: randomUUID(), callAttemptId: attemptId },
+    },
+    ctx as WorkerContext,
+  );
+}
+
+/**
+ * Runs the same job as its last delivery: the one that spends the queue's final retry, so a failure
+ * inside it has to leave the task's state decided rather than throwing it back to BullMQ.
+ */
+async function runFinalApply(attemptId: string): Promise<CallResultsResult> {
+  return await process(
+    {
+      name: JOB[QUEUE.callResults].apply,
+      data: { outboxId: randomUUID(), callAttemptId: attemptId },
+      attemptsMade: CALL_RESULTS_ATTEMPTS - 1,
+      opts: { attempts: CALL_RESULTS_ATTEMPTS },
     },
     ctx as WorkerContext,
   );
@@ -658,6 +683,51 @@ describe('a menu call that collected every price', () => {
     expect(task.status).toBe('in_progress');
     expect(task.outcomeAt).toBeNull();
     expect(await priceRows(call.placeId)).toHaveLength(0);
+  });
+
+  it('hands a covered currency with no rate to the operator on the last delivery', async () => {
+    const call = await seedMenuCall({
+      outcome: 'completed',
+      items: [
+        {
+          slot: 'cheapest_main',
+          dish: 'Tacos',
+          priceText: '$180',
+          amountMinor: 18000,
+          currency: 'MXN',
+          confirmed: true,
+        },
+      ],
+    });
+
+    expect(await runFinalApply(call.attemptId)).toEqual({
+      applied: true,
+      taskStatus: 'needs_review',
+    });
+
+    // With no retry left there is nothing to fail into, so the task leaves `in_progress` for the one
+    // status an operator resolves a menu task from, dated by the attempt's own end (AAP 0.5.3, 0.5.7),
+    // and the prices the call could not convert are still not stored (AAP 0.5.6).
+    const task = await taskRow(call.taskId);
+    expect(task.status).toBe('needs_review');
+    expect(task.resolvedBy).toBeNull();
+    expect(task.blockedReason).toBeNull();
+    expect(task.outcomeAt?.toISOString()).toBe(call.endedAt.toISOString());
+    expect(await priceRows(call.placeId)).toHaveLength(0);
+
+    // The hand-off reports the failure by id and a short token, never by its message (AAP 0.11.1).
+    const line = logs.find(
+      (entry) =>
+        entry['event'] === 'call_result_unapplied' && entry['attemptId'] === call.attemptId,
+    );
+    expect(line).toMatchObject({ code: 'FxRateUnavailableError' });
+
+    // A redelivery now finds a task that is no longer its to move, which is what proves the task left
+    // `in_progress` and is the operator's to resolve.
+    expect(await runApply(call.attemptId)).toEqual({
+      applied: false,
+      reason: 'task_not_in_progress',
+    });
   });
 });
 

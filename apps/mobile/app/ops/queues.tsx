@@ -1212,7 +1212,7 @@ function CallTaskRow({
   );
 }
 
-/** The call queue: the dialing queue in its priority order. */
+/** The call queue: the operator's queue, oldest outcome first (AAP 0.5.4). */
 function CallTasksPanel(): ReactElement {
   const tasks = useQuery({
     queryKey: queryKeys.adminCallTasks,

@@ -309,7 +309,12 @@ export const AdminCallTaskDto = z.object({
 });
 export type AdminCallTaskDto = z.infer<typeof AdminCallTaskDto>;
 
-/** The body of `GET /admin/call-tasks`, the queue in priority order (AAP 0.5.4, 0.5.7). */
+/**
+ * The body of `GET /admin/call-tasks` (AAP 0.5.4): the operator's queue, oldest outcome first —
+ * `outcomeAt` ascending, the task id breaking a same-instant tie, and a task with no outcome yet
+ * last. The queue holds the tasks whose calls are already over, so the call-and-menu priority rule
+ * of AAP 0.5.7, which orders `menu-ingest` and `call-dispatch`, does not order this read.
+ */
 export const AdminCallTasksResponse = z.object({ items: z.array(AdminCallTaskDto) });
 export type AdminCallTasksResponse = z.infer<typeof AdminCallTasksResponse>;
 

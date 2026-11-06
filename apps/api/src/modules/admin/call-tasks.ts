@@ -13,11 +13,13 @@
  *
  * The checks run in the order the plan fixes (AAP 0.5.3, 0.5.4), and each is stated where it is
  * made: an outcome outside `OperatorCallTaskOutcome` is `422 invalid_outcome`, an unknown task id is
- * `404 not_found`, a `lodging_stay_verification` task is `422` for every outcome, and a task that is
+ * `404 not_found`, a `lodging_stay_verification` task is `422` for every outcome, a task that is
  * not `needs_review` or `unreachable` — or that an operator already resolved — is `422`, because
- * terminal tasks stay terminal. A resolution then runs in one transaction behind the operator's own
- * write fence and takes `SELECT … FOR UPDATE` on the task row first, so two operators resolving one
- * task serialize and the second cannot store a second outcome.
+ * terminal tasks stay terminal, and a task whose one target the guarded client can no longer read
+ * is `422` for every outcome rather than a `500` (AAP 0.5.2). A resolution then runs in one
+ * transaction behind the operator's own write fence and takes `SELECT … FOR UPDATE` on the task
+ * row first, so two operators resolving one task serialize and the second cannot store a second
+ * outcome.
  *
  * Three choices the plan leaves open are decided at their code: an empty `prices` array reads as no
  * prices at all, a `menu_prices` task whose place has no contact source is refused rather than
@@ -34,6 +36,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Prisma } from '@tablemate/db';
 import type { CallTask, DbClient, DbTx, Place } from '@tablemate/db';
+import type { Logger } from '@tablemate/server-core';
 import { OperatorCallTaskOutcome } from '@tablemate/shared';
 import type {
   AdminCallTaskDto,
@@ -59,10 +62,15 @@ import type { TransactServices } from '../outbox/write.ts';
  */
 export type CallTaskServices = TransactServices;
 
-/** What {@link listCallTasks} needs: the guarded client, narrowed to the delegate it reads. */
+/**
+ * What {@link listCallTasks} needs: the guarded client, narrowed to the delegate it reads, and the
+ * process logger the one warning a row the contract cannot carry is reported through (AAP 0.11.1).
+ */
 export interface CallTaskQueueReader {
   /** The guarded Prisma client, of which only the `callTask` delegate is read. */
   readonly db: Pick<DbClient, 'callTask'>;
+  /** The process logger, of which only `warn` is written through. */
+  readonly logger: Pick<Logger, 'warn'>;
 }
 
 /** The most tasks one read of the queue returns, the contract carrying no cursor (AAP 0.5.4). */
@@ -89,6 +97,10 @@ const LIVE_ATTEMPT_STATES: CallAttemptState[] = [
 
 /** The one log line a resolution writes. */
 const CALL_TASK_RESOLVED = 'call_task_resolved';
+
+// A queue row the contract cannot carry, because neither its place nor its lodging is readable,
+// logged under its own event so the defect is visible rather than silent.
+const CALL_TASK_TARGET_UNRESOLVED = 'call_task_target_unresolved';
 
 /** The scalar fields one extracted menu item contributes to the flat record, in listed order. */
 const EXTRACTED_ITEM_FIELDS = [
@@ -260,19 +272,35 @@ export type CallTaskQueueRow = Prisma.CallTaskGetPayload<{ select: typeof CALL_T
  * a change here. `extractedFields` is flattened for a menu task only, because a lodging
  * verification's content does not outlive its claim (AAP 0.5.2, 0.5.6).
  *
- * `targetName` and `cityId` fall back to the empty string when neither target relation resolves: the
- * `call_task_one_target_chk` constraint makes that arm unreachable, and it exists only so the mapper
- * is total rather than throwing on a row the constraint forbids.
+ * `null` when neither `row.place` nor `row.lodging` resolves, and never a value invented for one:
+ * `cityId` is a `CitySlug`, whose pattern the empty string fails, so a fallback would answer a body the
+ * response schema cannot carry — and the route would raise `500 internal_error` in place of a DTO —
+ * while `targetName` would name no business at all. `call_task_one_target_chk` keeps both relations from
+ * being absent at once, but a row this mapper cannot answer for is still reachable: outside `test` and
+ * `demo` the guarded client keeps a fixture business out of what a caller sees, both by excluding the
+ * owning row from a read that selects `place` or `lodging` and by nulling an optional fixture relation
+ * on a row a create-family operation hands back (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2), so a
+ * production database still holding a seeded business can leave its task unrepresentable. The callers
+ * answer such a row the way `modules/admin/onboarding.ts` answers a venue whose geography is NULL — by
+ * leaving it out and reporting it, rather than by inventing the name and city it does not have.
+ *
+ * @param row - One row as {@link CALL_TASK_SELECT} returns it.
+ * @returns The DTO, or `null` when the row's target is no longer readable.
  */
-export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto {
+export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto | null {
   const target = row.place ?? row.lodging;
+
+  if (target === null) {
+    return null;
+  }
+
   const latest = row.callAttempts[0];
 
   return {
     id: row.id,
     kind: row.kind,
-    targetName: target?.name ?? '',
-    cityId: target?.cityId ?? '',
+    targetName: target.name,
+    cityId: target.cityId,
     status: row.status,
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
@@ -294,6 +322,22 @@ export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto {
  * Both kinds are listed, so an operator sees a lodging verification's state too; only a
  * `menu_prices` task is resolvable from here, because a claim is resolved through its own route
  * (AAP 0.5.3).
+ *
+ * The order is the one the read states (AAP 0.5.4): `outcomeAt` ascending, the task id breaking a
+ * same-instant tie, and a task with no outcome yet last. This queue holds the tasks no dial is coming
+ * for — their calls are over, or they reached `unreachable` with `no_phone` or `do_not_call` and were
+ * never dialed at all — so the call-and-menu priority rule of AAP 0.5.7, the distance bands and the
+ * near locked meetup that `calls/priority.ts` applies to `menu-ingest` and to `call-dispatch`, where
+ * `callTaskOrderSql` picks the next task to dial, orders that path and not this read.
+ *
+ * A row whose target {@link toAdminCallTaskDto} cannot carry is left out of the answer and reported
+ * under {@link CALL_TASK_TARGET_UNRESOLVED} with its own id, so the reply is always a body the
+ * response schema accepts (AAP 0.5.2, 0.5.4) and the defect stays visible. The cap bounds the rows
+ * read, so one skipped row leaves the answer one item short of it.
+ *
+ * @param services - the guarded client the queue is read from, and the logger a skipped row is
+ *   reported to.
+ * @returns At most {@link ADMIN_CALL_TASKS_LIMIT} tasks, in the order above.
  */
 export async function listCallTasks(
   services: CallTaskQueueReader,
@@ -310,15 +354,33 @@ export async function listCallTasks(
     take: ADMIN_CALL_TASKS_LIMIT,
   });
 
-  return { items: rows.map((row) => toAdminCallTaskDto(row)) };
+  const items: AdminCallTaskDto[] = [];
+
+  for (const row of rows) {
+    const dto = toAdminCallTaskDto(row);
+
+    if (dto === null) {
+      // No DTO, because the contract has no field to carry a task whose business is unreadable: the
+      // row is reported and left out rather than answered with a name and a city it does not have.
+      services.logger.warn({ event: CALL_TASK_TARGET_UNRESOLVED, taskId: row.id });
+      continue;
+    }
+
+    items.push(dto);
+  }
+
+  return { items };
 }
 
 // ---------------------------------------------------------------------------------------------
 // One operator resolution (AAP 0.5.3, 0.5.4)
 // ---------------------------------------------------------------------------------------------
 
-/** The task columns a resolution decides on, read under the row lock. */
-type LockedCallTask = Pick<CallTask, 'id' | 'kind' | 'status' | 'resolvedBy' | 'placeId'>;
+/** The task columns a resolution decides on, read under the row lock, both target ids included. */
+type LockedCallTask = Pick<
+  CallTask,
+  'id' | 'kind' | 'status' | 'resolvedBy' | 'placeId' | 'lodgingId'
+>;
 
 /**
  * Locks one task row for the rest of the transaction (AAP 0.5.3) and returns the columns the
@@ -327,13 +389,45 @@ type LockedCallTask = Pick<CallTask, 'id' | 'kind' | 'status' | 'resolvedBy' | '
  */
 async function lockCallTask(tx: DbTx, taskId: string): Promise<LockedCallTask | null> {
   const rows = await tx.$queryRaw<LockedCallTask[]>(Prisma.sql`
-    SELECT "id", "kind", "status", "resolved_by" AS "resolvedBy", "place_id" AS "placeId"
+    SELECT "id", "kind", "status", "resolved_by" AS "resolvedBy", "place_id" AS "placeId",
+           "lodging_id" AS "lodgingId"
       FROM "call_task"
      WHERE "id" = ${taskId}::uuid
        FOR UPDATE
   `);
 
   return rows[0] ?? null;
+}
+
+/**
+ * Refuses a resolution whose target the guarded client can no longer read (AAP 0.5.2, 0.5.3).
+ *
+ * The task's one business target is read back through the same guarded client the rest of the
+ * transaction uses, because a to-one relation read is not a value this file holds: outside `test`
+ * and `demo` the guarded client narrows `place` and `lodging` to `is_fixture = false`
+ * (`packages/db/src/fixtures-guard.ts`), so a task on a seeded business has no name, no city and
+ * no source a price could be attributed to. Refusing every outcome on such a task answers the
+ * contract's `422` rather than half-applying one, and the update below — whose `where` the guard
+ * narrows the same way — would otherwise match no row and surface as a `500`.
+ *
+ * @param tx - The caller's open transaction, entered after `lockCallTask` locked the row.
+ * @param task - The locked row, whose `placeId` or `lodgingId` names the target to read.
+ * @throws {AppError} `invalid_outcome` (422) when neither id names a readable row, which covers
+ *   both a task with no target at all and a target the guard hides.
+ */
+async function assertTargetReadable(tx: DbTx, task: LockedCallTask): Promise<void> {
+  const { placeId, lodgingId } = task;
+
+  const target =
+    placeId !== null
+      ? await tx.place.findUnique({ where: { id: placeId }, select: { id: true } })
+      : lodgingId !== null
+        ? await tx.lodging.findUnique({ where: { id: lodgingId }, select: { id: true } })
+        : null;
+
+  if (target === null) {
+    throw new AppError('invalid_outcome', "The call task's target is no longer readable.");
+  }
 }
 
 /**
@@ -525,8 +619,10 @@ async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>
  * @param now - the current instant, passed in rather than read (AAP 0.11.1).
  * @returns the resolved task as the queue reports it.
  * @throws {AppError} `invalid_outcome` (422) for an outcome outside the operator's four, for a
- *   lodging task, for a task that is not in the queue, and for a `completed` with no prices to
- *   store; `not_found` (404) for an unknown task id.
+ *   lodging task, for a task that is not in the queue, for a `completed` with no prices to store,
+ *   and for a task whose target is no longer readable — checked before the outcome is applied —
+ *   which rolls the resolution back rather than storing an outcome the reply could not carry;
+ *   `not_found` (404) for an unknown task id.
  */
 export async function resolveCallTask(
   services: CallTaskServices,
@@ -564,6 +660,12 @@ export async function resolveCallTask(
         throw new AppError('invalid_outcome');
       }
 
+      // Every outcome needs a target the client can still read, so the check runs before the switch
+      // rather than inside an arm (AAP 0.5.2): a target the guarded client hides refuses the
+      // resolution with the contract's `422`, where the update below would match no row and answer
+      // `500`, and no arm applies its side effects first.
+      await assertTargetReadable(tx, task);
+
       switch (outcome) {
         case 'completed':
           await completeTask(tx, task, body.prices, now);
@@ -586,7 +688,17 @@ export async function resolveCallTask(
         select: CALL_TASK_SELECT,
       });
 
-      return toAdminCallTaskDto(row);
+      const dto = toAdminCallTaskDto(row);
+
+      if (dto === null) {
+        // The net the mapper's own contract requires, not an arm this path takes: the target above
+        // was just proven readable, so a row the contract still cannot carry is a defect, and
+        // failing closed keeps an outcome the reply could not carry out of the database (AAP 0.5.3,
+        // 0.5.4).
+        throw new AppError('invalid_outcome', "The call task's target is no longer readable.");
+      }
+
+      return dto;
     },
     { fenceUserId: operatorId },
   );

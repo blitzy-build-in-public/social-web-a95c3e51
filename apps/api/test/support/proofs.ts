@@ -20,6 +20,11 @@
  *   - Importing this module does no I/O and reads no argument, so it can be imported by a test
  *     worker or by a script that proves without ever building an app.
  *
+ * The native prover is resolved to an absolute path before it runs — from `RAPIDSNARK_PROVER` when
+ * the environment sets it to a non-empty value, otherwise the first executable `prover` on `PATH` —
+ * and the resolved path is reported, so which binary received the proving key and the witness is
+ * auditable (AAP 0.4.2, CWE-426).
+ *
  * The proofs are cached per (fixture, verification key, salt, registry root) under the git-ignored
  * `.local/test-proofs/`, because a proof of this circuit costs minutes and the fixtures change only
  * when `pnpm circuits:fixtures` reruns. Only two valid bookings exist — the signing key is discarded
@@ -35,11 +40,11 @@
 import { Buffer } from 'node:buffer';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildCircuitInputs, buildRegistry } from '@tablemate/circuits';
@@ -140,8 +145,18 @@ const ROGUE_KEY_FIELD = 'x-tablemate-fixture-key';
 const MISSING_ARTEFACTS =
   'circuit artefacts missing at packages/circuits/build — run pnpm circuits:build';
 
-/** The native prover the fixtures are proved with when it is installed (AAP 0.4.2). */
+/**
+ * The file name {@link resolveProverBinary} looks for on `PATH` (AAP 0.4.2). The binary that runs is
+ * the absolute path that resolution returns, never this bare name.
+ */
 const PROVER_BINARY = 'prover';
+
+/**
+ * The variable that pins the native prover's absolute path (AAP 0.4.2, CWE-426): the harness runs a
+ * `prover` only from the path it names, so a stray binary of that name earlier on `PATH` is never
+ * handed the proving key and the witness.
+ */
+const PROVER_PATH_ENV = 'RAPIDSNARK_PROVER';
 
 /** snarkjs' own CLI, inside the installed package, for the prover that needs no native build. */
 const SNARKJS_CLI_FILE = 'cli.cjs';
@@ -585,8 +600,8 @@ function loadSnarkjs(): Snarkjs {
 }
 
 /**
- * Proves one witness: the witness in a fresh temporary directory, then the native prover when it is
- * installed and snarkjs otherwise (AAP 0.2.4, AAP 0.5.5).
+ * Proves one witness: the witness in a fresh temporary directory, then the native prover when
+ * {@link resolveProverBinary} finds one and snarkjs otherwise (AAP 0.2.4, AAP 0.5.5).
  *
  * The directory is removed whatever happens, so a failed proof leaves no witness behind.
  *
@@ -618,27 +633,132 @@ async function proveFixture(
   }
 }
 
+/* Resolving the native prover before it runs (AAP 0.4.2, CWE-426). */
+
+/** The prover paths already reported, so one path is announced once per process, not once per proof. */
+const reportedProverPaths = new Set<string>();
+
 /**
- * The proof the native prover produces, or `undefined` when it is not installed (AAP 0.2.4).
+ * Whether a path is an executable regular file: how a prover is recognised before it runs.
  *
- * Only a missing executable means absent: any other failure is real and is reported, because a prover
- * that ran and failed is not the same as one that was never there.
+ * A path that cannot be inspected — absent, unreadable, a directory, a dangling symlink — is not one.
+ */
+function isExecutableProver(file: string): boolean {
+  try {
+    const stats = statSync(file);
+    return stats.isFile() && (stats.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every executable `prover` on `PATH`, in search order and each as an absolute path (CWE-426).
+ *
+ * An empty entry is skipped: POSIX reads it as the working directory, which is the relative search
+ * this resolution exists to keep the proving key and the witness out of. A relative entry is resolved
+ * against the working directory, exactly as a shell would, so the path returned is the file that
+ * would have run either way.
+ */
+function proverPathCandidates(): readonly string[] {
+  const candidates = new Set<string>();
+
+  for (const entry of (process.env['PATH'] ?? '').split(delimiter)) {
+    if (entry === '') {
+      continue;
+    }
+    const candidate = resolve(entry, PROVER_BINARY);
+    if (isExecutableProver(candidate)) {
+      candidates.add(candidate);
+    }
+  }
+
+  return [...candidates];
+}
+
+/** Announces the prover a proof is about to be handed to, once per distinct path per process. */
+function reportProver(file: string, source: string): void {
+  if (reportedProverPaths.has(file)) {
+    return;
+  }
+
+  reportedProverPaths.add(file);
+  console.warn(`fixture proof: proving with ${file} (${source})`);
+}
+
+/**
+ * The native prover to run, as an absolute path, or `undefined` when none is installed
+ * (AAP 0.4.2, CWE-426).
+ *
+ * `RAPIDSNARK_PROVER`, when it is set to a non-empty value, names the binary outright; an empty value
+ * counts as unset, which is how an unset variable is conventionally spelled. A prover the operator
+ * pointed at and a prover that was never installed are different situations, so a pin that is not an
+ * absolute path to an executable regular file is an error rather than a fallback to `PATH`; the
+ * variable is read on every call, so a suite that changes it between proofs is taken at its word.
+ * Otherwise the first executable `prover` on `PATH` is taken, in search order.
+ *
+ * The binary is resolved here rather than left to `execFile`'s own search, which would run whichever
+ * same-named file the environment happened to offer first with the proving key and the witness as its
+ * arguments: a path this function chose and reported is what makes those two files auditable.
+ *
+ * @returns The absolute path of the prover to run, or `undefined` when no prover is installed.
+ * @throws {Error} When `RAPIDSNARK_PROVER` is set and is not an absolute path to an executable
+ *   regular file, naming the variable and the value.
+ */
+export function resolveProverBinary(): string | undefined {
+  const pinned = process.env[PROVER_PATH_ENV];
+
+  if (pinned !== undefined && pinned !== '') {
+    if (!isAbsolute(pinned) || !isExecutableProver(pinned)) {
+      throw new Error(
+        `${PROVER_PATH_ENV}: ${pinned} is not an absolute path to an executable file`,
+      );
+    }
+
+    reportProver(pinned, `pinned by ${PROVER_PATH_ENV}`);
+    return pinned;
+  }
+
+  const [first, ...others] = proverPathCandidates();
+  if (first === undefined) {
+    return undefined;
+  }
+
+  reportProver(
+    first,
+    others.length === 0 ? 'from PATH' : `from PATH, ahead of ${others.join(', ')}`,
+  );
+  return first;
+}
+
+/**
+ * The proof the native prover produces, or `undefined` when none is installed (AAP 0.2.4, AAP 0.4.2).
+ *
+ * Absence is settled by {@link resolveProverBinary} before any command runs, so a command that reports
+ * a missing executable here covers only a prover that disappeared between that resolution and this
+ * call. Any other failure is real and is reported, because a prover that ran and failed is not the
+ * same as one that was never there.
  */
 async function proverOutput(
   artefacts: ArtefactPaths,
   witness: string,
   workDir: string,
 ): Promise<ProverOutput | undefined> {
+  const prover = resolveProverBinary();
+  if (prover === undefined) {
+    return undefined;
+  }
+
   const proofFile = join(workDir, PROVER_PROOF_FILE);
   const publicFile = join(workDir, PROVER_PUBLIC_FILE);
 
-  const result = await runCommand(PROVER_BINARY, [artefacts.zkey, witness, proofFile, publicFile]);
+  const result = await runCommand(prover, [artefacts.zkey, witness, proofFile, publicFile]);
 
   if (result.missing) {
     return undefined;
   }
   if (!result.ok) {
-    throw new Error(`${PROVER_BINARY} failed (${result.code}) on ${ZKEY_FILE}${result.note}`);
+    throw new Error(`${prover} failed (${result.code}) on ${ZKEY_FILE}${result.note}`);
   }
 
   return {
@@ -709,8 +829,10 @@ interface CommandResult {
  *
  * The command's output is deliberately not reported: a witness generator can echo the signal values
  * it was given, which are private inputs, so a failure carries the step, the file and the exit status
- * and nothing else (AAP 0.12.2). `ENOENT` is reported as missing rather than failing, which is how an
- * uninstalled native prover is told apart from a broken one.
+ * and nothing else (AAP 0.12.2). `ENOENT` is reported as missing rather than failing, which now covers
+ * only a prover that disappeared between {@link resolveProverBinary}'s resolution and this call: an
+ * uninstalled native prover is settled before any command runs, so a missing executable is not the
+ * evidence of absence it once was.
  */
 function runCommand(file: string, args: readonly string[]): Promise<CommandResult> {
   return new Promise<CommandResult>((resolve) => {
