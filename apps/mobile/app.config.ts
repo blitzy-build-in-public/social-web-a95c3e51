@@ -26,8 +26,10 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  * empty string must not reach a check as a value.
  */
 function readEnv(name: string): string | undefined {
-  const raw = process.env[name];
-  if (raw === undefined) return undefined;
+  // Narrowed by hand: under the Expo program's types an environment read arrives as `any`, and
+  // `typeof` is what makes a compose-supplied empty string a missing value rather than a value.
+  const raw: unknown = process.env[name];
+  if (typeof raw !== 'string') return undefined;
   const value = raw.trim();
   return value === '' ? undefined : value;
 }

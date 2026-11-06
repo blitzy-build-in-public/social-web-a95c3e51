@@ -22,11 +22,21 @@ import { CitiesFile, IssuerConfig, RegistryFile } from '@tablemate/shared';
 
 import { buildRegistry } from '../src/registry/merkle.ts';
 
-/** The `packages/circuits` directory, the base of every path inside this package. */
-export const PKG_DIR = fileURLToPath(new URL('..', import.meta.url));
+/** The directory this file sits in: `scripts/` from the source, `dist/scripts/` from the build. */
+const FILE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** The directory that holds that one: `packages/circuits` from the source, `dist/` from the build. */
+const PARENT_DIR = path.dirname(FILE_DIR);
+
+/**
+ * The `packages/circuits` directory, the base of every path inside this package. Accounting for a
+ * `dist` segment matters because the compiled entry is what `apps/api` reaches through
+ * `@tablemate/circuits`, and a hop that counted from `scripts/` would land on `dist/` there.
+ */
+export const PKG_DIR = path.basename(PARENT_DIR) === 'dist' ? path.dirname(PARENT_DIR) : PARENT_DIR;
 
 /** The repository root, which holds `config/` and is the base of every path in a report. */
-export const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+export const REPO_ROOT = path.join(PKG_DIR, '..', '..');
 
 /**
  * The file stem of the synthetic test issuer, `config/issuers/tablemate-test.json`: added to the test
