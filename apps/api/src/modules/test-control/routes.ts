@@ -14,6 +14,14 @@
  *    what actually releases a hold or captures one. Without it a suite that had just moved the clock
  *    would read a meetup settled while its money stayed pending.
  *
+ * What a jump moves is the server's clock alone. A delayed BullMQ job fires on Redis' own wall-clock
+ * time, and `settle-<meetupId>`, `lapse-<meetupId>` and `remind-<meetupId>` are scheduled against it,
+ * so a jump never makes them fire early: settlement after a jump is driven through
+ * `POST /v1/test/run-settlement`, whose sweeper judges "overdue" by `services.clock` (AAP 0.3.2,
+ * 0.5.6). The 15-minute access token and the 30-second session cache are judged by that same clock,
+ * so a jump past 15 minutes expires the caller's own access token and a suite has to refresh it, or
+ * sign a new one, before its next authenticated call.
+ *
  * Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set (AAP 0.5.1, 0.6.2). The
  * composition root registers this plugin only when both hold, and {@link testControlRoutes} refuses
  * to register at all otherwise: defence in depth, because the environment schema already refuses to
@@ -22,10 +30,12 @@
  *
  * The credential is a header rather than a session, because these routes are driven by test harnesses
  * that hold no account, and the token is compared with `timingSafeEqualString`, so a wrong token
- * costs the same to guess as a right one. A request without a usable header is answered exactly as a
- * wrong one is — `AppError('not_found')`, whose code carries the default message, and never `401` —
- * so the paths are no oracle for whether test control is mounted; neither the header nor the expected
- * token is ever logged (AAP 0.11.1).
+ * costs the same to guess as a right one. A request without a usable header — absent, repeated or
+ * wrong — is answered exactly as a request with a wrong one is: `AppError('not_found')` at `404`,
+ * never `401`, so a probe cannot tell the two apart and learns nothing from trying header values.
+ * That answer carries the same status and the same code an unknown path does; only the envelope's own
+ * message differs, which is a fact about a `test` process rather than about a deployed API. Neither
+ * the header nor the expected token is ever logged (AAP 0.11.1).
  *
  * The routes carry no bearer guard, no age gate and no rate limit: AAP 0.5.4 puts the age gate on the
  * traveler route group and the limits on the mutating traveler and console routes, and this group is
@@ -171,9 +181,9 @@ export default function testControlRoutes(app: App): Promise<void> {
     const header = request.headers[TEST_CONTROL_HEADER.toLowerCase()];
     const presented = typeof header === 'string' ? header : null;
 
-    // One answer for an absent header, a repeated one and a wrong token, and it is the answer an
-    // unknown path gets: `404`, never `401`. The comparison is constant-time in the token, and the
-    // presented value is never logged.
+    // One answer for an absent header, a repeated one and a wrong token, and it is the status and
+    // the code an unknown path answers with: `not_found` at `404`, never `401`. The comparison is
+    // constant-time in the token, and the presented value is never logged.
     if (presented === null || !timingSafeEqualString(presented, token)) {
       throw new AppError('not_found');
     }
@@ -216,17 +226,30 @@ export default function testControlRoutes(app: App): Promise<void> {
     {
       schema: {
         hide: true,
-        body: RunSettlementRequest,
+        // No `body` schema, on purpose. Fastify runs the body validator even when a request carries
+        // none, and refuses `undefined` against any declared object schema — including one wrapped in
+        // `.optional()`, which was measured against this provider and this Fastify version — so the
+        // bare request this route exists for, the one asking for whatever is due, would answer
+        // `400 invalid_field`. `RunSettlementRequest` still validates the body, in the handler below,
+        // so the shared schema remains the one description of it: `{}`, `{ meetupId }` and a malformed
+        // id keep exactly the meaning a declared schema would have given them.
         response: { 204: z.null(), 400: ErrorEnvelope, 404: ErrorEnvelope },
       },
     },
     async (request, reply) => {
-      const { settle, sweep } = await runSettlement(app.services, request.body.meetupId);
+      const body = RunSettlementRequest.safeParse(request.body ?? {});
+
+      if (!body.success) {
+        throw new AppError('invalid_field');
+      }
+
+      const meetupId = body.data.meetupId;
+      const { settle, sweep } = await runSettlement(app.services, meetupId);
 
       request.log.info(
         {
           event: 'test_run_settlement',
-          meetupId: request.body.meetupId ?? null,
+          meetupId: meetupId ?? null,
           settle: settle?.result ?? null,
           sweep,
         },
