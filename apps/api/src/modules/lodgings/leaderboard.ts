@@ -754,7 +754,7 @@ export async function lodgingStats(
 
   const lodging = await services.db.lodging.findUnique({
     where: { id: lodgingId },
-    select: { id: true, cityId: true, name: true },
+    select: { id: true, cityId: true },
   });
 
   if (lodging === null) {
@@ -771,7 +771,6 @@ export async function lodgingStats(
   const guests = await guestCountFor(services.db, [lodgingId], now, services.env.APP_ENV);
 
   return {
-    lodgingName: lodging.name,
     rank,
     activityScore: counted?.counted.length ?? 0,
     verifiedGuests: toGuestCount(guests.get(lodgingId) ?? 0),

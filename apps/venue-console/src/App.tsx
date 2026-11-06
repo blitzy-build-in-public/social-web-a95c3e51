@@ -4,8 +4,8 @@
  *
  * The console holds no secret of its own (AAP 0.3.2): the operator types one in here, `api.ts` keeps
  * it in `sessionStorage` for the life of the tab, and it reaches only the two console routes' secret
- * header -- never a message, a log line or a URL. A route answering `401`, the secret already
- * dropped by `api.ts`, returns this page to its secret form. There is no router -- `nginx` answers
+ * header -- never a message, a log line or a URL. A route answering `401`, the secret already dropped
+ * by `api.ts`, returns this page to its secret form. There is no router -- `nginx` answers
  * `index.html` for both paths (AAP 0.6.2) -- so the path is read from `window.location` and
  * navigation is plain anchors. Exactly one `<h1>` is on every page: the header carries it while the
  * form is shown, the open screen carries it once a secret is held (AAP 0.5.8).
@@ -18,13 +18,10 @@ import type { ConsoleKind } from './api.ts';
 import { LodgingStats } from './routes/LodgingStats.tsx';
 import { VenueCode } from './routes/VenueCode.tsx';
 
-/** The path of the venue check-in code screen (AAP 0.3.2, 0.5.8). */
+/** The two screens' paths (AAP 0.3.2, 0.5.8), and the site name every page carries -- the header
+ * renders it as the page's only `<h1>` at most. */
 const VENUE_PATH = '/venue';
-
-/** The path of the lodging stats screen (AAP 0.3.2, 0.5.8). */
 const LODGING_PATH = '/lodging';
-
-/** The site name every page carries; the header renders it as the page's only `<h1>` at most. */
 const SITE_NAME = 'Tablemate partner console';
 
 /** Trailing slashes stripped from a path, so `/venue/` opens the venue console. */
@@ -34,10 +31,8 @@ const TRAILING_SLASHES = /\/+$/;
 const HELP_TEXT =
   'Enter the secret Tablemate operations gave you. It stays in this browser tab and is cleared when the tab closes.';
 
-/** The inline error an empty submission raises. */
+/** The messages this screen shows for an empty submission and for a secret the API rejected. */
 const EMPTY_SECRET_MESSAGE = 'Enter the secret.';
-
-/** The notice a secret the API rejected raises. */
 const REJECTED_MESSAGE = 'That secret was not recognised. Ask Tablemate operations for a new one.';
 
 /**
@@ -71,10 +66,8 @@ const SECRET_FORMS: Record<ConsoleKind, SecretForm> = {
 };
 
 /**
- * The path this page was opened at, with trailing slashes removed.
- *
- * Read during render and never held in state: the console navigates by full page loads, so the path
- * cannot change while the page is up and there is no history event to listen for.
+ * The path this page was opened at, with trailing slashes removed. Read during render and never held
+ * in state: the console navigates by full page loads, so the path cannot change while the page is up.
  */
 function currentPath(): string {
   const stripped = window.location.pathname.replace(TRAILING_SLASHES, '');
@@ -82,9 +75,9 @@ function currentPath(): string {
 }
 
 /**
- * The console at whichever of its two paths the browser opened (AAP 0.5.8).
- *
- * Exported as a named export and as the default, so `main.tsx` may mount it either way.
+ * The console at whichever of its two paths the browser opened (AAP 0.5.8). Exported as a named
+ * export, and mounted that way by `main.tsx`: one mount contract for the one entry point that renders
+ * it.
  */
 export function App(): JSX.Element {
   const path = currentPath();
@@ -97,13 +90,8 @@ export function App(): JSX.Element {
   return <ConsoleIndex notFound={path !== '/'} />;
 }
 
-export default App;
-
-/**
- * The index of the two consoles, and the page a path outside them reaches (AAP 0.5.8).
- *
- * @param props.notFound - True for a path that names neither console.
- */
+/** The index of the two consoles, and the page a path outside them reaches (AAP 0.5.8); `notFound`
+ * is true for a path that names neither console. */
 function ConsoleIndex({ notFound }: { notFound: boolean }): JSX.Element {
   return (
     <main>
@@ -125,12 +113,8 @@ function ConsoleIndex({ notFound }: { notFound: boolean }): JSX.Element {
   );
 }
 
-/**
- * One console, behind the operator-issued secret that opens it (AAP 0.5.4).
- *
- * @param props.kind - Which console this is: the venue check-in code screen or the lodging stats
- * screen. It selects the field's label, and the route a held secret renders.
- */
+/** One console, behind the operator-issued secret that opens it (AAP 0.5.4). `kind` selects the
+ * field's label and the route a held secret renders. */
 function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
   const form = SECRET_FORMS[kind];
   const [secret, setSecret] = useState<string | null>(() => readSecret(kind));
@@ -191,10 +175,9 @@ function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
       ) : null}
 
       {secret === null ? (
-        // Constraint validation stays off although the field is `required`: leaving it on would
-        // stop an empty submission before `handleSubmit` runs, replacing this screen's announced
-        // message with the browser's own bubble -- not a live region, and worded in the browser's
-        // locale rather than in this screen's words.
+        // Constraint validation stays off although the field is `required`: leaving it on would stop
+        // an empty submission before `handleSubmit` runs, replacing this screen's announced message
+        // with the browser's own bubble -- not a live region, and in the browser's locale.
         <form onSubmit={handleSubmit} noValidate>
           <label htmlFor={form.fieldId}>{form.label}</label>
           <input

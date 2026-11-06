@@ -2,18 +2,29 @@
 import react from '@vitejs/plugin-react';
 import { defaultClientConditions, defineConfig, loadEnv } from 'vite';
 
-/** The one build-time variable this app reads (AAP 0.6.2): the API origin, without a path. */
+/** The API origin this app reads at build time (AAP 0.6.2), without a path. */
 const API_URL_VAR = 'VITE_API_URL';
 
 /** The repository root, which holds the `.env` file this build loads (AAP 0.6.2). */
 const ENV_DIR = '../..';
 
-/** The console's dev and preview port: the origin in the API's `VENUE_CONSOLE_ORIGIN` allowlist. */
-const CONSOLE_PORT = 8090;
+/**
+ * The build-time variable naming the port `server` and `preview` listen on, read from the repository-root
+ * `.env` or the shell. It is overridable because this run reserves a per-clone port block, so the console's
+ * port is `21000 + clone index × 10 + 2`: pinned to one value, a second clone's dev server fails to start
+ * instead of taking its own port.
+ */
+const CONSOLE_PORT_VAR = 'VITE_CONSOLE_PORT';
+
+/**
+ * The console's dev and preview port when `VITE_CONSOLE_PORT` is absent or blank: the origin in the
+ * API's `VENUE_CONSOLE_ORIGIN` allowlist.
+ */
+const DEFAULT_CONSOLE_PORT = 8090;
 
 const MISSING_MESSAGE = `${API_URL_VAR} is required: the API origin without a path, e.g. http://localhost:3000 (see .env.example)`;
 
-/** The message an unusable `VITE_API_URL` fails with; the value is quoted and is all it echoes. */
+/** The message an unusable `VITE_API_URL` fails with, quoting the value it echoes. */
 function invalidMessage(value: string): string {
   return `${API_URL_VAR} is invalid: expected the API origin without a path, e.g. http://localhost:3000 (got ${JSON.stringify(value)})`;
 }
@@ -21,13 +32,9 @@ function invalidMessage(value: string): string {
 /**
  * Validates and normalizes the API origin the console calls (AAP 0.6.2).
  *
- * A path, query, fragment or credentials are refused rather than trimmed, because dropping any of them
- * would call an origin other than the one configured; one trailing slash is removed, because the client
- * appends `/v1` by concatenation.
- *
- * @param configured - `VITE_API_URL` as the environment file or the shell supplied it.
- * @returns The origin as configured, without a trailing slash.
- * @throws Error when it is absent, blank or not an `http`/`https` origin.
+ * A path, query, fragment or credentials are refused rather than trimmed, because dropping any of
+ * them would call an origin other than the one configured; one trailing slash is removed, because the
+ * client appends `/v1` by concatenation. The value is the only thing the error echoes.
  */
 function resolveApiOrigin(configured: string | undefined): string {
   const value = (configured ?? '').trim();
@@ -53,6 +60,34 @@ function resolveApiOrigin(configured: string | undefined): string {
   return value.replace(/\/$/, '');
 }
 
+/** The message an unusable `VITE_CONSOLE_PORT` fails with, quoting the value it echoes. */
+function invalidPortMessage(value: string): string {
+  return `${CONSOLE_PORT_VAR} is invalid: expected an integer between 1 and 65535 (got ${JSON.stringify(value)})`;
+}
+
+/**
+ * Resolves the port the dev server and the preview server listen on.
+ *
+ * An absent or blank value is the default rather than an error, because the variable exists only to
+ * move the console inside the port block a parallel run reserves. A value that is set is taken as a
+ * port or refused: `1e3`, `0x1F90` and `21132/tcp` are rejected instead of being read as a different
+ * port.
+ */
+function resolveConsolePort(configured: string | undefined): number {
+  const value = (configured ?? '').trim();
+  if (value.length === 0) {
+    return DEFAULT_CONSOLE_PORT;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new Error(invalidPortMessage(value));
+  }
+  const port = Number(value);
+  if (port < 1 || port > 65535) {
+    throw new Error(invalidPortMessage(value));
+  }
+  return port;
+}
+
 /**
  * The console's Vite configuration (AAP 0.6.2, 0.8.1). The function form is required, because `loadEnv`
  * needs the resolved mode to pick `.env.<mode>`.
@@ -62,22 +97,23 @@ function resolveApiOrigin(configured: string | undefined): string {
  * `packages/shared/src/index.ts` as Metro, tsx and Vitest do it, with `browser` kept because `qrcode`
  * ships a browser entry. `envDir` is the repository root, so the `.env` a developer copies from
  * `.env.example` reaches this file and `import.meta.env`; only `VITE_`-prefixed values cross into the
- * bundle, leaving the root file's server secrets out of it.
- *
- * @param env - The mode Vite runs in (`development`, `production`, or `--mode`).
- * @returns The resolved Vite configuration.
+ * bundle, leaving the root file's server secrets out of it. Both servers bind the port
+ * `VITE_CONSOLE_PORT` names -- the root `.env` or the shell supplies it, `8090` is the default -- so
+ * the console follows the per-clone port block the run reserves instead of a fixed port a second clone
+ * cannot start on.
  */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ENV_DIR, 'VITE_');
   const apiUrl = resolveApiOrigin(env[API_URL_VAR]);
+  const port = resolveConsolePort(env[CONSOLE_PORT_VAR]);
 
   return {
     plugins: [react()],
     resolve: { conditions: ['tablemate-source', ...defaultClientConditions] },
     envDir: ENV_DIR,
     define: { 'import.meta.env.VITE_API_URL': JSON.stringify(apiUrl) },
-    server: { port: CONSOLE_PORT, strictPort: true },
-    preview: { port: CONSOLE_PORT, strictPort: true },
+    server: { port, strictPort: true },
+    preview: { port, strictPort: true },
     build: { outDir: 'dist', emptyOutDir: true, sourcemap: false },
   };
 });

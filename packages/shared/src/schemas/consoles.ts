@@ -76,10 +76,9 @@ export type TrendPoint = z.infer<typeof TrendPoint>;
  * even for a lodging scoring 0. `weeklyTrend` is exactly {@link LODGING_TREND_WEEKS} weekly points
  * covering `activityScore`'s window. `verifiedGuests` reuses {@link GuestCount}, so a count below
  * three reads "fewer than 3" here as in the directory instead of singling a guest out (AAP 0.5.7).
- * `lodgingName` is the business name for the heading; no guest, claim or booking field is included.
+ * No guest, claim or booking field is included.
  */
 export const LodgingConsoleStats = z.object({
-  lodgingName: z.string(),
   rank: z.number().int().positive(),
   activityScore: Count,
   verifiedGuests: GuestCount,

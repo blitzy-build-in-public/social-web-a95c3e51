@@ -8,9 +8,11 @@
  * on-primary,border,danger,on-danger,focus-ring}, --tm-space-{xs,sm,md,lg,xl,xxl},
  * --tm-radius-{sm,md,lg,pill}, --tm-font-size-{caption,body,label,title,heading,display},
  * --tm-line-height-{caption,body,label,title,heading,display}, --tm-font-weight-{regular,medium,
- * bold} and --tm-touch-target: each key the kebab-case form of the token it comes from, published
- * in rem so text follows the reader's system font size. Text is painted only in pairs recorded in
- * the tokens' CONTRAST_PAIRS; boundaries and the focus ring only in NON_TEXT_CONTRAST_PAIRS.
+ * bold}, --tm-border-{separator,edge,control}, --tm-opacity-{hover,pressed} and --tm-touch-target:
+ * each key the kebab-case form of the token it comes from, published in rem so text follows the
+ * reader's system font size and in px for the boundary widths the tokens state as CSS pixels. Text
+ * is painted only in pairs recorded in the tokens' CONTRAST_PAIRS; boundaries and the focus ring
+ * only in NON_TEXT_CONTRAST_PAIRS.
  */
 
 *,
@@ -56,6 +58,9 @@ form {
 h1 {
   font-size: var(--tm-font-size-heading);
   line-height: var(--tm-line-height-heading);
+  /* The console's largest text: a heading reflows like the rest of the column, so one unbroken
+     token in it cannot widen the page past the viewport. */
+  overflow-wrap: anywhere;
 }
 
 h2 {
@@ -63,7 +68,7 @@ h2 {
   line-height: var(--tm-line-height-title);
 }
 
-/* One centred column: header, secret form, code, countdown and any status line stack below. */
+/* One centred column: header, secret form, code, countdown and status lines stack below. */
 main {
   display: flex;
   flex-direction: column;
@@ -110,12 +115,12 @@ input {
   width: 100%;
   background: var(--tm-color-background);
   color: var(--tm-color-text);
-  border: 1px solid var(--tm-color-border);
+  border: var(--tm-border-edge) solid var(--tm-color-border);
 }
 
 button {
   min-width: var(--tm-touch-target);
-  border: 1px solid transparent;
+  border: var(--tm-border-edge) solid transparent;
   background: var(--tm-color-primary);
   color: var(--tm-color-on-primary);
   cursor: pointer;
@@ -142,22 +147,22 @@ button:disabled {
   pointer-events: none;
 }
 
-/* A control answers the pointer in its own vocabulary, from tokens the tokens' CONTRAST_PAIRS and
-   NON_TEXT_CONTRAST_PAIRS already record: the filled action deepens to the palette's darkest tone
-   (its `on-primary` label measures 17.21:1 there, the same measurement the tokens record for
-   `text` on `background`), the header's outlined control takes the `primary` boundary (7.3:1 over
-   the page, 6.59:1 over its own fill), and a link deepens to the darkest tone. A disabled control
-   carries pointer-events: none, so it can never be hovered. */
-main button:hover,
-main button:active {
-  background: var(--tm-color-text);
+/* A filled action answers the pointer with the tokens' own treatment: it dims its fill by the
+   `hover` factor and then by the `pressed` one -- exactly as the shared Button primitive does -- and
+   its white label keeps the ratio the tokens record for those composites. The header's control is
+   outlined rather than filled, its own fill already the lightest a control takes, so it keeps that
+   fill and takes the `primary` boundary the non-text records cover (7.3:1 over the page, 6.59:1 over
+   its own fill). A disabled control carries pointer-events: none, so it can never be hovered. */
+main :not(header) button:hover {
+  opacity: var(--tm-opacity-hover);
+}
+
+main :not(header) button:active {
+  opacity: var(--tm-opacity-pressed);
 }
 
 header button:hover,
 header button:active {
-  /* Its fill is restated rather than only its edge: the header sits inside the `main` column with
-     everything else, so the filled-action rule above matches this control too. */
-  background: var(--tm-color-surface);
   border-color: var(--tm-color-primary);
 }
 
@@ -175,11 +180,23 @@ a {
   color: var(--tm-color-primary);
 }
 
+/* A link that stands as a control is sized like one, rather than to the height of its own text
+   line, so the console's index carries the same minimum target its buttons and inputs do
+   (AAP 0.5.8). */
+nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tm-touch-target);
+}
+
+/* The ring and the gap holding it off the control are the boundary the tokens reserve for a
+   control's keyboard focus (`control`), so the indicator is neither thinner nor wider than the band
+   the design system gives it. */
 a:focus-visible,
 button:focus-visible,
 input:focus-visible {
-  outline: 3px solid var(--tm-color-focus-ring);
-  outline-offset: 2px;
+  outline: var(--tm-border-control) solid var(--tm-color-focus-ring);
+  outline-offset: var(--tm-border-control);
 }
 
 /* Read off this element as text, so it stays exactly six digits and the visual grouping is
@@ -220,6 +237,12 @@ input:focus-visible {
   background: var(--tm-color-background);
 }
 
+/* The symbol is a block of its own rather than an inline replaced element, so the figure's line box
+   adds no descender band below it and the QR box is the square the scanner sees. */
+.qr svg {
+  display: block;
+}
+
 .qr-bg {
   fill: var(--tm-color-background);
 }
@@ -239,22 +262,29 @@ input:focus-visible {
   color: var(--tm-color-text);
 }
 
-/* The failure surface: a rejected secret, a failed refresh. */
 .notice-error {
   background: var(--tm-color-danger);
   color: var(--tm-color-on-danger);
 }
 
-/* Lodging stats: each term shares a line with its value and the pair wraps as a unit, so a term
-   too wide for the row moves the value onto the next line instead of squeezing it out of the
-   viewport once the text is scaled up. A two-track grid cannot do this: whichever track is not
-   flexible takes the row and starves the other. */
 dl {
   display: flex;
   flex-wrap: wrap;
   column-gap: var(--tm-space-lg);
   row-gap: var(--tm-space-sm);
   overflow-wrap: anywhere;
+}
+
+/* Each pair is one item of that column and a flex row inside itself, so a term shares the line with
+   its value and the value grows into the space the term leaves. The pair wraps as a unit, so a term
+   too wide for the row moves the value onto the next line instead of squeezing it out of the
+   viewport once the text is scaled up. A two-track grid cannot do this: whichever track is not
+   flexible takes the row and starves the other. */
+dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-sm);
 }
 
 dt {
@@ -284,25 +314,11 @@ dd {
 
 .trend-baseline {
   stroke: var(--tm-color-border);
-  stroke-width: 1;
+  stroke-width: var(--tm-border-separator);
 }
 
 figcaption {
   color: var(--tm-color-text-muted);
   font-size: var(--tm-font-size-caption);
   line-height: var(--tm-line-height-caption);
-}
-
-/* Text a screen reader reads and the screen does not show, for a label a visible element
-   already carries. */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
 }

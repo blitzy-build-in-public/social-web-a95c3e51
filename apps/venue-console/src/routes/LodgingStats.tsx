@@ -3,16 +3,12 @@
  * `GET /v1/lodging-console/stats` with the operator-issued secret in `X-Lodging-Secret`
  * (AAP 0.5.1, 0.5.4, 0.8.1; requirement 15).
  *
- * The screen shows the server's numbers and derives none of its own:
- *
- *   - A verified guest count below three never arrives as a number; the API serializes the label
- *     instead (AAP 0.5.7 "Lodging visibility"), so the value is printed exactly as it was received
- *     and is never computed, compared or substituted here.
- *   - Every score and rank is the leaderboard's, and the leaderboard is cached in Redis for 60 s
- *     (AAP 0.5.7), so there is no auto-poll: the screen refetches when the operator asks and when
- *     the tab comes back to the foreground.
- *   - A rejected secret is not retried here. `api.ts` has already dropped it and reported kind
- *     `unauthorized`, so this screen hands the console back to its secret form (AAP 0.5.4).
+ * The screen shows the server's numbers and derives none of its own: a verified guest count below
+ * three never arrives as a number, because the API serializes the label instead (AAP 0.5.7 "Lodging
+ * visibility"), so the value is printed exactly as it was received and is never computed, compared or
+ * substituted here; every score and rank is the leaderboard's, and the leaderboard is cached in Redis
+ * for 60 s (AAP 0.5.7), so there is no auto-poll; and a rejected secret is not retried here, because
+ * `api.ts` has already dropped it and reported kind `unauthorized` (AAP 0.5.4).
  *
  * Nothing is styled inline: the console's Content-Security-Policy admits no inline style attribute
  * (AAP 0.3.2), so every colour and measurement comes from a class in `../styles.css`.
@@ -28,34 +24,24 @@ import type { LodgingConsoleStats, TrendPoint } from '@tablemate/shared';
 
 import { ConsoleApiError, fetchLodgingStats } from '../api.ts';
 
-/** ViewBox units one week of the trend occupies: an 8-unit bar and a 2-unit gap. */
+/** The trend's viewBox units: one 8-unit bar plus a 2-unit gap per week, in a 60-unit-tall plot. */
 const TREND_UNIT_WIDTH = 10;
-
-/** Width of one bar in viewBox units. */
 const TREND_BAR_WIDTH = 8;
-
-/** Height of the trend's plot in viewBox units. */
 const TREND_HEIGHT = 60;
-
-/** Width of the trend's plot in viewBox units: one unit column per week of the window. */
 const TREND_WIDTH = LODGING_TREND_WEEKS * TREND_UNIT_WIDTH;
 
-/** One week of the trend as a bar: where it sits, how tall it is and the point it draws. */
+/** One week of the trend as a bar: where it sits, how tall it is and the point it draws, which is
+ * also its React key. A height of 0 is a week with no activity. */
 interface TrendBar {
-  /** The week this bar stands for, which is also its React key. */
   point: TrendPoint;
-  /** Left edge in viewBox units. */
   x: number;
-  /** Height in viewBox units; 0 for a week with no activity. */
   height: number;
 }
 
 /**
- * The trend's bars, each scaled against the busiest week of the window (AAP 0.5.4).
- *
- * A week with activity keeps at least one unit, so a score that rounds below a unit still shows as
- * a bar rather than as the absence of one. A window with no activity at all has no bars and is
- * drawn as its baseline alone.
+ * The trend's bars, each scaled against the busiest week of the window (AAP 0.5.4). A week with
+ * activity keeps at least one unit, so a score that rounds below one still shows as a bar; a window
+ * with no activity at all is drawn as its baseline alone.
  */
 function trendBars(trend: readonly TrendPoint[]): TrendBar[] {
   const busiest = trend.reduce((highest, point) => Math.max(highest, point.activityScore), 0);
@@ -72,21 +58,16 @@ function trendBars(trend: readonly TrendPoint[]): TrendBar[] {
   }));
 }
 
-/**
- * The trend's accessible name: every score in the order it is drawn, oldest first, because the
- * chart's own shape says nothing to a screen reader (AAP 0.5.8).
- */
+/** The trend's accessible name: every score in the order it is drawn, oldest first, because the
+ * chart's own shape says nothing to a screen reader (AAP 0.5.8). */
 function trendLabel(trend: readonly TrendPoint[]): string {
   const scores = trend.map((point) => point.activityScore).join(', ');
   return `Weekly activity scores, oldest first: ${scores}`;
 }
 
 /**
- * The lodging stats screen.
- *
- * @param props.secret - The lodging's operator-issued secret, sent as `X-Lodging-Secret`.
- * @param props.onUnauthorized - Called when the API rejects that secret, so `App.tsx` can return
- * the console to its secret form.
+ * The lodging stats screen (AAP 0.5.4, 0.5.8). `onUnauthorized` is called when the API rejects the
+ * secret, so `App.tsx` can return the console to its secret form.
  */
 export function LodgingStats({
   secret,
@@ -172,16 +153,12 @@ export function LodgingStats({
   return (
     <>
       <header>
-        <button type="button" onClick={refresh} aria-busy={loading}>
-          Refresh
+        <button type="button" onClick={refresh} disabled={loading}>
+          {/* The control states what it is doing: before the first answer it is loading the screen,
+              after one it is refreshing stats a reader has already been shown. */}
+          {loading ? (stats === null ? 'Loading…' : 'Refreshing…') : 'Refresh'}
         </button>
       </header>
-
-      {loading && stats === null ? (
-        <p role="status" className="notice">
-          Loading stats…
-        </p>
-      ) : null}
 
       {failed ? (
         <div role="alert" className="notice notice-error">
@@ -192,10 +169,19 @@ export function LodgingStats({
         </div>
       ) : null}
 
-      {stats === null ? null : (
-        <>
-          <section data-testid="lodging-stats">
-            <h1>{stats.lodgingName}</h1>
+      {/* The heading is the screen's own and never the lodging's — the route's body carries no name
+          (AAP 0.5.4) — so the level-1 heading is here in every state, and the section, which is the
+          region the request updates, carries the in-flight state rather than the button. */}
+      <section data-testid="lodging-stats" aria-busy={loading}>
+        <h1>Lodging stats</h1>
+        {stats === null ? (
+          loading ? (
+            <p role="status" className="notice">
+              Loading stats…
+            </p>
+          ) : null
+        ) : (
+          <>
             <dl>
               <div>
                 <dt>Leaderboard rank</dt>
@@ -216,40 +202,42 @@ export function LodgingStats({
               </div>
             </dl>
             <p>{`Your score counts witnessed meetups involving your verified guests over the last ${LEADERBOARD_WINDOW_DAYS} days; each pair of travelers counts once in any ${LEADERBOARD_PAIR_DEDUPE_DAYS} days.`}</p>
-          </section>
+          </>
+        )}
+      </section>
 
-          <figure className="trend" data-testid="lodging-trend">
-            <figcaption>{`Weekly activity, last ${LODGING_TREND_WEEKS} weeks`}</figcaption>
-            {/* `../styles.css` gives the SVG the column's width, so the viewBox is scaled into that
-                box rather than to an intrinsic size. */}
-            <svg
-              role="img"
-              aria-label={trendLabel(stats.weeklyTrend)}
-              viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`}
-              preserveAspectRatio="none"
-            >
-              <line
-                className="trend-baseline"
-                x1={0}
-                y1={TREND_HEIGHT}
-                x2={TREND_WIDTH}
-                y2={TREND_HEIGHT}
-              />
-              {bars.map((bar) => (
-                <rect
-                  key={bar.point.weekStart}
-                  className="trend-bar"
-                  x={bar.x}
-                  y={TREND_HEIGHT - bar.height}
-                  width={TREND_BAR_WIDTH}
-                  height={bar.height}
-                >
-                  <title>{`Week of ${bar.point.weekStart}: ${bar.point.activityScore}`}</title>
-                </rect>
-              ))}
-            </svg>
-          </figure>
-        </>
+      {stats === null ? null : (
+        <figure className="trend" data-testid="lodging-trend">
+          <figcaption>{`Weekly activity, last ${LODGING_TREND_WEEKS} weeks`}</figcaption>
+          {/* `../styles.css` gives the SVG the column's width, so the viewBox is scaled into that
+              box rather than to an intrinsic size. */}
+          <svg
+            role="img"
+            aria-label={trendLabel(stats.weeklyTrend)}
+            viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`}
+            preserveAspectRatio="none"
+          >
+            <line
+              className="trend-baseline"
+              x1={0}
+              y1={TREND_HEIGHT}
+              x2={TREND_WIDTH}
+              y2={TREND_HEIGHT}
+            />
+            {bars.map((bar) => (
+              <rect
+                key={bar.point.weekStart}
+                className="trend-bar"
+                x={bar.x}
+                y={TREND_HEIGHT - bar.height}
+                width={TREND_BAR_WIDTH}
+                height={bar.height}
+              >
+                <title>{`Week of ${bar.point.weekStart}: ${bar.point.activityScore}`}</title>
+              </rect>
+            ))}
+          </svg>
+        </figure>
       )}
     </>
   );

@@ -92,3 +92,14 @@ A run that finds the lock held reports it and exits at once instead of queueing 
 naming the lock path and, for the directory, the remedy.
 
 The circuit itself, the registry and the issuer records are in `docs/zk-proofs.md`.
+
+## Partner console pages
+
+`apps/venue-console` serves the two pages the plan names for it, each behind the operator-issued
+secret the API checks (AAP 0.3.2, 0.5.4): `/venue` shows the venue's rotating check-in code with
+its QR form, and `/lodging` shows one lodging's leaderboard standing. Beyond those two, it serves
+a landing index at `/` that links both consoles, and any other path renders that same index with a
+"Page not found" line above the links. The landing index is a deliberate addition to the two
+screens the AAP names for this workspace, not a route the API serves. It renders no route data and
+makes no request: the `venue-console` image is nginx, which answers `index.html` for every path
+(AAP 0.6.2), so the page decides what to render from the path alone.
