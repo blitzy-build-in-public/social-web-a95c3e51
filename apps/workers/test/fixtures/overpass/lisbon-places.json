@@ -1,0 +1,35 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API (fixture)",
+  "osm3s": { "timestamp_osm_base": "2026-11-02T00:00:00Z", "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL." },
+  "_cases": {
+    "skipped": ["node/910014", "node/910015"],
+    "formattedPhone": ["node/910001"],
+    "dottedPhone": ["node/910005"],
+    "multiPhone": ["node/910006"],
+    "nonE164Phone": ["node/910004"],
+    "noPhone": ["node/910003", "node/910007", "node/910010", "node/910013"],
+    "invalidOpeningHours": ["node/910007"],
+    "fromCenter": ["way/920001"],
+    "withMenuLink": ["node/910001", "node/910002", "node/910004", "node/910011"],
+    "categories": { "restaurant": ["node/910001", "node/910002", "node/910003", "node/910004", "way/920001"], "cafe": ["node/910005", "node/910006", "node/910007"], "bar": ["node/910008", "node/910009", "node/910010"], "activity": ["node/910011", "node/910012", "node/910013"] }
+  },
+  "elements": [
+    { "type": "node", "id": 910001, "lat": 38.71120, "lon": -9.14050, "tags": { "name": "Fixture Tasca do Teste", "amenity": "restaurant", "website": "https://tasca.lisbon.fixture.test/", "phone": "+1 415-555-0161", "opening_hours": "Mo-Su 12:00-23:00", "addr:street": "Rua da Fixture", "addr:housenumber": "12", "addr:postcode": "0000-001", "addr:city": "Lisboa" } },
+    { "type": "node", "id": 910002, "lat": 38.71210, "lon": -9.13880, "tags": { "name": "Fixture Cervejaria", "amenity": "restaurant", "website:menu": "https://cervejaria.lisbon.fixture.test/menu", "phone": "+14155550163", "opening_hours": "Mo-Su 12:00-23:00" } },
+    { "type": "node", "id": 910003, "lat": 38.70980, "lon": -9.14310, "tags": { "name": "Fixture Restaurante Sem Telefone", "amenity": "restaurant", "opening_hours": "Mo-Su 12:00-23:00" } },
+    { "type": "node", "id": 910004, "lat": 38.70890, "lon": -9.13720, "tags": { "name": "Fixture Marisqueira", "amenity": "restaurant", "contact:website": "https://marisqueira.lisbon.fixture.test/", "phone": "555 0162" } },
+    { "type": "node", "id": 910005, "lat": 38.71340, "lon": -9.14460, "tags": { "name": "Fixture Café Tejo", "amenity": "cafe", "phone": "+1.415.555.0164" } },
+    { "type": "node", "id": 910006, "lat": 38.71050, "lon": -9.13610, "tags": { "name": "Fixture Pastelaria", "amenity": "cafe", "contact:phone": "+14155550165;+14155550166" } },
+    { "type": "node", "id": 910007, "lat": 38.71460, "lon": -9.13990, "tags": { "name": "Fixture Café Às Vezes", "amenity": "cafe", "opening_hours": "sometimes open" } },
+    { "type": "node", "id": 910008, "lat": 38.71090, "lon": -9.14240, "tags": { "name": "Fixture Bar Chiado", "amenity": "bar", "phone": "+14155550167" } },
+    { "type": "node", "id": 910009, "lat": 38.71390, "lon": -9.13910, "tags": { "name": "Fixture Pub Rossio", "amenity": "pub", "phone": "+14155550168" } },
+    { "type": "node", "id": 910010, "lat": 38.70830, "lon": -9.14520, "tags": { "name": "Fixture Bar Sem Site", "amenity": "bar" } },
+    { "type": "node", "id": 910011, "lat": 38.71570, "lon": -9.14180, "tags": { "name": "Fixture Museu do Teste", "tourism": "museum", "website": "https://museu.lisbon.fixture.test/", "phone": "+14155550169", "opening_hours": "Tu-Sa 10:00-18:00; Su,Mo off" } },
+    { "type": "node", "id": 910012, "lat": 38.70760, "lon": -9.13940, "tags": { "name": "Fixture Galeria", "tourism": "gallery", "contact:phone": "+14155550170" } },
+    { "type": "node", "id": 910013, "lat": 38.71630, "lon": -9.14620, "tags": { "name": "Fixture Jardim", "leisure": "park", "opening_hours": "Mo-Su 08:00-20:00" } },
+    { "type": "way", "id": 920001, "center": { "lat": 38.71270, "lon": -9.14390 }, "tags": { "name": "Fixture Restaurante Pátio", "amenity": "restaurant", "phone": "+14155550171" } },
+    { "type": "node", "id": 910014, "lat": 38.71010, "lon": -9.13830, "tags": { "amenity": "restaurant" } },
+    { "type": "node", "id": 910015, "lat": 38.70940, "lon": -9.14070, "tags": { "name": "Fixture Banco", "amenity": "bank" } }
+  ]
+}
