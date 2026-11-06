@@ -54,6 +54,11 @@ coverage/
 *.aab
 *.ipa
 
+# The web proving Worker, bundled as its own entry by apps/mobile's `export:worker` step and copied
+# into the web export from public/. Expo SDK 52's Metro cannot bundle a Worker through
+# `new Worker(new URL(...))`, so this file is generated rather than committed.
+/apps/mobile/public/prover.worker.js
+
 # Test output
 test-results/
 playwright-report/
