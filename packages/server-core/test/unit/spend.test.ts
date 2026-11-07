@@ -5,10 +5,14 @@
  * `runMeteredWithin`, and the module graph `src/llm/{adapter,openai,fake}.ts` form, each of the
  * three loaded as its own entry point.
  *
- * The adapters here are scripted rather than the fake provider, so a count and a reported usage are
- * exact and every assertion is arithmetic: the fake provider's byte-based tokenizer is exercised by
- * the integration suites, which need whole pipelines.
+ * Most adapters here are scripted, so a count and a reported usage are exact and every assertion is
+ * arithmetic. The fake provider is exercised where its own contract is the subject — the 25 USD
+ * boundary over Thai, Indonesian, emoji and base64-like content, the byte-identical count and send,
+ * the count mismatch that suspends every city, and the dialogue budget of one voice turn — because
+ * its tokenizer is the one the cap is really measured against.
  */
+
+import { randomBytes } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Redis } from 'ioredis';
@@ -16,6 +20,9 @@ import type { Redis } from 'ioredis';
 import { createTestClock } from '../../src/clock.ts';
 import type { TestClock } from '../../src/clock.ts';
 import type { Logger } from '../../src/logger.ts';
+import { EnvValidationError } from '../../src/env/common.ts';
+import { loadApiEnv } from '../../src/env/api.ts';
+import { loadWorkersEnv } from '../../src/env/workers.ts';
 import {
   LlmBudgetRefusedError,
   LlmCountError,
@@ -23,6 +30,12 @@ import {
   LlmSuspendedError,
   LlmTimeoutError,
 } from '../../src/llm/adapter.ts';
+import {
+  FAKE_LLM_PRICES,
+  createFakeLlmAdapter,
+  serializeFakeInputPart,
+} from '../../src/llm/fake.ts';
+import type { FakeLlmAdapter } from '../../src/llm/fake.ts';
 import type {
   LlmAdapter,
   LlmCallOptions,
@@ -40,8 +53,16 @@ import {
   createSqlSpendStore,
   parseUsdPerMTok,
 } from '../../src/llm/spend.ts';
-import { OPENAI_DEFAULT_TIMEOUT_MS, createOpenAiAdapter } from '../../src/llm/openai.ts';
-import type { OpenAiResponseSummary, OpenAiResponsesClient } from '../../src/llm/openai.ts';
+import {
+  OPENAI_DEFAULT_TIMEOUT_MS,
+  SUPPORTED_MODELS,
+  createOpenAiAdapter,
+} from '../../src/llm/openai.ts';
+import type {
+  OpenAiCallOptions,
+  OpenAiResponseSummary,
+  OpenAiResponsesClient,
+} from '../../src/llm/openai.ts';
 import type {
   LlmPrices,
   LlmReservation,
@@ -51,6 +72,26 @@ import type {
   SuspensionRedis,
   SuspensionStore,
 } from '../../src/llm/spend.ts';
+
+/**
+ * The OpenAI SDK's own entry point, replaced for this file: `openai.ts` imports the client class and
+ * three of its error classes, and the real ones must survive (a suite scripts an `AbortError` by
+ * name), so only the constructor is taken over. Every other case injects a stub client, so nothing
+ * else here depends on the replacement, and `ctor` lets a case read the options the adapter built
+ * its own client with.
+ */
+const ctor = vi.hoisted(() => vi.fn());
+
+vi.mock('openai', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('openai')>();
+  class MockOpenAI {
+    constructor(options: unknown) {
+      ctor(options);
+    }
+    responses = {};
+  }
+  return { ...actual, default: MockOpenAI, OpenAI: MockOpenAI };
+});
 
 /** A type-level check: a real ioredis client satisfies the contract the suspension store needs. */
 export type RedisSatisfiesSuspensionRedis = AssertAssignable<SuspensionRedis, Redis>;
@@ -67,9 +108,17 @@ const CAP_MICROS = 25_000_000;
 /** Text a log line must never carry. */
 const SECRET_TEXT = 'MENU-TEXT-THAT-MUST-NOT-BE-LOGGED';
 
-/** The zones the harness knows, so `timezoneFor` throws for anything else. */
+/**
+ * The zones the harness knows, so `timezoneFor` throws for anything else. The five launch cities are
+ * the ones `config/cities.json` carries, which is what makes a local-day assertion a real one;
+ * `auckland` is kept for the easternmost case.
+ */
 const TIMEZONES: Record<string, string> = {
   lisbon: 'Europe/Lisbon',
+  'mexico-city': 'America/Mexico_City',
+  medellin: 'America/Bogota',
+  'chiang-mai': 'Asia/Bangkok',
+  canggu: 'Asia/Makassar',
   auckland: 'Pacific/Auckland',
 };
 
@@ -88,7 +137,8 @@ function request(maxTokens = 100): LlmRequest {
 /** One `call_budget_day` row in memory, with the predicates the SQL statements carry. */
 class MemorySpendStore implements SpendStore {
   readonly rows = new Map<string, { spent: number; reserved: number }>();
-  sqlIssued = 0;
+  /** The highest `spent + reserved` this store has ever held, which the cap bounds. */
+  maxObserved = 0;
 
   row(cityId: string, localDate: string): { spent: number; reserved: number } {
     const key = `${cityId}/${localDate}`;
@@ -101,7 +151,10 @@ class MemorySpendStore implements SpendStore {
     return created;
   }
 
-  async tryReserve(args: {
+  // The three mutators below answer with a promise without being `async`: their bodies run
+  // synchronously, which is what makes one reservation atomic, and an `async` method that awaited
+  // nothing would say the same thing less plainly.
+  tryReserve(args: {
     cityId: string;
     localDate: string;
     micros: number;
@@ -111,21 +164,30 @@ class MemorySpendStore implements SpendStore {
     // Read and write in one synchronous step: the predicate is re-checked against the current row,
     // exactly as PostgreSQL re-evaluates its own `WHERE` under the row lock.
     if (row.spent + row.reserved + args.micros > args.capMicros) {
-      return false;
+      return Promise.resolve(false);
     }
     row.reserved += args.micros;
-    return true;
+    this.observe(row);
+    return Promise.resolve(true);
   }
 
-  async charge(reservation: LlmReservation, chargedMicros: number): Promise<void> {
+  charge(reservation: LlmReservation, chargedMicros: number): Promise<void> {
     const row = this.row(reservation.cityId, reservation.localDate);
     row.spent += chargedMicros;
     row.reserved = Math.max(0, row.reserved - Math.min(chargedMicros, reservation.micros));
+    this.observe(row);
+    return Promise.resolve();
   }
 
-  async release(reservation: LlmReservation, micros: number): Promise<void> {
+  release(reservation: LlmReservation, micros: number): Promise<void> {
     const row = this.row(reservation.cityId, reservation.localDate);
     row.reserved = Math.max(0, row.reserved - micros);
+    this.observe(row);
+    return Promise.resolve();
+  }
+
+  private observe(row: { spent: number; reserved: number }): void {
+    this.maxObserved = Math.max(this.maxObserved, row.spent + row.reserved);
   }
 }
 
@@ -138,24 +200,28 @@ class MemorySuspensionStore implements SuspensionStore {
   private mismatches = 0;
   throwOnRead = false;
 
-  async isSuspended(): Promise<boolean> {
+  isSuspended(): Promise<boolean> {
     if (this.throwOnRead) {
-      throw new Error('redis is down');
+      // Rejected rather than thrown, so this store answers as the Redis one does on a lost
+      // connection; the meter's fail-closed path never has to know which store it holds.
+      return Promise.reject(new Error('redis is down'));
     }
-    return this.suspended;
+    return Promise.resolve(this.suspended);
   }
 
-  async suspend(_reason: 'llm_count_mismatch', _since: Date): Promise<void> {
+  suspend(_reason: 'llm_count_mismatch', _since: Date): Promise<void> {
     this.suspended = true;
     this.mismatches += 1;
+    return Promise.resolve();
   }
 
-  async clear(): Promise<void> {
+  clear(): Promise<void> {
     this.suspended = false;
+    return Promise.resolve();
   }
 
-  async mismatchCount(): Promise<number> {
-    return this.mismatches;
+  mismatchCount(): Promise<number> {
+    return Promise.resolve(this.mismatches);
   }
 }
 
@@ -184,24 +250,24 @@ class ScriptedAdapter implements LlmAdapter {
     this.script = script;
   }
 
-  async countInputTokens(request: LlmRequest, options: LlmCallOptions): Promise<number> {
+  // Records what it was asked for, then answers synchronously as a promise: a scripted failure is
+  // rejected rather than thrown, so the adapter under test catches exactly what a provider returns.
+  countInputTokens(request: LlmRequest, options: LlmCallOptions): Promise<number> {
     this.counted.push(request);
     this.countSignals.push(options.signal);
     this.script.onCount?.();
-    if (this.script.countThrows !== undefined) {
-      throw this.script.countThrows;
-    }
-    return this.script.count;
+    const failure = this.script.countThrows;
+    return failure === undefined ? Promise.resolve(this.script.count) : Promise.reject(failure);
   }
 
-  async complete(request: LlmRequest, options: LlmCallOptions): Promise<LlmResult> {
+  complete(request: LlmRequest, options: LlmCallOptions): Promise<LlmResult> {
     this.sent.push(request);
     this.sendTimeouts.push(options.timeoutMs);
     this.sendSignals.push(options.signal);
-    if (this.script.sendThrows !== undefined) {
-      throw this.script.sendThrows;
-    }
-    return { text: '', json: null, usage: this.script.usage ?? null };
+    const failure = this.script.sendThrows;
+    return failure === undefined
+      ? Promise.resolve({ text: '', json: null, usage: this.script.usage ?? null })
+      : Promise.reject(failure);
   }
 }
 
@@ -275,13 +341,24 @@ describe('parseUsdPerMTok', () => {
     expect(parseUsdPerMTok(value)).toBe(expected);
   });
 
-  it.each(['0', '0.000000', '1.0000000', '-1', '1.', '.5', '1e3', ' 1', '01', ''])(
-    'rejects %s',
-    (value) => {
-      expect(() => parseUsdPerMTok(value)).toThrow(RangeError);
-      expect(() => parseUsdPerMTok(value)).toThrow('invalid_llm_price');
-    },
-  );
+  it.each([
+    '0',
+    '0.000000',
+    '1.0000000',
+    '-1',
+    '1.',
+    '.5',
+    '1e3',
+    '1e-3',
+    ' 1',
+    '01',
+    'abc',
+    '',
+    '0.1234567',
+  ])('rejects %s', (value) => {
+    expect(() => parseUsdPerMTok(value)).toThrow(RangeError);
+    expect(() => parseUsdPerMTok(value)).toThrow('invalid_llm_price');
+  });
 });
 
 describe('costMicros', () => {
@@ -294,6 +371,25 @@ describe('costMicros', () => {
     // 1000 × 0.4 + 100 × 1.6 = 560 micro-dollars exactly; one micro more would still round to 560.
     expect(costMicros(1000, 100, PRICES)).toBe(560);
     expect(boundMicros(1000, 100, PRICES)).toBe(560);
+  });
+
+  // AAP 0.5.6: "the cost in micro-dollars is rounded up", which is one ceiling over the exact sum
+  // and not one per component — the 1-in/1-out row is 2 where rounding each part would give 3, and
+  // the sub-micro rows are 1 where truncating would give 0.
+  it.each([
+    ['one input token', 1, 0, '0.4', '1.6', 1],
+    ['ten input tokens', 10, 0, '0.4', '1.6', 4],
+    ['a price a third of a micro-dollar per token', 3, 0, '0.333333', '1.6', 1],
+    ['the smallest price the parser accepts', 1, 0, '0.000001', '1.6', 1],
+    ['a million tokens', 1_000_000, 0, '2.5', '1.6', 2_500_000],
+    ['one input and one output token', 1, 1, '0.4', '1.6', 2],
+    ['seven output tokens', 0, 7, '0.4', '1.6', 12],
+    ['nothing at all', 0, 0, '0.4', '1.6', 0],
+  ])('rounds %s up', (_name, inputTokens, outputTokens, inputPrice, outputPrice, expected) => {
+    const prices: LlmPrices = { inputUsdPerMTok: inputPrice, outputUsdPerMTok: outputPrice };
+    expect(costMicros(inputTokens, outputTokens, prices)).toBe(expected);
+    // The reservation bound is the same ceiling, so a bound can never round below a charge.
+    expect(boundMicros(inputTokens, outputTokens, prices)).toBe(expected);
   });
 
   it.each([
@@ -1098,6 +1194,8 @@ class StubOpenAiClient implements OpenAiResponsesClient {
   readonly countDeadlines: (number | undefined)[] = [];
   readonly sendBodies: unknown[] = [];
   readonly sendDeadlines: (number | undefined)[] = [];
+  /** The call options each send carried, so a case can read the retry bound the profile sets. */
+  readonly sendOptions: (OpenAiCallOptions | undefined)[] = [];
   private readonly script: ProviderScript;
 
   constructor(script: ProviderScript) {
@@ -1105,27 +1203,34 @@ class StubOpenAiClient implements OpenAiResponsesClient {
   }
 
   readonly responses: OpenAiResponsesClient['responses'] = {
-    create: async (body, options) => {
+    create: (body, options) => {
       const failure = this.script.responseThrows;
       this.sendBodies.push(body);
       this.sendDeadlines.push(options?.timeout);
-      if (failure !== undefined) {
-        throw failure;
-      }
-      return this.script.response as OpenAiResponseSummary;
+      this.sendOptions.push(options);
+      return failure === undefined
+        ? Promise.resolve(this.script.response as OpenAiResponseSummary)
+        : Promise.reject(failure);
     },
     inputTokens: {
-      count: async (body, options) => {
+      count: (body, options) => {
         const failure = this.script.countThrows;
         this.countBodies.push(body);
         this.countDeadlines.push(options?.timeout);
-        if (failure !== undefined) {
-          throw failure;
-        }
-        return this.script.count as { input_tokens: number };
+        return failure === undefined
+          ? Promise.resolve(this.script.count as { input_tokens: number })
+          : Promise.reject(failure);
       },
     },
   };
+}
+
+/** A recorded request body as a record, so a case can compare the keys two calls carried. */
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('expected the stub client to have recorded a request body');
+  }
+  return value as Record<string, unknown>;
 }
 
 /** The stub client and the real adapter built over it, as one fixture. */
@@ -1158,6 +1263,84 @@ describe('createOpenAiAdapter', () => {
     expect(OPENAI_DEFAULT_TIMEOUT_MS).toBe(60_000);
     expect(client.countDeadlines).toEqual([1000]);
     expect(client.sendDeadlines).toEqual([1000]);
+  });
+
+  it('counts and sends one payload, differing in nothing but the two generation keys', async () => {
+    const { client, adapter } = provider({
+      count: { input_tokens: 42 },
+      response: { output_text: '{"items":[]}', usage: { input_tokens: 42, output_tokens: 7 } },
+    });
+    const request: LlmRequest = {
+      system: 'Extract menu items.',
+      messages: [{ role: 'user', content: 'ข้าวผัดกะเพราหมูสับ ไข่ดาว ฿60' }],
+      jsonSchema: { name: 'menu_items', schema: { type: 'object', properties: {} } },
+      maxTokens: 500,
+    };
+
+    expect(await adapter.countInputTokens(request, { timeoutMs: 1000 })).toBe(42);
+    const result = await adapter.complete(request, { timeoutMs: 1000 });
+
+    const counted = asRecord(client.countBodies[0]);
+    const sent = asRecord(client.sendBodies[0]);
+    // AAP 0.5.6: every key the count endpoint saw is sent unchanged. A difference here is what
+    // `spend.ts` reads as a count mismatch and suspends every city for.
+    for (const key of Object.keys(counted)) {
+      expect(sent[key]).toStrictEqual(counted[key]);
+    }
+    expect(counted).toStrictEqual({
+      model: STUB_MODEL,
+      instructions: request.system,
+      input: [{ role: 'user', content: 'ข้าวผัดกะเพราหมูสับ ไข่ดาว ฿60' }],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'menu_items',
+          schema: { type: 'object', properties: {} },
+          strict: true,
+        },
+      },
+    });
+    expect(
+      Object.keys(sent)
+        .filter((key) => !(key in counted))
+        .sort(),
+    ).toEqual(['max_output_tokens', 'store']);
+    expect(sent['max_output_tokens']).toBe(request.maxTokens);
+    expect(sent['store']).toBe(false);
+    expect(sent['tools']).toBeUndefined();
+    // The reported input count equals the count reserved for, which is what keeps the request off
+    // the mismatch path.
+    expect(result.usage).toEqual({ inputTokens: 42, outputTokens: 7 });
+    // One reservation covers exactly one sent request (AAP 0.5.6): no automatic retry is left on.
+    expect(client.sendOptions[0]).toMatchObject({ maxRetries: 0 });
+  });
+
+  it('builds its own client, retries off, when no client is injected', () => {
+    ctor.mockClear();
+
+    const adapter = createOpenAiAdapter({ apiKey: STUB_API_KEY, model: SUPPORTED_MODELS[0] });
+
+    expect(adapter.provider).toBe('openai');
+    expect(ctor).toHaveBeenCalledTimes(1);
+    // The deadline is the ceiling AAP 0.11.1 sets, so a call that forgot its own cannot inherit the
+    // SDK's ten-minute default.
+    expect(ctor.mock.calls[0]?.[0]).toMatchObject({
+      apiKey: STUB_API_KEY,
+      maxRetries: 0,
+      timeout: OPENAI_DEFAULT_TIMEOUT_MS,
+    });
+  });
+
+  it('refuses a model outside SUPPORTED_MODELS before it builds a client', () => {
+    ctor.mockClear();
+
+    expect(() => createOpenAiAdapter({ apiKey: STUB_API_KEY, model: 'gpt-unknown-0' })).toThrow(
+      RangeError,
+    );
+    expect(() => createOpenAiAdapter({ apiKey: STUB_API_KEY, model: 'gpt-unknown-0' })).toThrow(
+      'unsupported_llm_model',
+    );
+    expect(ctor).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1324,5 +1507,386 @@ describe('the llm module graph', () => {
 
     expect(built.provider).toBe('fake');
     expect(built.model).toBe('fake');
+  });
+});
+
+/**
+ * The cap's own boundary and the contract it rests on (AAP 0.5.6), over the fake provider: the one
+ * adapter whose count and send are both local, and whose tokenizer counts Thai, Indonesian, emoji
+ * and base64-like content the way a real one does. Every figure below is money against
+ * `CAP_LLM_USD_PER_CITY_DAY`, so a rounding, reservation or counting mistake is a spend breach
+ * rather than a wrong answer.
+ */
+describe('the fake provider under the city cap', () => {
+  /** Prices that end the boundary loop in tens of requests: 150 and 600 USD per million tokens. */
+  const BOUNDARY_PRICES: LlmPrices = { inputUsdPerMTok: '150', outputUsdPerMTok: '600' };
+  /** The city and the local day the frozen clock reads: 2026-11-04T12:00:00Z in Lisbon. */
+  const CITY = 'lisbon';
+  const LOCAL_DATE = '2026-11-04';
+  /** Menu content from the fixture languages, which no log line and no error may carry. */
+  const THAI_TEXT = 'ข้าวผัดกะเพราหมูสับ ไข่ดาว ฿60\n';
+  const INDONESIAN_TEXT = 'Nasi goreng spesial Rp 45.000\n';
+
+  /** The item of `items` at `index` by rotation, or a test failure for an empty list. */
+  function nth<T>(items: readonly T[], index: number): T {
+    const item = items[index % items.length];
+    if (item === undefined) {
+      throw new RangeError('the list to rotate over is empty');
+    }
+    return item;
+  }
+
+  /** One request over `content`, with the schema or token bound a real caller would give it. */
+  function req(
+    content: string,
+    options?: { maxTokens?: number; jsonSchema?: LlmRequest['jsonSchema'] },
+  ): LlmRequest {
+    const base: LlmRequest = {
+      system: 'Extract menu items.',
+      messages: [{ role: 'user', content }],
+      maxTokens: options?.maxTokens ?? 500,
+    };
+    const jsonSchema = options?.jsonSchema;
+    return jsonSchema === undefined ? base : { ...base, jsonSchema };
+  }
+
+  /** A structured-output schema of the size a menu extraction registers: two hundred properties. */
+  function largeMenuSchema(): Record<string, unknown> {
+    return {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 200 }, (_unused, index) => [
+          `field_${index}`,
+          { type: 'string', description: `the ${index}th field of one menu item` },
+        ]),
+      ),
+      required: [],
+      additionalProperties: false,
+    };
+  }
+
+  /** The five shapes the boundary is measured with, each as large as real extraction content. */
+  function boundaryRequests(): LlmRequest[] {
+    return [
+      req(THAI_TEXT.repeat(40), { maxTokens: 500 }),
+      req(INDONESIAN_TEXT.repeat(60), { maxTokens: 500 }),
+      req('🍜☕️🍺🥗'.repeat(200), { maxTokens: 500 }),
+      req(randomBytes(3000).toString('base64'), { maxTokens: 500 }),
+      req('Menu page text.', {
+        maxTokens: 500,
+        jsonSchema: { name: 'menu_items', schema: largeMenuSchema() },
+      }),
+    ];
+  }
+
+  /** The fake provider's count of one request: four UTF-8 bytes per token, rounded up. */
+  function countOf(request: LlmRequest): number {
+    return Math.ceil(Buffer.byteLength(serializeFakeInputPart(request), 'utf8') / 4);
+  }
+
+  interface Refusal {
+    readonly error: LlmBudgetRefusedError;
+    readonly request: LlmRequest;
+    readonly countedBefore: number;
+    readonly sentBefore: number;
+    readonly spentBefore: number;
+  }
+
+  /**
+   * Run the rotating requests until one does not fit the cap. Each round records what the provider
+   * had been asked for before the call, so the refusal can be asserted on: the count grew by exactly
+   * one, the send never happened, and the day's spent figure was already too high for the bound.
+   */
+  async function runToRefusal(
+    spend: LlmSpend,
+    store: MemorySpendStore,
+    fake: FakeLlmAdapter,
+  ): Promise<Refusal> {
+    const requests = boundaryRequests();
+    for (let round = 0; round < 200; round += 1) {
+      const request = nth(requests, round);
+      const countedBefore = fake.calls.counted.length;
+      const sentBefore = fake.calls.sent.length;
+      const spentBefore = store.row(CITY, LOCAL_DATE).spent;
+      try {
+        await spend.runMetered(fake, request, { cityId: CITY, timeoutMs: 1000 });
+      } catch (error) {
+        if (!(error instanceof LlmBudgetRefusedError)) {
+          throw error;
+        }
+        return { error, request, countedBefore, sentBefore, spentBefore };
+      }
+    }
+    throw new Error('the cap never refused a request');
+  }
+
+  it('never charges past 25 USD, and counts the refused request once without sending it', async () => {
+    const { spend, store } = harness({ prices: BOUNDARY_PRICES });
+    const fake = createFakeLlmAdapter({});
+
+    const refusal = await runToRefusal(spend, store, fake);
+    const row = store.row(CITY, LOCAL_DATE);
+
+    // The refusal is the counted bound that no longer fits, and it names the city cap.
+    expect(refusal.error.scope).toBe('city_cap');
+    expect(refusal.error.boundMicros).toBe(
+      boundMicros(countOf(refusal.request), refusal.request.maxTokens, BOUNDARY_PRICES),
+    );
+    expect(refusal.error.boundMicros + refusal.spentBefore).toBeGreaterThan(CAP_MICROS);
+    // Counted once, sent never.
+    expect(fake.calls.counted).toHaveLength(refusal.countedBefore + 1);
+    expect(fake.calls.sent).toHaveLength(refusal.sentBefore);
+    // And the counter itself never crossed the cap, at any point between a reservation and its
+    // charge: `maxObserved` is the highest total the store ever held.
+    expect(row.spent).toBeLessThanOrEqual(CAP_MICROS);
+    expect(row.reserved).toBe(0);
+    expect(store.maxObserved).toBeLessThanOrEqual(CAP_MICROS);
+  });
+
+  it('reopens the city headroom on its next local day, not on the wall clock alone', async () => {
+    const { spend, store, clock } = harness({ prices: BOUNDARY_PRICES });
+    await runToRefusal(spend, store, createFakeLlmAdapter({}));
+
+    // The 25 USD of the day just spent are not spendable again before the day ends.
+    expect(await spend.reserveLlm(CITY, CAP_MICROS)).toBeNull();
+
+    clock.advance(24 * 3_600_000);
+
+    // 2026-11-05T12:00Z in Lisbon is 2026-11-05, a fresh key with its own full cap.
+    expect(await spend.reserveLlm(CITY, CAP_MICROS)).toEqual({
+      cityId: CITY,
+      localDate: '2026-11-05',
+      micros: CAP_MICROS,
+    });
+  });
+
+  it.each([
+    ['Thai', THAI_TEXT.repeat(40)],
+    ['Indonesian', INDONESIAN_TEXT.repeat(60)],
+    ['emoji', '🍜☕️🍺🥗'.repeat(200)],
+    ['a base64-like string', randomBytes(3000).toString('base64')],
+  ])('counts and sends the identical payload for %s content', async (_name, content) => {
+    const { spend, store } = harness({ prices: FAKE_LLM_PRICES });
+    const fake = createFakeLlmAdapter({});
+    const request = req(content, { maxTokens: 500 });
+
+    const charge = await spend.runMetered(fake, request, { cityId: CITY, timeoutMs: 1000 });
+
+    const part = serializeFakeInputPart(request);
+    // AAP 0.5.6: the payload the count endpoint is given is byte-identical to the one sent.
+    expect(fake.calls.counted).toEqual([part]);
+    expect(fake.calls.sent).toEqual([part]);
+    // And the reservation was the provider's own count plus `maxTokens`, charged at what the
+    // provider reported — the count it reserved for, and one output token.
+    const counted = countOf(request);
+    expect(charge.countedInputTokens).toBe(counted);
+    expect(charge.chargedMicros).toBe(costMicros(counted, 1, FAKE_LLM_PRICES));
+    expect(store.row(CITY, LOCAL_DATE).spent).toBe(charge.chargedMicros);
+    expect(store.row(CITY, LOCAL_DATE).reserved).toBe(0);
+  });
+
+  it('sends nothing at all when the provider cannot count the payload', async () => {
+    const { spend, store, entries } = harness({ prices: FAKE_LLM_PRICES });
+    const fake = createFakeLlmAdapter({ failCount: true });
+
+    const error = await rejection(
+      spend.runMetered(fake, req(THAI_TEXT), { cityId: CITY, timeoutMs: 1000 }),
+    );
+
+    expect(error).toBeInstanceOf(LlmCountError);
+    expect(fake.calls.counted).toHaveLength(1);
+    expect(fake.calls.sent).toHaveLength(0);
+    expect(store.rows.size).toBe(0);
+    expect(JSON.stringify(entries)).not.toContain(THAI_TEXT);
+  });
+
+  it('charges the full bound, logs counts only and suspends every city on a reported mismatch', async () => {
+    const { spend, store, suspension, entries } = harness({ prices: FAKE_LLM_PRICES });
+    const fake = createFakeLlmAdapter({ reportedInputDelta: 1 });
+    const request = req(THAI_TEXT, { maxTokens: 500 });
+    const counted = countOf(request);
+
+    const charge = await spend.runMetered(fake, request, { cityId: CITY, timeoutMs: 1000 });
+
+    // The reported cost is below the bound, so the whole reservation is charged (AAP 0.5.6).
+    expect(charge.chargedMicros).toBe(boundMicros(counted, request.maxTokens, FAKE_LLM_PRICES));
+    expect(store.row(CITY, LOCAL_DATE).spent).toBe(charge.chargedMicros);
+    expect(store.row(CITY, LOCAL_DATE).reserved).toBe(0);
+
+    const warns = entries.filter((entry) => entry.fields['event'] === 'llm_count_mismatch');
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.fields).toMatchObject({
+      provider: 'fake',
+      model: 'fake',
+      counted,
+      reportedInput: counted + 1,
+      maxTokens: request.maxTokens,
+    });
+    expect(JSON.stringify(entries)).not.toContain(THAI_TEXT);
+    expect(await suspension.mismatchCount()).toBe(1);
+
+    // Suspension is global: no other city may reserve or count anything until it is cleared.
+    expect(await spend.reserveLlm('canggu', 1)).toBeNull();
+    const otherCity = createFakeLlmAdapter({});
+    const suspended = await rejection(
+      spend.runMetered(otherCity, request, { cityId: 'canggu', timeoutMs: 1000 }),
+    );
+    expect(suspended).toBeInstanceOf(LlmSuspendedError);
+    expect(otherCity.calls.counted).toHaveLength(0);
+    expect(otherCity.calls.sent).toHaveLength(0);
+
+    await suspension.clear();
+
+    await expect(
+      spend.runMetered(otherCity, request, { cityId: 'canggu', timeoutMs: 1000 }),
+    ).resolves.toBeDefined();
+    expect(otherCity.calls.sent).toHaveLength(1);
+  });
+
+  it('spends one voice turn inside the dialogue budget the call already holds', async () => {
+    const { spend, store } = harness({ prices: FAKE_LLM_PRICES });
+    const fake = createFakeLlmAdapter({});
+    // The classification template with a 2,000-byte conversation window, the turn `call-dispatch`
+    // reserves the largest of (AAP 0.5.6), with the provider's minimum output bound.
+    const turn = req('callee: '.concat('x'.repeat(2000)), { maxTokens: 16 });
+    const counted = countOf(turn);
+    const turnBound = boundMicros(counted, turn.maxTokens, FAKE_LLM_PRICES);
+    const budget = spend.dialogueBudgetMicros(turnBound, 3);
+
+    const reservation = await spend.reserveLlm('chiang-mai', budget);
+    if (reservation === null) {
+      throw new Error('expected the dialogue budget to be reserved');
+    }
+    const row = () => store.row('chiang-mai', LOCAL_DATE);
+    expect(row()).toEqual({ spent: 0, reserved: budget });
+
+    // A turn whose bound does not fit what is left of the call is not sent.
+    const refused = await rejection(
+      spend.runMeteredWithin(fake, turn, {
+        reservation,
+        remainingMicros: turnBound - 1,
+        timeoutMs: 3000,
+      }),
+    );
+    expect(refused).toBeInstanceOf(LlmBudgetRefusedError);
+    expect((refused as LlmBudgetRefusedError).scope).toBe('reservation');
+    expect(fake.calls.sent).toHaveLength(0);
+    expect(row()).toEqual({ spent: 0, reserved: budget });
+
+    // One that fits moves exactly its own cost from reserved to spent.
+    const charge = await spend.runMeteredWithin(fake, turn, {
+      reservation,
+      remainingMicros: turnBound,
+      timeoutMs: 3000,
+    });
+    const actual = costMicros(counted, 1, FAKE_LLM_PRICES);
+    expect(charge.chargedMicros).toBe(actual);
+    expect(charge.remainingMicros).toBe(turnBound - actual);
+    expect(row()).toEqual({ spent: actual, reserved: budget - actual });
+  });
+
+  it.each([
+    ['canggu', '2026-11-05'],
+    ['chiang-mai', '2026-11-05'],
+    ['lisbon', '2026-11-04'],
+    ['mexico-city', '2026-11-04'],
+    ['medellin', '2026-11-04'],
+  ])('books %s against its own local day at 17:30Z', async (cityId, localDate) => {
+    const clock = createTestClock();
+    clock.set(new Date('2026-11-04T17:30:00.000Z'));
+    const { spend } = harness({ clock });
+
+    // Makassar and Bangkok are already on the 5th, Lisbon, Mexico City and Bogotá are still on the
+    // 4th: the counter is keyed by the city's own day, never by UTC.
+    expect(await spend.reserveLlm(cityId, 1)).toEqual({ cityId, localDate, micros: 1 });
+  });
+});
+
+/**
+ * The startup refusal that protects the spend profile (AAP 0.5.6): a reservation bounds the spend
+ * only while `LLM_MODEL` is a model the count endpoint and the price list were checked against, so
+ * a process configured with anything else must not start. The full mode matrix belongs to
+ * `apps/api/test/unit/env-guard.test.ts`; the model guard is asserted here because this suite is the
+ * one that depends on the count-then-send profile holding.
+ */
+describe('the LLM_MODEL guard', () => {
+  /** The credential used here: not a key shape any provider issues, so it may stand in source. */
+  const LLM_KEY = 'test-llm-key';
+  /** 32 random bytes, the only form `FIELD_ENCRYPTION_KEY` accepts. */
+  const FIELD_KEY = randomBytes(32).toString('base64');
+  const SALTS = 'a'.repeat(40);
+  const SHARED = {
+    APP_ENV: 'test',
+    DATABASE_URL: 'postgres://tablemate@localhost:5432/tablemate',
+    REDIS_URL: 'redis://localhost:6379',
+    FIELD_ENCRYPTION_KEY: FIELD_KEY,
+    FIELD_ENCRYPTION_KEY_ID: 'k1',
+    ANALYTICS_SALT: SALTS,
+    TELEPHONY_MODE: 'off',
+    LLM_PROVIDER: 'openai',
+    LLM_API_KEY: LLM_KEY,
+    LLM_PRICE_INPUT_USD_PER_MTOK: '0.40',
+    LLM_PRICE_OUTPUT_USD_PER_MTOK: '1.60',
+  };
+
+  /** A complete raw environment for one process, from the scope tables of AAP 0.6.2. */
+  function rawEnvFor(process: 'api' | 'workers'): Record<string, string> {
+    const shared = {
+      ...SHARED,
+      API_PUBLIC_URL: 'http://localhost:3000',
+      WEB_ORIGIN: 'http://localhost:8080',
+    };
+    if (process === 'workers') {
+      return {
+        ...shared,
+        SMTP_URL: 'smtp://localhost:1025',
+        EMAIL_FROM: 'noreply@tablemate.test',
+        CRAWLER_CONTACT_URL: 'https://tablemate.test/bot',
+      };
+    }
+    return {
+      ...shared,
+      VENUE_CONSOLE_ORIGIN: 'http://localhost:8090',
+      ARTIFACTS_BASE_URL: 'http://localhost:8070',
+      JWT_SECRET: SALTS,
+      EMAIL_LOOKUP_PEPPER: SALTS,
+      EXPERIMENT_SALT: SALTS,
+      NULLIFIER_SALT: '12345',
+      TERMS_VERSION: '2026-11-04',
+      STRIPE_MODE: 'mock',
+      STRIPE_API_BASE: 'http://localhost:12100',
+    };
+  }
+
+  /** The error a synchronous call threw, for asserting on its fields. */
+  function thrownBy(call: () => unknown): unknown {
+    try {
+      call();
+    } catch (error: unknown) {
+      return error;
+    }
+    throw new Error('expected the call to throw');
+  }
+
+  it.each([
+    ['api', loadApiEnv],
+    ['workers', loadWorkersEnv],
+  ] as const)('%s accepts a supported model and refuses any other', (_process, load) => {
+    const raw = rawEnvFor(_process);
+
+    expect(load({ ...raw, LLM_MODEL: SUPPORTED_MODELS[0] }).llm).toMatchObject({
+      provider: 'openai',
+      model: SUPPORTED_MODELS[0],
+      prices: { inputUsdPerMTok: '0.40', outputUsdPerMTok: '1.60' },
+    });
+
+    const error = thrownBy(() => load({ ...raw, LLM_MODEL: 'gpt-unknown-0' }));
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    const issues = (error as EnvValidationError).issues;
+    expect(issues.some((issue) => issue.variable === 'LLM_MODEL')).toBe(true);
+    // A refusal names variables and reasons, never a value of one (AAP 0.12.2).
+    expect(String((error as Error).message)).not.toContain(LLM_KEY);
+    expect(JSON.stringify(issues)).not.toContain(LLM_KEY);
   });
 });
