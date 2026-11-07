@@ -1,56 +1,78 @@
 /**
- * Integration tests for `apps/workers/src/jobs/call-results.ts` (AAP 0.5.3, 0.5.6, 0.8.1).
+ * Integration tests for `apps/workers/src/jobs/call-results.ts` (AAP 0.3.2, 0.5.3, 0.5.6, 0.5.7).
  *
- * The suite runs against a real PostgreSQL 16 with PostGIS 3.4, started from the shipped image and
- * migrated with `packages/db/prisma/migrations/20261104000000_init/migration.sql`, so what it proves
- * is the effect of the job's own statements on the schema the run delivers. Time comes from
- * `createTestClock`, so one frozen instant fixes `outcomeAt` and the 24-hour retry.
+ * The API's relay records what a finished call produced on its `CallAttempt` in the same transaction
+ * that writes the `apply_call_result` outbox row; this job consumes that row and applies the result to
+ * the task and, for a lodging call, to the claim (AAP 0.3.2). The suite drives it exactly as the
+ * dispatcher would: one `OutboxMessage` row per case, its payload parsed with `parseOutboxPayload`,
+ * dispatched under the row's own `outbox-<id>` job id, and run against the real PostgreSQL 16 with
+ * PostGIS 3.4 and Redis the harness starts (AAP 0.11.2). What it proves is therefore the effect of the
+ * job's own statements on the schema the run delivers.
  *
- * The cases, in order:
+ * Three groups of cases:
  *
- *   1. A `menu_prices` call whose prices were all confirmed stores one `phone_quote` batch and
- *      completes the task (AAP 0.5.6).
- *   2. A partial call stores what it collected as `needs_review`, and a payload that is not a
- *      readable extraction stores nothing and sends the task to the operator queue.
- *   3. A price in a currency the FX table does not cover is dropped; a covered currency with no rate
- *      raises `FxRateUnavailableError` and leaves the task untouched for the queue to retry, and the
- *      last delivery of the same failure hands the task to the operator queue as `needs_review`
- *      instead of leaving it `in_progress` (AAP 0.5.3).
- *   4. The four outcomes that collect nothing: the retry after 24 hours, the second `no_answer`, the
- *      invalid number and the refusal (AAP 0.5.3).
- *   5. `do_not_call` blocks the number everywhere, cancels the other tasks of those targets and
- *      supersedes their live attempts, while the task that produced the outcome is left alone.
- *   6. A stay call's confirmed yes and no decide the claim and its task together, and a confirmed yes
- *      backfills the lodging's leaderboard fact; anything less returns the claim to `pending_call`.
- *   7. The guards: a missing attempt, a terminal or superseded task or attempt, an attempt with no
- *      outcome, a result a later attempt has replaced, and a stripped lodging attempt.
- *   8. The job's own boundary: an unknown name and malformed data are refused, and a second run of
- *      the same job changes nothing.
+ *   - A menu call's result (AAP 0.5.3, 0.5.6): every price confirmed stores one `phone_quote` capture
+ *     batch and completes the task; anything less stores what was collected as `needs_review` and hands
+ *     the task to the operator queue; each outcome that collected nothing moves the task on without
+ *     storing a price, and `do_not_call` blocks the number everywhere.
+ *   - A result that must not be applied changes nothing at all (AAP 0.5.3, "Terminal tasks stay
+ *     terminal"): a task already decided, an attempt a resolution superseded, a redelivered job.
+ *   - A lodging call's result (AAP 0.5.3, 0.5.7): a confirmed answer decides the task and the claim in
+ *     one run, and `verified` backfills the lodging's leaderboard fact, the dashboard's claim measure
+ *     and the claimant's notification.
  *
- * @see AAP 0.5.3 for every mapping, 0.5.6 for the price and do-not-call rules, 0.5.7 for `outcomeAt`
- *   and the leaderboard fact, 0.11.2 for the integration layer.
+ * Time comes from the harness's injected clock, so `outcomeAt`, the 24-hour retry and a claim's
+ * `resolveSeconds` are exact. The FX table is the recorded provider response of
+ * `apps/workers/test/fixtures/fx/usd-latest.json`, served over a local HTTP server and stored by the
+ * real `fx-refresh` job, which is what makes a phone quote's USD cents assertable (EUR 0.8, so 1.25 USD
+ * per EUR).
+ *
+ * @see AAP 0.5.3 for both lifecycles and their timers, 0.5.6 for the pipeline and the per-task-kind
+ *   rules, 0.5.7 for `outcomeAt` and the leaderboard fact, 0.3.2 for the outbox and the idempotence it
+ *   needs, 0.11.2 for the integration topology, 0.8.1 for this file's inventory row.
  */
 
-import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createServer, type Server } from 'node:http';
 
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { Prisma, createPrismaClient, type DbClient } from '@tablemate/db';
+import { createTestApp, testWorkersEnv, type TestApp } from '@tablemate/api/test-support/app';
+import {
+  makeCallAttempt,
+  makeCallTask,
+  makeClaim,
+  makeLodging,
+  makeMeetup,
+  makePlace,
+  makeUser,
+  makeVenue,
+  type CallAttemptFixture,
+  type CallTaskFixture,
+  type ClaimFixture,
+  type LodgingFixture,
+  type MeetupFixture,
+  type PlaceFixture,
+  type UserFixture,
+} from '@tablemate/api/test-support/factories';
+import type { DbClient, Prisma } from '@tablemate/db';
 import {
   JOB,
   QUEUE,
   QUEUE_JOB_OPTIONS,
-  QueuePayloadError,
-  createLogger,
-  createTestClock,
+  actorHash,
   loadWorkersEnv,
+  outboxJobId,
+  pairKey,
+  parseOutboxPayload,
 } from '@tablemate/server-core';
-import { DAY_MS, HOUR_MS } from '@tablemate/shared';
+import {
+  CALL_MAX_ATTEMPTS,
+  CALL_RETRY_SPACING_HOURS,
+  CHECK_IN_CLOSES_AFTER_MINUTES,
+  HOUR_MS,
+  MINUTE_MS,
+} from '@tablemate/shared';
 import type {
   BlockedReason,
   CallAttemptOutcome,
@@ -60,1034 +82,991 @@ import type {
 
 import {
   FxRateUnavailableError,
-  process,
+  process as runCallResults,
+  type CallResultsJob,
   type CallResultsResult,
 } from '../../src/jobs/call-results.ts';
-// Type-only, and narrowed below: this job reads the clock, the logger and the database client, and
-// no other collaborator of a worker context, so the suite builds those four fields and nothing else.
-import type { WorkerContext } from '../../src/queues.ts';
+import { process as runFxRefresh } from '../../src/jobs/fx-refresh.ts';
+import { normalizeItemName } from '../../src/jobs/menu-ingest.ts';
+import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
-/** The part of a worker context this job touches. */
-type CallResultsContext = Pick<WorkerContext, 'env' | 'clock' | 'logger' | 'db'>;
+/* The fixture set (AAP 0.5.2) */
 
-/** The instant every relative date below is measured from, and the clock's starting point. */
-const START = new Date('2026-11-04T12:00:00.000Z');
-
-/** The UTC day every FX rate and price below belongs to. */
-const CAPTURE_DAY = '2026-11-04';
-
-/** The number a menu call is dialed from, and the EUR/USD rate the expected cents are built on. */
-const MENU_PHONE = '+12025550100';
-const EUR_USD = '1.1';
+/** The one city every case works in: a launch city whose call language is published. */
+const CITY = 'lisbon';
 
 /**
- * How many deliveries BullMQ gives one `call-results` job: the queue's own policy (AAP 0.5.6), read
- * rather than hard-coded, so the case that runs the last delivery cannot drift from it.
+ * The instant every case starts at: Lisbon midday on the harness's own default day. `resetState`
+ * returns the clock here, and each case states it so the reason the dates below line up is visible.
  */
-const CALL_RESULTS_ATTEMPTS = QUEUE_JOB_OPTIONS[QUEUE.callResults].attempts ?? 1;
+const NOW = new Date('2026-11-16T12:00:00.000Z');
 
-// Every row this suite seeds is named, and the names are the assertions' vocabulary.
-const CITY = 'lisbon';
-const VENUE = 'aaaaaaaa-0000-4000-8000-000000000001';
-const PLACE = 'aaaaaaaa-0000-4000-8000-000000000002';
-const PLACE_SHARED = 'aaaaaaaa-0000-4000-8000-000000000003';
-const PLACE_OTHER = 'aaaaaaaa-0000-4000-8000-000000000004';
-const LODGING = 'aaaaaaaa-0000-4000-8000-000000000005';
-const LODGING_PHONE = '+12025550101';
-const OTHER_PHONE = '+12025550102';
-const CLAIMANT = 'bbbbbbbb-0000-4000-8000-000000000001';
-const COUNTERPART = 'bbbbbbbb-0000-4000-8000-000000000002';
-const MEETUP = 'cccccccc-0000-4000-8000-000000000001';
+/** The provider response `fx-refresh` stores the day's rates from (AAP 0.3.3, 0.5.6). */
+const FX_FIXTURE = new URL('../fixtures/fx/usd-latest.json', import.meta.url);
 
-/** The four items a complete menu call collects, in the order the script asks them. */
-const MENU_ITEMS = [
+/** The number a menu call is dialed from, from the reserved fictional range (AAP 0.5.2). */
+const MENU_PHONE = '+14155550150';
+/** One number two places share, for the do-not-call cascade, and one nothing else uses. */
+const SHARED_PHONE = '+14155550151';
+const OTHER_PHONE = '+14155550152';
+
+/**
+ * One priced item a menu call collected, in the shape the API's relay records it (AAP 0.5.6):
+ * `amountMinor` is the price in the currency's minor units and `priceText` is the price as heard.
+ */
+interface MenuPriceItem {
+  readonly slot: 'cheapest_main' | 'priciest_main' | 'coffee' | 'beer';
+  readonly dish: string;
+  readonly priceText: string;
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly confirmed: boolean;
+}
+
+/** `CallAttempt.extractedFields`, mirrored from `ExtractedFields` in the API's `dialogue.ts`. */
+type ExtractedFields =
+  | { readonly kind: 'menu_prices'; readonly items: readonly MenuPriceItem[] }
+  | {
+      readonly kind: 'lodging_stay_verification';
+      readonly answer: 'yes' | 'no' | null;
+      readonly confirmed: boolean;
+    };
+
+/** The four prices a complete Lisbon menu call collects, at the FX fixture's EUR rate of 1.25. */
+const MENU_ITEMS: readonly MenuPriceItem[] = [
   {
     slot: 'cheapest_main',
-    dish: 'Bacalhau',
-    priceText: '12,50 €',
-    amountMinor: 1250,
+    dish: 'Bitoque',
+    priceText: '9,50 €',
+    amountMinor: 950,
     currency: 'EUR',
     confirmed: true,
   },
   {
     slot: 'priciest_main',
-    dish: 'Arroz de Marisco',
-    priceText: '24,00 €',
-    amountMinor: 2400,
+    dish: 'Bacalhau',
+    priceText: '18,50 €',
+    amountMinor: 1850,
     currency: 'EUR',
     confirmed: true,
   },
   {
     slot: 'coffee',
-    dish: 'Espresso',
-    priceText: '2,50 €',
-    amountMinor: 250,
+    dish: 'Café',
+    priceText: '0,90 €',
+    amountMinor: 90,
     currency: 'EUR',
     confirmed: true,
   },
   {
     slot: 'beer',
     dish: 'Imperial',
-    priceText: '5,00 €',
-    amountMinor: 500,
+    priceText: '2,50 €',
+    amountMinor: 250,
     currency: 'EUR',
     confirmed: true,
   },
 ];
 
-/**
- * The migration the container is built with: the same file the compose stack applies. Found by
- * walking up from this module's own directory, because the repository carries no vitest
- * configuration and `vitest run` therefore collects a compiled copy of this file as well.
- */
-const MIGRATION = findMigration();
+/** Each dish's price in whole USD cents: `amountMinor / 100 * 1.25 * 100`, rounded half up. */
+const USD_CENTS: Readonly<Record<string, number>> = {
+  Bitoque: 1188,
+  Bacalhau: 2313,
+  Café: 113,
+  Imperial: 313,
+};
 
-/**
- * @returns The absolute path of the init migration.
- * @throws Error naming the directory the search started from when no ancestor holds it.
- */
-function findMigration(): string {
-  const from = dirname(fileURLToPath(import.meta.url));
-  const migration = 'packages/db/prisma/migrations/20261104000000_init/migration.sql';
-  for (let dir = from; ; dir = dirname(dir)) {
-    const candidate = join(dir, migration);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    if (dirname(dir) === dir) {
-      throw new Error(`the init migration is missing: no ancestor of ${from} holds ${migration}`);
-    }
-  }
-}
+/* The stay a lodging call asks about (AAP 0.5.2, 0.5.7) */
 
-/**
- * The environment the `workers` process validates at start (AAP 0.6.2). Every value is a placeholder
- * that matches no credential shape, and the telephony and language-model modes reach no provider, so
- * the job under test needs no external service at all.
- */
-function environment(databaseUrl: string): Record<string, string> {
-  return {
-    APP_ENV: 'test',
-    DATABASE_URL: databaseUrl,
-    REDIS_URL: 'redis://127.0.0.1:6379/0',
-    FIELD_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-    FIELD_ENCRYPTION_KEY_ID: 'k1',
-    ANALYTICS_SALT: 'test-analytics-salt-0123456789abcdef',
-    TELEPHONY_MODE: 'off',
-    LLM_PROVIDER: 'fake',
-    SMTP_URL: 'smtp://127.0.0.1:1025',
-    EMAIL_FROM: 'Tablemate <no-reply@tablemate.test>',
-    CRAWLER_CONTACT_URL: 'https://tablemate.test/crawler',
-    API_PUBLIC_URL: 'http://127.0.0.1:21000',
-    WEB_ORIGIN: 'http://127.0.0.1:21001',
-  };
-}
+/** The week the claimed stay covers, `YYYY-MM-DD`, ending the day before the cases run. */
+const STAY_FROM = '2026-11-09';
+const STAY_TO = '2026-11-15';
 
-let db: DbClient;
-let clock: ReturnType<typeof createTestClock>;
-let ctx: CallResultsContext;
-/** Assigned last in `beforeAll`, so a failure before that point leaves it undefined. */
-let stop: (() => Promise<void>) | undefined;
-const logs: Record<string, unknown>[] = [];
+/** A completed meetup inside the stay, one outside its dates, and one past the 90-day window. */
+const IN_STAY = new Date('2026-11-12T12:00:00.000Z');
+const OUTSIDE_STAY = new Date('2026-10-20T12:00:00.000Z');
+const BEFORE_WINDOW = new Date('2026-07-01T12:00:00.000Z');
+
+/* The harness (AAP 0.11.2) */
+
+let app: TestApp;
+let store: DbClient;
+let ctx: WorkerContext;
+let fx: Server;
 
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer('postgis/postgis:16-3.4').start();
-  const migration = await readFile(MIGRATION, 'utf8');
-  const applied = await container.exec([
-    'psql',
-    '-v',
-    'ON_ERROR_STOP=1',
-    '-U',
-    'test',
-    '-d',
-    'test',
-    '-c',
-    migration,
-  ]);
+  const table = await readFile(FX_FIXTURE, 'utf8');
+  // The recorded provider response, served over HTTP: `fx-refresh` reads it through the same path it
+  // reads the real endpoint through, so the rates and their own date are the recorded ones (AAP 0.3.3).
+  fx = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
+    response.end(table);
+  });
+  const fxUrl = await listenOnLoopback(fx);
 
-  if (applied.exitCode !== 0) {
-    throw new Error(`the init migration failed: ${applied.stderr}`);
-  }
-
-  const databaseUrl = container.getConnectionUri();
-  db = createPrismaClient({ databaseUrl, appEnv: 'test' });
-  clock = createTestClock({ start: START });
-  ctx = {
-    env: loadWorkersEnv(environment(databaseUrl)),
-    clock,
-    logger: createLogger({
-      name: 'call-results-test',
-      level: 'info',
-      appEnv: 'test',
-      destination: {
-        write: (line: string) => {
-          logs.push(JSON.parse(line) as Record<string, unknown>);
-        },
-      },
-    }),
-    db,
-  };
-  stop = async () => {
-    await db.$disconnect();
-    await container.stop();
-  };
-
-  await seed();
-}, 300_000);
+  app = await createTestApp();
+  store = app.services.db;
+  ctx = await createWorkerContext(
+    loadWorkersEnv(testWorkersEnv({ FX_URL: `${fxUrl}/usd-latest.json` })),
+    { clock: app.clock },
+  );
+});
 
 afterAll(async () => {
-  // A `beforeAll` that failed before assigning `stop` must report its own error, not a second one.
-  if (stop) {
-    await stop();
-  }
+  fx.closeAllConnections();
+  await new Promise<void>((resolve) => {
+    fx.close(() => {
+      resolve();
+    });
+  });
+  await closeWorkerContext(ctx);
+  await app.close();
+});
+
+beforeEach(async () => {
+  await app.resetState();
+  await app.seedCities();
+  app.time.at(NOW);
+  // The rates every `phone_quote` converts through, written by the job that writes them in production
+  // rather than inserted by hand, so the conversion the cases assert is the pipeline's own.
+  await runFxRefresh({ name: JOB[QUEUE.fxRefresh].refresh, data: {} }, ctx);
 });
 
 /**
- * The rows every case builds on: the city, the venue, the three places (two of them sharing a
- * number), the lodging, the two accounts and the completed meetup a verified stay credits.
+ * Start a fixture HTTP server on an ephemeral loopback port.
+ *
+ * @param server - The server to start.
+ * @returns Its `http://127.0.0.1:<port>` base.
+ * @throws Error when the server bound no TCP address.
  */
-async function seed(): Promise<void> {
-  await db.city.createMany({
-    data: [
-      {
-        id: CITY,
-        circuitCityId: 1,
-        name: 'Lisbon',
-        countryCode: 'PT',
-        timezone: 'Europe/Lisbon',
-        callLanguage: 'pt-PT',
-        currency: 'EUR',
-        bbox: { south: 38.6, west: -9.3, north: 38.8, east: -9.0 },
-      },
-    ],
+async function listenOnLoopback(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve();
+    });
   });
 
-  await db.venue.createMany({
-    data: [{ id: VENUE, cityId: CITY, name: 'Venue', address: 'Rua Teste 1' }],
-  });
+  const address = server.address();
 
-  await db.place.createMany({
-    data: [
-      { id: PLACE, cityId: CITY, name: 'Place', category: 'restaurant', phone: MENU_PHONE },
-      {
-        id: PLACE_SHARED,
-        cityId: CITY,
-        name: 'Place Shared Line',
-        category: 'cafe',
-        phone: MENU_PHONE,
-      },
-      {
-        id: PLACE_OTHER,
-        cityId: CITY,
-        name: 'Place Other Line',
-        category: 'bar',
-        phone: OTHER_PHONE,
-      },
-    ],
-  });
+  if (address === null || typeof address === 'string') {
+    throw new Error('the FX fixture server bound no TCP port');
+  }
 
-  await db.lodging.createMany({
-    data: [{ id: LODGING, cityId: CITY, name: 'Lodging', kind: 'hostel', phone: LODGING_PHONE }],
-  });
-
-  await db.user.createMany({
-    data: [
-      { id: CLAIMANT, handle: 'claimant' },
-      { id: COUNTERPART, handle: 'counterpart' },
-    ],
-  });
-
-  // The meetup a verified stay of the claim below covers: completed yesterday, inside the 90-day
-  // window, on the one local date the claim's stay spans (AAP 0.5.7).
-  await db.meetup.createMany({
-    data: [
-      {
-        id: MEETUP,
-        initiatorId: CLAIMANT,
-        recipientId: COUNTERPART,
-        venueId: VENUE,
-        startsAt: new Date(START.getTime() - DAY_MS),
-        depositCents: 1000,
-        status: 'completed',
-        variantPairing: 'social',
-        lockedAt: new Date(START.getTime() - 2 * DAY_MS),
-        settledAt: new Date(START.getTime() - DAY_MS),
-        finalAt: new Date(START.getTime() - DAY_MS),
-      },
-    ],
-  });
-
-  // EUR only: a menu price quoted in its own currency converts, MXN has no row (the retry case) and
-  // GBP is not a currency the table covers at all (the drop case).
-  await db.fxRate.createMany({
-    data: [
-      { date: new Date(`${CAPTURE_DAY}T00:00:00.000Z`), currency: 'EUR', usdPerUnit: EUR_USD },
-    ],
-  });
+  return `http://127.0.0.1:${address.port}`;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------------------------
+/* Running the job as the outbox dispatcher does (AAP 0.3.2) */
 
-/** Runs the job for one attempt, as the outbox dispatcher would: `apply` with `{ outboxId, … }`. */
-async function runApply(attemptId: string): Promise<CallResultsResult> {
-  return await process(
-    {
-      name: JOB[QUEUE.callResults].apply,
-      data: { outboxId: randomUUID(), callAttemptId: attemptId },
-    },
-    ctx as WorkerContext,
-  );
-}
-
-/**
- * Runs the same job as its last delivery: the one that spends the queue's final retry, so a failure
- * inside it has to leave the task's state decided rather than throwing it back to BullMQ.
- */
-async function runFinalApply(attemptId: string): Promise<CallResultsResult> {
-  return await process(
-    {
-      name: JOB[QUEUE.callResults].apply,
-      data: { outboxId: randomUUID(), callAttemptId: attemptId },
-      attemptsMade: CALL_RESULTS_ATTEMPTS - 1,
-      opts: { attempts: CALL_RESULTS_ATTEMPTS },
-    },
-    ctx as WorkerContext,
-  );
+/** The instant the clock reads, which is the end of every attempt these cases seed. */
+function now(): Date {
+  return app.clock.now();
 }
 
 /** The task as it stands, so an assertion names the columns the job writes. */
-async function taskRow(taskId: string) {
-  return await db.callTask.findUniqueOrThrow({ where: { id: taskId } });
+function taskRow(taskId: string): Promise<{
+  readonly status: CallTaskStatus;
+  readonly blockedReason: BlockedReason | null;
+  readonly resolvedBy: string | null;
+  readonly outcomeAt: Date | null;
+  readonly nextAttemptAt: Date;
+}> {
+  return store.callTask.findUniqueOrThrow({
+    where: { id: taskId },
+    select: {
+      status: true,
+      blockedReason: true,
+      resolvedBy: true,
+      outcomeAt: true,
+      nextAttemptAt: true,
+    },
+  });
 }
 
-/** A call's extracted fields as the JSON column stores them. */
-function extraction(value: unknown): Prisma.InputJsonValue {
+/**
+ * The job one outbox row becomes: the row the API's relay would have written, parsed before the insert
+ * as `outbox/write.ts` parses it, dispatched under the stable id of AAP 0.3.2.
+ *
+ * @param attemptId - The attempt whose recorded result the row names.
+ * @returns The `call-results` / `apply` job carrying that row.
+ */
+async function callResultJob(attemptId: string): Promise<CallResultsJob> {
+  const payload = parseOutboxPayload('apply_call_result', { callAttemptId: attemptId });
+  const row = await store.outboxMessage.create({
+    data: { kind: 'apply_call_result', payload, createdAt: now() },
+    select: { id: true },
+  });
+
+  return {
+    id: outboxJobId(row.id),
+    name: JOB[QUEUE.callResults].apply,
+    data: { outboxId: row.id, callAttemptId: attemptId },
+  };
+}
+
+/**
+ * Runs one `apply` job as BullMQ would, at the delivery the caller names.
+ *
+ * The queue's retry allowance is read from the queue's own options rather than written here, so the
+ * case that spends the last delivery cannot drift from the policy it is about (AAP 0.5.6).
+ *
+ * @param job - The job to run.
+ * @param delivery - `first` for a delivery a retry follows, `last` for the one that has none.
+ * @returns What the processor reports.
+ */
+function runJob(
+  job: CallResultsJob,
+  delivery: 'first' | 'last' = 'first',
+): Promise<CallResultsResult> {
+  if (delivery === 'first') {
+    return runCallResults(job, ctx);
+  }
+
+  const attempts = QUEUE_JOB_OPTIONS[QUEUE.callResults].attempts ?? 1;
+
+  return runCallResults({ ...job, attemptsMade: attempts - 1, opts: { attempts } }, ctx);
+}
+
+/**
+ * Writes what the API's relay recorded on an attempt: the extraction the dialogue contract defines.
+ *
+ * The builders write an attempt's columns, but the menu form carries a list of items, which their
+ * `extractedFields` option does not admit, so the payload is written here in the shape the relay
+ * records it (AAP 0.5.2).
+ *
+ * @param attemptId - The attempt to write.
+ * @param fields - The extraction, or any other payload a case needs.
+ */
+async function setExtraction(attemptId: string, fields: ExtractedFields): Promise<void> {
+  await store.callAttempt.update({
+    where: { id: attemptId },
+    data: { extractedFields: asJson(fields) },
+  });
+}
+
+/** A JSON column's input, which Prisma types structurally rather than by the values it holds. */
+function asJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
-/** What one seeded menu call is: its task, its attempt and the place it was dialed to. */
+/* Seeding one menu call (AAP 0.5.2, 0.5.6) */
+
+/** What one seeded menu call is: its place, its task and the attempt whose result is applied. */
 interface MenuCall {
-  readonly taskId: string;
-  readonly attemptId: string;
-  readonly placeId: string;
-  readonly endedAt: Date;
+  readonly place: PlaceFixture;
+  readonly task: CallTaskFixture;
+  readonly attempt: CallAttemptFixture;
 }
 
-/** The shape {@link seedMenuCall} builds a menu call from, with the ordinary case as its default. */
+/** What {@link seedMenuCall} may replace, with a complete confirmed call as its default. */
 interface MenuCallInput {
   readonly outcome: CallAttemptOutcome;
-  readonly confidence?: 'high' | 'low' | null;
-  readonly items?: readonly unknown[];
-  readonly extracted?: boolean;
+  readonly confidence?: 'high' | 'low';
+  readonly items?: readonly MenuPriceItem[];
   readonly attempts?: number;
-  readonly status?: CallTaskStatus;
-  readonly superseded?: boolean;
-  readonly placeId?: string;
-  readonly startedAt?: Date;
-  readonly endedAt?: Date | null;
-  readonly twilioCallSid?: string | null;
+  readonly phone?: string;
 }
-
-/** How many case-owned places exist, so each one gets a number of its own. */
-let casePlaces = 0;
 
 /**
- * A place of its own for one case: a case's assertions read its place's price records alone, so a
- * batch another case stored can never be mistaken for this one's.
+ * Seed one `menu_prices` task in `in_progress` with one ended attempt, as the dispatcher leaves them.
+ *
+ * @param input - The outcome the call produced and whatever the case varies.
+ * @returns The place the call was dialed to, the task and the attempt.
  */
-async function seedPlace(): Promise<string> {
-  const id = randomUUID();
-  casePlaces += 1;
-
-  await db.place.create({
-    data: {
-      id,
-      cityId: CITY,
-      name: `Case Place ${casePlaces}`,
-      category: 'restaurant',
-      phone: `+1202555${String(1000 + casePlaces)}`,
-    },
-  });
-
-  return id;
-}
-
-/** Seeds one `menu_prices` task, with its own place unless one is given, and one ended attempt. */
 async function seedMenuCall(input: MenuCallInput): Promise<MenuCall> {
-  const taskId = randomUUID();
-  const attemptId = randomUUID();
-  const placeId = input.placeId ?? (await seedPlace());
-  const startedAt = input.startedAt ?? new Date(START.getTime() - HOUR_MS);
-  const endedAt = input.endedAt === undefined ? START : input.endedAt;
-
-  await db.callTask.create({
-    data: {
-      id: taskId,
-      kind: 'menu_prices',
-      placeId,
-      status: input.status ?? 'in_progress',
-      attempts: input.attempts ?? 1,
-      nextAttemptAt: startedAt,
-    },
+  const place = await makePlace(app, {
+    cityId: CITY,
+    category: 'restaurant',
+    phone: input.phone ?? MENU_PHONE,
+  });
+  const task = await makeCallTask(app, {
+    kind: 'menu_prices',
+    placeId: place.id,
+    status: 'in_progress',
+    attempts: input.attempts ?? 1,
+  });
+  const attempt = await makeCallAttempt(app, task, {
+    state: 'ended',
+    outcome: input.outcome,
+    durationSec: 90,
+    ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
   });
 
-  await db.callAttempt.create({
-    data: {
-      id: attemptId,
-      callTaskId: taskId,
-      twilioCallSid:
-        input.twilioCallSid === undefined ? `CA-${attemptId.slice(0, 8)}` : input.twilioCallSid,
-      state: 'ended',
-      superseded: input.superseded ?? false,
-      outcome: input.outcome,
-      extractedFields:
-        input.extracted === false
-          ? Prisma.DbNull
-          : extraction({ kind: 'menu_prices', items: input.items ?? MENU_ITEMS }),
-      confidence: input.confidence ?? (input.outcome === 'completed' ? 'high' : null),
-      startedAt,
-      endedAt: endedAt === null ? null : endedAt,
-    },
-  });
+  await setExtraction(attempt.id, { kind: 'menu_prices', items: input.items ?? MENU_ITEMS });
 
-  return { taskId, attemptId, placeId, endedAt: endedAt ?? START };
+  return { place, task, attempt };
 }
 
-/** What one seeded stay call is: its task, its attempt and the claim it verifies. */
+/* Seeding one lodging call (AAP 0.5.2, 0.5.3, 0.5.7) */
+
+/** What one seeded stay call is: the claim, its lodging, the pair and the three completed meetups. */
 interface StayCall {
-  readonly taskId: string;
-  readonly attemptId: string;
-  readonly claimId: string;
+  readonly claimant: UserFixture;
+  readonly counterpart: UserFixture;
+  readonly lodging: LodgingFixture;
+  readonly claim: ClaimFixture;
+  readonly task: CallTaskFixture;
+  readonly attempt: CallAttemptFixture;
+  readonly inStay: MeetupFixture;
 }
 
-/** The shape {@link seedStayCall} builds a stay call from, with a `calling` claim as its default. */
+/** What {@link seedStayCall} may replace; the confirmed answer a case names is otherwise unconfirmed. */
 interface StayCallInput {
   readonly outcome: CallAttemptOutcome;
-  readonly confidence?: 'high' | 'low' | null;
-  readonly answer?: 'yes' | 'no' | null;
-  readonly confirmed?: boolean;
-  readonly extracted?: boolean;
+  readonly answer: 'yes' | 'no' | null;
+  readonly confidence?: 'high' | 'low';
   readonly attempts?: number;
-  readonly status?: CallTaskStatus;
-  readonly claimStatus?: LodgingClaimStatus;
-  readonly detachedClaim?: boolean;
-  readonly startedAt?: Date;
-  readonly endedAt?: Date | null;
-  readonly twilioCallSid?: string | null;
 }
 
-/** Seeds one `lodging_stay_verification` task, its claim and one ended attempt (AAP 0.5.3). */
+/**
+ * Seed one `lodging_stay_verification` task in `in_progress`, the `calling` claim it verifies, and the
+ * completed meetups a verified stay is credited with.
+ *
+ * The claim was created two hours ago, which is what makes its `resolveSeconds` exact; the claimant met
+ * the counterpart once inside the stay, once outside its dates and once past the 90-day window, so a
+ * backfill that ignored either bound would be visible (AAP 0.5.7).
+ *
+ * @param input - The outcome the call produced and whatever the case varies.
+ * @returns The rows the assertion needs, including the meetup inside the stay.
+ */
 async function seedStayCall(input: StayCallInput): Promise<StayCall> {
-  const taskId = randomUUID();
-  const attemptId = randomUUID();
-  const claimId = randomUUID();
-  const startedAt = input.startedAt ?? new Date(START.getTime() - HOUR_MS);
-
-  await db.lodgingClaim.create({
-    data: {
-      id: claimId,
-      userId: CLAIMANT,
-      lodgingId: LODGING,
-      stayFrom: new Date('2026-10-30T00:00:00.000Z'),
-      stayTo: new Date('2026-11-10T00:00:00.000Z'),
-      callConsentAt: startedAt,
-      status: input.claimStatus ?? 'calling',
-    },
+  const claimant = await makeUser(app);
+  const counterpart = await makeUser(app);
+  const venue = await makeVenue(app, { cityId: CITY });
+  const lodging = await makeLodging(app, { cityId: CITY });
+  const claim = await makeClaim(app, claimant, lodging, {
+    status: 'calling',
+    stayFrom: STAY_FROM,
+    stayTo: STAY_TO,
   });
 
-  await db.callTask.create({
-    data: {
-      id: taskId,
-      kind: 'lodging_stay_verification',
-      lodgingId: LODGING,
-      lodgingClaimId: input.detachedClaim === true ? null : claimId,
-      status: input.status ?? 'in_progress',
-      attempts: input.attempts ?? 1,
-      nextAttemptAt: startedAt,
-    },
+  await store.lodgingClaim.update({
+    where: { id: claim.id },
+    data: { createdAt: new Date(now().getTime() - 2 * HOUR_MS) },
   });
 
-  await db.callAttempt.create({
-    data: {
-      id: attemptId,
-      callTaskId: taskId,
-      twilioCallSid:
-        input.twilioCallSid === undefined ? `CA-${attemptId.slice(0, 8)}` : input.twilioCallSid,
-      state: 'ended',
-      outcome: input.outcome,
-      extractedFields:
-        input.extracted === false
-          ? Prisma.DbNull
-          : extraction({
-              kind: 'lodging_stay_verification',
-              answer: input.answer ?? null,
-              confirmed: input.confirmed ?? false,
-            }),
-      confidence: input.confidence ?? (input.outcome === 'completed' ? 'high' : null),
-      startedAt,
-      endedAt: input.endedAt === undefined ? START : input.endedAt,
-    },
+  const inStay = await makeMeetup(app, {
+    status: 'completed',
+    initiator: claimant,
+    recipient: counterpart,
+    venue,
+    startsAt: IN_STAY,
+  });
+  await makeMeetup(app, {
+    status: 'completed',
+    initiator: claimant,
+    recipient: counterpart,
+    venue,
+    startsAt: OUTSIDE_STAY,
+  });
+  await makeMeetup(app, {
+    status: 'completed',
+    initiator: counterpart,
+    recipient: claimant,
+    venue,
+    startsAt: BEFORE_WINDOW,
   });
 
-  return { taskId, attemptId, claimId };
+  const task = await makeCallTask(app, {
+    kind: 'lodging_stay_verification',
+    lodgingId: lodging.id,
+    lodgingClaimId: claim.id,
+    status: 'in_progress',
+    attempts: input.attempts ?? 1,
+  });
+  const attempt = await makeCallAttempt(app, task, {
+    state: 'ended',
+    outcome: input.outcome,
+    durationSec: 45,
+    ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
+  });
+
+  await setExtraction(attempt.id, {
+    kind: 'lodging_stay_verification',
+    answer: input.answer,
+    confirmed: input.answer !== null,
+  });
+
+  return { claimant, counterpart, lodging, claim, task, attempt, inStay };
 }
 
-/** The price records of one place, oldest id first, so an assertion reads a whole batch. */
-async function priceRows(placeId: string) {
-  return await db.priceRecord.findMany({ where: { placeId } });
+/* The rows one case can change (AAP 0.5.3) */
+
+/** Every row a result may move, for the deep equality of the cases that must change nothing. */
+interface Rows {
+  readonly task: readonly unknown[];
+  readonly attempts: readonly unknown[];
+  readonly records: readonly unknown[];
+  readonly outbox: readonly unknown[];
 }
 
-// ---------------------------------------------------------------------------------------------
-// A menu call's result (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
+/**
+ * Read the rows of one menu call, so a case can assert that a refused result changed none of them.
+ *
+ * @param call - The seeded call.
+ * @returns Its task, its attempts, its price records and every outbox row.
+ */
+async function callRows(call: MenuCall): Promise<Rows> {
+  return {
+    task: await store.callTask.findMany({ where: { id: call.task.id } }),
+    attempts: await store.callAttempt.findMany({
+      where: { callTaskId: call.task.id },
+      orderBy: { startedAt: 'asc' },
+    }),
+    records: await store.priceRecord.findMany({
+      where: { placeId: call.place.id },
+      orderBy: { id: 'asc' },
+    }),
+    outbox: await store.outboxMessage.findMany({ orderBy: { id: 'asc' } }),
+  };
+}
 
-describe('a menu call that collected every price', () => {
-  it('stores one phone_quote batch and completes the task', async () => {
-    const call = await seedMenuCall({ outcome: 'completed' });
+/* Applying one recorded result (AAP 0.3.2) */
 
-    const result = await runApply(call.attemptId);
+/** The job one recorded result becomes, and what the processor reported for it. */
+interface AppliedResult {
+  readonly job: CallResultsJob;
+  readonly result: CallResultsResult;
+}
 
-    expect(result).toEqual({ applied: true, taskStatus: 'completed' });
+/**
+ * Apply one seeded result as the dispatcher would: the outbox row the API's relay writes, then the job
+ * that row becomes.
+ *
+ * @param attemptId - The attempt whose recorded result is applied.
+ * @param delivery - Which delivery of that job this is.
+ * @returns The job, so a case can redeliver it, and what the processor reported.
+ */
+async function applyResult(
+  attemptId: string,
+  delivery: 'first' | 'last' = 'first',
+): Promise<AppliedResult> {
+  const job = await callResultJob(attemptId);
 
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe('completed');
-    expect(task.resolvedBy).toBe('agent');
-    expect(task.blockedReason).toBeNull();
-    expect(task.outcomeAt?.toISOString()).toBe(call.endedAt.toISOString());
+  return { job, result: await runJob(job, delivery) };
+}
 
-    const rows = await priceRows(call.placeId);
-    expect(rows).toHaveLength(4);
+/* A menu call's recorded result (AAP 0.5.3, 0.5.6) */
 
-    // One batch, one source, one URL: the prices were heard on the place's own number (AAP 0.5.6).
-    const batchIds = new Set(rows.map((row) => row.captureBatchId));
-    expect(batchIds.size).toBe(1);
+/** One case of a recorded menu result: what the call produced and what the task must read after it. */
+interface MenuMapping {
+  readonly name: string;
+  readonly outcome: CallAttemptOutcome;
+  readonly confidence?: 'high' | 'low';
+  readonly items?: readonly MenuPriceItem[];
+  readonly attempts?: number;
+  readonly status: CallTaskStatus;
+  readonly blockedReason?: BlockedReason;
+  readonly records: number;
+  readonly reviewStatus?: 'approved' | 'needs_review';
+}
 
-    const place = await db.place.findUniqueOrThrow({ where: { id: call.placeId } });
+/**
+ * Every outcome a menu call can record, and the task status and price records each leaves behind
+ * (AAP 0.5.3's lifecycle, 0.5.6's confidence rule): a call that collected every price completes the
+ * task, one that collected less hands it to an operator queue, and the outcomes that collected nothing
+ * store no price at all.
+ */
+const MENU_MAPPINGS: readonly MenuMapping[] = [
+  {
+    name: 'a completed call with every price confirmed completes the task',
+    outcome: 'completed',
+    confidence: 'high',
+    status: 'completed',
+    records: MENU_ITEMS.length,
+    reviewStatus: 'approved',
+  },
+  {
+    name: 'a completed call with one price unconfirmed goes to the operator queue',
+    outcome: 'completed',
+    confidence: 'low',
+    items: MENU_ITEMS.map((item, index) => (index === 0 ? { ...item, confirmed: false } : item)),
+    status: 'needs_review',
+    records: MENU_ITEMS.length,
+    reviewStatus: 'needs_review',
+  },
+  {
+    name: 'a call dropped mid-script goes to the operator queue with what it collected',
+    outcome: 'needs_review',
+    confidence: 'low',
+    items: MENU_ITEMS.slice(0, 1),
+    status: 'needs_review',
+    records: 1,
+    reviewStatus: 'needs_review',
+  },
+  {
+    name: 'an unanswered call with an attempt left is requeued for the next day',
+    outcome: 'no_answer',
+    status: 'queued',
+    records: 0,
+  },
+  {
+    name: 'an unanswered call whose attempts are spent becomes unreachable',
+    outcome: 'no_answer',
+    attempts: CALL_MAX_ATTEMPTS,
+    status: 'unreachable',
+    records: 0,
+  },
+  {
+    name: 'a number the provider cannot reach becomes unreachable',
+    outcome: 'unreachable',
+    status: 'unreachable',
+    blockedReason: 'invalid_number',
+    records: 0,
+  },
+  {
+    name: 'a refusal closes the task and blocks no target',
+    outcome: 'refused',
+    status: 'refused',
+    records: 0,
+  },
+];
 
-    for (const row of rows) {
-      expect(row.source).toBe('phone_quote');
-      expect(row.sourceUrl).toBe(`tel:${place.phone}`);
-      expect(row.currency).toBe('EUR');
-      expect(row.reviewStatus).toBe('approved');
-      expect(row.confidence).toBe('high');
-      expect(row.isFixture).toBe(false);
-      expect(row.perPerson).toBeNull();
-      expect(row.ticketType).toBeNull();
-      expect(row.capturedAt.toISOString()).toBe(call.endedAt.toISOString());
-      expect(row.fxDate.toISOString()).toBe(`${CAPTURE_DAY}T00:00:00.000Z`);
-    }
-
-    const byName = new Map(rows.map((row) => [row.itemName, row]));
-
-    // 12,50 EUR at 1.1 USD per EUR is 1,375 cents, and the same conversion is applied to each item.
-    expect(byName.get('Bacalhau')?.priceUsdCents).toBe(1375);
-    expect(byName.get('Bacalhau')?.itemCategory).toBe('main');
-    expect(byName.get('Bacalhau')?.normalizedName).toBe('bacalhau');
-    expect(byName.get('Bacalhau')?.localAmountMinor).toBe(1250);
-    expect(byName.get('Bacalhau')?.alcoholic).toBeNull();
-    expect(byName.get('Arroz de Marisco')?.priceUsdCents).toBe(2640);
-    expect(byName.get('Espresso')?.itemCategory).toBe('drink');
-    expect(byName.get('Espresso')?.alcoholic).toBe(false);
-    expect(byName.get('Espresso')?.priceUsdCents).toBe(275);
-    expect(byName.get('Imperial')?.alcoholic).toBe(true);
-    expect(byName.get('Imperial')?.priceUsdCents).toBe(550);
-  });
-
-  it('stores partial data as needs_review and leaves the task to an operator', async () => {
+describe('a menu call record applied to its task', () => {
+  it.each(MENU_MAPPINGS)('$name', async (row) => {
     const call = await seedMenuCall({
-      outcome: 'needs_review',
-      confidence: 'low',
-      items: [
-        {
-          slot: 'cheapest_main',
-          dish: 'Bacalhau',
-          priceText: '12,50 €',
-          amountMinor: 1250,
-          currency: 'EUR',
-          confirmed: false,
-        },
-      ],
+      outcome: row.outcome,
+      ...(row.confidence === undefined ? {} : { confidence: row.confidence }),
+      ...(row.items === undefined ? {} : { items: row.items }),
+      ...(row.attempts === undefined ? {} : { attempts: row.attempts }),
     });
+    const endedAt = now();
 
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'needs_review' });
+    const { result } = await applyResult(call.attempt.id);
 
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe('needs_review');
-    expect(task.resolvedBy).toBeNull();
-    expect(task.outcomeAt?.toISOString()).toBe(call.endedAt.toISOString());
+    expect(result).toEqual({ applied: true, taskStatus: row.status });
 
-    const rows = await priceRows(call.placeId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.reviewStatus).toBe('needs_review');
-    expect(rows[0]?.confidence).toBe('low');
-  });
+    const task = await taskRow(call.task.id);
+    expect(task.status).toBe(row.status);
+    // Every status a call result reaches is dated by the attempt's own end (AAP 0.5.7).
+    expect(task.outcomeAt?.toISOString()).toBe(endedAt.toISOString());
+    expect(task.blockedReason).toBe(row.blockedReason ?? null);
+    // Only a call that collected every price counts as the task's own result, so only it is resolved
+    // by the agent (AAP 0.5.2, 0.5.3).
+    expect(task.resolvedBy).toBe(row.status === 'completed' ? 'agent' : null);
 
-  it('stores nothing when the payload is not a readable extraction', async () => {
-    // The menu form without its `items` list: a shape the contract does not define.
-    const call = await seedMenuCall({ outcome: 'needs_review' });
-    await db.callAttempt.update({
-      where: { id: call.attemptId },
-      data: { extractedFields: extraction({ kind: 'menu_prices' }) },
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'needs_review' });
-    expect(await priceRows(call.placeId)).toHaveLength(0);
-  });
-
-  it('drops an item whose currency the FX table does not cover', async () => {
-    const call = await seedMenuCall({
-      outcome: 'completed',
-      items: [
-        ...MENU_ITEMS.slice(0, 1),
-        {
-          slot: 'priciest_main',
-          dish: 'Roast',
-          priceText: '£18.00',
-          amountMinor: 1800,
-          currency: 'GBP',
-          confirmed: true,
-        },
-      ],
-    });
-
-    // One of the two items could not be converted, so the task is not complete on partial data.
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'needs_review' });
-
-    const rows = await priceRows(call.placeId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.itemName).toBe('Bacalhau');
-  });
-
-  it('throws for a covered currency with no rate and leaves the task untouched', async () => {
-    const call = await seedMenuCall({
-      outcome: 'completed',
-      items: [
-        {
-          slot: 'cheapest_main',
-          dish: 'Tacos',
-          priceText: '$180',
-          amountMinor: 18000,
-          currency: 'MXN',
-          confirmed: true,
-        },
-      ],
-    });
-
-    await expect(runApply(call.attemptId)).rejects.toBeInstanceOf(FxRateUnavailableError);
-
-    // The transaction rolled back: the task is still the dispatcher's to retry, and nothing was
-    // stored from a price that has no rate (AAP 0.5.6).
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe('in_progress');
-    expect(task.outcomeAt).toBeNull();
-    expect(await priceRows(call.placeId)).toHaveLength(0);
-  });
-
-  it('hands a covered currency with no rate to the operator on the last delivery', async () => {
-    const call = await seedMenuCall({
-      outcome: 'completed',
-      items: [
-        {
-          slot: 'cheapest_main',
-          dish: 'Tacos',
-          priceText: '$180',
-          amountMinor: 18000,
-          currency: 'MXN',
-          confirmed: true,
-        },
-      ],
-    });
-
-    expect(await runFinalApply(call.attemptId)).toEqual({
-      applied: true,
-      taskStatus: 'needs_review',
-    });
-
-    // With no retry left there is nothing to fail into, so the task leaves `in_progress` for the one
-    // status an operator resolves a menu task from, dated by the attempt's own end (AAP 0.5.3, 0.5.7),
-    // and the prices the call could not convert are still not stored (AAP 0.5.6).
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe('needs_review');
-    expect(task.resolvedBy).toBeNull();
-    expect(task.blockedReason).toBeNull();
-    expect(task.outcomeAt?.toISOString()).toBe(call.endedAt.toISOString());
-    expect(await priceRows(call.placeId)).toHaveLength(0);
-
-    // The hand-off reports the failure by id and a short token, never by its message (AAP 0.11.1).
-    const line = logs.find(
-      (entry) =>
-        entry['event'] === 'call_result_unapplied' && entry['attemptId'] === call.attemptId,
-    );
-    expect(line).toMatchObject({ code: 'FxRateUnavailableError' });
-
-    // A redelivery now finds a task that is no longer its to move, which is what proves the task left
-    // `in_progress` and is the operator's to resolve.
-    expect(await runApply(call.attemptId)).toEqual({
-      applied: false,
-      reason: 'task_not_in_progress',
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------------------------
-// The outcomes that collect nothing (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
-describe('a menu call that collected nothing', () => {
-  const cases: {
-    readonly name: string;
-    readonly outcome: CallAttemptOutcome;
-    readonly attempts: number;
-    readonly expected: CallTaskStatus;
-    readonly blockedReason: BlockedReason | null;
-  }[] = [
-    {
-      name: 'requeues an unanswered call',
-      outcome: 'no_answer',
-      attempts: 1,
-      expected: 'queued',
-      blockedReason: null,
-    },
-    {
-      name: 'stops after the second unanswered call',
-      outcome: 'no_answer',
-      attempts: 2,
-      expected: 'unreachable',
-      blockedReason: null,
-    },
-    {
-      name: 'stops on an invalid number',
-      outcome: 'unreachable',
-      attempts: 1,
-      expected: 'unreachable',
-      blockedReason: 'invalid_number',
-    },
-    {
-      name: 'closes on a refusal',
-      outcome: 'refused',
-      attempts: 1,
-      expected: 'refused',
-      blockedReason: null,
-    },
-  ];
-
-  it.each(cases)('$name', async (entry) => {
-    const call = await seedMenuCall({ outcome: entry.outcome, attempts: entry.attempts });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: entry.expected });
-
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe(entry.expected);
-    expect(task.blockedReason).toBe(entry.blockedReason);
-    expect(task.outcomeAt?.toISOString()).toBe(call.endedAt.toISOString());
-    expect(task.resolvedBy).toBeNull();
-
-    if (entry.expected === 'queued') {
-      // The retry is a day after the attempt ended, and a queued task is not blocked (AAP 0.5.3).
-      expect(task.nextAttemptAt.toISOString()).toBe(
-        new Date(call.endedAt.getTime() + 24 * HOUR_MS).toISOString(),
+    if (row.status === 'queued') {
+      expect(task.nextAttemptAt.getTime()).toBe(
+        endedAt.getTime() + CALL_RETRY_SPACING_HOURS * HOUR_MS,
       );
     }
 
-    expect(await priceRows(call.placeId)).toHaveLength(0);
+    const records = await store.priceRecord.findMany({ where: { placeId: call.place.id } });
+    expect(records).toHaveLength(row.records);
+
+    if (row.reviewStatus !== undefined) {
+      expect(new Set(records.map((record) => record.reviewStatus))).toEqual(
+        new Set([row.reviewStatus]),
+      );
+    }
   });
 
-  it('blocks the number everywhere and cancels every other task for it', async () => {
-    // The call answers for the seeded place, whose number a second place shares (AAP 0.5.6).
-    const call = await seedMenuCall({ outcome: 'do_not_call', placeId: PLACE });
+  it('stores the collected prices as one approved phone_quote batch', async () => {
+    const call = await seedMenuCall({ outcome: 'completed', confidence: 'high' });
+    const endedAt = now();
 
-    // A second place behind the same line, with a task waiting and a call already live, and a third
-    // place on another number that must be left exactly as it is.
-    const sharedTaskId = randomUUID();
-    const sharedAttemptId = randomUUID();
-    const otherTaskId = randomUUID();
+    const { result } = await applyResult(call.attempt.id);
 
-    await db.callTask.create({
-      data: {
-        id: sharedTaskId,
-        kind: 'menu_prices',
-        placeId: PLACE_SHARED,
-        status: 'queued',
-        nextAttemptAt: START,
-      },
+    expect(result).toEqual({ applied: true, taskStatus: 'completed' });
+
+    const records = await store.priceRecord.findMany({ where: { placeId: call.place.id } });
+    expect(records).toHaveLength(MENU_ITEMS.length);
+    // One call is one capture batch, as one fetch is on the online path, so the estimate reads the
+    // call's prices as one capture (AAP 0.5.6, 0.5.7).
+    expect(new Set(records.map((record) => record.captureBatchId)).size).toBe(1);
+
+    const byName = new Map(records.map((record) => [record.itemName, record]));
+
+    for (const item of MENU_ITEMS) {
+      const record = byName.get(item.dish);
+
+      if (record === undefined) {
+        throw new Error(`no price record was stored for ${item.dish}`);
+      }
+
+      expect(record.source).toBe('phone_quote');
+      // The number called is the price's source, and the only attribution a quote has (AAP 0.5.6).
+      expect(record.sourceUrl).toBe(`tel:${call.place.phone}`);
+      expect(record.currency).toBe('EUR');
+      expect(record.priceText).toBe(item.priceText);
+      expect(record.localAmountMinor).toBe(item.amountMinor);
+      expect(record.priceUsdCents).toBe(USD_CENTS[item.dish]);
+      expect(record.itemCategory).toBe(
+        item.slot === 'coffee' || item.slot === 'beer' ? 'drink' : 'main',
+      );
+      expect(record.alcoholic).toBe(
+        item.slot === 'coffee' ? false : item.slot === 'beer' ? true : null,
+      );
+      expect(record.normalizedName).toBe(normalizeItemName(item.dish));
+      // A phone quote is a dish or a drink, so the two ticket columns stay empty (AAP 0.5.6).
+      expect(record.perPerson).toBeNull();
+      expect(record.ticketType).toBeNull();
+      expect(record.reviewStatus).toBe('approved');
+      expect(record.confidence).toBe('high');
+      expect(record.capturedAt.toISOString()).toBe(endedAt.toISOString());
+      // The rate's own day, which the provider published and `fx-refresh` stored under.
+      expect(record.fxDate.toISOString()).toBe('2026-11-03T00:00:00.000Z');
+    }
+  });
+
+  it('blocks the number and cancels every other task for it', async () => {
+    const shared = await makePlace(app, {
+      cityId: CITY,
+      category: 'cafe',
+      phone: SHARED_PHONE,
     });
-    await db.callAttempt.create({
-      data: {
-        id: sharedAttemptId,
-        callTaskId: sharedTaskId,
-        twilioCallSid: `CA-${sharedAttemptId.slice(0, 8)}`,
-        state: 'in_progress',
-        startedAt: START,
-      },
+    const call = await seedMenuCall({ outcome: 'do_not_call', phone: SHARED_PHONE });
+    const other = await makePlace(app, { cityId: CITY, category: 'bar', phone: OTHER_PHONE });
+
+    // A second task for the place that was called, one for a place reachable on the same number, and
+    // one that must not be touched: the answer is about the number, not about one row (AAP 0.5.3).
+    const sameTarget = await makeCallTask(app, {
+      kind: 'menu_prices',
+      placeId: call.place.id,
+      status: 'queued',
     });
-    await db.callTask.create({
-      data: {
-        id: otherTaskId,
-        kind: 'menu_prices',
-        placeId: PLACE_OTHER,
-        status: 'queued',
-        nextAttemptAt: START,
-      },
+    const samePhone = await makeCallTask(app, {
+      kind: 'menu_prices',
+      placeId: shared.id,
+      status: 'queued',
+    });
+    const untouched = await makeCallTask(app, {
+      kind: 'menu_prices',
+      placeId: other.id,
+      status: 'queued',
     });
 
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'do_not_call' });
+    const { result } = await applyResult(call.attempt.id);
 
-    const applied = await taskRow(call.taskId);
+    expect(result).toEqual({ applied: true, taskStatus: 'do_not_call' });
+
+    const applied = await taskRow(call.task.id);
     expect(applied.status).toBe('do_not_call');
     expect(applied.blockedReason).toBe('do_not_call');
+    expect((await taskRow(sameTarget.id)).status).toBe('cancelled');
+    expect((await taskRow(samePhone.id)).status).toBe('cancelled');
+    expect((await taskRow(untouched.id)).status).toBe('queued');
 
-    // The number is blocked on both records that carry it, and nowhere else.
-    expect((await db.place.findUniqueOrThrow({ where: { id: PLACE } })).doNotCall).toBe(true);
-    expect((await db.place.findUniqueOrThrow({ where: { id: PLACE_SHARED } })).doNotCall).toBe(
-      true,
-    );
-    expect((await db.place.findUniqueOrThrow({ where: { id: PLACE_OTHER } })).doNotCall).toBe(
-      false,
-    );
-
-    expect((await taskRow(sharedTaskId)).status).toBe('cancelled');
-    expect((await taskRow(otherTaskId)).status).toBe('queued');
-
-    // Only the attempt that did not produce the result is superseded (AAP 0.5.3).
-    const sharedAttempt = await db.callAttempt.findUniqueOrThrow({
-      where: { id: sharedAttemptId },
+    const places = await store.place.findMany({
+      where: { id: { in: [call.place.id, shared.id, other.id] } },
+      select: { id: true, doNotCall: true },
     });
-    const appliedAttempt = await db.callAttempt.findUniqueOrThrow({
-      where: { id: call.attemptId },
-    });
-    expect(sharedAttempt.superseded).toBe(true);
-    expect(appliedAttempt.superseded).toBe(false);
+    const flagged = new Map(places.map((place) => [place.id, place.doNotCall]));
+
+    expect(flagged.get(call.place.id)).toBe(true);
+    expect(flagged.get(shared.id)).toBe(true);
+    expect(flagged.get(other.id)).toBe(false);
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
   });
-});
 
-// ---------------------------------------------------------------------------------------------
-// A lodging call's result (AAP 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
+  it('stores nothing when the payload is not a readable extraction', async () => {
+    const call = await seedMenuCall({ outcome: 'needs_review' });
 
-describe('a stay call with a confirmed answer', () => {
-  it('verifies the claim, completes the task and credits the lodging', async () => {
-    const call = await seedStayCall({
+    // The menu form without its list of items: a payload the contract does not define, which must not
+    // become a price nobody can trace to what was said (AAP 0.5.6).
+    await store.callAttempt.update({
+      where: { id: call.attempt.id },
+      data: { extractedFields: asJson({ kind: 'menu_prices' }) },
+    });
+
+    const { result } = await applyResult(call.attempt.id);
+
+    expect(result).toEqual({ applied: true, taskStatus: 'needs_review' });
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
+  });
+
+  it('leaves a price it cannot convert for the queue to retry', async () => {
+    // The table covers MXN, so the item is not dropped as an unsupported currency is; no rate reaches
+    // back to the capture day, so it cannot be converted yet (AAP 0.5.6).
+    await store.fxRate.deleteMany({ where: { currency: 'MXN' } });
+
+    const call = await seedMenuCall({
       outcome: 'completed',
       confidence: 'high',
-      answer: 'yes',
-      confirmed: true,
+      items: [
+        {
+          slot: 'cheapest_main',
+          dish: 'Tacos',
+          priceText: '180 MXN',
+          amountMinor: 18_000,
+          currency: 'MXN',
+          confirmed: true,
+        },
+      ],
     });
+    const endedAt = now();
+    const job = await callResultJob(call.attempt.id);
 
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'completed' });
+    // A delivery the queue will retry fails, and the next one tries the same application again: the
+    // whole application is one transaction, so nothing it wrote survives the throw (AAP 0.3.2).
+    await expect(runJob(job)).rejects.toThrow(FxRateUnavailableError);
+    expect((await taskRow(call.task.id)).status).toBe('in_progress');
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
 
-    const task = await taskRow(call.taskId);
-    expect(task.status).toBe('completed');
-    expect(task.resolvedBy).toBe('agent');
-    expect(task.lodgingClaimId).toBe(call.claimId);
+    // The last delivery has no retry behind it, so it hands the task to the operator queue rather than
+    // leaving it `in_progress` with nothing that could ever move it (AAP 0.5.3).
+    expect(await runJob(job, 'last')).toEqual({ applied: true, taskStatus: 'needs_review' });
 
-    const claim = await db.lodgingClaim.findUniqueOrThrow({ where: { id: call.claimId } });
-    expect(claim.status).toBe('verified');
-    expect(claim.resolvedAt?.toISOString()).toBe(START.toISOString());
-
-    // The verification backfills the one completed meetup the stay covers (AAP 0.5.7).
-    const facts = await db.lodgingActivityFact.findMany({ where: { lodgingId: LODGING } });
-    expect(facts).toHaveLength(1);
-    expect(facts[0]?.meetupId).toBe(MEETUP);
-
-    // The dashboard's claim measures and the claimant's notification are written with it.
-    expect(
-      await db.analyticsEvent.count({ where: { name: 'lodging_claim_resolved' } }),
-    ).toBeGreaterThan(0);
-    expect(await db.outboxMessage.count({ where: { kind: 'notification' } })).toBeGreaterThan(0);
-  });
-
-  it('rejects the claim when reception said no', async () => {
-    const call = await seedStayCall({
-      outcome: 'completed',
-      confidence: 'high',
-      answer: 'no',
-      confirmed: true,
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'completed' });
-
-    const claim = await db.lodgingClaim.findUniqueOrThrow({ where: { id: call.claimId } });
-    expect(claim.status).toBe('rejected');
-    expect(await db.lodgingActivityFact.count({ where: { lodgingId: LODGING } })).toBe(1);
-  });
-
-  it('returns the claim to pending_call when no answer was confirmed', async () => {
-    const call = await seedStayCall({
-      outcome: 'needs_review',
-      confidence: 'low',
-      answer: 'yes',
-      confirmed: false,
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'needs_review' });
-
-    const claim = await db.lodgingClaim.findUniqueOrThrow({ where: { id: call.claimId } });
-    expect(claim.status).toBe('pending_call');
-    expect(claim.resolvedAt).toBeNull();
-
-    // The task joins the operator queue while the claimant still sees the claim pending, and the
-    // attempt's own fields are left for the operator to read (AAP 0.5.3).
-    const task = await taskRow(call.taskId);
+    const task = await taskRow(call.task.id);
     expect(task.status).toBe('needs_review');
-    const attempt = await db.callAttempt.findUniqueOrThrow({ where: { id: call.attemptId } });
-    expect(attempt.extractedFields).not.toBeNull();
-  });
-
-  it('refuses a result whose claim a resolution has already decided', async () => {
-    const call = await seedStayCall({
-      outcome: 'completed',
-      confidence: 'high',
-      answer: 'yes',
-      confirmed: true,
-      claimStatus: 'verified',
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: false, reason: 'claim_missing' });
-    expect((await taskRow(call.taskId)).status).toBe('in_progress');
+    expect(task.blockedReason).toBeNull();
+    expect(task.outcomeAt?.toISOString()).toBe(endedAt.toISOString());
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// The guards (AAP 0.3.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
+/* Results that must not be applied (AAP 0.3.2, 0.5.3) */
 
-describe('a result that has already been decided', () => {
-  it('is refused when the task is no longer in progress', async () => {
-    const call = await seedMenuCall({ outcome: 'completed' });
+describe('a result that must not be applied', () => {
+  it('changes nothing for a task that is already decided', async () => {
+    const call = await seedMenuCall({ outcome: 'completed', confidence: 'high' });
+    expect((await applyResult(call.attempt.id)).result).toEqual({
+      applied: true,
+      taskStatus: 'completed',
+    });
 
-    expect(await runApply(call.attemptId)).toEqual({ applied: true, taskStatus: 'completed' });
-    // The outbox row was redelivered: the same job, the same attempt, nothing left to decide.
-    expect(await runApply(call.attemptId)).toEqual({
+    // An operator or a claim's resolution moved the task on after the call ended: the terminal task
+    // stays terminal, whatever a later attempt reports (AAP 0.5.3).
+    await store.callTask.update({ where: { id: call.task.id }, data: { status: 'cancelled' } });
+    const later = await makeCallAttempt(app, call.task, {
+      state: 'ended',
+      outcome: 'completed',
+      confidence: 'high',
+    });
+    await setExtraction(later.id, { kind: 'menu_prices', items: MENU_ITEMS });
+
+    const job = await callResultJob(later.id);
+    const before = await callRows(call);
+
+    expect(await runJob(job)).toEqual({ applied: false, reason: 'task_not_in_progress' });
+    expect(await callRows(call)).toEqual(before);
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(
+      MENU_ITEMS.length,
+    );
+  });
+
+  it('changes nothing for an attempt a resolution superseded', async () => {
+    const call = await seedMenuCall({ outcome: 'completed', confidence: 'high' });
+
+    // The signal the API's relay reads when a call is ended: a superseded attempt's result is never
+    // applied, even while its task is still open (AAP 0.5.3).
+    await store.callAttempt.update({
+      where: { id: call.attempt.id },
+      data: { superseded: true },
+    });
+
+    const job = await callResultJob(call.attempt.id);
+    const before = await callRows(call);
+
+    expect(await runJob(job)).toEqual({ applied: false, reason: 'attempt_superseded' });
+    expect(await callRows(call)).toEqual(before);
+    expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
+  });
+
+  it('changes nothing when the same job is delivered again', async () => {
+    const call = await seedMenuCall({ outcome: 'completed', confidence: 'high' });
+    const applied = await applyResult(call.attempt.id);
+
+    expect(applied.result).toEqual({ applied: true, taskStatus: 'completed' });
+
+    const before = await callRows(call);
+
+    expect(await runJob(applied.job)).toEqual({
       applied: false,
       reason: 'task_not_in_progress',
     });
-    expect(await priceRows(call.placeId)).toHaveLength(4);
-  });
+    expect(await callRows(call)).toEqual(before);
 
-  it('is refused when the attempt was superseded', async () => {
-    const call = await seedMenuCall({ outcome: 'completed', superseded: true });
-
-    expect(await runApply(call.attemptId)).toEqual({
-      applied: false,
-      reason: 'attempt_superseded',
-    });
-    expect((await taskRow(call.taskId)).status).toBe('in_progress');
-  });
-
-  it('is refused when a later attempt has replaced it', async () => {
-    const call = await seedMenuCall({
-      outcome: 'needs_review',
-      startedAt: new Date(START.getTime() - 4 * HOUR_MS),
-    });
-    const later = randomUUID();
-
-    await db.callAttempt.create({
-      data: {
-        id: later,
-        callTaskId: call.taskId,
-        twilioCallSid: `CA-${later.slice(0, 8)}`,
-        state: 'in_progress',
-        startedAt: new Date(START.getTime() - 2 * HOUR_MS),
-      },
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({
-      applied: false,
-      reason: 'attempt_superseded',
-    });
-    expect((await taskRow(call.taskId)).status).toBe('in_progress');
-  });
-
-  it('is refused when it names an attempt that is gone', async () => {
-    expect(await runApply(randomUUID())).toEqual({ applied: false, reason: 'attempt_missing' });
-  });
-
-  it('is refused when the attempt carries no outcome yet', async () => {
-    const taskId = randomUUID();
-    const attemptId = randomUUID();
-
-    await db.callTask.create({
-      data: {
-        id: taskId,
-        kind: 'menu_prices',
-        placeId: PLACE,
-        status: 'in_progress',
-        attempts: 1,
-        nextAttemptAt: START,
-      },
-    });
-    await db.callAttempt.create({
-      data: {
-        id: attemptId,
-        callTaskId: taskId,
-        twilioCallSid: `CA-${attemptId.slice(0, 8)}`,
-        state: 'in_progress',
-        startedAt: START,
-      },
-    });
-
-    expect(await runApply(attemptId)).toEqual({ applied: false, reason: 'outcome_missing' });
-    expect(
-      logs.some(
-        (line) =>
-          line['event'] === 'call_result_without_outcome' && line['attemptId'] === attemptId,
-      ),
-    ).toBe(true);
-  });
-
-  it('is refused for an attempt whose call content was stripped', async () => {
-    const call = await seedStayCall({
-      outcome: 'needs_review',
-      extracted: false,
-      detachedClaim: true,
-      twilioCallSid: null,
-    });
-
-    expect(await runApply(call.attemptId)).toEqual({ applied: false, reason: 'attempt_stripped' });
-    expect((await taskRow(call.taskId)).status).toBe('in_progress');
+    const records = await store.priceRecord.findMany({ where: { placeId: call.place.id } });
+    expect(records).toHaveLength(MENU_ITEMS.length);
+    expect(new Set(records.map((record) => record.captureBatchId)).size).toBe(1);
   });
 });
 
-// ---------------------------------------------------------------------------------------------
-// The job's own boundary (AAP 0.5.6, 0.11.1)
-// ---------------------------------------------------------------------------------------------
+/* A lodging call's recorded result (AAP 0.5.3, 0.5.7) */
 
-describe('the job itself', () => {
-  it('refuses a name the call-results queue does not accept', async () => {
-    await expect(
-      process(
-        { name: 'settle', data: { outboxId: randomUUID(), callAttemptId: randomUUID() } },
-        ctx as WorkerContext,
-      ),
-    ).rejects.toBeInstanceOf(QueuePayloadError);
-  });
+/** One case of a recorded stay result: the answer and what the claim and task must read after it. */
+interface StayMapping {
+  readonly name: string;
+  readonly outcome: CallAttemptOutcome;
+  readonly answer: 'yes' | 'no' | null;
+  readonly confidence?: 'high' | 'low';
+  readonly attempts?: number;
+  readonly taskStatus: CallTaskStatus;
+  readonly claimStatus: LodgingClaimStatus;
+}
 
-  it('refuses data that is not an attempt to apply', async () => {
-    await expect(
-      process(
-        { name: JOB[QUEUE.callResults].apply, data: { outboxId: randomUUID() } },
-        ctx as WorkerContext,
-      ),
-    ).rejects.toBeInstanceOf(QueuePayloadError);
-  });
+/**
+ * Every result a stay call can record, and what it leaves behind (AAP 0.5.3): only an explicit,
+ * confirmed answer decides the claim, and every other result returns it to the operator queue while
+ * the claimant still reads it as pending.
+ */
+const STAY_MAPPINGS: readonly StayMapping[] = [
+  {
+    name: 'a confirmed yes verifies the claim and completes the task',
+    outcome: 'completed',
+    answer: 'yes',
+    confidence: 'high',
+    taskStatus: 'completed',
+    claimStatus: 'verified',
+  },
+  {
+    name: 'a confirmed no rejects the claim',
+    outcome: 'completed',
+    answer: 'no',
+    confidence: 'high',
+    taskStatus: 'completed',
+    claimStatus: 'rejected',
+  },
+  {
+    name: 'an unconfirmed answer returns the claim to the operator queue',
+    outcome: 'needs_review',
+    answer: null,
+    confidence: 'low',
+    taskStatus: 'needs_review',
+    claimStatus: 'pending_call',
+  },
+  {
+    name: 'an unanswered call leaves the claim waiting for a retry',
+    outcome: 'no_answer',
+    answer: null,
+    attempts: 1,
+    taskStatus: 'queued',
+    claimStatus: 'pending_call',
+  },
+];
 
-  it('logs the applied outcome by id alone', async () => {
-    const call = await seedMenuCall({ outcome: 'completed' });
-
-    await runApply(call.attemptId);
-
-    const line = logs.find(
-      (entry) => entry['event'] === 'call_outcome' && entry['attemptId'] === call.attemptId,
-    );
-    expect(line).toMatchObject({
-      taskId: call.taskId,
-      outcome: 'completed',
-      taskStatus: 'completed',
+describe('a lodging call record applied to its claim', () => {
+  it.each(STAY_MAPPINGS)('$name', async (row) => {
+    const stay = await seedStayCall({
+      outcome: row.outcome,
+      answer: row.answer,
+      ...(row.confidence === undefined ? {} : { confidence: row.confidence }),
+      ...(row.attempts === undefined ? {} : { attempts: row.attempts }),
     });
-    // Nothing that was said on the call reaches a log line (AAP 0.11.1).
-    expect(JSON.stringify(line)).not.toContain(MENU_PHONE);
-    expect(JSON.stringify(line)).not.toContain('Bacalhau');
+    const endedAt = now();
+
+    const { result } = await applyResult(stay.attempt.id);
+
+    expect(result).toEqual({ applied: true, taskStatus: row.taskStatus });
+
+    const task = await taskRow(stay.task.id);
+    expect(task.status).toBe(row.taskStatus);
+    expect(task.outcomeAt?.toISOString()).toBe(endedAt.toISOString());
+    // The task that produced the answer is never cancelled and never superseded by the resolution it
+    // caused, whichever way the answer went (AAP 0.5.3).
+    expect(task.status).not.toBe('cancelled');
+
+    if (row.taskStatus === 'queued') {
+      expect(task.nextAttemptAt.getTime()).toBe(
+        endedAt.getTime() + CALL_RETRY_SPACING_HOURS * HOUR_MS,
+      );
+    }
+
+    const resolved = row.claimStatus === 'verified' || row.claimStatus === 'rejected';
+    const claim = await store.lodgingClaim.findUniqueOrThrow({ where: { id: stay.claim.id } });
+
+    expect(claim.status).toBe(row.claimStatus);
+    expect(claim.resolvedAt?.toISOString() ?? null).toBe(resolved ? endedAt.toISOString() : null);
+
+    // A resolution writes the leaderboard fact only for a verified stay, and the claim measure and the
+    // claimant's notification for any resolution (AAP 0.5.7).
+    expect(await store.lodgingActivityFact.count({ where: { lodgingId: stay.lodging.id } })).toBe(
+      row.claimStatus === 'verified' ? 1 : 0,
+    );
+
+    const events = await store.analyticsEvent.findMany({
+      where: { name: 'lodging_claim_resolved' },
+    });
+    expect(events).toHaveLength(resolved ? 1 : 0);
+
+    if (resolved) {
+      expect(events[0]?.props).toEqual({
+        outcome: row.claimStatus,
+        resolveSeconds: (2 * HOUR_MS) / 1000,
+      });
+    }
+
+    expect(await store.outboxMessage.count({ where: { kind: 'notification' } })).toBe(
+      resolved ? 1 : 0,
+    );
+  });
+
+  it('credits the stay to the lodging and notifies the claimant', async () => {
+    const stay = await seedStayCall({ outcome: 'completed', answer: 'yes', confidence: 'high' });
+
+    // A retry the dispatcher left open for the same claim, with its attempt still in a state a call
+    // could genuinely be live in: resolving the claim cancels the work that produced no result and
+    // ends the call it was holding, while the task that did produce it is left alone (AAP 0.5.3).
+    const retry = await makeCallTask(app, {
+      kind: 'lodging_stay_verification',
+      lodgingId: stay.lodging.id,
+      lodgingClaimId: stay.claim.id,
+      status: 'queued',
+    });
+    const live = await makeCallAttempt(app, retry, { state: 'dispatching' });
+    const endedAt = now();
+
+    const { job, result } = await applyResult(stay.attempt.id);
+
+    expect(result).toEqual({ applied: true, taskStatus: 'completed' });
+
+    const task = await taskRow(stay.task.id);
+    expect(task.resolvedBy).toBe('agent');
+    // The verification work the claim still had outstanding is cancelled, not the task that answered:
+    // a terminal task stays terminal (AAP 0.5.3).
+    expect((await taskRow(retry.id)).status).toBe('cancelled');
+    expect((await store.callAttempt.findUniqueOrThrow({ where: { id: live.id } })).superseded).toBe(
+      true,
+    );
+
+    const claim = await store.lodgingClaim.findUniqueOrThrow({ where: { id: stay.claim.id } });
+    expect(claim.status).toBe('verified');
+    expect(claim.resolvedAt?.toISOString()).toBe(endedAt.toISOString());
+    // The booking details are the `data-expiry` run's to erase, not this job's (AAP 0.5.2).
+    expect(claim.detailsErasedAt).toBeNull();
+
+    // Exactly the one completed meetup the stay covers is credited: not the meetup outside the stay's
+    // dates, and not the one past the 90-day window (AAP 0.5.7).
+    const facts = await store.lodgingActivityFact.findMany({
+      where: { lodgingId: stay.lodging.id },
+    });
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.meetupId).toBe(stay.inStay.id);
+    expect(facts[0]?.pairKey).toBe(
+      pairKey(ctx.env.ANALYTICS_SALT, stay.claimant.id, stay.counterpart.id),
+    );
+    // A fact carries the meetup's own settlement, so a backfill never moves a historical score.
+    expect(facts[0]?.completedAt.getTime()).toBe(
+      stay.inStay.startsAt.getTime() + CHECK_IN_CLOSES_AFTER_MINUTES * MINUTE_MS,
+    );
+
+    // The claim measure the dashboard counts, keyed by the claimant's hash and dated by the run.
+    const events = await store.analyticsEvent.findMany({
+      where: { name: 'lodging_claim_resolved' },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actorHash).toBe(actorHash(ctx.env.ANALYTICS_SALT, stay.claimant.id));
+    expect(events[0]?.cityId).toBe(CITY);
+    expect(events[0]?.props).toEqual({ outcome: 'verified', resolveSeconds: (2 * HOUR_MS) / 1000 });
+
+    // The claimant's message, written in the transaction that resolved the claim (AAP 0.3.2).
+    const notifications = await store.outboxMessage.findMany({ where: { kind: 'notification' } });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.payload).toEqual({
+      kind: 'lodging_claim_resolved',
+      userId: stay.claimant.id,
+      lodgingClaimId: stay.claim.id,
+    });
+
+    // The row is delivered a second time, and the claim is terminal: nothing is written again.
+    expect(await runJob(job)).toEqual({ applied: false, reason: 'task_not_in_progress' });
+    expect(
+      (await store.lodgingClaim.findUniqueOrThrow({ where: { id: stay.claim.id } })).status,
+    ).toBe('verified');
+    expect(await store.lodgingActivityFact.count({ where: { lodgingId: stay.lodging.id } })).toBe(
+      1,
+    );
+    expect(await store.analyticsEvent.count({ where: { name: 'lodging_claim_resolved' } })).toBe(1);
+    expect(await store.outboxMessage.count({ where: { kind: 'notification' } })).toBe(1);
   });
 });
