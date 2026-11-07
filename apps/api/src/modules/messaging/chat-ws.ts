@@ -14,8 +14,9 @@
  *
  *  - **Frames are processed one at a time, in order.** Every inbound frame's work is appended to a
  *    per-socket promise chain, so two messages from one sender are committed in the order they were
- *    sent. A chain that rejected would stall every frame behind it, so each frame's handling turns
- *    every failure it can meet into a frame and resolves.
+ *    sent, and a frame a client writes the moment its handshake completed waits for the socket's
+ *    meetup set to be attached instead of being lost. A chain that rejected would stall every frame
+ *    behind it, so each frame's handling turns every failure it can meet into a frame and resolves.
  *  - **The access check runs inside the transaction that writes the message**, behind the
  *    account-deletion write fence (AAP 0.5.3). `transact(..., { fenceUserId })` takes `SELECT … FOR
  *    SHARE` on the sender's row first, the session the upgrade authenticated with is then re-resolved
@@ -456,9 +457,32 @@ async function serveSocket(
     chain: Promise.resolve(),
   };
 
+  /**
+   * Resolved once the socket carries its meetups, and never before.
+   *
+   * The listener below is attached before the first `await`, because `ws` emits `message` whether or
+   * not anything is listening: a frame a client writes as soon as its handshake completes — the
+   * native and web clients both send as soon as the socket is open, with no readiness step — would
+   * otherwise be dropped in the window the meetup set is read in. Every frame's work then waits on
+   * this gate, so a frame that arrived inside that window is judged after the socket carries the
+   * meetup it names, and the frames still run one at a time in the order they were sent. An attach
+   * that fails closes the socket and leaves the gate unresolved: nothing queued behind it runs.
+   */
+  let attached: () => void = () => undefined;
+  const ready = new Promise<void>((resolve) => {
+    attached = resolve;
+  });
+
+  socket.on('message', (data, isBinary) => {
+    connection.chain = connection.chain
+      .then(() => ready)
+      .then(() => receiveFrame(connection, data, isBinary));
+  });
+
   try {
     const meetupIds = await messageableMeetupIds(services.db, userId);
     services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
+    attached();
   } catch (error) {
     request.log.warn(
       { event: 'chat_attach_failed', err: { name: errorName(error) } },
@@ -494,10 +518,6 @@ async function serveSocket(
 
   socket.on('close', stop);
   socket.on('error', stop);
-
-  socket.on('message', (data, isBinary) => {
-    connection.chain = connection.chain.then(() => receiveFrame(connection, data, isBinary));
-  });
 }
 
 /*
