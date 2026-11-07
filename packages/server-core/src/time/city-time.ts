@@ -12,11 +12,13 @@
  * No luxon global state is touched: every construction passes `{ zone }` explicitly, so no result
  * depends on the zone the process happens to run in.
  *
- * Daylight saving, as the pinned luxon 3.7.2 resolves it: a wall time in the spring-forward gap
- * moves forward by the size of the gap (Lisbon 2026-03-29 01:30 is 02:30 WEST, 2026-03-29T01:30Z),
- * and a wall time in the fall-back overlap takes the later instant, the post-transition
- * standard-time reading (Lisbon 2026-10-25 01:30 is 01:30 WET, 2026-10-25T01:30Z). Lisbon is the
- * only launch city with DST, and neither window meets the calling hours or the 23:00 cut-off.
+ * Daylight saving is resolved from the zone's own offset table rather than through luxon's factory,
+ * which guesses the offset to read a wall time at from `Settings.now()`: a wall time in the
+ * spring-forward gap moves forward by the size of the gap (Lisbon 2026-03-29 01:30 is 02:30 WEST,
+ * 2026-03-29T01:30Z), and a wall time in the fall-back overlap takes the earlier of its two readings
+ * (Lisbon 2026-10-25 01:30 is 01:30 WEST, 2026-10-25T00:30Z), so neither depends on when the process
+ * started. Lisbon is the only launch city with DST, and neither wall time meets the calling hours or
+ * the 23:00 cut-off.
  */
 import { DateTime, IANAZone } from 'luxon';
 
@@ -82,6 +84,47 @@ function isoDateOf(dt: MaybeValid): string {
   return dt.toISODate();
 }
 
+/** One day in milliseconds: the step that brackets a DST transition when probing a zone's offsets. */
+const DAY_MS = 86_400_000;
+
+/**
+ * The offsets, in minutes east of UTC, that could apply around the wall-clock time `wallMs` — the
+ * zone's offset a day before it, at it and a day after it. A transition moves the offset once, so
+ * one day either side brackets every candidate.
+ */
+function candidateOffsets(zone: IANAZone, wallMs: number): number[] {
+  const offsets = new Set<number>();
+  for (const step of [-DAY_MS, 0, DAY_MS]) {
+    offsets.add(zone.offset(wallMs + step));
+  }
+  return [...offsets];
+}
+
+/**
+ * The instant the wall-clock time `wallMs` denotes in `zone`, where `wallMs` is the millisecond
+ * count `Date.UTC` produces for those fields. Reading that wall time at offset `o` gives the instant
+ * `wallMs - o * 60_000`, so an offset is a real reading only when the zone reports it again at that
+ * instant.
+ *
+ * A fall-back overlap has two real readings and the earlier is taken, so the result never depends on
+ * when the process started; a spring-forward gap has none, and the wall time moves forward by the
+ * size of the gap, its first instant after it.
+ *
+ * `DateTime.fromObject` cannot be used for this: it guesses the offset to read the wall time at from
+ * `Settings.now()`, so an ambiguous wall time resolves differently in a process started in summer
+ * and one started in winter.
+ */
+function resolveWallTime(zone: IANAZone, wallMs: number): Date {
+  const offsets = candidateOffsets(zone, wallMs);
+  const readings = offsets
+    .map((offset) => wallMs - offset * 60_000)
+    .filter((instant) => zone.offset(instant) * 60_000 === wallMs - instant);
+  if (readings.length > 0) {
+    return new Date(Math.min(...readings));
+  }
+  return new Date(wallMs - Math.min(...offsets) * 60_000);
+}
+
 /**
  * Assert that `tz` is an IANA zone the runtime knows (AAP 0.6.2: zones come from
  * `config/cities.json`). Every other export takes a zone and calls this first.
@@ -105,20 +148,16 @@ export function localDateKey(tz: string, at: Date): string {
 }
 
 /**
- * The UTC instant of wall-clock `hhmm` on `localDate` in `tz` (AAP 0.5.6), under the DST rule in
- * the file header: a gap wall time moves forward by the gap, an overlap takes the later reading.
- * Throws `RangeError` for a non-IANA zone or a malformed string.
+ * The UTC instant of wall-clock `hhmm` on `localDate` in `tz` (AAP 0.5.6), resolved by
+ * {@link resolveWallTime} under the DST rule in the file header: a gap wall time moves forward by
+ * the gap, an overlap takes the earlier reading. Throws `RangeError` for a non-IANA zone or a
+ * malformed string.
  */
 export function localTimeOn(tz: string, localDate: string, hhmm: string): Date {
   assertValidZone(tz);
   const { year, month, day } = parseLocalDate(localDate);
   const { hour, minute } = parseHHmm(hhmm);
-  return toDate(
-    DateTime.fromObject(
-      { year, month, day, hour, minute, second: 0, millisecond: 0 },
-      { zone: tz },
-    ),
-  );
+  return resolveWallTime(IANAZone.create(tz), Date.UTC(year, month - 1, day, hour, minute));
 }
 
 /**
