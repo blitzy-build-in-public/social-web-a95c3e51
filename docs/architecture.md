@@ -311,8 +311,11 @@ in process.
 
 Files are `kebab-case.ts` and React components `PascalCase.tsx`; Prisma models are `PascalCase` mapped
 to `snake_case` tables; enum values and error codes are `snake_case`, as the contract lists them;
-environment variables are `UPPER_SNAKE_CASE`; workspace packages are `@tablemate/<workspace>`. Every
-workspace extends `tsconfig.base.json`, so `strict`, `noUncheckedIndexedAccess`,
+environment variables are `UPPER_SNAKE_CASE`; workspace packages are `@tablemate/<workspace>`. The City
+primary key is the one id the plan calls a slug id (AAP 0.5.2): the column is named `id`, its value is
+the city slug (`lisbon`, `mexico-city`, …), and that same value is what `CityDto.id`, every `:cityId`
+parameter, `config/cities.json` and the registry's `slug` field carry. Every workspace extends
+`tsconfig.base.json`, so `strict`, `noUncheckedIndexedAccess`,
 `exactOptionalPropertyTypes`, `verbatimModuleSyntax` and `isolatedModules` hold throughout.
 Configuration is loaded by one schema per process in `packages/server-core/src/env/{common,api,workers,modes}.ts`,
 so a variable outside a process's scope is never required of it and each process fails fast with one

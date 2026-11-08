@@ -422,6 +422,9 @@ model MagicLinkToken {
 }
 
 model City {
+  // The primary key is the city slug itself (AAP 0.5.2): `id` holds `lisbon`, `mexico-city`,
+  // `medellin`, `chiang-mai` and `canggu`, the value every `:cityId` parameter, `CityDto.id` and
+  // `config/cities.json` carry. The column is named `id`, not `slug`.
   id              String                                @id
   circuitCityId   Int                                   @unique @map("circuit_city_id")
   name            String
