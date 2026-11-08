@@ -70,17 +70,27 @@ so the picker satisfies it on web; the share sheet runs on iOS and Android.
 engine and not the others. **Permitted fallback:** the request allows an attendee to "scan or enter";
 manual entry is the guaranteed path on all three engines, and the code is validated on the server clock.
 
-### Web proving memory
+### Web proving artefacts and memory
 
-**Deviation:** none, but the memory profile is recorded as a risk — the complete proving key is resident
-in the Worker's memory while it proves, with the witness and prover buffers on top. **Reason:** snarkjs
-0.7.6 reads a key through fastfile, whose `bigMem` form holds the whole file, so OPFS can stream the
-download but not feed the prover page by page. **Handling:** the Worker streams the circuit WASM and the
-key into OPFS, hashing each with `@noble/hashes` as it arrives, then reads the key in 4 MiB pages
-(`1 << 22`, fastfile's own page size) into one `bigMem` object for `groth16.prove` and builds the witness
-with `wtns.calculate` over a `mem`-form WASM. The page's main thread never holds the key, and it
-terminates the Worker after every attempt or cancellation. A browser that cannot finish the proof is
-recorded `fail` in [`zk-performance.md`](./zk-performance.md) — WebKit is in that state today.
+**Deviation:** none, but the memory profile and the engine check's two host preconditions are recorded.
+**Memory:** the complete proving key is resident in the Worker's memory while it proves, with the witness
+and prover buffers on top, because snarkjs 0.7.6 reads a key through fastfile, whose `bigMem` form holds
+the whole file. The Worker reads the key in 4 MiB pages (`1 << 22`, fastfile's own page size) into one
+`bigMem` object for `groth16.prove` and builds the witness with `wtns.calculate` over a `mem`-form WASM;
+the page's main thread never holds the key, and the Worker is terminated after every attempt or
+cancellation. Measured for one proof of this circuit: under 8 GB in Chromium and Firefox, and about 30 GB
+in Playwright's WebKit build, whose allocator also needs about 79,000 memory maps where Chromium needs a
+few thousand. **Where the artefacts come from:** the Worker streams the circuit WASM and the proving key
+into the Origin Private File System, hashing each with `@noble/hashes` as it arrives; on an engine whose
+origin private file system cannot be used — every call into it fails, as in that WebKit build — it
+resolves them from the URLs they are published at instead, and the `prove` pass streams them in one
+hashing pass, refusing anything whose length or digest differs from the manifest (AAP 0.3.4). Neither
+Cache Storage nor IndexedDB can carry the key on such an engine: the origin's quota there is 1 GiB against
+a 1.59 GB key. **The engine check's preconditions on a Linux host:** `vm.max_map_count` at 100,000 or
+more, and no kill of the web process at WebKit's 16 GB memory-pressure threshold, which the WebKit
+project of `apps/mobile/playwright.config.ts` turns off with the measurement in its comment. Without them
+the WebKit walk does not complete; with them all three engines record `pass` in
+[`zk-performance.md`](./zk-performance.md).
 
 ### Web notifications
 

@@ -25,13 +25,13 @@ defect against the web capability, never an exception, and its deviation is repo
 
 ## Criterion 4 status
 
-| Measurement                           | Result  | Evidence                                                                                    |
-| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------- |
-| Proving, iPhone 13 class              | pending | Not yet measured — device access required                                                   |
-| Proving, Pixel 7 class                | pending | Not yet measured — device access required                                                   |
-| Server verification                   | pass    | `verifyItineraryProof` p95 10.48 ms and route p95 22.68 ms — run 2026-11-08, commit a5ee7c3 |
-| Web local proving, Playwright engines | fail    | WebKit 27.2 recorded `fail` with no duration — run 2026-11-08, commit be61372-dirty         |
-| Web local proving, branded browsers   | pending | Pending — manual browser check not yet run; the Safari rows need a macOS host               |
+| Measurement                           | Result  | Evidence                                                                                                                                                                |
+| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Proving, iPhone 13 class              | pending | Not yet measured — device access required                                                                                                                               |
+| Proving, Pixel 7 class                | pending | Not yet measured — device access required                                                                                                                               |
+| Server verification                   | pass    | `verifyItineraryProof` p95 10.48 ms and route p95 22.68 ms — run 2026-11-08, commit a5ee7c3                                                                             |
+| Web local proving, Playwright engines | pass    | pass — Chromium 156.0.8078.4 256.4 s, Firefox 157.0 263.1 s and WebKit 27.2 209.4 s; each engine's proof was accepted by the API — run 2026-11-08, commit 73a65de-dirty |
+| Web local proving, branded browsers   | pending | Pending — manual browser check not yet run; the Safari rows need a macOS host                                                                                           |
 
 Updated by hand as the tables below gain measurements, and mirrored in
 [`acceptance.md`](./acceptance.md).
@@ -90,9 +90,15 @@ proofs come from the test harness, and the runtime image holds no proving key an
 a throwaway account imports `valid.eml` through the proof-import UI, the page's Web Worker proves
 it, and the API's answer to the submission is the evidence, `201` or `409 nullifier_used` when an
 earlier actor already spent the booking. Its measured span runs from the proving step's first paint
-to the instant the submission is issued, so the artefact download and its hash check sit outside it.
+to the instant the submission is issued. Where the store downloads and verifies the artefacts before
+proving — Chromium and Firefox, which keep them in the origin private file system — the transfer sits
+outside that span; on an engine whose origin private file system cannot be used the artefacts are
+streamed as proving begins, so that engine's figure includes the transfer as well.
 Each engine writes `.local/e2e/web-proving/<engine>.json`, and `scripts/e2e.ts` turns the files
-written by its own run into the block below; an engine with no file is `pending`.
+written by its own run into the block below; an engine with no file is `pending`. Where an engine's
+origin private file system cannot be used, the client resolves the two artefacts from the URLs they are
+published at and the Worker streams them, hashing each as it arrives, so the walk still reaches the
+proving step (AAP 0.3.4); Playwright's WebKit build on this host is such an engine.
 
 Branded desktop browsers are checked by hand: import and prove the same fixture through the
 proof-import screen of a stack started with `APP_ENV=test`. "The two latest" means the current
@@ -153,22 +159,36 @@ One row per engine, written from `.local/e2e/web-proving/<engine>.json` by `scri
 
 <!-- BEGIN e2e:web-proving -->
 
-Web proving in the end-to-end suite. Run 2026-11-08T18:06:00.950Z · commit 580b819 · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
+Web proving in the end-to-end suite. Run 2026-11-08T20:46:04.000Z · commit 73a65de-dirty · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
 
 | Engine   | Version      | Total (s) | Result |
 | -------- | ------------ | --------- | ------ |
-| chromium | 156.0.8078.4 | 258.9     | pass   |
-| firefox  | 157.0        | 270.5     | pass   |
-| webkit   | 27.2         | n/a       | fail   |
+| chromium | 156.0.8078.4 | 256.4     | pass   |
+| firefox  | 157.0        | 263.1     | pass   |
+| webkit   | 27.2         | 209.4     | pass   |
 
 Timings are informational: the 90-second target names only the phone classes (AAP 0.5.5). Each row is one `.local/e2e/web-proving/<engine>.json` that this run wrote, and an engine whose file is missing is `pending`. Chrome, Firefox and Safari at their current and previous branded versions are recorded by hand (AAP 0.3.4).
 
 <!-- END e2e:web-proving -->
 
-WebKit's row is a defect against the web capability rather than an exception (AAP 0.3.4): that
-engine's walk recorded a failure with no duration, so its proof was not accepted by the API and the
-engine is not proved until a later run records `pass`. The Stripe mode in the heading belongs to the
-end-to-end run that produced the rows; local proving does not touch the card provider.
+Every engine now proves the fixture locally. Chromium and Firefox read the artefacts from the origin
+private file system; Playwright's WebKit build on this host cannot use it at all — every call into it
+fails — so the client resolves the circuit WASM and the proving key from the URLs they are published at
+and the Worker streams them in one hashing pass (AAP 0.3.4). Two properties of that engine's build decide
+whether the walk can finish, and both are the host's rather than the app's:
+
+- **Memory.** One proof holds the whole 1.59 GB key plus the witness and the WebAssembly prover's own
+  allocations in a single web process. Measured here: Chromium and Firefox stay under 8 GB, WebKit's
+  process peaks near 30 GB, and WebKit's memory-pressure handler kills a process it cannot bring back
+  under its 16 GB kill threshold — `Unable to shrink memory footprint of process (19615 MB) below the
+kill thresold (16384 MB). Killed`. `apps/mobile/playwright.config.ts` turns that handler off for the
+  WebKit project alone, with the measurement recorded in its comment.
+- **Memory maps.** That engine's allocator needs about 79,000 memory maps for this proof where Chromium
+  needs a few thousand, so `vm.max_map_count` must be 100,000 or more. At the Linux default of 65,530
+  the web process spends its time in the kernel without progressing and never reaches the proof.
+
+The Stripe mode in the heading belongs to the end-to-end run that produced the rows; local proving does
+not touch the card provider.
 
 ## Web — branded desktop browsers
 

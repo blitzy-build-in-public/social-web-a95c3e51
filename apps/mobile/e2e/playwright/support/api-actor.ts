@@ -255,6 +255,11 @@ function visible(page: Page, testID: string): Locator {
  * click issued in that window lands on a node React has already replaced and changes nothing. So
  * every step waits for the screen it moved to before it touches anything on it.
  *
+ * Every node carrying an id is examined rather than the first one in document order, for the reason
+ * {@link visible} gives: React Navigation keeps a hidden copy of each screen mounted, and that copy
+ * is usually the earlier of the two, so its zero-sized box would answer for a screen that is on
+ * screen. An id counts as arrived when any of its nodes is laid out and not `visibility: hidden`.
+ *
  * @throws Error when none of the ids appears inside the deadline.
  */
 async function awaited(
@@ -265,12 +270,12 @@ async function awaited(
   const handle = await page
     .waitForFunction(
       (ids: string[]) =>
-        ids.find((id) => {
-          const el = document.querySelector(`[data-testid="${id}"]`);
-          if (el === null) return false;
-          const box = el.getBoundingClientRect();
-          return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden';
-        }) ?? false,
+        ids.find((id) =>
+          [...document.querySelectorAll(`[data-testid="${id}"]`)].some((el) => {
+            const box = el.getBoundingClientRect();
+            return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+          }),
+        ) ?? false,
       [...testIDs],
       { timeout: timeoutMs },
     )

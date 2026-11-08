@@ -4,9 +4,12 @@
  *
  * The browser half of the artefact pair whose contract `./prover.ts` declares, and the only place the
  * client creates a `Worker`. The download belongs to the Worker — it streams the circuit WASM and the
- * proving key into the Origin Private File System, hashing each as it arrives — so this page holds no
- * byte of the key. What it owns is the Worker's lifetime, its frame protocol, and the cheap question a
- * generate screen asks before a gigabyte moves: is the key already here (AAP 0.5.5)?
+ * proving key into the Origin Private File System, hashing each as it arrives, and serves the request
+ * from the artefacts' published URLs where that file system cannot be used — so this page holds no
+ * byte of the key and takes no view of which source served it: the Worker is the single authority on
+ * that, because only the Worker can see whether the origin private file system works (AAP 0.3.4).
+ * What this page owns is the Worker's lifetime, its frame protocol, and the cheap question a generate
+ * screen asks before a gigabyte moves: is the key already here (AAP 0.5.5)?
  *
  * A Worker never outlives an attempt: while it proves it holds the whole key plus the witness buffers,
  * and no message cancels a run in flight, so terminating it is both how that memory comes back and the
@@ -203,8 +206,9 @@ export function runWorker<T extends WorkerName = WorkerRequest['type']>(
 
 /* --- The artefact store (AAP 0.5.1, AAP 0.5.5) ----------------------------------------------- */
 
-/** The OPFS directory the Worker keeps both artefacts and their records in, and the Worker's entry
- * names, which is what `location` in its `ensured` reply carries. */
+/** The OPFS directory the Worker keeps both artefacts and their records in, and the entry names it
+ * stores them under. `location` in its `ensured` reply carries one of these names when the Worker
+ * stored the artefact, and the artefact's published URL when it could not store it. */
 const STORAGE_DIRECTORY = 'tablemate-zk';
 const WASM_FILE = 'tablemate_itinerary.wasm';
 const ZKEY_FILE = 'tablemate_itinerary.zkey';
@@ -352,19 +356,21 @@ export async function plan(artifacts: ZkConfig['artifacts']): Promise<ArtifactPl
 }
 
 /**
- * Both artefacts, present and verified in OPFS (AAP 0.5.1, AAP 0.5.5).
+ * Both artefacts, present and verified on this browser (AAP 0.5.1, AAP 0.5.5).
  *
  * The streaming, the hashing and every write happen in the Worker, which is what keeps a
  * gigabyte-scale key off the page's main thread; this call owns the attempt — one `ensure` request,
- * its progress reports, and the Worker's termination when it ends. The reply's `location`s are the
- * Worker's own OPFS entry names, which `prover.web.ts` passes straight back in its `prove` frames.
+ * its progress reports, and the Worker's termination when it ends. Which source serves that request is
+ * the Worker's to decide: it stores the artefacts in its OPFS directory, and where this browser cannot
+ * use that directory it answers with the artefacts' published URLs instead. Either way the reply's
+ * `location`s are what `prover.web.ts` passes straight back in its `prove` frames (AAP 0.3.4).
  *
  * @param artifacts - The artefact links of `GET /v1/zk/config`.
  * @param onProgress - Called as bytes arrive, across both artefacts.
  * @param signal - Aborts the download, which terminates the Worker and stops the transfer.
- * @throws A `ZkClientError`: `cancelled`, `artifact_storage_unavailable` on a browser without OPFS,
- *   `worker_unavailable`, and otherwise what the Worker reported — `artifact_download_failed`,
- *   `artifact_insufficient_storage` or `artifact_hash_mismatch`.
+ * @throws A `ZkClientError`: `cancelled`, `worker_unavailable`, and otherwise what the Worker
+ *   reported — `artifact_download_failed`, `artifact_insufficient_storage` or
+ *   `artifact_hash_mismatch`.
  */
 export async function ensureArtifacts(
   artifacts: ZkConfig['artifacts'],
@@ -373,16 +379,15 @@ export async function ensureArtifacts(
 ): Promise<ResolvedArtifacts> {
   if (signal?.aborted === true) throw fail('cancelled');
 
-  const storage = storageManager();
-  if (typeof storage?.getDirectory !== 'function') throw fail('artifact_storage_unavailable');
-
   // Best effort, and the answer is not read: a granted persistence makes the browser far less likely
   // to evict a gigabyte-scale key under storage pressure, and a refusal costs nothing (AAP 0.5.5).
   // Deliberately not awaited: Firefox settles this promise only once its persistent-storage prompt is
   // answered, so a session that never answers one — an automated browser — would otherwise sit in the
-  // download phase forever. Persistence is an optimisation, never a condition of proving.
+  // download phase forever. Persistence is an optimisation, never a condition of proving, and neither
+  // is the storage this asks it for: a browser offering none skips this and proves from the artefacts'
+  // published URLs.
   try {
-    void Promise.resolve(storage.persist?.()).catch(() => undefined);
+    void Promise.resolve(storageManager()?.persist?.()).catch(() => undefined);
   } catch {
     // Intentionally ignored: persistence is an optimisation, never a condition of proving.
   }

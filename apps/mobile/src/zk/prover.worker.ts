@@ -1,16 +1,26 @@
 /**
- * The web proving Worker: artefact delivery into OPFS, and snarkjs Groth16 proving, off the main
- * thread (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1).
+ * The web proving Worker: artefact delivery from the origin private file system or the artefacts'
+ * published URLs, and snarkjs Groth16 proving, off the main thread (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1).
  *
  * One request per message and exactly one reply — `ensured`, `proved`, or a single error code.
- * `ensure` streams the circuit WASM and the proving key into the Origin Private File System, hashing
- * each with `@noble/hashes` as it arrives and refusing anything whose size or digest differs from the
- * page's declaration, so a download never holds a whole artefact in memory. `prove` re-verifies both
- * files by digest — the one check the origin private file system can support, because it never
- * advances a file's modification time — loads them into the shapes snarkjs 0.7.6 reads, builds the
- * witness and proves, and answers with the proof and the two component timings. The page owns this
- * Worker's lifetime and terminates it after every attempt or cancellation, which is what keeps a
- * cancel and a retry from overlapping (AAP 0.5.5).
+ *
+ * Artefacts have two possible sources, and `ensure` resolves each request from the one that can serve
+ * it. Its first attempt streams the circuit WASM and the proving key into the Origin Private File
+ * System, hashing each with `@noble/hashes` as it arrives and refusing anything whose size or digest
+ * differs from the page's declaration, so a download never holds a whole artefact in memory. Where
+ * that file system cannot be used — every call into it fails, and no other store of the browser is
+ * large enough for a gigabyte-scale key — the attempt is `artifact_storage_unavailable`, which is not
+ * a browser that cannot prove: the same request is served from the artefacts' published URLs instead,
+ * each confirmed to be published at the declared size and nothing else fetched or kept, because an
+ * engine whose origin private file system cannot be used must still prove locally (AAP 0.3.4). `prove`
+ * then reads every artefact from where its own location says. A published URL is streamed in one pass,
+ * hashed as it arrives, and refused unless its length and its digest equal the declaration; an OPFS
+ * entry is re-verified by digest first — the one check the origin private file system can support,
+ * because it never advances a file's modification time. Either source ends in the shapes snarkjs 0.7.6
+ * reads: the WASM whole, in `mem` form, and the key as the 4 MiB page array of a fastfile `bigMem`
+ * file. The witness is built, the proof is made, and the reply carries the proof and the two component
+ * timings. The page owns this Worker's lifetime and terminates it after every attempt or cancellation,
+ * which is what keeps a cancel and a retry from overlapping (AAP 0.5.5).
  *
  * Why this file is a Metro entry of its own. Expo SDK 52's Metro does not bundle
  * `new Worker(new URL('./prover.worker.ts', import.meta.url))`: Worker bundling arrived with SDK 53,
@@ -230,6 +240,15 @@ function codeForFailure(err: unknown, fallback: ZkClientErrorCode): ZkClientErro
 }
 
 /**
+ * True for the one failure the published-URL source exists to answer: this engine's origin private file
+ * system cannot be used at all. The code is read off the failure itself, and never from the phase's
+ * fallback, so a failure that is not about storage keeps the code it already had.
+ */
+function isStorageUnavailable(err: unknown): boolean {
+  return codeForFailure(err, 'worker_failed') === 'artifact_storage_unavailable';
+}
+
+/**
  * Refuses a declaration this Worker could never confirm: a size that is not a positive integer or a
  * digest that is not a lowercase SHA-256. Such a declaration would send the re-hash path after a file
  * that cannot match it and delete a good cached artefact, so it is rejected before anything is read.
@@ -278,10 +297,13 @@ type PhaseReporter = (phase: WorkerPhase, total: number) => (received: number) =
 /* --- OPFS ------------------------------------------------------------------------------------ */
 
 /**
- * The OPFS directory holding both artefacts and their metadata, created on first use. A browser
- * without OPFS, or one that refuses it (Firefox private browsing, a sandboxed frame), is
- * `artifact_storage_unavailable` rather than a crash, and the page then reports the web client as
- * unable to prove on this browser.
+ * The OPFS directory holding both artefacts and their metadata, created on first use.
+ *
+ * A browser without OPFS, or one that refuses it (Firefox private browsing, a sandboxed frame, and the
+ * WebKit build measured on this host, where every call into the API fails), is
+ * `artifact_storage_unavailable` rather than a crash. That is the one failure `runEnsure` answers from
+ * the artefacts' published URLs, so a browser that cannot store the artefacts still proves in it
+ * (AAP 0.3.4).
  */
 async function storageDirectory(): Promise<FileSystemDirectoryHandle> {
   const storage: StorageManager | undefined = navigator.storage;
@@ -505,13 +527,20 @@ function writeAll(handle: SyncAccessHandle, chunk: Uint8Array, at: number): numb
  *
  * A streamed body is the point of this phase: a browser that cannot stream would have to hold the
  * whole proving key in memory, which is the risk AAP 0.3.4 names, so an unusable response is a
- * download failure rather than a fallback to buffering.
+ * download failure rather than a fallback to buffering. A request the engine refuses or cannot make —
+ * a rejection, an unreachable host, a status that is not ok, a response with no body — is the same
+ * `artifact_download_failed`, so a caller that is not inside a `try` of its own still reports the
+ * failure that happened rather than a generic one.
  */
 async function fetchArtifact(url: string): Promise<ReadableStream<Uint8Array>> {
-  const response = await fetch(url, { cache: 'no-store' });
-  const body = response.body;
-  if (!response.ok || body === null) throw new WorkerError('artifact_download_failed');
-  return body;
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    const body = response.body;
+    if (!response.ok || body === null) throw new WorkerError('artifact_download_failed');
+    return body;
+  } catch (err) {
+    throw new WorkerError(codeForFailure(err, 'artifact_download_failed'));
+  }
 }
 
 /**
@@ -605,12 +634,112 @@ async function ensureOne(
   return stored ?? (await download(directory, name, ref, appVersion, base, report));
 }
 
-/** `ensure`: both artefacts present and verified on disk, the WASM first because it is the smaller. */
+/* --- The published-URL source ------------------------------------------------------------------ */
+
+/**
+ * True for a location that names an artefact's published URL rather than an OPFS entry. It is the form
+ * `ensure` answers with on an engine whose origin private file system cannot be used, and the form
+ * `prove` streams instead of reading from storage.
+ */
+function isPublishedUrl(location: string): boolean {
+  return /^https?:\/\//i.test(location);
+}
+
+/** The whole-file size a one-byte range response states, as in `bytes 0-0/1588395630`. */
+const CONTENT_RANGE_TOTAL = /^bytes \d+-\d+\/(\d+)$/;
+
+/**
+ * Confirms the server publishes one artefact at the size the page declared, without reading any of it.
+ *
+ * A range of one byte is what makes this cheap: a static file server answers `206` and states the whole
+ * file's size in `Content-Range`, while a server that ignores the range answers `200` and states it in
+ * `Content-Length`. The body is cancelled the moment the response arrives and is never read, so a
+ * gigabyte-scale key costs one header round trip. `bytes=0-0` is a single range value in the
+ * CORS-safelisted form, so the request adds no preflight to the cross-origin artefacts host.
+ *
+ * A response this Worker can read no size out of, and one that declares another size than the page
+ * published, are both `artifact_download_failed`: the declaration is what every later read is checked
+ * against, so an artefact that contradicts it cannot be served from here at all.
+ */
+async function confirmPublishedSize(ref: WorkerArtifactRef): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(ref.url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+  } catch (err) {
+    throw new WorkerError(codeForFailure(err, 'artifact_download_failed'));
+  }
+
+  const body = response.body;
+  if (body !== null) await body.cancel().catch(() => undefined);
+
+  let declared: string | null;
+  if (response.status === 206) {
+    declared = CONTENT_RANGE_TOTAL.exec(response.headers.get('content-range') ?? '')?.[1] ?? null;
+  } else if (response.ok) {
+    declared = response.headers.get('content-length');
+  } else {
+    declared = null;
+  }
+  if (declared === null || Number(declared) !== ref.size) {
+    throw new WorkerError('artifact_download_failed');
+  }
+}
+
+/**
+ * One artefact as the published-URL source resolves it: the URL itself is the location `prove` reads
+ * from, because on this engine nothing is kept and every read streams from the origin. The declared
+ * digest and size are echoed, so the set a `prove` frame carries says what its read is held to.
+ */
+function publishedFile(ref: WorkerArtifactRef): ResolvedFile {
+  return { location: ref.url, sha256: ref.sha256, size: ref.size };
+}
+
+/**
+ * `ensure` from the artefacts' published URLs: each is confirmed to be published at the declared size,
+ * and both are answered with their own URL as their location. Nothing is written anywhere — an engine
+ * that could not create the proving key in its origin private file system has nowhere else large
+ * enough to keep one — so the reads that follow are the streaming passes of `prove`, which hash and
+ * check the bytes as they arrive.
+ */
+async function publishedArtifacts(
+  wasmRef: WorkerArtifactRef,
+  zkeyRef: WorkerArtifactRef,
+): Promise<ResolvedArtifacts> {
+  await confirmPublishedSize(wasmRef);
+  await confirmPublishedSize(zkeyRef);
+  return { wasm: publishedFile(wasmRef), zkey: publishedFile(zkeyRef) };
+}
+
+/**
+ * `ensure`: both artefacts resolved from their own source, the WASM first because it is the smaller.
+ *
+ * The OPFS source is attempted exactly as it always was. An `artifact_storage_unavailable` from it is
+ * the one failure the published-URL source answers, because an engine whose origin private file system
+ * cannot be used must still prove (AAP 0.3.4). Every other failure keeps its own code: a browser that
+ * can store the artefacts but has no room for the key is a different answer from one that cannot store
+ * them at all, and the page turns each into its own sentence.
+ */
 async function runEnsure(request: EnsureRequest): Promise<void> {
   const { wasm: wasmRef, zkey: zkeyRef } = request.artifacts;
   assertDeclared(wasmRef);
   assertDeclared(zkeyRef);
 
+  let artifacts: ResolvedArtifacts;
+  try {
+    artifacts = await opfsArtifacts(request, wasmRef, zkeyRef);
+  } catch (err) {
+    if (!isStorageUnavailable(err)) throw err;
+    artifacts = await publishedArtifacts(wasmRef, zkeyRef);
+  }
+  scope.postMessage({ type: 'ensured', id: request.id, artifacts });
+}
+
+/** The OPFS source of `ensure`: both artefacts present and verified on disk, WASM first. */
+async function opfsArtifacts(
+  request: EnsureRequest,
+  wasmRef: WorkerArtifactRef,
+  zkeyRef: WorkerArtifactRef,
+): Promise<ResolvedArtifacts> {
   const directory = await storageDirectory();
   const reportPhase: PhaseReporter = (phase, total) => progressReporter(request.id, phase, total);
   const report = reportPhase('download', wasmRef.size + zkeyRef.size);
@@ -632,7 +761,7 @@ async function runEnsure(request: EnsureRequest): Promise<void> {
     report,
     reportPhase,
   );
-  scope.postMessage({ type: 'ensured', id: request.id, artifacts: { zkey, wasm } });
+  return { zkey, wasm };
 }
 
 /* --- Loading and proving ---------------------------------------------------------------------- */
@@ -733,9 +862,144 @@ interface SnarkjsSubset {
 /** snarkjs, narrowed to {@link SnarkjsSubset}. The import itself carries no declarations. */
 const snark = snarkjs as unknown as SnarkjsSubset;
 
+/* --- The published-URL read ------------------------------------------------------------------- */
+
 /**
- * `prove`: re-verify both artefacts by digest, load them, build the witness, prove, and answer with
- * the proof and the component timings.
+ * Streams one published artefact in a single pass, hashing it as it arrives and handing each chunk to
+ * `write`, and returns only once the bytes read and their digest both equal the declaration.
+ *
+ * The body is refused as `artifact_download_failed` the moment it passes the declared size — an answer
+ * that is not the artefact cannot be verified — and as `artifact_hash_mismatch` when it ends short of
+ * the declaration, or at the declared length with another digest. `base` is what an earlier artefact of
+ * the same load already reported, so the load phase draws one bar for the pair. The reader is released
+ * on every path, so a refusal never leaves a transfer running.
+ */
+async function streamArtifact(
+  url: string,
+  declared: Pick<WorkerArtifactRef, 'size' | 'sha256'>,
+  base: number,
+  report: (received: number) => void,
+  write: (chunk: Uint8Array) => void,
+): Promise<void> {
+  const body = await fetchArtifact(url);
+  const reader = body.getReader();
+  const hasher = sha256.create();
+  let received = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (received + value.byteLength > declared.size) {
+        throw new WorkerError('artifact_download_failed');
+      }
+      hasher.update(value);
+      write(value);
+      received += value.byteLength;
+      report(base + received);
+    }
+  } catch (err) {
+    await reader.cancel().catch(() => undefined);
+    throw new WorkerError(codeForFailure(err, 'artifact_download_failed'));
+  }
+  if (received !== declared.size || bytesToHex(hasher.digest()) !== declared.sha256) {
+    throw new WorkerError('artifact_hash_mismatch');
+  }
+}
+
+/**
+ * The circuit WASM of a published artefact set, in the one buffer `wtns.calculate` reads: it is a few
+ * megabytes, so the whole of it arrives and is copied into its `mem` form as it streams.
+ */
+async function streamWhole(
+  file: ResolvedFile,
+  base: number,
+  report: (received: number) => void,
+): Promise<Uint8Array> {
+  const bytes = new Uint8Array(file.size);
+  let offset = 0;
+  await streamArtifact(file.location, file, base, report, (chunk) => {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return bytes;
+}
+
+/**
+ * The proving key of a published artefact set, in the page array of a fastfile `bigMem` file.
+ *
+ * The two invariants of {@link loadPages} hold here too, and the allocation makes them hold: no page
+ * exists before the bytes that fill it arrive, and each page is sized to what the declaration leaves
+ * for it, so only the last page can be short — which is exactly what `bigMem` reads the file's size
+ * off. Nothing but these pages holds the key, and they live in this Worker, never on the page
+ * (AAP 0.3.4, AAP 0.5.5).
+ */
+async function streamPages(
+  file: ResolvedFile,
+  base: number,
+  report: (received: number) => void,
+): Promise<Uint8Array[]> {
+  const pages: Uint8Array[] = [];
+  let page: Uint8Array | null = null;
+  let filled = 0;
+  try {
+    await streamArtifact(file.location, file, base, report, (chunk) => {
+      let read = 0;
+      while (read < chunk.byteLength) {
+        if (page === null || filled === page.byteLength) {
+          page = new Uint8Array(
+            Math.min(ZKEY_PAGE_BYTES, file.size - pages.length * ZKEY_PAGE_BYTES),
+          );
+          filled = 0;
+          pages.push(page);
+        }
+        const take = Math.min(page.byteLength - filled, chunk.byteLength - read);
+        page.set(chunk.subarray(read, read + take), filled);
+        filled += take;
+        read += take;
+      }
+    });
+  } catch (err) {
+    // Whatever was loaded goes back at once: a failed load must not keep a gigabyte of pages alive.
+    pages.length = 0;
+    throw err;
+  }
+  return pages;
+}
+
+/**
+ * One artefact of a `prove` request, as its own location resolves it. A published URL is taken as the
+ * streaming pass will read it, which hashes it and checks its length and digest as it arrives; an OPFS
+ * entry is re-verified by digest here, before a byte of it is loaded (AAP 0.5.5).
+ */
+async function verifiedSource(
+  file: ResolvedFile,
+  appVersion: string,
+  reportPhase: PhaseReporter,
+  opfsDirectory: () => Promise<FileSystemDirectoryHandle>,
+): Promise<ResolvedFile> {
+  if (isPublishedUrl(file.location)) return file;
+  const verified = await verifyStored(
+    await opfsDirectory(),
+    file.location,
+    file,
+    appVersion,
+    reportPhase,
+    'digest',
+  );
+  if (verified === null) throw new WorkerError('artifact_hash_mismatch');
+  return verified;
+}
+
+/**
+ * `prove`: obtain each artefact from where its own location says, load the two into the shapes snarkjs
+ * reads, build the witness, prove, and answer with the proof and the component timings.
+ *
+ * The two sources of {@link runEnsure} meet here, and each artefact is read from the one its location
+ * names. A location that is an absolute `http(s)` URL is the address the artefact is published at:
+ * it is streamed in one pass and checked as it arrives. Any other location is the OPFS entry name the
+ * OPFS source wrote, and the entry is re-verified by digest before it is read. A set that mixes the two
+ * is harmless and not expected — one `ensure` reply names one source — so the directory is opened only
+ * for the artefacts that need it, and a proving pass over published URLs never touches storage at all.
  *
  * The digest is what stands in for the other platforms' size, modification-time and app-version rule
  * here, and the reason is recorded on {@link verifyStored}: OPFS metadata cannot show a same-length
@@ -751,37 +1015,32 @@ async function runProve(request: ProveRequest): Promise<void> {
   assertDeclared(wasm);
   assertDeclared(zkey);
 
-  const directory = await storageDirectory();
   const reportPhase: PhaseReporter = (phase, total) => progressReporter(request.id, phase, total);
-  const verifiedWasm = await verifyStored(
-    directory,
-    WASM_FILE,
-    wasm,
-    request.appVersion,
-    reportPhase,
-    'digest',
-  );
-  const verifiedZkey = await verifyStored(
-    directory,
-    ZKEY_FILE,
-    zkey,
-    request.appVersion,
-    reportPhase,
-    'digest',
-  );
-  if (verifiedWasm === null || verifiedZkey === null) {
-    throw new WorkerError('artifact_hash_mismatch');
-  }
+
+  // Opened once, and only when a location names an OPFS entry: the published-URL source reads nothing
+  // from storage, so an engine whose file system cannot be used never reaches it.
+  let directory: FileSystemDirectoryHandle | null = null;
+  const opfsDirectory = async (): Promise<FileSystemDirectoryHandle> => {
+    if (directory === null) directory = await storageDirectory();
+    return directory;
+  };
+
+  const verifiedWasm = await verifiedSource(wasm, request.appVersion, reportPhase, opfsDirectory);
+  const verifiedZkey = await verifiedSource(zkey, request.appVersion, reportPhase, opfsDirectory);
 
   const report = reportPhase('load', verifiedWasm.size + verifiedZkey.size);
-  const wasmBytes = await loadWhole(directory, WASM_FILE, verifiedWasm.size, 0, report);
-  const pages = await loadPages(
-    directory,
-    ZKEY_FILE,
-    verifiedZkey.size,
-    wasmBytes.byteLength,
-    report,
-  );
+  const wasmBytes = isPublishedUrl(verifiedWasm.location)
+    ? await streamWhole(verifiedWasm, 0, report)
+    : await loadWhole(await opfsDirectory(), verifiedWasm.location, verifiedWasm.size, 0, report);
+  const pages = isPublishedUrl(verifiedZkey.location)
+    ? await streamPages(verifiedZkey, wasmBytes.byteLength, report)
+    : await loadPages(
+        await opfsDirectory(),
+        verifiedZkey.location,
+        verifiedZkey.size,
+        wasmBytes.byteLength,
+        report,
+      );
 
   // Proving has no byte count to report against, so the phase frame carries a 0 total: the page shows
   // the step, not a made-up percentage.

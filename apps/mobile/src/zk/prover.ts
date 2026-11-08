@@ -75,7 +75,10 @@ export interface EmlIntake {
 
 /** One artefact on disk, after download and SHA-256 verification against the manifest. */
 export interface ResolvedFile {
-  /** Where the engine reads it: a verified file URI on native, an OPFS entry on the web. */
+  /**
+   * Where the engine reads it: a verified file URI on native, an OPFS entry on the web, or the
+   * artefact's published URL on an engine whose origin-private file system cannot be used.
+   */
   readonly location: string;
 
   readonly sha256: string;
@@ -117,7 +120,9 @@ export interface ArtifactPlan {
  * The artefact half of the split: fetching the proving key and the circuit WASM, verifying each
  * against its published SHA-256, and keeping them for the next attempt (AAP 0.5.5). A store
  * re-verifies what it holds by size and modification time before each use, and re-hashes it after an
- * app update. Its failures are {@link ZkClientErrorCode} values.
+ * app update; a store whose platform cannot keep the artefacts resolves them to the URLs they are
+ * published at instead, and the engine then re-verifies each as it streams it in. Its failures are
+ * {@link ZkClientErrorCode} values.
  */
 export interface ArtifactStore {
   /** Reports what a download would cost, without starting one. */

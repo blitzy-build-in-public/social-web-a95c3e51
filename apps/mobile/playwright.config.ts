@@ -193,7 +193,31 @@ export default defineConfig({
     {
       name: 'webkit',
       testMatch: '**/web-proving.spec.ts',
-      use: { ...devices['Desktop Safari'] },
+      use: {
+        ...devices['Desktop Safari'],
+        /*
+         * One proof of this circuit needs the whole 1.59 GB proving key, the witness and the WebAssembly
+         * prover's own allocations inside one web process. Measured on the host this ran on: Playwright's
+         * WebKit build peaks near 30 GB there, while Chromium and Firefox stay under 8 GB, and the
+         * engine's memory-pressure handler ends a process it cannot bring back under its 16 GB kill
+         * threshold ("Unable to shrink memory footprint of process (19615 MB) below the kill thresold
+         * (16384 MB). Killed"), which is what ended the WebKit walk before this was set. The handler is an
+         * embedder heuristic rather than part of the walk, so it is turned off for this project alone.
+         * Two host preconditions go with it, recorded in docs/zk-performance.md: vm.max_map_count at
+         * 100000 or more, because that engine's allocations need about 79,000 memory maps where Chromium
+         * needs a few thousand, and a host with memory to spare for the peak above.
+         */
+        launchOptions: {
+          env: {
+            ...Object.fromEntries(
+              Object.entries(process.env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined,
+              ),
+            ),
+            WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR: '1',
+          },
+        },
+      },
     },
   ],
 });

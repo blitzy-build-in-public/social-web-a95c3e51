@@ -25,8 +25,9 @@ import type { EngineOutput, ProverEngine, ResolvedArtifacts, ZkClientErrorCode }
 import type { WorkerResponse } from './prover.worker.ts';
 
 /**
- * The engine's other half: the streaming, digest-checked download of the circuit WASM and the proving
- * key into the Origin Private File System, and its record of what was verified. Re-exported from here
+ * The engine's other half: the streaming, digest-checked delivery of the circuit WASM and the proving
+ * key — into the Origin Private File System where the browser gives us one, and from the artefacts'
+ * published URLs where it cannot be used — and the record of what was verified. Re-exported from here
  * because `./prover.ts` reads both halves of this platform from one namespace (AAP 0.5.5).
  */
 export { artifactStore } from './artifacts.web.ts';
@@ -55,31 +56,31 @@ function appVersion(): string {
 }
 
 /**
- * Whether this build can prove at all, as far as the page can tell: a Worker to prove in, the
- * WebAssembly the circuit runs on, and the origin-private storage the artefacts live in (AAP 0.3.4).
+ * Whether this build can prove at all, as far as the page can tell: a Worker to prove in and the
+ * WebAssembly the circuit runs on (AAP 0.3.4).
  *
+ * The origin private file system is deliberately not a condition here: a browser that cannot use it
+ * still proves locally, because the Worker streams the artefacts from their published URLs instead.
  * The synchronous access handle `prove` needs can only be reached from inside the Worker, so its
- * absence is not tested here: that build answers `artifact_storage_unavailable` when asked to prove,
- * and the generate screen maps the code to its own sentence.
+ * absence is not tested here either: that build's OPFS source reports
+ * `artifact_storage_unavailable`, the Worker answers from the published URLs, and the attempt fails
+ * only if the artefacts cannot be read from there at all.
  */
 function available(): boolean {
-  return (
-    typeof Worker === 'function' &&
-    typeof WebAssembly === 'object' &&
-    typeof navigator !== 'undefined' &&
-    typeof navigator.storage?.getDirectory === 'function'
-  );
+  return typeof Worker === 'function' && typeof WebAssembly === 'object';
 }
 
 /**
  * Proves one witness in a fresh Worker against the artefacts `./artifacts.web.ts` verified, and
  * returns the proof, the public signals and the Worker's two component timings (AAP 0.5.5).
  *
- * The stored files are re-verified by digest inside the Worker before anything is loaded, because
- * OPFS metadata cannot show a same-length edit. An `artifact_hash_mismatch` therefore means an
- * artefact changed on disk since `ensureArtifacts` resolved it: the caller re-runs `ensureArtifacts`
- * and proves again, which is the code `importAndProve` puts on the store for the screen's retry
- * (AAP 0.5.5, AAP 0.5.8).
+ * Each artefact is read from where its own `location` says, inside the Worker: an OPFS entry is
+ * re-verified by digest before anything is loaded, because OPFS metadata cannot show a same-length
+ * edit, and a published URL — what `ensureArtifacts` answers with on a browser whose origin private
+ * file system cannot be used — is hashed and length-checked as it streams. An
+ * `artifact_hash_mismatch` therefore means the bytes are no longer the ones `ensureArtifacts` resolved:
+ * the caller re-runs `ensureArtifacts` and proves again, which is the code `importAndProve` puts on the
+ * store for the screen's retry (AAP 0.5.5, AAP 0.5.8).
  *
  * @param inputsJson - The witness, `JSON.stringify`ed by the caller and read only in the Worker.
  * @param artifacts - The verified artefacts. The web runs the witness generator from the WASM, so a
