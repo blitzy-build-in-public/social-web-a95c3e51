@@ -22,10 +22,10 @@
  * Two harness facts shape the file. The clock is frozen at `DEFAULT_TEST_NOW` and every date here is
  * derived from it and `DAY_MS` — a claim whose stay has ended is written with dates before it, never by
  * moving the clock — so no case waits for a window to pass. And the directory is cached in Redis for
- * `LEADERBOARD_CACHE_SECONDS` under `leaderboard:<cityId>`, whose TTLs are wall-clock: the reader below
- * drops that key before every read that must see the rows a case has just written, and asserts the
- * entry was written again with the TTL the contract states, which is also what proves the key it drops
- * is the route's own.
+ * `LEADERBOARD_CACHE_SECONDS` under `leaderboard:<APP_ENV>:<cityId>`, one entry per fixture policy,
+ * whose TTLs are wall-clock: the reader below drops this run's own key before every read that must see
+ * the rows a case has just written, and asserts the entry was written again with the TTL the contract
+ * states, which is also what proves the key it drops is the route's own.
  *
  * @see AAP 0.5.4 for the routes, their errors and their DTOs, 0.5.7 for the visibility, guest-count and
  *   leaderboard rules, 0.12.1 for the two criteria, 0.11.2 for the harness, 0.8.1 for this file.
@@ -33,8 +33,9 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, inject } from 'vitest';
 
+import { createPrismaClient, type DbClient } from '@tablemate/db';
 import {
   DAY_MS,
   GUEST_COUNT_BELOW_LABEL,
@@ -72,6 +73,10 @@ import type {
   RouteResponse,
   UserFixture,
 } from '../support/factories.ts';
+import {
+  leaderboard,
+  type LodgingLeaderboardServices,
+} from '../../src/modules/lodgings/leaderboard.ts';
 
 /* Names and keys every case is written against (AAP 0.5.2, 0.5.7) */
 
@@ -88,10 +93,12 @@ const UNKNOWN_CITY = 'narnia';
 const MISSING_LODGING_ID = '00000000-0000-4000-8000-000000000000';
 
 /**
- * The directory's cache entry, `leaderboard:<cityId>` (AAP 0.5.7), rewritten by every recomputation.
- * Redis TTLs are wall-clock, so the reader below drops this key rather than waiting it out.
+ * The directory's cache entry under this run's own fixture policy, `leaderboard:test:<cityId>`
+ * (AAP 0.5.2, 0.5.7), rewritten by every recomputation. `APP_ENV` is in the key, so the integration
+ * project's own `test` policy is named here. Redis TTLs are wall-clock, so the reader below drops this
+ * key rather than waiting it out.
  */
-const CACHE_KEY = `leaderboard:${LISBON}`;
+const CACHE_KEY = `leaderboard:test:${LISBON}`;
 
 /** What must never appear in an answer: a console secret, a booking field or a proof nullifier. */
 const FORBIDDEN_IN_RESPONSE = ['secret', 'cipher', 'booking', 'nullifier', 'emailCiphertext'];
@@ -688,5 +695,105 @@ describe('criterion 16: the city leaderboard', () => {
     expect(item(items, charlie.id).rank).toBe(1);
     expect(item(items, bravo.id).rank).toBe(2);
     expect(item(items, alpha.id).rank).toBe(3);
+  });
+});
+
+/* ---------------------------------------------------------------------------------------------
+ * The cache's scope — one board per fixture policy (AAP 0.5.2)
+ * ------------------------------------------------------------------------------------------- */
+
+/** The environment the second policy stands for: one that may neither write nor read fixture rows. */
+const REFUSING_ENV = 'staging' as const;
+
+/** The city's cache entry under {@link REFUSING_ENV}, the key a fixture-refusing process must use. */
+const REFUSING_CACHE_KEY = `leaderboard:${REFUSING_ENV}:${LISBON}`;
+
+/**
+ * The services of the fixture-refusing policy: the run's own Redis, clock and logger, over a client
+ * built for an environment outside `test` and `demo` (AAP 0.5.2).
+ *
+ * The case drives the module's exported {@link leaderboard} rather than a second app, because the
+ * harness cannot build one: `buildApp` refuses a fault injector outside `APP_ENV=test`
+ * (`apps/api/src/app.ts:564`) and the factory always supplies one
+ * (`apps/api/test/support/app.ts:866`). The directory route calls exactly this function with exactly
+ * these services, so the cache key under test is the one the route reads and writes.
+ */
+function refusingServices(db: DbClient): LodgingLeaderboardServices {
+  return {
+    db,
+    redis: t.services.redis,
+    clock: t.services.clock,
+    logger: t.services.logger,
+    env: { APP_ENV: REFUSING_ENV, ANALYTICS_SALT: t.env.ANALYTICS_SALT },
+    timezoneFor: t.services.timezoneFor,
+  };
+}
+
+/** The ids a board carries, sorted, so two boards compare without depending on their order. */
+function idsOf(items: readonly LodgingSummary[]): string[] {
+  return items.map((entry) => entry.id).sort();
+}
+
+/** The board one cache key holds, as the route would have answered it (AAP 0.5.7). */
+async function cachedBoard(key: string): Promise<readonly LodgingSummary[]> {
+  const raw = await t.services.redis.client.get(key);
+  if (raw === null) {
+    throw new Error(`no leaderboard cache entry at ${key}`);
+  }
+
+  // The entry is the board itself, the array the route hands its callers (AAP 0.5.7).
+  const decoded: unknown = JSON.parse(raw);
+  return LodgingSummary.array().parse(decoded);
+}
+
+/** Asserts one key holds an entry whose lifetime is the contract's (AAP 0.5.7). */
+async function expectCacheTtl(key: string): Promise<void> {
+  const ttl = await t.services.redis.client.ttl(key);
+  expect(ttl).toBeGreaterThan(0);
+  expect(ttl).toBeLessThanOrEqual(LEADERBOARD_CACHE_SECONDS);
+}
+
+describe('the directory cache holds one board per fixture policy', () => {
+  let guarded: DbClient;
+  let refusing: LodgingLeaderboardServices;
+
+  beforeAll(() => {
+    guarded = createPrismaClient({ databaseUrl: inject('databaseUrl'), appEnv: REFUSING_ENV });
+    refusing = refusingServices(guarded);
+  });
+
+  afterAll(async () => {
+    await guarded.$disconnect();
+  });
+
+  it('never serves a fixture-bearing board to a process outside test and demo', async () => {
+    const lodgings = [
+      await makeLodging(t, { cityId: LISBON }),
+      await makeLodging(t, { cityId: LISBON }),
+      await makeLodging(t, { cityId: LISBON }),
+    ];
+    const ids = lodgings.map((lodging) => lodging.id).sort();
+
+    // The fixture-allowing policy lists them, and the board it computed is the one the cache holds.
+    await t.services.redis.client.del(CACHE_KEY);
+    const allowed = await leaderboard(t.services, LISBON, 'activity');
+
+    expect(allowed.every((entry) => entry.name.startsWith('Fixture'))).toBe(true);
+    expect(idsOf(allowed)).toEqual(ids);
+    expect(idsOf(await cachedBoard(CACHE_KEY))).toEqual(ids);
+    await expectCacheTtl(CACHE_KEY);
+
+    // The same city through a process that may not read fixture rows at all. On a key without the
+    // environment this read is served the board above, fixtures and all.
+    const refused = await leaderboard(refusing, LISBON, 'activity');
+
+    expect(refused.filter((entry) => entry.name.startsWith('Fixture'))).toEqual([]);
+    expect(idsOf(refused)).toEqual([]);
+
+    // The two entries are independent: the refusing read wrote one of its own, and the
+    // fixture-allowing board is still the one its own policy computed.
+    expect(idsOf(await cachedBoard(REFUSING_CACHE_KEY))).toEqual([]);
+    await expectCacheTtl(REFUSING_CACHE_KEY);
+    expect(idsOf(await cachedBoard(CACHE_KEY))).toEqual(ids);
   });
 });

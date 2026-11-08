@@ -24,7 +24,7 @@
       "departure": {
         "anchor": "Check-out: ",
         "terminator": 13,
-        "charset": "alnum"
+        "charset": "date"
       },
       "reference": {
         "anchor": "Booking reference: ",

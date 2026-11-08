@@ -24,12 +24,16 @@
  * composition root is another file's deliverable, it is not on this file's dependency whitelist,
  * and the narrowed interface states exactly the capabilities these functions use.
  *
- * Three invariants the SQL keeps:
+ * Four invariants this module keeps:
  *
  * - Raw statements are `Prisma.sql` tagged templates with double-quoted identifiers, so no value is
  *   ever concatenated into SQL (AAP 0.11.2), and every statement that reads `lodging` or `venue`
  *   adds {@link fixturePredicate} for that alias, because a raw query bypasses the guarded client's
  *   fixture extension (AAP 0.5.2).
+ * - The cached board is a projection of the process's fixture policy, so its cache entry carries the
+ *   environment as well as the city ({@link leaderboardCacheKey}): a process outside `test` and
+ *   `demo` is never served a board that a fixture-allowing process computed, even where the two
+ *   share one Redis (AAP 0.5.2).
  * - A verified claim stays *active* until the end of its `stayTo` in the lodging's city time
  *   ({@link currentStayPredicate}), never until the end of a UTC day, so the directory's guest
  *   count, a lodging's guest list and the claim rules agree on who is currently staying
@@ -82,7 +86,10 @@ const PAIR_DEDUPE_MS = LEADERBOARD_PAIR_DEDUPE_DAYS * DAY_MS;
 /** One week, the width of a console trend point (AAP 0.5.4). */
 const WEEK_MS = 7 * DAY_MS;
 
-/** The prefix of a city's leaderboard cache key: `leaderboard:<cityId>` (AAP 0.5.7). */
+/**
+ * The prefix of a city's leaderboard cache key, which {@link leaderboardCacheKey} completes with the
+ * environment and the city: `leaderboard:<APP_ENV>:<cityId>` (AAP 0.5.2, 0.5.7).
+ */
 const CACHE_KEY_PREFIX = 'leaderboard:';
 
 /** The alias the directory statement gives `lodging`. */
@@ -484,15 +491,18 @@ export async function guestCountFor(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The cache key of a city's leaderboard: `leaderboard:<cityId>` (AAP 0.5.7).
+ * The cache key of a city's leaderboard: `leaderboard:<APP_ENV>:<cityId>` (AAP 0.5.2, 0.5.7).
  *
- * Keyed by city and not by environment, because a deployment owns its Redis: BullMQ's fixed queue
- * names and job ids already require one Redis per deployment, and no environment's stack is
- * pointed at another's. Everything a key holds is therefore a copy of what that deployment's own
- * database returned, and a stale entry can only ever be this city's own board.
+ * Keyed by the environment as well as the city, because the board is a projection of the process's
+ * fixture policy: {@link computeLeaderboard} ANDs `fixturePredicate(appEnv, LODGING_ALIAS)` into both
+ * of its statements, so one entry holds the lodgings of exactly one policy. Without the environment
+ * in the key, a process outside `test` and `demo` reading a Redis it shares with a fixture-allowing
+ * process would be served that process's fixture-bearing board, and the fixture guard's promise that
+ * such a process "cannot read them" (AAP 0.5.2) would not hold. Each environment therefore keeps its
+ * own entry, and the 60-second TTL each writer sets is what bounds how long an entry stands.
  */
-function leaderboardCacheKey(cityId: string): string {
-  return `${CACHE_KEY_PREFIX}${cityId}`;
+function leaderboardCacheKey(appEnv: AppEnv, cityId: string): string {
+  return `${CACHE_KEY_PREFIX}${appEnv}:${cityId}`;
 }
 
 /** The stored number as a `LodgingSummary` can carry it: E.164, or no number at all. */
@@ -587,7 +597,7 @@ async function readLeaderboardCache(
   services: LodgingLeaderboardServices,
   cityId: string,
 ): Promise<LodgingSummary[] | null> {
-  const key = leaderboardCacheKey(cityId);
+  const key = leaderboardCacheKey(services.env.APP_ENV, cityId);
   let raw: string | null;
 
   try {
@@ -635,7 +645,7 @@ async function writeLeaderboardCache(
 ): Promise<void> {
   try {
     await services.redis.client.set(
-      leaderboardCacheKey(cityId),
+      leaderboardCacheKey(services.env.APP_ENV, cityId),
       JSON.stringify(items),
       'EX',
       LEADERBOARD_CACHE_SECONDS,
@@ -773,7 +783,7 @@ export async function invalidateLeaderboard(
   cityId: string,
 ): Promise<void> {
   try {
-    await services.redis.client.del(leaderboardCacheKey(cityId));
+    await services.redis.client.del(leaderboardCacheKey(services.env.APP_ENV, cityId));
   } catch {
     services.logger.warn(
       { event: 'leaderboard_cache_unavailable', cityId },
