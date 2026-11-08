@@ -354,7 +354,7 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the canonical inventory: every file this run created is named there exactly once. The run
-added a closed set of thirteen tracked paths it does not name, each required by an AAP requirement or the toolchain:
+added a closed set of seventeen tracked paths it does not name, each required by an AAP requirement or the toolchain:
 those below, and `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -368,6 +368,14 @@ those below, and `packages/server-core/src/llm/contract.ts`, which the language-
 - **`apps/mobile/{babel,metro}.config.cjs`** — stand for, and supersede the spelling of, the plan's
   `apps/mobile/{babel,metro}.config.js` rows: both manifests declare `"type": "module"`, so a `.js` config would
   load as ESM and its `module.exports` would throw.
+- **`apps/mobile/{index.ts,src/zod-jitless.web.ts,src/zod-jitless.native.ts,test/zod-jitless.test.ts}`** — the plan's
+  `apps/mobile` rows name no Metro entry, and `package.json`'s `main` now reads `apps/mobile/index.ts`, which imports
+  the extensionless `./src/zod-jitless` declaration ahead of `expo-router/entry`; the two platform halves are that
+  declaration — the web half sets Zod's `jitless` flag on the shared `globalThis.__zod_globalConfig` object before
+  `@tablemate/shared`'s module-scope schemas are built, so the one `new Function('')` capability probe Zod would run
+  is never attempted and the browser has nothing to report against `infra/nginx/web.conf`'s `script-src 'self'` policy,
+  and the native half is a documented no-op because no native runtime enforces a CSP; the fourth is the declaration's
+  unit suite, which guards the flag, the mutation and the absent probe.
 - **`apps/venue-console/src/zod-jitless.ts`** — sets Zod's `jitless` flag before the shared schemas are built, so
   its one `new Function('')` probe never fires under the console's `script-src 'self'` policy.
 - **`apps/workers/test/unit/push.test.ts`** — the unit suite of the planned `apps/workers/src/notify/push.ts`, the

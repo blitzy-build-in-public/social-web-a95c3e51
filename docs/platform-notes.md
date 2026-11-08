@@ -25,7 +25,10 @@ Android `minSdkVersion` 29, `compileSdkVersion` 35, `targetSdkVersion` 34 (the E
 `buildToolsVersion` 35.0.0. The New Architecture is on (`newArchEnabled: true`), which is what the native
 prover module is built against, and the web build is a single-page Metro export
 (`web: { bundler: 'metro', output: 'single' }`) whose nginx headers carry `worker-src 'self' blob:` and
-`'wasm-unsafe-eval'` for the proving Worker and snarkjs.
+`'wasm-unsafe-eval'` for the proving Worker and snarkjs. The export also declares its runtime eval-free
+— `apps/mobile/index.ts` sets Zod's `jitless` flag before the first shared schema is built, so the
+capability probe Zod would otherwise run is never attempted and the browser has nothing to report —
+which is what lets the delivered `script-src 'self'` policy go without `'unsafe-eval'`.
 
 Toolchain: Xcode 16.4 (`packages/circuits/scripts/native-smoke.sh`), Android NDK 26.1.10909125
 (`packages/circuits/scripts/build-native.sh`), JDK 17 (Temurin 17.0.21+9) for the React Native 0.76.9

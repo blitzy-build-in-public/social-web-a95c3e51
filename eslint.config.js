@@ -51,6 +51,7 @@ const NODE_BUILT_INS = [
  */
 const CLIENT_SAFE_FILES = [
   'packages/circuits/src/**/*.ts',
+  'apps/mobile/index.ts',
   'apps/mobile/app/**/*.{ts,tsx}',
   'apps/mobile/src/**/*.{ts,tsx}',
   'apps/mobile/modules/tablemate-prover/index.ts',

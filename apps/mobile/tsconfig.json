@@ -1,6 +1,6 @@
-// Type-checking programme for the Expo app: the Expo Router screens under app/, the client
-// code under src/, the local native prover module, the Vitest test and the Playwright e2e
-// suite, plus app.config.ts and playwright.config.ts. Run by
+// Type-checking programme for the Expo app: the Metro entry, the Expo Router screens under
+// app/, the client code under src/, the local native prover module, the Vitest test and the
+// Playwright e2e suite, plus app.config.ts and playwright.config.ts. Run by
 // `pnpm --filter @tablemate/mobile typecheck`, which root `pnpm typecheck` delegates to, and
 // read by root ESLint's projectService for every one of those files. Metro emits the app, so
 // no compiler here ever writes a file.
@@ -43,6 +43,7 @@
     "types": ["node", "expo/types"]
   },
   "include": [
+    "index.ts",
     "app/**/*.ts",
     "app/**/*.tsx",
     "src/**/*.ts",
