@@ -18,13 +18,13 @@ const MAX_RANDOM_BYTES = 64;
  * The experiment module derives a variant bucket from the whole digest
  * (`BigInt('0x' + digest.toString('hex')) % 10000n`), so the digest must never be truncated.
  */
-export function hmacSha256(key: string | Uint8Array, data: string | Uint8Array): Buffer {
+export function hmac(key: string | Uint8Array, data: string | Uint8Array): Buffer {
   return createHmac('sha256', key).update(data).digest();
 }
 
 /** HMAC-SHA256 as 64 lowercase hex characters. */
-export function hmacSha256Hex(key: string | Uint8Array, data: string | Uint8Array): string {
-  return hmacSha256(key, data).toString('hex');
+export function hmacHex(key: string | Uint8Array, data: string | Uint8Array): string {
+  return hmac(key, data).toString('hex');
 }
 
 /** SHA-256 as 64 lowercase hex characters. */
@@ -45,7 +45,7 @@ export function normalizeEmail(email: string): string {
  * address under `EMAIL_LOOKUP_PEPPER`, so spelling and spacing variations reach one account.
  */
 export function emailLookupHash(pepper: string, email: string): string {
-  return hmacSha256Hex(pepper, normalizeEmail(email));
+  return hmacHex(pepper, normalizeEmail(email));
 }
 
 /**
@@ -53,7 +53,7 @@ export function emailLookupHash(pepper: string, email: string): string {
  * not anonymous — the hash still reconnects a user's events until erasure strips it.
  */
 export function actorHash(salt: string, userId: string): string {
-  return hmacSha256Hex(salt, userId);
+  return hmacHex(salt, userId);
 }
 
 /**
@@ -69,7 +69,7 @@ export function pairKey(salt: string, idA: string, idB: string): string {
   assertUsablePairId(idB);
   const low = idA < idB ? idA : idB;
   const high = idA < idB ? idB : idA;
-  return hmacSha256Hex(salt, `${low}:${high}`);
+  return hmacHex(salt, `${low}:${high}`);
 }
 
 /**

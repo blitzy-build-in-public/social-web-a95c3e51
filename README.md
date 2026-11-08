@@ -126,7 +126,10 @@ Default compose services: `postgres`, `redis`, `mailpit`, `migrate`, `api`, `wor
 `venue-console`, `artifacts`, `stripe-mock` and `stripe-proxy`. Published ports bind the loopback
 interface and come from the per-clone `API_PORT`, `WEB_PORT`, `VENUE_CONSOLE_PORT`, `ARTIFACTS_PORT`,
 `POSTGRES_PORT`, `REDIS_PORT`, `MAILPIT_SMTP_PORT` and `MAILPIT_HTTP_PORT` variables, so side-by-side
-checkouts take separate blocks. Three profiles are never started by a plain `docker compose up`:
+checkouts take separate blocks. The compose project name is likewise derived from the checkout
+directory's own name, so side-by-side checkouts share no containers, networks or the `pgdata` volume;
+`COMPOSE_PROJECT_NAME` or `docker compose -p` overrides it. Three profiles are never started by a plain
+`docker compose up`:
 
 | Profile       | Service      | What it adds                                                                        |
 | ------------- | ------------ | ----------------------------------------------------------------------------------- |

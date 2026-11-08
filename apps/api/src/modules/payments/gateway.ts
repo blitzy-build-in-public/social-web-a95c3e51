@@ -216,9 +216,17 @@ export interface RefundResult {
  */
 export type WebhookObject =
   | {
-      /** A `payment_intent.*` event: the intent's full normalized state. */
+      /** A `payment_intent.*` event: the intent the handler correlates the delivery by. */
       kind: 'payment_intent';
-      intent: IntentState;
+      /** The PaymentIntent id the event names, which is what the handler correlates and re-reads by. */
+      intentId: string;
+      /**
+       * The normalized state the payload carried, or `null` when it lacks a field this build needs —
+       * its status above all, which a reduced payload does not carry at all. A payload may omit a
+       * field an effect needs, so `null` means the handler reads the PaymentIntent from the provider
+       * before it opens its transaction, never that the delivery failed (AAP 0.3.2).
+       */
+      intent: IntentState | null;
     }
   | {
       /** A `charge.*` event, which the handler correlates by the PaymentIntent it belongs to. */

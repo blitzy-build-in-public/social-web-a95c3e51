@@ -96,9 +96,10 @@ import type {
  * names the mode, the credentials and the caller id.
  *
  * Narrowed to the four fields this module touches, so a caller passes its whole `WorkersEnv` while a
- * suite builds only these. The caller id lives on `telephony` because it is a mode's own fact: the
- * simulator answers every call from `TWILIO_SIMULATOR.fromNumber`, and `twilio` mode carries
- * `TWILIO_FROM_NUMBER` (AAP 0.6.2).
+ * suite builds only these. `API_PUBLIC_URL` may be `null` — the deployment provides it or it does
+ * not, and {@link apiPublicUrlFor} is what refuses a dispatch without it. The caller id lives on
+ * `telephony` because it is a mode's own fact: the simulator answers every call from
+ * `TWILIO_SIMULATOR.fromNumber`, and `twilio` mode carries `TWILIO_FROM_NUMBER` (AAP 0.6.2).
  */
 export type DispatchEnv = Pick<
   WorkersEnv,
@@ -139,6 +140,30 @@ export function fromNumberFor(env: Pick<WorkersEnv, 'telephony'>): string {
     throw new Error('call dispatch needs TWILIO_FROM_NUMBER when TELEPHONY_MODE=twilio');
   }
   return from;
+}
+
+/**
+ * The public base URL the two callback URLs of one call are built on (AAP 0.3.2, 0.3.3).
+ *
+ * `API_PUBLIC_URL` belongs to the `api` process's scope, and this process reads it where the
+ * deployment provides it: `docker-compose.yml` passes it, so the delivered stack always has one, and
+ * a deployment that leaves it out starts anyway rather than losing the whole process over a variable
+ * its own row does not carry. A dispatch cannot be placed without it, though — the TwiML fetch and
+ * the status callback are the only two addresses Twilio is given, and both resolve against this
+ * base — so the absence belongs to the call-dispatch feature and not to startup.
+ *
+ * @param env - The parsed environment, or its `API_PUBLIC_URL` field alone.
+ * @returns The base {@link callbackUrls} resolves the TwiML and status-callback paths against.
+ * @throws Error when the environment carries no `API_PUBLIC_URL`.
+ */
+export function apiPublicUrlFor(env: Pick<WorkersEnv, 'API_PUBLIC_URL'>): string {
+  const base = env.API_PUBLIC_URL;
+  if (base === null) {
+    throw new Error(
+      'call dispatch needs API_PUBLIC_URL: the TwiML and status-callback URLs are built on it',
+    );
+  }
+  return base;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -407,9 +432,10 @@ const SECOND_MS = 1_000;
  * @param deps - The database, telephony client, spend meter, call guard, environment, clock, logger,
  *   city zone and dialogue budget.
  * @returns What happened, one of {@link DispatchResult}'s seven shapes.
- * @throws Error when `deps.env` names no caller id (see {@link fromNumberFor}), `RangeError` when the
- *   city zone is not an IANA zone or a figure is malformed, and whatever a database or spend-meter
- *   failure raises — a job retries rather than reading a failure as a refusal.
+ * @throws Error when `deps.env` names no caller id (see {@link fromNumberFor}) or no public base URL
+ *   (see {@link apiPublicUrlFor}), `RangeError` when the city zone is not an IANA zone or a figure is
+ *   malformed, and whatever a database or spend-meter failure raises — a job retries rather than
+ *   reading a failure as a refusal.
  * @see AAP 0.3.2 for the dispatch sequence and the reconciliation that follows it, 0.5.3 for the
  *   lifecycle this drives, 0.5.6 for the budget and the caps.
  */
@@ -418,9 +444,11 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   // failure writes all describe the same moment (AAP 0.11.1).
   const now = deps.clock.now();
 
-  // Resolved before anything is read, reserved or claimed: a telephony configuration that names no
-  // caller id must fail the job outright, never leave an attempt, a call slot and a budget behind it.
+  // Resolved before anything is read, reserved or claimed: a configuration that names no caller id
+  // or no public base URL must fail the job outright, never leave an attempt, a call slot and a
+  // budget behind it.
   const from = fromNumberFor(deps.env);
+  const apiPublicUrl = apiPublicUrlFor(deps.env);
 
   const target = await readTargetCity(deps.db, taskId, now);
 
@@ -503,7 +531,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   }
 
   const { call } = claim;
-  const { twimlUrl, statusCallbackUrl } = callbackUrls(deps.env.API_PUBLIC_URL, call.attemptId);
+  const { twimlUrl, statusCallbackUrl } = callbackUrls(apiPublicUrl, call.attemptId);
 
   let callSid: string;
   try {

@@ -34,6 +34,7 @@
   "devDependencies": {
     "@tablemate/api": "workspace:*",
     "@tablemate/db": "workspace:*",
+    "@tablemate/server-core": "workspace:*",
     "@tablemate/shared": "workspace:*",
     "@tablemate/workers": "workspace:*",
     "@testcontainers/postgresql": "12.2.1",

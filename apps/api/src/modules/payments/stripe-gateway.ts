@@ -163,20 +163,23 @@ function toIntentStatus(status: string): IntentStatus | null {
 }
 
 /**
- * One provider PaymentIntent, normalized (AAP 0.3.2, AAP 0.5.3).
+ * One provider PaymentIntent, normalized, or `null` when its status is one this build cannot name
+ * (AAP 0.3.2, AAP 0.5.3).
  *
  * This is the authoritative view the executor, the settlement and the webhook handler decide on, so
  * nothing is inferred: a `latest_charge` that arrived as an id leaves the capture deadline and the
  * refund flag at their defaults, and `metadata` is the attempt metadata this application wrote or
  * `null` when it is absent or malformed.
  *
- * @throws PaymentUnavailableError with the `unexpected_status` reason when the provider reports a
- *   status this build cannot name: nothing may be decided from a state that cannot be expressed, which
- *   is what that reason exists for.
+ * The `null` arm exists for a **webhook payload**, which is whatever bytes the provider sent: an
+ * event object may omit the status altogether, and a payload naming no state this build can express
+ * is not a failure of the endpoint — the handler reads the PaymentIntent itself before it opens its
+ * transaction (AAP 0.3.2). Every other caller goes through {@link toIntentState}, which refuses to
+ * report a state nobody can name.
  */
-function toIntentState(intent: Stripe.PaymentIntent): IntentState {
+function toIntentStateOrNull(intent: Stripe.PaymentIntent): IntentState | null {
   const status = toIntentStatus(intent.status);
-  if (status === null) throw new PaymentUnavailableError('unexpected_status');
+  if (status === null) return null;
   const charge = typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
   const metadata = PaymentIntentMetadata.safeParse(intent.metadata);
   const canceledAt = intent.canceled_at;
@@ -197,16 +200,41 @@ function toIntentState(intent: Stripe.PaymentIntent): IntentState {
 }
 
 /**
+ * One provider PaymentIntent this application must decide on, normalized (AAP 0.3.2, AAP 0.5.3).
+ *
+ * @throws PaymentUnavailableError with the `unexpected_status` reason when the provider reports a
+ *   status this build cannot name: nothing may be decided from a state that cannot be expressed, which
+ *   is what that reason exists for. A webhook payload goes through {@link toIntentStateOrNull}
+ *   instead, because a delivery this build cannot normalize is a read the handler makes rather than a
+ *   failure it reports.
+ */
+function toIntentState(intent: Stripe.PaymentIntent): IntentState {
+  const state = toIntentStateOrNull(intent);
+  if (state === null) throw new PaymentUnavailableError('unexpected_status');
+  return state;
+}
+
+/**
  * The object a verified event carried, reduced to the fields the handler applies (AAP 0.3.2).
  *
  * The whole provider object never leaves this boundary, so a field the provider added cannot reach the
- * database or a response by accident. An object of a kind this API does not model is reported as
- * `other`, which the handler applies as a no-op rather than failing the endpoint.
+ * database or a response by accident. An object of a kind this API does not model — and an envelope
+ * that carries none at all, which only a hand-built delivery does — is reported as `other`, which the
+ * handler applies as a no-op rather than failing the endpoint. A `payment_intent` payload carrying no
+ * status this build can name — an event object may omit the field entirely — is reported with its id
+ * and `intent: null`, which the handler answers by reading the PaymentIntent before its transaction.
+ * No shape of signed payload can therefore throw here: a delivery this build cannot read never fails
+ * the endpoint, and the receipt line is written for every delivery whose signature checked out
+ * (AAP 0.3.2, AAP 0.11.1).
  */
 function toWebhookObject(event: Stripe.Event): WebhookObject {
-  const object = event.data.object;
+  const object = event.data?.object;
+
+  if (object === undefined || object === null) {
+    return { kind: 'other' };
+  }
   if (object.object === 'payment_intent') {
-    return { kind: 'payment_intent', intent: toIntentState(object) };
+    return { kind: 'payment_intent', intentId: object.id, intent: toIntentStateOrNull(object) };
   }
   if (object.object === 'charge') {
     return {
@@ -745,8 +773,9 @@ export function createStripeGateway(
    *
    * @throws BadSignatureError when the header is missing or malformed, when the timestamp is outside
    *   tolerance, or when the signature was made with another secret; `webhook.ts` maps it to
-   *   `400 bad_signature`. A body whose signature verifies but whose object cannot be normalized is not
-   *   a signature failure, and is reported as unavailable instead.
+   *   `400 bad_signature`. A body whose signature verifies is normalized and never thrown for: a
+   *   `payment_intent` payload that omits a field the handler needs, its status included, is reported
+   *   as `intent: null` beside its id, and the handler reads the PaymentIntent itself (AAP 0.3.2).
    */
   function verifyWebhook(
     rawBody: Buffer,

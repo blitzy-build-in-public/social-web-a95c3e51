@@ -182,6 +182,24 @@ export interface ExecutionResult {
 export type OperationScope = { readonly meetupId: string } | { readonly userId: string };
 
 /**
+ * How {@link runOperationsFor} narrows one call's passes (AAP 0.3.2).
+ *
+ * A caller that means to run one operation itself — the hold whose result is a route's response —
+ * names it here, and the pass then covers only the open operations of that operation's own deposit
+ * with a lower `seq`, in plan order. Those are exactly the rows the claim gate makes it wait on: a
+ * retry plans the new attempt's `hold` **after** the release of the attempt it superseded
+ * (`holds.ts`), and {@link claimRow} refuses a row while any lower `seq` of its deposit is open, so a
+ * caller that ran the hold first would find it unclaimable and report a create nobody had sent yet.
+ */
+export interface RunOperationsOptions {
+  /**
+   * The operation whose predecessors a pass is restricted to, when the caller is about to run that
+   * operation itself. Absent, the pass covers the whole of `scope`.
+   */
+  readonly beforeOperationId?: string;
+}
+
+/**
  * What one {@link runPendingOperations} pass did (AAP 0.3.2).
  *
  * The four buckets sum to `attempted`: every operation the pass examined is counted once, and one
@@ -2046,6 +2064,41 @@ function scopeOperations(scope: OperationScope): Prisma.PaymentOperationWhereInp
 }
 
 /**
+ * The `WHERE` clause one {@link runOperationsFor} pass reads its scope with (AAP 0.3.2).
+ *
+ * Without {@link RunOperationsOptions.beforeOperationId} it is the caller's own scope. With it, the
+ * pass is restricted to the open operations of the named operation's own deposit that come **before**
+ * it in that deposit's plan, which is the set its claim waits on: the plan orders a retry's new hold
+ * after the release of the attempt it superseded, and {@link claimRow} refuses the hold until that
+ * release is terminal, so running these rows in plan order is what frees the hold for its own caller.
+ *
+ * @param services - The app's services.
+ * @param scope - The meetup or account the pass would cover on its own.
+ * @param opts - The operation whose predecessors this pass is restricted to, when the caller named one.
+ * @returns The filter for this pass, or `null` when the named operation is gone or belongs to no
+ *   deposit, in which case the pass has no predecessors to run.
+ */
+async function passScope(
+  services: AppServices,
+  scope: OperationScope,
+  opts: RunOperationsOptions | undefined,
+): Promise<Prisma.PaymentOperationWhereInput | null> {
+  const before = opts?.beforeOperationId;
+
+  if (before === undefined) {
+    return scopeOperations(scope);
+  }
+
+  const target = await readOperation(services, before);
+
+  if (target === null || target.depositId === null) {
+    return null;
+  }
+
+  return { depositId: target.depositId, seq: { lt: target.seq } };
+}
+
+/**
  * Compensates a forfeit whose hold turned out to have been lost before it committed (AAP 0.3.2).
  *
  * It runs after the recording transaction has committed, because it opens a transaction of its own
@@ -2181,22 +2234,35 @@ export async function executeHoldInline(
  * (the orphan release a hold outcome adds, the refund a compensation adds) is only visible to the
  * next pass, which is why the loop re-reads its scope until a pass makes no progress.
  *
+ * A caller that is about to run one operation itself names it in `opts`, and the passes then cover
+ * that operation's predecessors alone: the hold a retry route places is planned after the release of
+ * the attempt it superseded, and the claim gate holds it until that release is terminal, so the
+ * predecessors are what has to run first (AAP 0.3.2 "Claiming and ordering").
+ *
  * It exists in after-commit paths, so it never throws: a failure is logged and the pass continues,
  * and the sweeper is the backstop for anything left open.
  *
  * @param services - The app's services.
  * @param scope - The meetup whose deposits' operations run, or the account whose operations run.
+ * @param opts - When set, restricts every pass to the predecessors of the operation it names.
  */
 export async function runOperationsFor(
   services: AppServices,
   scope: OperationScope,
+  opts?: RunOperationsOptions,
 ): Promise<void> {
   for (let pass = 0; pass < MAX_SCOPE_PASSES; pass += 1) {
     let open: readonly PaymentOperation[];
 
     try {
+      const where = await passScope(services, scope, opts);
+
+      if (where === null) {
+        return;
+      }
+
       open = await services.db.paymentOperation.findMany({
-        where: { AND: [scopeOperations(scope), openOperations(services.clock.now())] },
+        where: { AND: [where, openOperations(services.clock.now())] },
         orderBy: [{ depositId: 'asc' }, { seq: 'asc' }, { createdAt: 'asc' }],
         take: DEFAULT_PENDING_LIMIT,
       });

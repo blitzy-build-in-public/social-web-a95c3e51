@@ -542,6 +542,68 @@ describe.runIf(MOCK)(`${MODE} POST ${WEBHOOK_URL} — ordering and lifecycle`, (
     expect(await notificationKinds()).toEqual(['proposal_received']);
   });
 
+  it('retrieves the intent of an authorization whose payload carries no status', async () => {
+    const pending = await awaitingInitiation();
+    const at = t.services.clock.nowMs();
+    await proxy().complete3ds(pending.deposit.paymentIntentId);
+
+    // The payload a delivery may carry with no field the handler can normalize: an id and the object
+    // kind alone. The state the effect decides on therefore comes from the intent the handler reads
+    // before its transaction opens (AAP 0.3.2), and the delivery is posted twice, with a fresh
+    // signature each time, because that is how a provider redelivers (AAP 0.3.2, 0.11.1).
+    const event = eventEnvelope('payment_intent.amount_capturable_updated', {
+      id: pending.deposit.paymentIntentId,
+      object: 'payment_intent',
+    });
+
+    expectAccepted(await deliverStripeEvents(t.app, [event, event], t.stripe.webhookSecret));
+
+    await expectProcessedOnce(event.id);
+
+    const deposit = await depositOf(pending.meetupId, 'initiator');
+    expect(deposit.status).toBe('held');
+    // The deadline is not in this payload either: it comes from the retrieved intent (AAP 0.5.2).
+    expect(deposit.captureBefore).not.toBeNull();
+
+    const meetup = await t.services.db.meetup.findUniqueOrThrow({
+      where: { id: pending.meetupId },
+      select: { proposalVisibleAt: true, recipientDeadline: true },
+    });
+    expect(meetup.proposalVisibleAt?.getTime()).toBe(at);
+    expect(meetup.recipientDeadline?.getTime()).toBe(at + RECIPIENT_DEADLINE_HOURS * HOUR_MS);
+    expect(await analyticsCount('proposal_sent')).toBe(1);
+    expect(await notificationKinds()).toEqual(['proposal_received']);
+  });
+
+  it('acknowledges a status-less payload naming an intent this application did not create', async () => {
+    const event = eventEnvelope('payment_intent.amount_capturable_updated', {
+      id: `pi_${randomBytes(12).toString('hex')}`,
+      object: 'payment_intent',
+    });
+
+    // The read the reduced payload forces reports `resource_missing`, which is nothing to correlate
+    // and nothing a redelivery could change, so the delivery is acknowledged as unmatched
+    // (AAP 0.3.2) rather than retried forever.
+    expectAccepted(await deliverStripeEvents(t.app, [event], t.stripe.webhookSecret));
+
+    await expectProcessedOnce(event.id);
+  });
+
+  it('acknowledges a signed payload that carries no object at all', async () => {
+    // An envelope with no `data` member, which only a hand-built delivery produces: nothing can be
+    // correlated and nothing throws, so the delivery is recorded and acknowledged rather than
+    // answered 500 — whose retries the provider would keep sending (AAP 0.3.2, AAP 0.11.1).
+    const event = {
+      id: `evt_${randomBytes(12).toString('hex')}`,
+      type: 'payment_intent.amount_capturable_updated',
+      created: nowSec(),
+    };
+
+    expectAccepted(await deliverStripeEvents(t.app, [event], t.stripe.webhookSecret));
+
+    await expectProcessedOnce(event.id);
+  });
+
   it('locks the meetup when the recipient completes 3-D Secure', async () => {
     const proposed = await proposeMeeting('visa', '3ds');
 

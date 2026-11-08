@@ -131,7 +131,10 @@ The circuit itself, the registry and the issuer records are in `docs/zk-proofs.m
    | `stripe-mock`, `stripe-proxy` | The credential-free payment path `STRIPE_MODE=mock` uses, reached by the API alone                |
 
 4. Ports. Each host-side port is the variable of its own name, so checkouts running side by side take
-   separate blocks, and every one of them binds the loopback interface alone.
+   separate blocks, and every one of them binds the loopback interface alone. The compose project
+   name is derived from the checkout directory's own name for the same reason, so side-by-side
+   checkouts share no containers, networks or the `pgdata` volume; `COMPOSE_PROJECT_NAME` or
+   `docker compose -p` overrides it.
 
    | Variable                                 | Default    | Service             |
    | ---------------------------------------- | ---------- | ------------------- |

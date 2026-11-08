@@ -137,7 +137,7 @@ const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
  * an event already `processed`, and `unmatched` named no deposit this application created. All four
  * answer `200`; the result reaches the log line and, with `meetupId`, the post-commit work.
  */
-interface WebhookOutcome {
+export interface WebhookOutcome {
   readonly result: 'applied' | 'ignored' | 'duplicate' | 'unmatched';
   /** The meetup the delivery touched, whose planned operations the handler then runs. */
   readonly meetupId?: string;
@@ -252,11 +252,10 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
         return;
       }
 
-      const intent = await intentFor(services, request.log, event);
-
-      const outcome = await transact(services, (tx, after) =>
-        applyDelivery(tx, services, request.log, after, event, intent, now),
-      );
+      // One transaction, opened by this module's own entry point: the effect, the record that the
+      // event was applied and the rows that plan follow-up provider calls commit together or not at
+      // all (AAP 0.3.2, AAP 0.5.1).
+      const outcome = await handleStripeEvent(services, request.log, event, now);
 
       // After the commit: a throw here answers `500` while the effects stand and the redelivery is
       // skipped as a duplicate (AAP 0.11.2).
@@ -317,9 +316,16 @@ function verifySignature(
 /**
  * The PaymentIntent state this event's effect decides on, retrieved only when the payload lacks a
  * field the effect needs (AAP 0.3.2): an event payload does not expand `latest_charge`, so the
- * capture deadline of an authorization arrives from the intent itself, and a `charge.*` event
- * carries a charge rather than an intent, whose metadata, cancellation instant and refund state are
- * read from it.
+ * capture deadline of an authorization arrives from the intent itself, a payload may omit a field
+ * this build cannot normalize at all — a `payment_intent` object with no status — and a `charge.*`
+ * event carries a charge rather than an intent, whose metadata, cancellation instant and refund state
+ * are read from it.
+ *
+ * Every branch here answers with a state or with `null`, so nothing between the signature check and
+ * the receipt line this file writes can throw for a delivery whose signature was valid: the
+ * `stripe_webhook_received` point of AAP 0.11.1 is written for every accepted delivery, whatever its
+ * payload shape. A read that cannot be observed is the one exception, and it answers
+ * `503 payment_unavailable` through {@link retrieveIntent} so the provider redelivers.
  *
  * @returns The intent, or null when the event names none this application could correlate.
  * @throws AppError `payment_unavailable` (503) when an intent that must be read could not be.
@@ -332,6 +338,10 @@ async function intentFor(
   const { object } = event;
 
   if (object.kind === 'payment_intent') {
+    if (object.intent === null) {
+      return retrieveIntent(services, log, event, object.intentId);
+    }
+
     const needsDeadline =
       event.type === 'payment_intent.amount_capturable_updated' &&
       object.intent.captureBefore === null;
@@ -403,6 +413,45 @@ async function recordUnapplied(
 // ---------------------------------------------------------------------------------------------
 // The transaction (AAP 0.3.2 "Stripe webhooks")
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * Apply one verified delivery and report what it decided: the event-application step itself, at the
+ * name AAP 0.5.1 gives it — `handleStripeEvent(event)`, in a single transaction.
+ *
+ * It is the whole of this endpoint's transaction. The event's PaymentIntent is resolved first, read
+ * from the provider when the payload lacks a field the effect needs (AAP 0.3.2), and everything the
+ * event means is then applied in one transaction with the `stripe_event` row: a replay of a row
+ * already `processed` has no effect, and a crash before the commit rolls the record back with every
+ * effect it describes. No provider call happens inside the transaction — these writes only *plan*
+ * `PaymentOperation` rows, which the executor runs after the commit with the settlement sweeper as
+ * the backstop.
+ *
+ * The route below calls this function in place of inlining those two steps, so the interface the AAP
+ * names is the one the delivered code answers to. A caller of its own must have verified the
+ * signature already: `event` is a {@link VerifiedWebhookEvent}, never a raw body.
+ *
+ * @param services - The app's providers: the guarded database client, the payment gateway and the
+ *   fault points.
+ * @param log - The request's own logger, so every line written under it carries that delivery's
+ *   request id (AAP 0.11.1).
+ * @param event - The event to apply, its signature already checked.
+ * @param now - The instant the request was stamped with, from the injected clock (AAP 0.11.1).
+ * @returns What the delivery decided; an outcome carrying a `meetupId` is what its caller runs the
+ *   planned operations for.
+ * @throws AppError `payment_unavailable` (503) when an intent that must be read could not be.
+ */
+export async function handleStripeEvent(
+  services: AppServices,
+  log: App['log'],
+  event: VerifiedWebhookEvent,
+  now: Date,
+): Promise<WebhookOutcome> {
+  const intent = await intentFor(services, log, event);
+
+  return transact(services, (tx, after) =>
+    applyDelivery(tx, services, log, after, event, intent, now),
+  );
+}
 
 /**
  * Apply one delivery in a single transaction (AAP 0.3.2).

@@ -9,15 +9,15 @@
  * rather than characters makes Thai, Indonesian, emoji and base64-like content count high, the way a
  * real tokenizer counts them.
  *
- * `adapter.ts` imports this file, so its error classes and `assertLlmRequest` are referenced inside
- * function bodies only: a top-level read would meet their temporal dead zone while the cycle
- * initialises.
+ * The graph runs one way here: the shared vocabulary — the error classes and `assertLlmRequest` —
+ * comes from `contract.ts`, which imports nothing, and `adapter.ts` imports this file's factory.
+ * Nothing in this file imports `adapter.ts`, so no load order can meet an uninitialised binding.
  */
 
 import { utf8ByteLength } from '@tablemate/shared';
 
-import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult } from './adapter.ts';
-import { LlmCountError, LlmProviderError, LlmTimeoutError, assertLlmRequest } from './adapter.ts';
+import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult } from './contract.ts';
+import { LlmCountError, LlmProviderError, LlmTimeoutError, assertLlmRequest } from './contract.ts';
 
 /**
  * The scripted behaviour of one fake adapter, read at call time so a suite can build the scenarios

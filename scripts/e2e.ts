@@ -385,10 +385,11 @@ export function buildSuiteEnv(
   env.FIELD_ENCRYPTION_KEY_ID = valueOr(env.FIELD_ENCRYPTION_KEY_ID, 'e2e');
   env.NULLIFIER_SALT = valueOr(env.NULLIFIER_SALT, randomFieldElement());
 
-  /* The compose file reads both of these from the shell, and a checkout whose `.env` names the
-   * host's own ports — as a clone that reserved a port block does — would leave a container
-   * dialling itself: the notifications job would never reach Mailpit and no magic link would
-   * arrive. They are pinned to the names only the compose network resolves (AAP 0.3.3). */
+  /* The compose file pins both of these itself, to the names only the compose network resolves: a
+   * host-addressed value from `.env` — as a clone that reserved a port block writes — would leave a
+   * container dialling itself, so the notifications job would never reach Mailpit and no magic link
+   * would arrive. Set here to the same values as well, so a harness process that reads this
+   * environment matches what the containers use (AAP 0.3.3). */
   env.SMTP_URL = 'smtp://mailpit:1025';
   env.VOICE_SIM_URL = 'http://voice-sim:4010';
 

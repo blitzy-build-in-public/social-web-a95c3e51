@@ -54,6 +54,7 @@ import {
   AcceptResponse,
   DEFAULT_DEPOSIT_CENTS,
   DAY_MS,
+  HoldRetryResponse,
   MINUTE_MS,
   OUR_CANCELLATION_REASON,
   ProposeResponse,
@@ -556,10 +557,11 @@ async function route(
  * Retry a hold through the route that owns it.
  *
  * A retry that supersedes an attempt which recorded an authorization writes that attempt's release
- * ahead of the new attempt in the deposit's own plan, so the inline attempt is refused
- * `409 hold_pending` while the same request's executor pass carries both rows out — the deposit ends
- * holding attempt `n + 1` and the meetup moves with it. The state the client reads next is therefore
- * what a caller asserts, and the response is returned for the case that pins the refusal.
+ * ahead of the new attempt in the deposit's own plan, and the same request carries both rows out: the
+ * release first, the new attempt inline after it, and the answer is that attempt's own client secret —
+ * the deposit ends holding attempt `n + 1` and the meetup moves with it (AAP 0.3.2, 0.5.4). A retry
+ * whose predecessor cannot conclude still answers `409 hold_pending`, which is the case that pins the
+ * refusal against a deposit left `pending`.
  */
 function retryHold(
   proposal: Proposal,
@@ -932,20 +934,28 @@ describe.runIf(MOCK)(`${MODE} payment operations — superseded attempts`, () =>
     expect(failed.currentAttempt).toBe(1);
 
     // The traveler saves another card and the attempt is retried, which supersedes the first one.
-    // Its release is planned ahead of the new attempt, so the inline attempt is refused while the
-    // same request's pass releases attempt 1 and holds attempt 2.
+    // Its release is planned ahead of the new attempt, and this request carries both rows out: the
+    // release of attempt 1, then attempt 2 inline, whose own secret is the answer (AAP 0.5.4).
     await attachVisa(proposal.recipient);
-    const refused = await route(
+    const retried = await route(
       'POST',
       `/v1/meetups/${proposal.meetupId}/accept`,
       proposal.recipient,
     );
-    expectError(refused, 409, 'hold_pending');
+    expect(retried.status, `the retry answered ${retried.body}`).toBe(200);
+    const accepted = AcceptResponse.parse(retried.json());
+    expect(accepted.status).toBe('locked');
 
     const current = await depositOf(proposal.meetupId, 'recipient');
     expect(current.currentAttempt).toBe(2);
     expect(current.status).toBe('held');
     expect(await meetupStatus(proposal.meetupId)).toBe('locked');
+    // The secret is the caller's own current attempt's: the attempt this call placed, never the
+    // counterpart's and never the superseded one (AAP 0.5.4).
+    const placed = (await intentsFor(current.id)).find(
+      (intent) => intent.id === intentIdOf(current),
+    );
+    expect(accepted.clientSecret).toBe(placed?.client_secret);
     const superseded = await operationOf(current.id, 'release');
     expect(superseded?.idempotencyKey).toBe(releaseKey(current.id, 1));
     expect(superseded?.status).toBe('succeeded');
@@ -1156,13 +1166,27 @@ describe.runIf(MOCK)(`${MODE} payment operations — late and orphan authorizati
       expect(await meetupStatus(proposal.meetupId)).toBe('proposed');
 
       // A `failed` deposit whose attempt ended is exactly what a retry needs: the new attempt is
-      // planned, and the abandoned one is released ahead of it in the deposit's own plan.
+      // planned, the request releases the abandoned one ahead of it, and then places it inline — so
+      // the answer carries attempt 2's own secret (AAP 0.5.4).
       const retried = await retryHold(proposal, actor, row.endpoint);
-      expectError(retried, 409, 'hold_pending');
+      expect(retried.status, `the retry answered ${retried.body}`).toBe(200);
+
       const again = await depositOf(proposal.meetupId, role);
       expect(again.currentAttempt).toBe(2);
       expect(again.status).toBe('requires_action');
-      expect(await intentsFor(again.id)).toHaveLength(2);
+      const attempts = await intentsFor(again.id);
+      expect(attempts).toHaveLength(2);
+      // The caller's own current attempt's secret, on the body the route answers for that side.
+      const current = attempts.find((intent) => intent.id === intentIdOf(again));
+      if (row.endpoint === 'accept') {
+        const answered = AcceptResponse.parse(retried.json());
+        expect(answered.status).toBe('proposed');
+        expect(answered.clientSecret).toBe(current?.client_secret);
+      } else {
+        const answered = HoldRetryResponse.parse(retried.json());
+        expect(answered.initiatorHold).toBe('requires_action');
+        expect(answered.clientSecret).toBe(current?.client_secret);
+      }
     },
     TIMEOUT_CASE_MS,
   );
@@ -1186,7 +1210,10 @@ describe.runIf(MOCK)(`${MODE} payment operations — late and orphan authorizati
 
     await attachVisa(proposal.recipient);
     const retried = await retryHold(proposal, proposal.recipient, 'accept');
-    expectError(retried, 409, 'hold_pending');
+    expect(retried.status, `the retry answered ${retried.body}`).toBe(200);
+    // The new attempt holds and the initiator's already did, so the proposal locks on this request
+    // (AAP 0.5.4).
+    expect(AcceptResponse.parse(retried.json()).status).toBe('locked');
 
     const current = await depositOf(proposal.meetupId, 'recipient');
     expect(current.currentAttempt).toBe(2);

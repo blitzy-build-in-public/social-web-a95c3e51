@@ -33,8 +33,10 @@
  * once an outcome is set, so a racing status callback and a relay finalize produce one result.
  *
  * Nothing here logs, returns or throws the callee's words: a log line carries an event name, the
- * attempt id and an outcome, and a booking name is redacted out of the classification window rather
- * than left to the provider's discretion (AAP 0.5.2, AAP 0.11.1, AAP 0.12.2).
+ * attempt id, an outcome and — per turn — the label that turn classified as, which is what lets
+ * `voice_call_no_data` tell a call the dialogue never understood from one nobody answered; a booking
+ * name is redacted out of the classification window rather than left to the provider's discretion
+ * (AAP 0.5.2, AAP 0.11.1, AAP 0.12.2).
  *
  * @see AAP 0.5.6 for the templates, the read-back rule, the caps and the outcomes, 0.5.3 for the
  *   call-task lifecycle the outcomes drive, 0.5.2 for what a call may keep, 0.3.2 for the single
@@ -1051,17 +1053,37 @@ export class DialogueSession {
       };
       const unusedMicros = Math.max(0, this.reservedMicros - this.chargedMicros);
 
+      let recorded = false;
       await transact(this.services, async (tx, after) => {
         const attempt = await lockAttempt(tx, this.ctx.attempt.id);
         if (attempt === null) {
           return;
         }
-        await recordAttemptOutcome(tx, this.services, after, attempt, result, {
+        recorded = await recordAttemptOutcome(tx, this.services, after, attempt, result, {
           reservation: this.reservation,
           unusedMicros,
           endCall: true,
         });
       });
+
+      // A call that ran and ended with nothing to apply. `no_answer` is the outcome the AAP fixes
+      // for a call that produced no data, and `CallAttempt.outcome` and `CallTask.blockedReason`
+      // carry no value that could say why (AAP 0.5.2, 0.5.3), so the reason is recorded here: the
+      // callee answered and every one of this call's turns classified `unclear`, which is what
+      // `LLM_PROVIDER=fake` does. An operator reads this line to tell a call the dialogue never
+      // understood from one nobody answered, whose `no_answer` is written with no turn classified
+      // (AAP 0.11.1).
+      if (recorded && result.outcome === 'no_answer' && this.classifications > 0) {
+        this.services.logger.info(
+          {
+            event: 'voice_call_no_data',
+            attemptId: this.ctx.attempt.id,
+            outcome: result.outcome,
+            turns: this.classifications,
+          },
+          'voice_call_no_data',
+        );
+      }
     } catch {
       this.services.logger.warn(
         { event: 'voice_finalize_failed', attemptId: this.ctx.attempt.id },
@@ -1133,6 +1155,21 @@ export class DialogueSession {
       );
       return;
     }
+
+    // The turn's own label, written before the control check so a refusal and a do-not-call are
+    // recorded like any other turn. A call that collected nothing is where this matters: with
+    // `LLM_PROVIDER=fake` every turn classifies `unclear`, so the attempt's `no_answer` would
+    // otherwise read as a line nobody answered (AAP 0.11.1).
+    this.services.logger.debug(
+      {
+        event: 'voice_turn',
+        attemptId: this.ctx.attempt.id,
+        turn: this.classifications,
+        step: step.slot,
+        classification: classification.label,
+      },
+      'voice_turn',
+    );
 
     const control = CONTROL_ACTIONS[classification.label];
     if (control !== undefined) {

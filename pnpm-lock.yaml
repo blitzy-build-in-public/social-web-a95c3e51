@@ -30,6 +30,9 @@ importers:
       '@tablemate/db':
         specifier: workspace:*
         version: link:packages/db
+      '@tablemate/server-core':
+        specifier: workspace:*
+        version: link:packages/server-core
       '@tablemate/shared':
         specifier: workspace:*
         version: link:packages/shared

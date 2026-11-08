@@ -19,15 +19,15 @@
  * prompt, a menu, a transcript or a reply must reach neither a log nor an error message (AAP 0.11.1,
  * AAP 0.12.2), so a provider's own failure travels in `cause`.
  *
- * `adapter.ts` imports this file and this file imports it back; that cycle stays safe only while
- * nothing at module top level reads an imported binding, hence no top-level `class ... extends
- * LlmProviderError` and no top-level `new LlmCountError(...)`.
+ * The graph runs one way here: the shared vocabulary — the error classes and `assertLlmRequest` —
+ * comes from `contract.ts`, which imports nothing, and `adapter.ts` imports this file's factory.
+ * Nothing in this file imports `adapter.ts`, so no load order can meet an uninitialised binding.
  */
 
 import OpenAI, { APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import type { InputTokenCountParams } from 'openai/resources/responses/index.js';
 import type { ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses.js';
-import { assertLlmRequest, LlmCountError, LlmProviderError, LlmTimeoutError } from './adapter.ts';
+import { assertLlmRequest, LlmCountError, LlmProviderError, LlmTimeoutError } from './contract.ts';
 import type {
   LlmAdapter,
   LlmCallOptions,
@@ -35,7 +35,7 @@ import type {
   LlmRequest,
   LlmResult,
   LlmUsage,
-} from './adapter.ts';
+} from './contract.ts';
 
 /**
  * The models `LLM_MODEL` may name (AAP 0.5.6): each used text-only, billed purely per input and

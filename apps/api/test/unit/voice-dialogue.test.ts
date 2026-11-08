@@ -1,7 +1,8 @@
 /**
  * The voice dialogue's unit suite (AAP 0.8.1, 0.5.6, 0.12.2): the disclosure every call opens with in
  * all five languages, the templates and the two scripts the relay speaks from, the booking name's
- * redaction, the classification window's byte bound, and one whole call per script driven with fakes.
+ * redaction, the classification window's byte bound, one whole call per script driven with fakes, and
+ * the call-outcome lines those calls write (AAP 0.11.1).
  *
  * The disclosure is what the suite is named for (AAP 0.12.2): `disclosureFor` is the sentence
  * `twiml.ts` sends as the ConversationRelay `welcomeGreeting`, so each of the five languages is
@@ -119,6 +120,10 @@ const STAY_TO = new Date('2026-11-14T00:00:00.000Z');
 /** `LLM_MAX_TURNS_PER_CALL` (AAP 0.5.6), and the dialogue budget a dispatch reserves with it. */
 const MAX_TURNS = 60;
 const DIALOGUE_BUDGET_MICROS = 600_000n;
+
+/** pino's numeric levels: a per-turn line is debug, a call-outcome line is info (AAP 0.11.1, 0.6.2). */
+const DEBUG_LEVEL = 20;
+const INFO_LEVEL = 30;
 
 /** The field keyring the stay script decrypts a booking name with (AAP 0.5.2). */
 const KEYRING = createFieldKeyring({
@@ -337,12 +342,14 @@ interface ScenarioTurn {
   };
 }
 
-/** What the fake transaction recorded, for a case to assert on. */
+/** What the fake transaction and the session's own logger recorded, for a case to assert on. */
 interface Stores {
   readonly attemptUpdates: Record<string, unknown>[];
   readonly targetUpdates: Record<string, unknown>[];
   readonly taskUpdates: Record<string, unknown>[];
   readonly outboxRows: Record<string, unknown>[];
+  /** Every line the session logged while the call ran, parsed (AAP 0.11.1). */
+  readonly lines: Record<string, unknown>[];
 }
 
 /** One driven call and the spies a case asserts on. */
@@ -358,6 +365,38 @@ interface Harness {
 /** A logger that writes nothing, so the suite's own output stays its own. */
 function silentLogger(): Logger {
   return createLogger({ name: 'api', level: 'silent', appEnv: 'test' });
+}
+
+/**
+ * The logger a driven call writes through, with every line it writes captured rather than printed
+ * (AAP 0.11.1).
+ *
+ * `createLogger`'s `destination` exists for exactly this, and `debug` is the level the per-turn
+ * lines are written at, so a line the suite reads back is one a `LOG_LEVEL=debug` run would show.
+ *
+ * @returns The logger, and the lines it wrote, parsed, in the order they were written.
+ */
+function capturingLogger(): { readonly logger: Logger; readonly lines: Record<string, unknown>[] } {
+  const lines: Record<string, unknown>[] = [];
+  const logger = createLogger({
+    name: 'api',
+    level: 'debug',
+    appEnv: 'test',
+    destination: {
+      write: (line: string) => {
+        lines.push(JSON.parse(line) as Record<string, unknown>);
+      },
+    },
+  });
+  return { logger, lines };
+}
+
+/** Every captured line that carries `event`, in the order the call wrote them. */
+function linesFor(
+  lines: readonly Record<string, unknown>[],
+  event: string,
+): Record<string, unknown>[] {
+  return lines.filter((line) => line['event'] === event);
 }
 
 /**
@@ -403,7 +442,8 @@ function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest
 
 /**
  * One whole call over fakes: the two database reads the session makes, a metered send that charges
- * nothing, a frozen clock, a capturing socket and no wait for speech.
+ * nothing, a frozen clock, a capturing socket, a logger whose lines the case reads back, and no wait
+ * for speech.
  *
  * The database object is asserted into `DbClient` once, on purpose: the session reads only
  * `callAttempt` and `$transaction`, while the client's type is the whole guarded Prisma surface.
@@ -416,11 +456,13 @@ function driveScenario(input: {
   readonly turns: readonly ScenarioTurn[];
   readonly taskStatus?: CallTaskStatus;
 }): Harness {
+  const capture = capturingLogger();
   const stores: Stores = {
     attemptUpdates: [],
     targetUpdates: [],
     taskUpdates: [],
     outboxRows: [],
+    lines: capture.lines,
   };
   const attempt = attemptRow();
   const live = {
@@ -516,7 +558,7 @@ function driveScenario(input: {
   const services = {
     db,
     clock: createTestClock(),
-    logger: silentLogger(),
+    logger: capture.logger,
     outbox: {
       kick: vi.fn(),
       runOnce: () => Promise.resolve(0),
@@ -962,6 +1004,12 @@ describe('a call driven turn by turn', () => {
     // The attempt's unused dialogue budget is released after the commit (AAP 0.5.6).
     expect(harness.releaseLlm).toHaveBeenCalledTimes(1);
     expect(harness.closed).toHaveBeenCalledTimes(1);
+    // One debug line per classified turn, in the order the answers arrived, and — the call having
+    // extracted everything — no line about missing data (AAP 0.11.1).
+    expect(
+      linesFor(harness.stores.lines, 'voice_turn').map((line) => line['classification']),
+    ).toEqual(['price', 'yes', 'price', 'yes', 'price', 'yes']);
+    expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
 
   it('switches recognition and speech together on a preference for English', async () => {
@@ -1021,6 +1069,17 @@ describe('a call driven turn by turn', () => {
     expect(harness.stores.attemptUpdates[0]?.['outcome']).toBe('refused');
     expect(harness.stores.attemptUpdates[0]?.['confidence']).toBeNull();
     expect(harness.stores.targetUpdates).toEqual([]);
+    // The refusal is a turn like any other: its label is recorded before the engine acts on it, and
+    // a call that closed on it says nothing about missing data (AAP 0.5.6, 0.11.1).
+    expect(linesFor(harness.stores.lines, 'voice_turn')).toEqual([
+      expect.objectContaining({
+        attemptId: ATTEMPT_ID,
+        turn: 1,
+        step: 'cheapest_main',
+        classification: 'stop',
+      }),
+    ]);
+    expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
 
   it('marks the target and cancels its other tasks on a do-not-call request', async () => {
@@ -1052,6 +1111,11 @@ describe('a call driven turn by turn', () => {
     expect(harness.session.finalizedBy).toBe('superseded');
     expect(harness.stores.attemptUpdates[0]?.['outcome']).toBe('no_answer');
     expect(harness.llm.calls.sent).toEqual([]);
+    // Nobody answered, so no turn was ever classified: this `no_answer` carries no turn line and no
+    // line about missing data, which is what distinguishes it from a call the dialogue could not
+    // understand (AAP 0.5.3, 0.11.1).
+    expect(linesFor(harness.stores.lines, 'voice_turn')).toEqual([]);
+    expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
 
   it('verifies a stay without ever handing the guest name to the provider', async () => {
@@ -1089,6 +1153,58 @@ describe('a call driven turn by turn', () => {
     const fields = recorded?.['extractedFields'];
     expect(isRecord(fields) ? fields['answer'] : null).toBe('yes');
     expect(isRecord(fields) ? fields['confirmed'] : null).toBe(true);
+  });
+
+  it('logs every unclassified turn and the line that says the call ended with no data at all', async () => {
+    // No scenario turns, so every prompt classifies `unclear` — the reply the credential-free `fake`
+    // provider gives — and the dialogue collects nothing at all (AAP 0.5.6, 0.6.2).
+    const harness = driveScenario({
+      ctx: callContext({ city: LISBON, kind: 'menu_prices' }),
+      turns: [],
+    });
+    await harness.session.start();
+    // Two tries per question, three questions, and then the call closes.
+    for (let turn = 0; turn < 6; turn += 1) {
+      await harness.session.onPrompt('Desculpe, não percebi.');
+    }
+
+    expect(harness.session.finalizedBy).toBe('completed');
+    // One debug line per classified turn, each naming the label the turn classified as and the
+    // question it was answering, so the log stream shows where the dialogue was lost (AAP 0.11.1).
+    const turns = linesFor(harness.stores.lines, 'voice_turn');
+    expect(turns.map((line) => line['classification'])).toEqual(Array(6).fill('unclear'));
+    expect(turns.map((line) => line['turn'])).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(turns.map((line) => line['step'])).toEqual([
+      'cheapest_main',
+      'cheapest_main',
+      'priciest_main',
+      'priciest_main',
+      'coffee_or_beer',
+      'coffee_or_beer',
+    ]);
+    for (const line of turns) {
+      expect(line['attemptId']).toBe(ATTEMPT_ID);
+      expect(line['level']).toBe(DEBUG_LEVEL);
+    }
+    // No line carries the callee's words, however the call went (AAP 0.11.1, 0.12.2).
+    expect(JSON.stringify(harness.stores.lines)).not.toContain('Desculpe');
+
+    // The attempt keeps `no_answer`, the outcome the AAP fixes for a call that produced no data, and
+    // the one line beside it says why: the dialogue ran and did not understand the callee, which is
+    // not the same as a line nobody answered (AAP 0.5.2, 0.5.3, 0.11.1).
+    expect(harness.stores.attemptUpdates[0]?.['outcome']).toBe('no_answer');
+    expect(linesFor(harness.stores.lines, 'voice_call_outcome')).toEqual([
+      expect.objectContaining({ attemptId: ATTEMPT_ID, outcome: 'no_answer' }),
+    ]);
+    const noData = linesFor(harness.stores.lines, 'voice_call_no_data');
+    expect(noData).toEqual([
+      expect.objectContaining({
+        attemptId: ATTEMPT_ID,
+        outcome: 'no_answer',
+        turns: 6,
+        level: INFO_LEVEL,
+      }),
+    ]);
   });
 });
 

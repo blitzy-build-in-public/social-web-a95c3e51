@@ -43,8 +43,8 @@ import {
   LlmProviderError,
   LlmSuspendedError,
   LlmTimeoutError,
-} from './adapter.ts';
-import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult, LlmUsage } from './adapter.ts';
+} from './contract.ts';
+import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult, LlmUsage } from './contract.ts';
 
 /** The prices one token is charged at, in USD per million tokens (AAP 0.5.6). */
 export interface LlmPrices {

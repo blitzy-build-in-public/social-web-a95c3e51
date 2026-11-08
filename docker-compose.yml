@@ -9,9 +9,12 @@
 # Published ports bind the loopback interface alone, and the host side of each is the per-clone
 # variable of its own name — API_PORT, WEB_PORT, VENUE_CONSOLE_PORT, ARTIFACTS_PORT, POSTGRES_PORT,
 # REDIS_PORT, MAILPIT_SMTP_PORT, MAILPIT_HTTP_PORT — so that checkouts running side by side take
-# separate blocks. The container side never moves, so the port a process listens on is fixed, and
-# `API_PUBLIC_URL` must name the host side of `API_PORT`. stripe-mock, stripe-proxy and voice-sim
-# publish nothing: only the compose network reaches them.
+# separate blocks. The project name is left to compose, which derives it from the checkout
+# directory's own name; `COMPOSE_PROJECT_NAME` or `docker compose -p` overrides it. Two checkouts on
+# one host therefore share no container, network or `pgdata` volume. The container side never moves,
+# so the port a process listens on is fixed, and `API_PUBLIC_URL` must name the host side of
+# `API_PORT`. stripe-mock, stripe-proxy and voice-sim publish nothing: only the compose network
+# reaches them.
 #
 # Profiles, which a plain `docker compose up` never starts: `test` adds the scripted telephony
 # simulator, `stripe-test` the Stripe CLI forwarding test-mode webhooks, and `perf` the k6 load profile.
@@ -21,8 +24,6 @@
 # crawler or caller-id variable. A key written with an empty value (`STRIPE_SECRET_KEY:`) is passed
 # through from the shell or `.env` when it is set and left unset in the container when it is not, which
 # is what keeps the three test-only switches absent outside APP_ENV=test.
-
-name: tablemate
 
 # ---------------------------------------------------------------------------------------------
 # Shared environment blocks (the AAP 0.6.2 scope rows), merged into the services below.
@@ -90,7 +91,8 @@ x-api-env: &api-env
 # holds no payment secret in any mode.
 x-workers-env: &workers-env
   <<: *common-server-env
-  SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+  # Mailpit's service name: the `.env` value addresses the host, which a container cannot reach.
+  SMTP_URL: smtp://mailpit:1025
   EMAIL_FROM: '${EMAIL_FROM:-Tablemate <no-reply@tablemate.local>}'
   OVERPASS_URL: ${OVERPASS_URL:-https://overpass-api.de/api/interpreter}
   FX_URL: ${FX_URL:-https://open.er-api.com/v6/latest/USD}
@@ -98,7 +100,8 @@ x-workers-env: &workers-env
   CALLS_PRODUCTION_APPROVED: ${CALLS_PRODUCTION_APPROVED:-false}
   FINANCIAL_RETENTION_DAYS: ${FINANCIAL_RETENTION_DAYS:-2557}
   # Read in `simulator` mode alone.
-  VOICE_SIM_URL: ${VOICE_SIM_URL:-http://voice-sim:4010}
+  # The simulator's service name: the `.env` value addresses the host, not the compose network.
+  VOICE_SIM_URL: http://voice-sim:4010
   # The caller id belongs to the dialing process, the allowlist to the environment that dials outside
   # production (AAP 0.3.3).
   TWILIO_FROM_NUMBER:

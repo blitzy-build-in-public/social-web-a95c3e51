@@ -1244,11 +1244,15 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     expect(failed.status).toBe('failed');
     expect(failed.currentAttempt).toBe(1);
 
-    // The retry supersedes that attempt, so its release is carried out in this same request and the
-    // new attempt runs behind it: the answer is the recovery's, and the money has moved by the time
+    // The retry supersedes that attempt: this request carries the release out and then places attempt
+    // 2 behind it, so the answer is that attempt's own secret — and the money has moved by the time
     // the client reads the meetup again (AAP 0.3.2, 0.5.4).
     await attachCard(fixture.recipient, WORKING_CARD);
-    expectError(await accept(fixture.recipient, created.meetupId), 409, 'hold_pending');
+    const response = await accept(fixture.recipient, created.meetupId);
+    expect(response.status, `the retry accept answered ${response.body}`).toBe(200);
+    const answered = AcceptResponse.parse(response.json());
+    expect(answered.status).toBe('locked');
+    expect(answered.clientSecret.length).toBeGreaterThan(0);
 
     const retried = await depositOf(created.meetupId, fixture.recipient);
     expect(retried.status).toBe('held');
@@ -1675,10 +1679,16 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     const meetupId = await onlyMeetupId();
     await attachCard(initiator, WORKING_CARD);
 
-    // The refused attempt's release is carried out first, so this answer is the recovery's rather
-    // than the new attempt's — and the money has moved by the time the client reads the meetup.
+    // The retry carries out the superseded attempt's release and then places attempt 2, so the answer
+    // is that attempt's own secret, and the money has moved by the time the client reads the meetup
+    // (AAP 0.5.4).
     const now = t.time.now();
-    expectError(await retryHold(initiator, meetupId), 409, 'hold_pending');
+    const response = await retryHold(initiator, meetupId);
+    expect(response.status, `the hold retry answered ${response.body}`).toBe(200);
+    const retried = HoldRetryResponse.parse(response.json());
+    expect(retried.status).toBe('proposed');
+    expect(retried.initiatorHold).toBe('held');
+    expect(retried.clientSecret.length).toBeGreaterThan(0);
 
     const held = await depositOf(meetupId, initiator);
     expect(held.status).toBe('held');
@@ -1693,13 +1703,15 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     // The recipient can see it now, which is what a successful retry buys (AAP 0.5.3).
     expect((await readMeetup(recipient, meetupId)).status).toBe(200);
 
-    // A further retry confirms the attempt that holds the authorization and places no new one.
-    const response = await retryHold(initiator, meetupId);
-    expect(response.status).toBe(200);
-    const retried = HoldRetryResponse.parse(response.json());
-    const initiatorHold: HoldView = retried.initiatorHold;
-    expect(retried.status).toBe('proposed');
+    // A further retry confirms the attempt that holds the authorization — the provider's own secret
+    // for it comes back again — and places no new one.
+    const confirmed = await retryHold(initiator, meetupId);
+    expect(confirmed.status, `the repeated hold retry answered ${confirmed.body}`).toBe(200);
+    const again = HoldRetryResponse.parse(confirmed.json());
+    const initiatorHold: HoldView = again.initiatorHold;
+    expect(again.status).toBe('proposed');
     expect(initiatorHold).toBe('held');
+    expect(again.clientSecret).toBe(retried.clientSecret);
     expect((await depositOf(meetupId, initiator)).currentAttempt).toBe(2);
     await expectAttemptIntents(held.id, 2);
   });

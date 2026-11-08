@@ -377,11 +377,11 @@ async function serveConnection(
     }
 
     const ctx = await loadCallContext(services.db, claimed.data);
-    // The socket can go while the attempt is being read, in which case there is nothing left to
-    // attach and the teardown has already released the connection's slot.
-    if (ended) return;
-    // Re-checked after the read, because another socket may have claimed the attempt meanwhile: the
-    // registry entry is claimed below with no await in between, so exactly one connection holds it.
+    // These three are checked after the read, not before it, because every one of them decides whether
+    // this socket was this attempt's conversation at all: a socket that reports another call, or one
+    // whose attempt another live socket already carries, must not touch the attempt even to record an
+    // ending. The registry entry is claimed below with no await in between, so exactly one connection
+    // holds it.
     if (sessions.has(claimed.data)) {
       refuse('duplicate_session');
       return;
@@ -392,6 +392,17 @@ async function serveConnection(
     }
     if (ctx.attempt.twilioCallSid !== frame.callSid) {
       refuse('call_sid_mismatch');
+      return;
+    }
+
+    // The socket can go while the attempt is being read. The call then dropped before any data —
+    // which AAP 0.5.3 maps to `no_answer` — and the session is what records it: a session that
+    // collected nothing and was never started finalizes at the script's own `no_answer`, releasing
+    // the attempt's unused dialogue budget with it. The socket is already gone, so no question is
+    // spoken into it. The session is never registered, because the teardown has run and would leave
+    // the registry entry behind to refuse the attempt's next socket.
+    if (ended) {
+      await new DialogueSession(services, ctx, undefined, io).finalize('socket_closed');
       return;
     }
 

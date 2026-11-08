@@ -239,6 +239,31 @@ async function clearDeliveryToken(ctx: WorkerContext, tokenId: string): Promise<
 }
 
 /*
+ * The web origin the links of a message are built on (AAP 0.3.2).
+ */
+
+/**
+ * The origin a message's links are built on: the sign-in URL of a magic link, and the base the app
+ * opens a meetup from.
+ *
+ * `WEB_ORIGIN` belongs to the `api` process's scope, and this process reads it where the deployment
+ * provides it — `docker-compose.yml` passes it to the `workers` service, so the delivered stack
+ * always has one, while a deployment that leaves it out still starts rather than losing the whole
+ * process over a variable its own row does not carry. A message whose links cannot be built is not
+ * worth sending, so the absence fails this job, and the row stays in the outbox for the retry and
+ * for the operator to see, instead of a sign-in mail nobody can follow or a push pointing nowhere.
+ *
+ * @throws Error when the environment carries no `WEB_ORIGIN`.
+ */
+function webOriginFor(ctx: WorkerContext): string {
+  const origin = ctx.env.WEB_ORIGIN;
+  if (origin === null) {
+    throw new Error('notification delivery needs WEB_ORIGIN: the message links are built on it');
+  }
+  return origin;
+}
+
+/*
  * Processing one job (AAP 0.5.6).
  */
 
@@ -347,7 +372,7 @@ async function deliverMagicLink(
   }
 
   const rendered = renderNotification(MAGIC_LINK_KIND, {
-    webOrigin: ctx.env.WEB_ORIGIN,
+    webOrigin: webOriginFor(ctx),
     magicLinkToken: secrets.token,
   });
 
@@ -469,7 +494,7 @@ async function gatherRenderData(
   payload: NotificationJobData,
   recipientId: string,
 ): Promise<GatheredNotification | null> {
-  const data: NotificationRenderData = { webOrigin: ctx.env.WEB_ORIGIN };
+  const data: NotificationRenderData = { webOrigin: webOriginFor(ctx) };
 
   const dispute =
     payload.disputeId === undefined ? null : await loadDispute(ctx, payload.disputeId);

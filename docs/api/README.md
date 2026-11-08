@@ -132,10 +132,15 @@ routes are hidden from `openapi.json`, so it lists every operation below except 
 | `GET /cities/:cityId/travelers?cursor=` | traveler | `cities/routes.ts`, `cities/discovery.ts` | `200 TravelersResponse`, 20 `Tier0Profile`s a page                  | `404 city_not_found`; `403 no_valid_proof`; `400 invalid_field` (a cursor this API did not write)                                                                                            | `cities-discovery.test.ts` | —            |
 | `GET /zk/config`                        | public   | `proofs/routes.ts`, `proofs/registry.ts`  | `200 ZkConfig`                                                      | `503 service_unavailable` (the artefact manifest is absent)                                                                                                                                  | `proofs.test.ts`           | **Addition** |
 
-`Deviation:` AAP 0.5.4's additive-routes table lists `GET /cities` as public, while
-`modules/cities/routes.ts` installs `requireTraveler` on it, so the route needs a bearer token and the
-age gate. The guard as built is documented above; an unverified traveler still browses cities and
-venues, which is what AAP 0.5.8 requires.
+`Deviation:` the additive-routes table of AAP 0.5.4 marks the row holding `GET /cities` and
+`GET /zk/config` as "(public)", but that marking reads on `GET /zk/config` alone: the same
+section's age-gate scope enumerates the public routes (`POST /auth/magic-link`, `/auth/verify`,
+`/auth/refresh`, `GET /health`, `GET /zk/config`) and does not carry `/cities`; requirement 1 of
+AAP 0.1.1 puts the 18+ gate before any feature use, which is what the Discover city picker over
+this route is (AAP 0.5.8). The route group in `modules/cities/routes.ts` therefore keeps
+`requireTraveler`: the route answers `401 token_invalid` with no bearer token,
+`403 age_gate_required` until the consents are recorded and `200` after, while an unverified
+traveler still browses the cities and the venues, which is what AAP 0.5.8 requires.
 
 ### Users and safety
 

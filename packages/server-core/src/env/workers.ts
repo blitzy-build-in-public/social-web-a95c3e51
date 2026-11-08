@@ -8,11 +8,15 @@
  * environment is dropped by the schema's default strip mode and can never reach this process's
  * configuration or the gateway code it would build.
  *
- * Two variables the request's scope tables place with `api` are read here as well, because `workers`
- * is what uses them: `API_PUBLIC_URL` is the base of the TwiML and status-callback URLs a dispatched
- * call carries, which must name the address Twilio called rather than an internal host (AAP 0.3.2,
- * 0.3.3), and `WEB_ORIGIN` is the base of the magic link `notify/email.ts` mails on web (AAP 0.3.2,
- * 0.3.4). `docker-compose.yml` passes both to the `workers` service.
+ * Two variables the request's scope tables place with `api` alone are read here as well, because
+ * `workers` is what uses them: `API_PUBLIC_URL` is the base of the TwiML and status-callback URLs a
+ * dispatched call carries, which must name the address Twilio called rather than an internal host
+ * (AAP 0.3.2, 0.3.3), and `WEB_ORIGIN` is the base of the magic link `notify/email.ts` mails on web
+ * (AAP 0.3.2, 0.3.4). `docker-compose.yml` passes both to the `workers` service, so the delivered
+ * stack carries them; a deployment that provides neither still starts, because a variable outside
+ * this process's own scope is never required of it. The run that needs one it does not have fails
+ * its own work — `calls/dispatch-twilio.ts` refuses to dispatch, and the `notifications` job
+ * refuses to deliver — while the rest of the process keeps running.
  *
  * The module reads no environment beyond {@link loadWorkersEnv}'s default argument, logs nothing, and
  * puts no value — a phone number above all — in an issue or an error (AAP 0.11.1, 0.12.2).
@@ -123,6 +127,10 @@ function allowlistIssues(env: NormalizedEnv): EnvIssue[] {
  * The variables only the `workers` process reads (AAP 0.6.2, the `workers` scope row). Everything a
  * mode requires beyond this is stated by the group that mode belongs to in `./modes.ts`, so this
  * shape holds the endpoints, the delivery settings and the call-and-retention configuration alone.
+ *
+ * `API_PUBLIC_URL` and `WEB_ORIGIN` are the two entries the `api` scope owns and this process reads
+ * as well; both are optional, so a deployment that provides neither still starts and only the work
+ * that needs one fails.
  */
 const WORKERS_ONLY_ENV_SHAPE = {
   SMTP_URL: envUrl({ protocols: ['smtp:', 'smtps:'] }),
@@ -137,8 +145,8 @@ const WORKERS_ONLY_ENV_SHAPE = {
     min: 1,
     default: DEFAULT_FINANCIAL_RETENTION_DAYS,
   }),
-  API_PUBLIC_URL: envUrl({ protocols: ['http:', 'https:'] }),
-  WEB_ORIGIN: envOrigin(),
+  API_PUBLIC_URL: envUrl({ protocols: ['http:', 'https:'], optional: true }),
+  WEB_ORIGIN: envOrigin({ optional: true }),
 } as const;
 
 /**
@@ -167,8 +175,8 @@ interface WorkersOnlyEnvValues {
   readonly CALL_ALLOWLIST?: string | undefined;
   readonly CALLS_PRODUCTION_APPROVED: boolean;
   readonly FINANCIAL_RETENTION_DAYS: number;
-  readonly API_PUBLIC_URL: string;
-  readonly WEB_ORIGIN: string;
+  readonly API_PUBLIC_URL: string | undefined;
+  readonly WEB_ORIGIN: string | undefined;
 }
 
 /** Everything {@link buildWorkersEnv} reads: the common, test-only, mode and workers-only groups. */
@@ -206,10 +214,16 @@ export type WorkersEnv = CommonEnv & {
   readonly CALLS_PRODUCTION_APPROVED: boolean;
   /** Days a meetup's financial records are kept after settlement (AAP 0.5.2). */
   readonly FINANCIAL_RETENTION_DAYS: number;
-  /** The public base URL of Twilio's TwiML fetch and status callbacks (AAP 0.3.3). */
-  readonly API_PUBLIC_URL: string;
-  /** The web client's origin, the base of a magic link's URL (AAP 0.3.2). */
-  readonly WEB_ORIGIN: string;
+  /**
+   * The public base URL of Twilio's TwiML fetch and status callbacks (AAP 0.3.3); `null` when the
+   * deployment does not provide it, which fails a call dispatch rather than this process's start.
+   */
+  readonly API_PUBLIC_URL: string | null;
+  /**
+   * The web client's origin, the base of a magic link's URL (AAP 0.3.2); `null` when the deployment
+   * does not provide it, which fails the magic-link delivery rather than this process's start.
+   */
+  readonly WEB_ORIGIN: string | null;
   /** The telephony posture `TELEPHONY_MODE` names; `off` carries nothing and dials nothing. */
   readonly telephony: EnvTelephonyConfig;
   /** The language-model posture `LLM_PROVIDER` names; `fake` needs no credential (AAP 0.5.6). */
@@ -234,8 +248,8 @@ function buildWorkersEnv(values: WorkersEnvValues, env: NormalizedEnv): WorkersE
     CALL_ALLOWLIST: parseAllowlist(values.CALL_ALLOWLIST),
     CALLS_PRODUCTION_APPROVED: values.CALLS_PRODUCTION_APPROVED,
     FINANCIAL_RETENTION_DAYS: values.FINANCIAL_RETENTION_DAYS,
-    API_PUBLIC_URL: values.API_PUBLIC_URL,
-    WEB_ORIGIN: values.WEB_ORIGIN,
+    API_PUBLIC_URL: values.API_PUBLIC_URL ?? null,
+    WEB_ORIGIN: values.WEB_ORIGIN ?? null,
     telephony: buildTelephony(values, 'workers'),
     llm: buildLlm(values),
   };

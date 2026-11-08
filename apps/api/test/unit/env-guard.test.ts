@@ -603,6 +603,19 @@ describe('both processes: the common variables', () => {
     );
   });
 
+  it('requires neither of the two api-scoped variables of workers', () => {
+    // `API_PUBLIC_URL` and `WEB_ORIGIN` are the `api` row's (AAP 0.6.2) and `workers` reads them
+    // where a deployment provides them, so their absence fails the call-dispatch or magic-link work
+    // rather than this process's start — while `api`, whose row they are, still requires both.
+    const workers = workersRaw('demo', { API_PUBLIC_URL: undefined, WEB_ORIGIN: undefined });
+    const env = loadWorkersEnv(workers);
+    expect(env.API_PUBLIC_URL).toBeNull();
+    expect(env.WEB_ORIGIN).toBeNull();
+
+    const api = apiRaw('demo', { WEB_ORIGIN: undefined });
+    expectEnvError(() => loadApiEnv(api), ['WEB_ORIGIN'], api);
+  });
+
   it('reports every finding of one start attempt, once each', () => {
     const raw = apiRaw('demo', { JWT_SECRET: undefined, NULLIFIER_SALT: 'not a field element' });
     const error = expectEnvError(() => loadApiEnv(raw), ['JWT_SECRET', 'NULLIFIER_SALT'], raw);

@@ -18,7 +18,7 @@
  *   `EXPERIMENT_SOCIAL_SHARE`, 0.11.1 for the injected clock.
  */
 
-import { hmacSha256 } from '@tablemate/server-core';
+import { hmac } from '@tablemate/server-core';
 import { Variant } from '@tablemate/shared';
 
 import type { DbClient, DbTx } from '@tablemate/db';
@@ -51,7 +51,7 @@ export type ExperimentAssignmentRef = {
  * @returns A bucket in 0-9999.
  */
 export function bucketFor(salt: string, userId: string): number {
-  const digest = hmacSha256(salt, userId);
+  const digest = hmac(salt, userId);
   return Number(BigInt(`0x${digest.toString('hex')}`) % BigInt(SHARE_BASIS));
 }
 

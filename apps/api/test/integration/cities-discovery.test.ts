@@ -204,6 +204,14 @@ describe('GET /cities', () => {
     expect(cities.items).toHaveLength(LAUNCH_CITIES.length);
   });
 
+  it('answers 401 token_invalid to a request that carries no bearer token', async () => {
+    // The additive-routes row of AAP 0.5.4 reads "(public)", but the age-gate scope of the same
+    // section leaves `/cities` out of the public routes, so the group guard answers first.
+    const response = await callRoute(t.app, { method: 'GET', url: '/v1/cities' });
+
+    expectError(response, 401, 'token_invalid');
+  });
+
   it('refuses a caller who has not confirmed the age gate and the terms', async () => {
     const viewer = await makeUser(t, { consents: false, card: 'none' });
 

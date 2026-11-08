@@ -2,8 +2,9 @@
  * The spend cap's unit suite (AAP 0.5.6): the pure cost arithmetic, the memory stores that apply
  * the same predicates as the SQL ones, the suspension flag the meter fails closed on, the provider
  * boundary's own error contract over a stub client, every path through `runMetered` and
- * `runMeteredWithin`, and the module graph `src/llm/{adapter,openai,fake}.ts` form, each of the
- * three loaded as its own entry point.
+ * `runMeteredWithin`, and the module graph `src/llm/{contract,adapter,openai,fake}.ts` forms —
+ * `contract.ts` the leaf every other module there imports, each of the four loaded as its own entry
+ * point.
  *
  * Most adapters here are scripted, so a count and a reported usage are exact and every assertion is
  * arithmetic. The fake provider is exercised where its own contract is the subject — the 25 USD
@@ -1462,14 +1463,14 @@ describe('createOpenAiAdapter', () => {
 });
 
 /**
- * The module graph `src/llm/{adapter,openai,fake}.ts` forms at start-up: `adapter.ts` imports both
- * provider factories while each provider imports back `adapter.ts`'s error classes and
- * `assertLlmRequest`, so the cycle is safe only while no module reads an imported binding at its
- * own top level. Each case resets the registry and imports one module as the graph's entry point,
- * which is the order a process gets it in, and then uses that module's own exports; a top-level
- * read added later meets its import's temporal dead zone here instead of when the process starts.
- * The fresh registry hands back new class identities, so an assertion reads `provider`, `model` or
- * a code and never `instanceof` against the classes this file imported statically.
+ * The module graph `src/llm/{contract,adapter,openai,fake}.ts` forms at start-up: `contract.ts` is
+ * the leaf and imports nothing, both providers and `spend.ts` import it, and `adapter.ts` imports the
+ * two provider factories on top of it. No module in this directory imports a provider but the facade,
+ * so the graph is acyclic at every level. Each case resets the registry and imports one module as the
+ * graph's entry point, which is the order a process gets it in, and then uses that module's own
+ * exports: every module loads and works on its own, with each import initialised by the time that
+ * module runs. The fresh registry hands back new class identities, so an assertion reads `provider`,
+ * `model` or a code and never `instanceof` against the classes this file imported statically.
  */
 describe('the llm module graph', () => {
   it('builds the adapter factory when adapter.ts is the entry point', async () => {
@@ -1479,7 +1480,8 @@ describe('the llm module graph', () => {
     const built = adapter.createLlmAdapter({ provider: 'fake' });
 
     expect(built.provider).toBe('fake');
-    // `LlmError` is a class binding the providers import back, so it must be constructible here.
+    // `LlmError` reaches this entry point as a re-export of `contract.ts`, and the providers throw
+    // it, so it must be constructible here.
     expect(typeof adapter.LlmError).toBe('function');
     expect(new adapter.LlmError('llm_suspended', 'llm_suspended').code).toBe('llm_suspended');
   });
@@ -1507,6 +1509,19 @@ describe('the llm module graph', () => {
 
     expect(built.provider).toBe('fake');
     expect(built.model).toBe('fake');
+  });
+
+  it('holds the shared vocabulary when contract.ts is the entry point', async () => {
+    vi.resetModules();
+
+    const contract = await import('../../src/llm/contract.ts');
+
+    // The leaf's own class and its own guard, with nothing else in the directory loaded: the fresh
+    // registry hands back a new class identity, so the assertion reads `code`.
+    expect(typeof contract.LlmError).toBe('function');
+    expect(new contract.LlmError('llm_suspended', 'llm_suspended').code).toBe('llm_suspended');
+    expect(() => contract.assertLlmRequest(request())).not.toThrow();
+    expect(() => contract.assertLlmRequest(request(0))).toThrow(RangeError);
   });
 });
 

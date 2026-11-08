@@ -36,7 +36,7 @@ import {
   type FakeLlmAdapter,
 } from '@tablemate/server-core';
 
-import { renderTemplate } from '../../src/modules/voice-agent/dialogue.ts';
+import { renderTemplate, type TemplateKey } from '../../src/modules/voice-agent/dialogue.ts';
 import {
   CLASSIFICATION_MAX_OUTPUT_TOKENS,
   CLASSIFICATION_TURN_TIMEOUT_MS,
@@ -68,6 +68,7 @@ import enUS from '../../src/modules/voice-agent/i18n/en-US.json' with { type: 'j
 import esUS from '../../src/modules/voice-agent/i18n/es-US.json' with { type: 'json' };
 import ptPT from '../../src/modules/voice-agent/i18n/pt-PT.json' with { type: 'json' };
 import budgetExhaustion from '../support/voice-simulator/scenarios/budget-exhaustion.json' with { type: 'json' };
+import wantsHumanScenario from '../support/voice-simulator/scenarios/wants-human.json' with { type: 'json' };
 
 /* Constants, harness and helpers (AAP 0.3.3, AAP 0.11.2) */
 
@@ -801,6 +802,106 @@ describe('the relay dialogue', () => {
       await capped.close();
     }
   });
+});
+
+/* The scenario fixtures (AAP 0.5.3, AAP 0.5.6) */
+
+/**
+ * One scenario fixture the suite plays end to end, and the ending AAP gives it.
+ *
+ * `machine` and `drop-before-prompt` are the two remaining `no_answer` triggers of AAP 0.5.3's
+ * call-task table — an answering machine and a call dropped before any data — and `wants-human` the
+ * request for a person AAP 0.5.6 answers with `closing.refused` and outcome `refused`. Playing the
+ * fixture is what each row proves: the document the TwiML route answers with, what the relay socket
+ * carried and the outcome the attempt settles at all come from the scenario file rather than from a
+ * callback the case posted itself.
+ */
+interface FixtureRow {
+  /** The scenario file the simulator plays for a live call. */
+  readonly scenario: ScenarioName;
+  /** The outcome the attempt settles at, as AAP 0.5.3 and AAP 0.5.6 give this ending. */
+  readonly outcome: CallAttemptOutcome;
+  /** Twilio's machine-detection verdict: `machine_start` for the answering machine. */
+  readonly answeredBy: string;
+  /** True when the TwiML fetch was answered `<Hangup/>` instead of a relay document. */
+  readonly hangup: boolean;
+  /** The closing line the callee hears, or null when the call ends without one. */
+  readonly closing: TemplateKey | null;
+  /** True when the dialogue ended the session itself with a ConversationRelay `end`. */
+  readonly endReceived: boolean;
+  /** What the callee says, from the scenario's own turns (AAP 0.5.6). */
+  readonly prompts: readonly string[];
+}
+
+/** Every fixture no other suite plays, and the ending its script must produce. */
+const FIXTURE_ROWS: readonly FixtureRow[] = [
+  {
+    scenario: 'machine',
+    outcome: 'no_answer',
+    answeredBy: 'machine_start',
+    hangup: true,
+    closing: null,
+    endReceived: false,
+    prompts: [],
+  },
+  {
+    scenario: 'drop-before-prompt',
+    outcome: 'no_answer',
+    answeredBy: 'human',
+    hangup: false,
+    closing: null,
+    endReceived: false,
+    prompts: [],
+  },
+  {
+    scenario: 'wants-human',
+    outcome: 'refused',
+    answeredBy: 'human',
+    hangup: false,
+    closing: 'closing.refused',
+    endReceived: true,
+    prompts: wantsHumanScenario.turns.map((turn) => turn.say),
+  },
+];
+
+describe('the scenario fixtures', () => {
+  it.each(rows(FIXTURE_ROWS))(
+    'settles a played $scenario call as $outcome',
+    async (row) => {
+      const call = await menuCall();
+      const played = await playCall(call, row.scenario);
+
+      expect(played.scenario).toBe(row.scenario);
+      expect(played.answeredBy).toBe(row.answeredBy);
+      expect(played.twiml.hangup).toBe(row.hangup);
+      expect(played.promptsSent.map((prompt) => prompt.text)).toEqual(row.prompts);
+      expect(played.failures).toEqual([]);
+      if (row.hangup) {
+        // No relay document: the machine hears nothing and no prompt is ever sent.
+        expect(played.twiml.relayUrl).toBeNull();
+        expect(played.spoken).toEqual([]);
+      } else {
+        // The disclosure is still the first line: Twilio speaks it from the TwiML, in the city's own
+        // language (AAP 0.12.2).
+        expect(played.spoken[0]?.text).toBe(ptPT['greeting.menu_prices']);
+      }
+      if (row.closing === null) {
+        expect(played.endReceived).toBe(false);
+      } else {
+        expect(played.endReceived).toBe(true);
+        expect(played.spoken.map((line) => line.text)).toContain(ptPT[row.closing]);
+      }
+
+      const attempt = await settledAttempt(call.attemptId, row.outcome);
+      expect(attempt.state).toBe('ended');
+      // Neither of the three endings has data behind it: the outcome is recorded and nothing is
+      // invented — no confidence, no extracted fields (AAP 0.5.3, AAP 0.5.6).
+      expect(attempt.confidence).toBeNull();
+      expect(attempt.extractedFields).toBeNull();
+      expect(await resultRows()).toHaveLength(1);
+    },
+    DIALOGUE_TIMEOUT_MS,
+  );
 });
 
 /* The dialogue budget (AAP 0.3.2, AAP 0.5.6) */

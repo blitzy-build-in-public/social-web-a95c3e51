@@ -22,9 +22,12 @@
  * or writes anything about the meetup, so a racing accept, cancel, block, lapse, check-in, dispute or
  * hold-loss webhook is serialized on the row and this request reads the result the other one
  * committed. No Stripe, Redis or provider call runs inside that transaction: the hold whose result is
- * the response runs after the commit through `executeHoldInline`, and the release a retry planned for
- * the attempt it superseded is carried out in the same request by `runOperationsFor` — after the hold,
- * and never before it, because the open operations of the meetup include the hold itself.
+ * the response runs after the commit through `executeHoldInline`, and the rows the claim gate makes it
+ * wait on run before it — the release a retry planned for the attempt it superseded, which the
+ * deposit's plan orders ahead of the new attempt — through the scoped `runOperationsFor` pass
+ * {@link runHoldAttempt} opens with the hold's own id. The meetup's remaining operations run after
+ * that hold, and never before it, because the open operations of the meetup would otherwise include
+ * the hold itself.
  *
  * **A lost answer is never a second authorization.** A deposit left `pending` answers
  * `409 hold_pending` rather than starting a new attempt, while the sweeper replays the identical
@@ -62,6 +65,7 @@ import { lockMeetup, transition } from './state-machine.ts';
 
 import type { DbClient, DbTx, Deposit } from '@tablemate/db';
 import type { IntentState, IntentStatus } from '../payments/gateway.ts';
+import type { RunOperationsOptions } from '../payments/operations.ts';
 import type { MeetupRow } from './queries.ts';
 
 // Type-only, as everywhere in this module: `app.ts` is the one declaration of the app's type, it is
@@ -478,17 +482,20 @@ export async function retryInitiatorHold(
  * Run one attempt's hold inline and return the caller's own secret to confirm it (AAP 0.3.2, 0.5.4).
  *
  * The hold's result *is* the response, so it runs in the request that asked for it rather than being
- * left to the sweeper. The four outcomes that are not an authorization are mapped by
- * {@link inlineHoldOrThrow}, exactly as `POST /meetups` maps them, except that a claim which is still
- * running answers `409 hold_pending` here: on these routes the caller is the one who may retry, and a
- * `503` would send the client to recover through `GET /meetups` when the same call can simply be
- * repeated (AAP 0.3.2, 0.5.4).
+ * left to the sweeper. Its predecessors run first: a retry plans the new attempt's hold **after** the
+ * release of the attempt it superseded in that deposit's own plan, and the executor's claim gate
+ * refuses a hold while any lower `seq` of its deposit is still open, so the scoped pass is what lets
+ * this call place the attempt it was asked to place instead of reporting a claim a later pass holds
+ * (AAP 0.3.2 "Claiming and ordering"). The meetup's remaining operations run after that hold: the
+ * open operations would otherwise include the hold itself, and running them here is what carries out
+ * the orphan release a hold outcome plans. A failure in either pass is logged rather than raised,
+ * because those rows are durable and the sweeper resumes them.
  *
- * The meetup's remaining operations run after the hold and never before it: the open operations of
- * this meetup include the hold itself, so running the scope first would send the create and leave this
- * call holding a row another pass claimed. Running them here is what carries out the release a retry
- * planned for the attempt it superseded, and a failure is logged rather than raised, because those
- * rows are durable and the sweeper resumes them.
+ * The outcomes that are not an authorization are mapped by {@link inlineHoldOrThrow}, exactly as
+ * `POST /meetups` maps them, except that a hold this call could not claim — a deposit whose create is
+ * still being recovered, or a predecessor that has not concluded — answers `409 hold_pending` here:
+ * on these routes the caller is the one who may retry, and a `503` would send the client to recover
+ * through `GET /meetups` when the same call can simply be repeated (AAP 0.3.2, 0.5.4).
  *
  * @param services - The app's services.
  * @param meetupId - The meetup whose attempt is being placed.
@@ -501,6 +508,10 @@ async function runHoldAttempt(
   meetupId: string,
   holdOperationId: string,
 ): Promise<string> {
+  // The rows the claim gate makes this hold wait on — the release of the attempt it superseded —
+  // run first, so the create this answer reports is its own (AAP 0.3.2 "Claiming and ordering").
+  await runMeetupOperations(services, meetupId, { beforeOperationId: holdOperationId });
+
   const result = await executeHoldInline(services, holdOperationId);
 
   await runMeetupOperations(services, meetupId);
@@ -633,17 +644,23 @@ async function depositView(
 }
 
 /**
- * Carry out the releases a decision planned, once its transaction has committed (AAP 0.3.2).
+ * Carry out the operations a decision planned, once its transaction has committed (AAP 0.3.2).
  *
  * A failure to reach the provider never fails the request: the operations are durable rows, and the
  * 60-second sweeper resumes every one that is still open.
  *
  * @param services - The app's services.
  * @param meetupId - The meetup whose deposits' operations run.
+ * @param opts - When set, each pass covers the predecessors of the operation it names alone, which is
+ *   how {@link runHoldAttempt} frees the hold it is about to place.
  */
-async function runMeetupOperations(services: AppServices, meetupId: string): Promise<void> {
+async function runMeetupOperations(
+  services: AppServices,
+  meetupId: string,
+  opts?: RunOperationsOptions,
+): Promise<void> {
   try {
-    await runOperationsFor(services, { meetupId });
+    await runOperationsFor(services, { meetupId }, opts);
   } catch (error) {
     services.logger.warn(
       { event: 'meetup_operations_deferred', meetupId, err: error },
