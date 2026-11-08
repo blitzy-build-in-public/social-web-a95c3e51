@@ -1,0 +1,369 @@
+# Criterion 1 on a device, with the device user as the INITIATOR (actor A) and the counterpart acting
+# through the API (AAP 0.11.2 "End-to-end native"; AAP 0.12.1 criterion 1, the criterion this request
+# ranks first). Every UI step of the initiator's role runs here — the magic-link sign-in, the
+# saved-card step, the proposal with its framing copy and its safety notice, the lock it waits for,
+# chat, the day plan, the witnessed check-in and the settlement result — and `criterion1-recipient.yaml`
+# runs the same walk with the roles swapped, so both roles pass through the real UI on each platform.
+# `config.yaml` orders this flow first, ahead of reachability and criterion1-recipient.
+#
+# The walk confirms real Stripe test-mode holds, and no mocked payment path exists (AAP 0.11.2). Under
+# `STRIPE_MODE=mock` the flow prints one E2E_BLOCKED line, touches no UI and passes; `scripts/e2e.ts`
+# reads that line and records the blocked row for web, iOS and Android in docs/acceptance.md.
+#
+# The walk is driven by `.local/e2e/fixture-proofs.js`, which `pnpm --filter @tablemate/mobile
+# e2e:prepare` (AAP 0.8.2) writes before Maestro starts; a missing file means that step never ran.
+# Maestro binds a literal flow-header value before a command-line `-e`, so every default below reads
+# the incoming value first, and a `runScript` step sees these variables without being handed them
+# again (GraalJsEngine keeps them in one env binding and layers a step's own `env` on top of it).
+appId: com.tablemate.app
+name: criterion1-initiator
+tags: [e2e, stripe-test]
+env:
+  API_URL: ${API_URL || 'http://localhost:3000'}
+  MAILPIT_URL: ${MAILPIT_URL || 'http://localhost:8025'}
+  STRIPE_MODE: ${STRIPE_MODE || 'mock'}
+  DEV_CLIENT_URL: ${DEV_CLIENT_URL || ''}
+---
+# The harness's prepared data: both actors, the partner venue with its city and console secret, the
+# stay window and the Stripe mode. It carries no proof and no token — both actors hold a valid proof by
+# then, and the device signs in with a link of its own.
+- runScript:
+    file: ../../../../.local/e2e/fixture-proofs.js
+
+# A fixture prepared for the other mode would ask this stack to confirm holds it cannot confirm.
+- assertTrue:
+    condition: ${output.e2e.stripeMode === STRIPE_MODE}
+    label: 'fixture-proofs.js was prepared for STRIPE_MODE=${output.e2e.stripeMode} and this run is ${STRIPE_MODE} — rerun e2e:prepare'
+# Without Stripe's test-mode keys no card can be confirmed anywhere in the walk, so criterion 1 is
+# blocked rather than walked (AAP 0.11.2): one line naming the platform, and no device interaction.
+- runFlow:
+    when:
+      true: ${STRIPE_MODE !== 'test'}
+    commands:
+      - evalScript: ${console.log('E2E_BLOCKED criterion1-initiator ' + maestro.platform + ' Blocked — Stripe test-mode keys not supplied')}
+
+# Everything below runs in Stripe test mode only, against the `APP_ENV=test` stack scripts/e2e.ts
+# starts (AAP 0.11.2).
+- runFlow:
+    when:
+      true: ${STRIPE_MODE === 'test'}
+    commands:
+      # --- the API-side actors: the operator first, then the counterpart B ---
+      # The operator signs in first because clearing a pair needs one when the pair still holds an open
+      # dispute; `e2e:prepare` created and granted the operator this flow's platform key owns.
+      - runScript:
+          file: scripts/read-magic-link.js
+          env:
+            EMAIL: ${output.e2e.operators[maestro.platform + ':criterion1-initiator']}
+            ROLE: operator
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: signin, ROLE: operator } }
+      - runScript:
+          file: scripts/read-magic-link.js
+          env:
+            EMAIL: ${output.e2e.actors.b.email}
+            ROLE: b
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: signin, ROLE: b } }
+      # Nothing open between A and B before the walk starts, and what its tier check turns on.
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: clear-pair, ROLE: b } }
+      # A day of this walk's own inside both proofs' stay window: the operator dashboard is ranged over
+      # that day alone, so its completion rate counts this walk's meetup and no other (AAP 0.5.7).
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: fresh-day, ROLE: b } }
+      # The proposal form validates a start against the DEVICE clock's five-day horizon, while
+      # `fresh-day` takes its day from the API test clock, which moves forward at least a day per walk
+      # and can only move forward. Once the day has drifted past that horizon no start can be typed at
+      # all, and the mismatch is named here rather than surfacing later as a submit control that never
+      # becomes enabled. A city-local 17:30 on the day (below) is the instant D 09:30Z for the launch
+      # cities' +8 and D 23:30Z for their -6, so the latest of those is what the horizon is compared
+      # against.
+      - assertTrue:
+          condition: ${Date.parse(output.day.date + 'T23:30:00.000Z') < Date.now() + 5 * 86400000}
+          label: 'the walk day ${output.day.date} is beyond the proposal form horizon, which is five days from the device clock and cannot follow the API test clock — reset the stack and rerun e2e:prepare'
+      # --- the device: launch, and make sure the device user is A ---
+      # No state is cleared: iOS keeps the keychain across a clearState anyway, and A's session has to
+      # survive for reachability.yaml and for the second platform's run.
+      - launchApp:
+          permissions:
+            location: allow
+            camera: allow
+            notifications: allow
+      # A development build opens its own launcher unless the project URL is handed to it.
+      - runFlow:
+          when:
+            true: ${DEV_CLIENT_URL !== ''}
+          commands:
+            - openLink: ${DEV_CLIENT_URL}
+      - extendedWaitUntil:
+          visible:
+            id: 'tab-discover|sign-in-email'
+          timeout: 60000
+      # The session on the device is A's only if discovery lists B: only the two of them hold a proof
+      # for the venue's city, and discovery never lists the caller. The Discover tab renders those
+      # travelers inline, so nothing is tapped on the way — its city rows open a city's venue list, not
+      # its travelers.
+      - runFlow:
+          when:
+            visible:
+              id: tab-discover
+          commands:
+            - extendedWaitUntil:
+                visible:
+                  id: traveler-${output.e2e.actors.b.userId}
+                timeout: 15000
+                optional: true
+            - runFlow:
+                when:
+                  notVisible:
+                    id: traveler-${output.e2e.actors.b.userId}
+                commands:
+                  - tapOn:
+                      id: tab-profile
+                  - tapOn:
+                      id: profile-settings
+                  - tapOn:
+                      id: settings-logout
+                  - extendedWaitUntil:
+                      visible:
+                        id: sign-in-email
+                      timeout: 15000
+      # A signs in with a link of its own: this is A's only device sign-in on this platform.
+      - runFlow:
+          when:
+            visible:
+              id: sign-in-email
+          commands:
+            - runScript:
+                file: scripts/read-magic-link.js
+                env:
+                  EMAIL: ${output.e2e.actors.a.email}
+                  ROLE: device actor a
+            - openLink: tablemate://auth/verify?token=${output.token}
+            # iOS asks before it hands a custom scheme to the app that registered it.
+            - runFlow: { when: { platform: iOS, visible: Open }, commands: [{ tapOn: Open }] }
+            - extendedWaitUntil:
+                visible:
+                  id: 'age-gate-adult|tab-discover'
+                timeout: 60000
+            # A consented on the web when e2e:prepare created the account, so the gate is normally
+            # absent; an account that reaches it is passed through here.
+            - runFlow:
+                when:
+                  visible:
+                    id: age-gate-adult
+                commands:
+                  - tapOn:
+                      id: age-gate-adult
+                  - tapOn:
+                      id: age-gate-submit
+            - extendedWaitUntil:
+                visible:
+                  id: tab-discover
+                timeout: 30000
+      # --- the device: the saved-card step a deposit needs ---
+      # e2e:prepare already stored a card for A, so Stripe's sheet normally lists it; the card fields
+      # are filled only when the sheet asks for a card. Those labels, and the sheet's own primary
+      # button, belong to Stripe's views rather than to Tablemate, which is why text selectors appear
+      # here and nowhere else, and why the ones a saved card hides are optional.
+      - tapOn:
+          id: tab-profile
+      - tapOn:
+          id: profile-payment
+      - tapOn:
+          id: payment-setup
+      - runFlow:
+          when:
+            visible: 'Card number'
+          commands:
+            - tapOn: 'Card number'
+            - inputText: '4242424242424242'
+            - tapOn: 'MM / YY'
+            - inputText: '1234'
+            - tapOn: 'CVC'
+            - inputText: '123'
+            - runFlow:
+                when:
+                  visible: 'ZIP|Postal code|ZIP code'
+                commands:
+                  - tapOn: 'ZIP|Postal code|ZIP code'
+                  - inputText: '12345'
+      - tapOn:
+          text: 'Set up|Save card|Save|Continue'
+          optional: true
+      - extendedWaitUntil:
+          visible:
+            id: payment-saved
+          timeout: 60000
+      # Back to the tabs: the card screen is pushed, so iOS taps the header's back button, which the
+      # root Stack labels "Back", and Android presses the system back.
+      - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
+      - runFlow: { when: { platform: Android }, commands: [back] }
+      # --- the device: the proposal ---
+      - tapOn:
+          id: tab-discover
+      - tapOn:
+          id: traveler-${output.e2e.actors.b.userId}
+      - assertVisible:
+          id: user-profile
+      - tapOn:
+          id: user-propose
+      # The venue list is alphabetical and holds every partner venue of the city, so the walk's own
+      # venue, which the harness takes as the first by id, can sit anywhere in it.
+      - scrollUntilVisible:
+          element:
+            id: propose-venue-${output.e2e.venue.id}
+          direction: DOWN
+          centerElement: true
+      - tapOn:
+          id: propose-venue-${output.e2e.venue.id}
+      - scrollUntilVisible:
+          element:
+            id: propose-start
+          direction: DOWN
+          centerElement: true
+      # The start is this walk's own day at a city-local 17:30, in the form's own `YYYY-MM-DD HH:mm`
+      # spelling of the venue city's zone (AAP 0.5.8). Maestro's sandbox carries no zone data, so the
+      # local time is chosen to hold across the launch cities' offsets (-6 to +8) instead of being
+      # computed: 17:30 city-local is the instant D 09:30Z to D 23:30Z, which is after the D 09:00Z
+      # clock `fresh-day` set, still on day D for `accept`, and 30 minutes inside both ends of that
+      # range — so the clock can still move five minutes back from the start for the check-in. The two
+      # erases clear the field whatever the tap put the cursor on: the prefilled value is 16 characters,
+      # and the second pass clears any tail the first left behind.
+      - tapOn:
+          id: propose-start
+      - eraseText: 16
+      - eraseText: 16
+      - inputText: ${output.day.date + ' 17:30'}
+      - hideKeyboard
+      - scrollUntilVisible:
+          element:
+            id: propose-deposit-1000
+          direction: DOWN
+          centerElement: true
+      - tapOn:
+          id: propose-deposit-1000
+      - extendedWaitUntil:
+          visible:
+            id: propose-submit
+            enabled: true
+          timeout: 15000
+      # The framing copy of A's variant — the device user's variant is unknown here, so either of the
+      # request's two sentences for a 10 USD deposit is accepted — then the safety notice, and the
+      # submit control after it, in the order the screen renders them (AAP 0.12.2).
+      - scrollUntilVisible:
+          element:
+            id: safety-notice
+          direction: DOWN
+          centerElement: true
+      - assertVisible:
+          id: deposit-copy
+          text: '.*(Hold a seat at the table. Your 10 USD comes back as soon as you both show up.|You.ll lose 10 USD if you don.t show up.).*'
+      - assertVisible:
+          id: safety-notice
+      - assertVisible:
+          id: propose-submit
+          below:
+            id: safety-notice
+      - tapOn:
+          id: propose-submit
+      # The screen replaces itself with the meetup once A's hold is held (AAP 0.5.3).
+      - extendedWaitUntil:
+          visible:
+            id: meetup-status
+            text: '(?i)proposed'
+          timeout: 60000
+      # --- the counterpart locks the proposal the device made ---
+      # B's saved card is the public test card, so the hold needs no 3-D Secure step and the accept
+      # answers `locked` (AAP 0.5.3).
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: accept, ROLE: b } }
+      # The detail screen follows the lock over the chat socket's `meetup_status` frame.
+      - extendedWaitUntil:
+          visible:
+            id: meetup-status
+            text: '(?i)locked'
+          timeout: 30000
+      # --- chat, and the day plan, both reached from navigation on the locked meetup (criterion 8) ---
+      - tapOn:
+          id: meetup-chat
+      - extendedWaitUntil:
+          visible:
+            id: chat-input
+          timeout: 15000
+      # Send stays disabled until the socket is open, so the connection is awaited first.
+      - extendedWaitUntil:
+          visible: Connected
+          timeout: 30000
+      - tapOn:
+          id: chat-input
+      - inputText: Hello from Maestro
+      - tapOn:
+          id: chat-send
+      - extendedWaitUntil:
+          visible: Hello from Maestro
+          timeout: 15000
+      - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
+      - runFlow: { when: { platform: Android }, commands: [back] }
+      - extendedWaitUntil:
+          visible:
+            id: meetup-suggestions
+          timeout: 15000
+      - tapOn:
+          id: meetup-suggestions
+      - extendedWaitUntil:
+          visible:
+            id: suggestions-budget
+          timeout: 30000
+      # OpenStreetMap attribution is always rendered on the day plan (AAP 0.12.2).
+      - assertVisible:
+          id: osm-attribution
+      - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
+      - runFlow: { when: { platform: Android }, commands: [back] }
+      # --- the witnessed check-in, and the settlement ---
+      # The API clock moves to five minutes before the start: inside the window that runs from 15
+      # minutes before it to 45 minutes after it (AAP 0.5.7).
+      - runScript:
+          file: scripts/api-actor.js
+          env: { ACTION: advance-to, ROLE: b, OFFSET_MIN: -5 }
+      # The device stands at the venue, inside the 150 metre geofence, where the app reads its
+      # coordinates from on submit.
+      - setLocation:
+          latitude: ${output.e2e.venue.lat}
+          longitude: ${output.e2e.venue.lng}
+      - tapOn:
+          id: meetup-check-in
+      - extendedWaitUntil:
+          visible:
+            id: checkin-code
+          timeout: 15000
+      # The code is read immediately before it is typed: the venue's code steps every 60 seconds and the
+      # API accepts the step it is in and its two neighbours.
+      - runScript: { file: scripts/read-venue-code.js }
+      - tapOn:
+          id: checkin-code
+      - inputText: ${output.code}
+      - hideKeyboard
+      - tapOn:
+          id: checkin-submit
+      - extendedWaitUntil:
+          visible:
+            id: checkin-result
+          timeout: 30000
+      # The counterpart's half of the witness, through the API. The second reading is what hands the
+      # script a code the current step still derives.
+      - runScript: { file: scripts/read-venue-code.js }
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: check-in, ROLE: b } }
+      # Past the close of the window, the settlement, and its pass checks (AAP 0.12.1): the meetup
+      # completed with both holds released, a completion rate of 100% for one meetup on the day the
+      # dashboard ranges over, and A's profile read back at the tier one completion discloses.
+      - runScript:
+          file: scripts/api-actor.js
+          env: { ACTION: advance-to, ROLE: b, OFFSET_MIN: 46 }
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: settle, ROLE: b } }
+      - runScript: { file: scripts/api-actor.js, env: { ACTION: assert-settled, ROLE: b } }
+      # The device sees the settlement too: the check-in screen's own back button returns to the detail
+      # screen, which the settlement's `meetup_status` frame has refreshed.
+      - tapOn:
+          id: checkin-back
+      - extendedWaitUntil:
+          visible:
+            id: meetup-status
+            text: '(?i)completed'
+          timeout: 60000
