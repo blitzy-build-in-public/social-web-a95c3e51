@@ -1,1109 +1,969 @@
 /**
- * Integration tests for `apps/workers/src/jobs/data-expiry.ts` (AAP 0.5.2, 0.5.6, 0.8.1).
+ * Integration tests for the retention rules `apps/workers/src/jobs/data-expiry.ts` enforces
+ * (AAP 0.5.2, 0.5.6, 0.12.2).
  *
- * The suite runs against a real PostgreSQL 16 with PostGIS 3.4, started from the shipped image and
- * migrated with `packages/db/prisma/migrations/20261104000000_init/migration.sql`, so what it proves
- * is the effect of the job's own statements on the schema the run delivers. Time comes from
- * `createTestClock`, which lets one frozen instant drive every retention boundary and then move two
- * days to show a rule following the clock.
+ * AAP 0.5.2 gives every record a retention window, names `data-expiry` as the job that enforces it
+ * and names this suite for the two things it has to show: the hourly rules, each reaching the record
+ * it is due to reach while leaving its neighbour inside the window alone; and the daily financial
+ * purge, run with the clock past `FINANCIAL_RETENTION_DAYS`, which must leave a live account's
+ * reputation counters where they were (criterion 10). AAP 0.12.2 fixes the shape the lodging-call
+ * strip has to leave behind, field by field, so the assertions below compare the whole task and
+ * attempt rows rather than only the fields that changed.
  *
- * The cases, in order:
+ * The suite drives the real job against the PostgreSQL 16 with PostGIS and the Redis the integration
+ * project's `globalSetup` starts, through the same harness the folder's other suites use: the app's
+ * own `TestClock` is handed to the worker context, so every boundary is crossed by moving one clock
+ * (AAP 0.11.1) and nothing waits for real time. Each hourly case seeds the record a rule is due to
+ * reach beside one just inside its window, runs the step, and requires a second run at the same
+ * instant to report zeros and to change nothing — every rule is a delete-or-update-where whose own
+ * predicate takes the rows it just touched out of its selection (AAP 0.3.2).
  *
- *   1. `process` refuses a job name the `data-expiry` queue does not accept, and data whose `step`
- *      contradicts the name it arrived as (AAP 0.5.6).
- *   2. The hourly step erases a resolved claim's booking details, strips its lodging call rows to
- *      exactly the shape AAP 0.5.2 keeps, and leaves a claim that is still `calling` alone.
- *   3. The same step applies the transcript, magic-link, session, 365-day call-metadata, 180-day
- *      reason, operator-access-log and 120-day activity-fact rules.
- *   4. A second run of the hourly step at the same instant changes nothing and reports zeros.
- *   5. After the clock moves two days, the transcript that was not yet due is deleted and a grace
- *      period that has run out takes its row — the test clock driving the job, not a fixed window.
- *   6. The daily step purges the meetup family past `FINANCIAL_RETENTION_DAYS`, the `StripeEvent`
- *      rows, the finished `delete_customer` operation, the tombstone-owned reputation rows and the
- *      tombstone no retained record references — while the live participant's witness event keeps
- *      existing with its meetup link nulled, so a live account's counters cannot move.
- *   7. A second run of the daily step changes nothing.
+ * `FINANCIAL_RETENTION_DAYS` is read from the loaded `workers` environment rather than written as a
+ * number here: the period is configuration (AAP 0.5.2, 0.6.2), so a suite that hard-coded it would
+ * assert the wrong boundary the moment an operator changed it.
  *
- * @see AAP 0.5.2 for every rule, 0.12.2 for the stripped shape, 0.11.2 for the integration layer
- *   running against real PostgreSQL, and 0.8.1 for the file under test.
+ * @see AAP 0.5.2 for each rule and its window, 0.5.6 for the job's cadence, 0.12.2 for the stripped
+ *   lodging-call shape, 0.5.3 for the claim and call-task states it reads, 0.3.2 for the idempotence
+ *   every rule keeps, 0.11.1 for the injected clock, 0.11.2 for the integration topology, and 0.8.1
+ *   for this file.
  */
 
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestApp, testWorkersEnv, type TestApp } from '@tablemate/api/test-support/app';
+import {
+  callRoute,
+  makeActivityFacts,
+  makeCallAttempt,
+  makeCallTask,
+  makeClaim,
+  makeDispute,
+  makeLodging,
+  makeMeetup,
+  makePlace,
+  makeUser,
+  makeVenue,
+  rows,
+  type UserFixture,
+} from '@tablemate/api/test-support/factories';
+import { JOB, QUEUE, loadWorkersEnv } from '@tablemate/server-core';
+import { DAY_MS, MINUTE_MS, MeDto } from '@tablemate/shared';
 
-import { createPrismaClient, type DbClient } from '@tablemate/db';
-import { DAY_MS, HOUR_MS } from '@tablemate/shared';
-import { createLogger, createTestClock, loadWorkersEnv } from '@tablemate/server-core';
+import {
+  process as runDataExpiry,
+  runDailyExpiry,
+  runHourlyExpiry,
+} from '../../src/jobs/data-expiry.ts';
+import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
-import { process, runDailyExpiry, runHourlyExpiry } from '../../src/jobs/data-expiry.ts';
+/* The fixtures every case shares (AAP 0.11.2) */
 
-/** The instant every relative date below is measured from, and the clock's starting point. */
-const START = new Date('2026-11-04T12:00:00.000Z');
-
-/** `START` moved by `days` (negative for the past), so one instant describes every seeded age. */
-const at = (days: number): Date => new Date(START.getTime() + days * DAY_MS);
-
-/** `START` moved backwards by `hours`, for the two grace periods shorter than a day (AAP 0.5.2). */
-const hoursAgo = (hours: number): Date => new Date(START.getTime() - hours * HOUR_MS);
-
-/**
- * The migration the container is built with: the same file the compose stack applies.
- *
- * Found by walking up from this module's own directory rather than by a fixed relative path, because
- * the repository carries no vitest configuration and `vitest run` therefore collects the compiled
- * copy of this file under `dist/` as well as the source: from `apps/workers/dist/test/integration` a
- * fixed depth of four lands in `apps/` instead of the repository root.
- */
-const MIGRATION = findMigration();
-
-/**
- * The nearest ancestor of this module's directory that holds the init migration, so the source and
- * the compiled copy of this file read the same file.
- *
- * @returns The absolute path of the init migration.
- * @throws Error naming the directory the search started from when no ancestor holds it.
- */
-function findMigration(): string {
-  const from = dirname(fileURLToPath(import.meta.url));
-  const migration = 'packages/db/prisma/migrations/20261104000000_init/migration.sql';
-  for (let dir = from; ; dir = dirname(dir)) {
-    const candidate = join(dir, migration);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    if (dirname(dir) === dir) {
-      throw new Error(`the init migration is missing: no ancestor of ${from} holds ${migration}`);
-    }
-  }
-}
-
-// Every row this suite seeds is named, and the names are the assertions' vocabulary. The ids are
-// plain uuids rather than generated ones so a failing assertion names the row it meant.
+/** The launch city every venue, lodging and place of this suite stands in. */
 const CITY = 'lisbon';
-const VENUE = 'aaaaaaaa-0000-4000-8000-000000000001';
-const LODGING = 'aaaaaaaa-0000-4000-8000-000000000002';
-const LODGING_TWO = 'aaaaaaaa-0000-4000-8000-000000000004';
-const PLACE = 'aaaaaaaa-0000-4000-8000-000000000003';
-const LIVE = 'bbbbbbbb-0000-4000-8000-000000000001';
-const LIVE_TWO = 'bbbbbbbb-0000-4000-8000-000000000002';
-const GONE = 'bbbbbbbb-0000-4000-8000-000000000003';
-const GONE_KEPT = 'bbbbbbbb-0000-4000-8000-000000000004';
-const GONE_FREE = 'bbbbbbbb-0000-4000-8000-000000000005';
-const MEETUP_OLD = 'cccccccc-0000-4000-8000-000000000001';
-const MEETUP_RECENT = 'cccccccc-0000-4000-8000-000000000002';
-const DEPOSIT_OLD = 'dddddddd-0000-4000-8000-000000000001';
-const OPERATION_OLD = 'dddddddd-0000-4000-8000-000000000002';
-const CUSTOMER_OLD = 'dddddddd-0000-4000-8000-000000000003';
-const CUSTOMER_RECENT = 'dddddddd-0000-4000-8000-000000000004';
-const CREDIT_OLD = 'eeeeeeee-0000-4000-8000-000000000001';
-const CHECK_IN_OLD = 'eeeeeeee-0000-4000-8000-000000000002';
-const MESSAGE_OLD = 'eeeeeeee-0000-4000-8000-000000000003';
-const DISPUTE_OLD = 'ffffffff-0000-4000-8000-000000000001';
-const DISPUTE_STALE = 'ffffffff-0000-4000-8000-000000000002';
-const DISPUTE_OPEN = 'ffffffff-0000-4000-8000-000000000003';
-const WITNESS_LIVE = 'ffffffff-0000-4000-8000-000000000004';
-const WITNESS_GONE = 'ffffffff-0000-4000-8000-000000000005';
-const WITNESS_LONE = 'ffffffff-0000-4000-8000-000000000006';
-const REPORT_OLD = 'ffffffff-0000-4000-8000-000000000007';
-const REPORT_RECENT = 'ffffffff-0000-4000-8000-000000000008';
-const REPORT_LINKED = 'ffffffff-0000-4000-8000-000000000009';
-const FACT_OLD = 'ffffffff-0000-4000-8000-00000000000a';
-const FACT_FOR_OLD_MEETUP = 'ffffffff-0000-4000-8000-00000000000b';
-const FACT_RECENT = 'ffffffff-0000-4000-8000-00000000000c';
-const ACCESS_OLD = '66666666-0000-4000-8000-000000000001';
-const ACCESS_RECENT = '66666666-0000-4000-8000-000000000002';
-const STRIPE_OLD = 'evt_old';
-const STRIPE_RECENT = 'evt_recent';
-const CLAIM_TERMINAL = '99999999-0000-4000-8000-000000000001';
-const CLAIM_LIVE = '99999999-0000-4000-8000-000000000002';
-const TASK_LODGING_OLD = '99999999-0000-4000-8000-000000000003';
-const TASK_LODGING_LIVE = '99999999-0000-4000-8000-000000000004';
-const TASK_MENU_OLD = '99999999-0000-4000-8000-000000000005';
-const TASK_MENU_RECENT = '99999999-0000-4000-8000-000000000006';
-const TASK_MENU_REVIEW = '99999999-0000-4000-8000-000000000007';
-const ATTEMPT_LODGING_OLD = '99999999-0000-4000-8000-000000000008';
-const ATTEMPT_LODGING_LIVE = '99999999-0000-4000-8000-000000000009';
-const ATTEMPT_MENU_OLD = '99999999-0000-4000-8000-00000000000a';
-const ATTEMPT_MENU_RECENT = '99999999-0000-4000-8000-00000000000b';
-const ATTEMPT_MENU_LATER = '99999999-0000-4000-8000-00000000000c';
-const ATTEMPT_MENU_UNDATED = '99999999-0000-4000-8000-00000000000d';
-const CALLBACK_FIRST = '55555555-0000-4000-8000-000000000001';
-const CALLBACK_LAST = '55555555-0000-4000-8000-000000000002';
-const MAGIC_PURGED = '88888888-0000-4000-8000-000000000001';
-const MAGIC_DISARMED = '88888888-0000-4000-8000-000000000002';
-const MAGIC_SENT = '88888888-0000-4000-8000-000000000003';
-const MAGIC_LIVE = '88888888-0000-4000-8000-000000000004';
-const SESSION_PURGED = '77777777-0000-4000-8000-000000000001';
-const SESSION_KEPT = '77777777-0000-4000-8000-000000000002';
 
-/** The lodging call's sid, which the strip must match on when it deletes the callbacks. */
-const LODGING_SID = 'CA-terminal-0001';
+/** The minutes one day holds, so the two 24-hour boundaries below are written as the rules state them. */
+const DAY_MINUTES = 24 * 60;
 
 /**
- * The environment the `workers` process validates at start (AAP 0.6.2). Every value is a placeholder
- * that matches no credential shape, and the telephony and language-model modes reach no provider, so
- * the job under test needs no external service at all.
+ * The provider call ids of the lodging call the strip removes and of the live one it must leave
+ * alone: `CA` and thirty-two hex digits, the shape Twilio reports and the unique column takes.
  */
-function environment(databaseUrl: string): Record<string, string> {
-  return {
-    APP_ENV: 'test',
-    DATABASE_URL: databaseUrl,
-    REDIS_URL: 'redis://127.0.0.1:6379/0',
-    FIELD_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-    FIELD_ENCRYPTION_KEY_ID: 'k1',
-    ANALYTICS_SALT: 'test-analytics-salt-0123456789abcdef',
-    TELEPHONY_MODE: 'off',
-    LLM_PROVIDER: 'fake',
-    SMTP_URL: 'smtp://127.0.0.1:1025',
-    EMAIL_FROM: 'Tablemate <no-reply@tablemate.test>',
-    CRAWLER_CONTACT_URL: 'https://tablemate.test/crawler',
-    API_PUBLIC_URL: 'http://127.0.0.1:21000',
-    WEB_ORIGIN: 'http://127.0.0.1:21001',
-  };
+const STRIPPED_CALL_SID = 'CA0123456789abcdef0123456789abcdef';
+const LIVE_CALL_SID = 'CAfedcba9876543210fedcba9876543210';
+
+/**
+ * What a lodging call's attempt carries before the strip: every field the rule has to take away, so
+ * the case asserts the retained shape against a row that was not already empty.
+ */
+const LODGING_CALL_CONTENT = {
+  outcome: 'completed' as const,
+  confidence: 'high' as const,
+  summary: 'Fixture summary',
+  extractedFields: { slots: 3 },
+  durationSec: 42,
+  llmReservedMicros: 1_234n,
+};
+
+/**
+ * The fields the strip takes off an attempt (AAP 0.5.2, 0.12.2): the provider's id, the summary, the
+ * extracted fields, the confidence, the duration, the transcript with its deadline, and the
+ * language-model reservation the call has released.
+ */
+const STRIPPED_ATTEMPT = {
+  twilioCallSid: null,
+  summary: null,
+  extractedFields: null,
+  confidence: null,
+  durationSec: null,
+  transcript: null,
+  transcriptDeleteAt: null,
+  llmReservedMicros: 0n,
+} as const;
+
+/**
+ * The `workers` configuration of this host: `FINANCIAL_RETENTION_DAYS` is the daily step's cut-off
+ * and is read here rather than assumed, because it is configuration (AAP 0.5.2, 0.6.2).
+ */
+const env = loadWorkersEnv(testWorkersEnv());
+
+let testApp: TestApp;
+let ctx: WorkerContext;
+
+/* The clock's boundaries (AAP 0.11.1, 0.5.2) */
+
+/** `now` shifted by `minutes` (negative for the past): a 24-hour rule's own boundary. */
+function minutesFromNow(minutes: number): Date {
+  return new Date(testApp.time.now().getTime() + minutes * MINUTE_MS);
 }
 
-let db: DbClient;
-let clock: ReturnType<typeof createTestClock>;
-let ctx: Parameters<typeof runHourlyExpiry>[0];
-/** Assigned last in `beforeAll`, so a failure before that point leaves it undefined. */
-let stop: (() => Promise<void>) | undefined;
-const logs: Record<string, unknown>[] = [];
+/** `now` shifted by `days` (negative for the past): a coarse instant for an age check. */
+function daysFromNow(days: number): Date {
+  return new Date(testApp.time.now().getTime() + days * DAY_MS);
+}
 
-/** The ids a query returns, so an assertion reads as a set comparison rather than a count. */
-async function ids(sql: TemplateStringsArray, ...values: unknown[]): Promise<string[]> {
-  const rows = await db.$queryRaw<{ id: string }[]>(sql, ...values);
-  return rows.map((row) => row.id);
+/**
+ * `now` shifted by `days` and then by `minutes`, negative for the past: the instant one minute either
+ * side of a day-count rule's window.
+ *
+ * Every age predicate is an inclusive comparison against a cut-off computed from the same clock, so a
+ * row placed a whole unit from the edge sits exactly on it and a window moved by that unit would not
+ * move the count. A minute places the row off the edge, which is what makes a moved window change
+ * what the rule reports.
+ */
+function atAge(days: number, minutes: number): Date {
+  return new Date(testApp.time.now().getTime() + (days * DAY_MINUTES + minutes) * MINUTE_MS);
+}
+
+/** The counts a pass reported that were not zero: an empty list is a pass that changed nothing. */
+function residual(counts: Record<string, number>): readonly (readonly [string, number])[] {
+  return Object.entries(counts).filter(([, count]) => count !== 0);
+}
+
+/**
+ * Run the hourly step once, then once more, and require the first pass to report `expected`, the
+ * second to report zeros, and `read` to be unchanged across it (AAP 0.3.2).
+ *
+ * The counts are asserted rather than ignored because they are the rule's own answer: a retention
+ * window moved by one unit of its rule changes which rows are selected, so the counts move with it
+ * and this suite fails with the rule that changed.
+ *
+ * @param read - The rows this case asserts on, read afresh before and after the second pass.
+ * @param expected - What the first pass must report, as the rule's own count keys.
+ * @returns The rows as they stand once the first pass has run.
+ */
+async function hourlyPass<Row>(
+  read: () => Promise<Row>,
+  expected: Record<string, number>,
+): Promise<Row> {
+  const first = await runHourlyExpiry(ctx);
+  expect(
+    first,
+    'the first pass of the hourly step did not report the rule’s own counts',
+  ).toMatchObject(expected);
+
+  const after = await read();
+  const second = residual(await runHourlyExpiry(ctx));
+  expect(second, 'a second pass of the hourly step still changed rows').toEqual([]);
+  expect(await read(), 'a second pass of the hourly step changed rows').toEqual(after);
+
+  return after;
 }
 
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer('postgis/postgis:16-3.4').start();
-  const migration = await readFile(MIGRATION, 'utf8');
-  const applied = await container.exec([
-    'psql',
-    '-v',
-    'ON_ERROR_STOP=1',
-    '-U',
-    'test',
-    '-d',
-    'test',
-    '-c',
-    migration,
-  ]);
-
-  if (applied.exitCode !== 0) {
-    throw new Error(`the init migration failed: ${applied.stderr}`);
-  }
-
-  const databaseUrl = container.getConnectionUri();
-  db = createPrismaClient({ databaseUrl, appEnv: 'test' });
-  clock = createTestClock({ start: START });
-  // The expiry steps read the clock, the logger, the configuration and the database client, and no
-  // other collaborator of a worker context, so the suite builds those four and asserts the cast: the
-  // remaining fields are the ones no statement under test reaches.
-  ctx = {
-    env: loadWorkersEnv(environment(databaseUrl)),
-    clock,
-    logger: createLogger({
-      name: 'data-expiry-test',
-      level: 'info',
-      appEnv: 'test',
-      destination: {
-        write: (line: string) => {
-          logs.push(JSON.parse(line) as Record<string, unknown>);
-        },
-      },
-    }),
-    db,
-  } as unknown as Parameters<typeof runHourlyExpiry>[0];
-  stop = async () => {
-    await db.$disconnect();
-    await container.stop();
-  };
-}, 300_000);
-
-afterAll(async () => {
-  // A `beforeAll` that failed before assigning `stop` must report its own error, not a second one.
-  if (stop) {
-    await stop();
-  }
+  testApp = await createTestApp();
+  // The app's own clock, so a case that advances it moves the job's cut-offs too, and the app's own
+  // database, which `resetState` truncates between cases (AAP 0.11.2).
+  ctx = await createWorkerContext(env, { clock: testApp.clock });
 });
 
-/**
- * The rows each rule is meant to act on, plus the neighbours it must leave alone.
- *
- * Every age is expressed against {@link START}, which is also the clock's instant when the first
- * assertions run, so the arithmetic an assertion checks is visible in the seed. The rows are created
- * through the guarded client rather than by hand-written SQL, which keeps a mistyped column out of
- * the fixture; the assertions read raw SQL, because the subject under test is raw SQL.
- */
-async function seed(): Promise<void> {
-  await db.city.createMany({
-    data: [
-      {
-        id: CITY,
-        circuitCityId: 1,
-        name: 'Lisbon',
-        countryCode: 'PT',
-        timezone: 'Europe/Lisbon',
-        callLanguage: 'pt-PT',
-        currency: 'EUR',
-        bbox: { south: 38.6, west: -9.3, north: 38.8, east: -9.0 },
-      },
-    ],
-  });
+afterAll(async () => {
+  await closeWorkerContext(ctx);
+  await testApp.close();
+});
 
-  await db.venue.createMany({
-    data: [{ id: VENUE, cityId: CITY, name: 'Venue', address: 'Rua Teste 1' }],
-  });
-  await db.lodging.createMany({
-    data: [
-      { id: LODGING, cityId: CITY, name: 'Lodging', kind: 'hostel', phone: '+12025550100' },
-      { id: LODGING_TWO, cityId: CITY, name: 'Lodging Two', kind: 'hotel', phone: '+12025550101' },
-    ],
-  });
-  await db.place.createMany({
-    data: [{ id: PLACE, cityId: CITY, name: 'Place', category: 'restaurant' }],
-  });
+beforeEach(async () => {
+  await testApp.resetState();
+  await testApp.seedCities();
+});
 
-  // Two live accounts — one of them the counterpart every retained row about an erased account
-  // points at — and three tombstones: one still referenced by a report, one by a recent meetup, and
-  // one referenced only by rows this run deletes.
-  await db.user.createMany({
-    data: [
-      { id: LIVE, handle: 'live-one' },
-      { id: LIVE_TWO, handle: 'live-two' },
-    ],
-  });
-  await db.user.createMany({
-    data: [
-      { id: GONE, deletedAt: at(-200) },
-      { id: GONE_KEPT, deletedAt: at(-200) },
-      { id: GONE_FREE, deletedAt: at(-200) },
-    ],
-  });
+/* One row per hourly rule (AAP 0.5.2, 0.11.1) */
 
-  // The old meetup: finalised 2,558 days ago, one day past the 2,557-day retention period. The
-  // recent one is 10 days old, and is why a tombstone that still appears in the directory stays.
-  await db.meetup.createMany({
-    data: [
-      {
-        id: MEETUP_OLD,
-        initiatorId: LIVE,
-        recipientId: LIVE_TWO,
-        venueId: VENUE,
-        startsAt: at(-2560),
-        depositCents: 1000,
-        status: 'completed',
-        variantPairing: 'social',
-        lockedAt: at(-2561),
-        settledAt: at(-2560),
-        finalAt: at(-2558),
-        budgetUpdatedBy: GONE,
-      },
-      {
-        id: MEETUP_RECENT,
-        initiatorId: GONE_KEPT,
-        recipientId: LIVE_TWO,
-        venueId: VENUE,
-        startsAt: at(-11),
-        depositCents: 1000,
-        status: 'completed',
-        variantPairing: 'punitive',
-        lockedAt: at(-12),
-        settledAt: at(-10),
-        finalAt: at(-10),
-      },
-    ],
-  });
-
-  await db.deposit.createMany({
-    data: [
-      {
-        id: DEPOSIT_OLD,
-        meetupId: MEETUP_OLD,
-        ownerId: LIVE,
-        role: 'initiator',
-        status: 'captured',
-        amountCents: 1000,
-      },
-    ],
-  });
-  await db.paymentOperation.createMany({
-    data: [
-      {
-        id: OPERATION_OLD,
-        userId: LIVE,
-        depositId: DEPOSIT_OLD,
-        kind: 'capture',
-        seq: 1,
-        idempotencyKey: 'capture-old-1',
-        status: 'succeeded',
-        completedAt: at(-2558),
-      },
-      {
-        id: CUSTOMER_OLD,
-        userId: GONE_FREE,
-        kind: 'delete_customer',
-        seq: 1,
-        stripeCustomerId: 'cus_deleted',
-        idempotencyKey: 'delete-customer-old',
-        status: 'succeeded',
-        completedAt: at(-2558),
-      },
-      {
-        id: CUSTOMER_RECENT,
-        userId: LIVE_TWO,
-        kind: 'delete_customer',
-        seq: 1,
-        stripeCustomerId: 'cus_recent',
-        idempotencyKey: 'delete-customer-recent',
-        status: 'succeeded',
-        completedAt: at(-10),
-      },
-    ],
-  });
-  await db.meetupSettlement.createMany({
-    data: [
-      {
-        meetupId: MEETUP_OLD,
-        outcome: 'completed',
-        initiatorPresent: true,
-        recipientPresent: true,
-        appliedAt: at(-2560),
-      },
-    ],
-  });
-  await db.tableCreditEntry.createMany({
-    data: [
-      { id: CREDIT_OLD, userId: GONE, meetupId: MEETUP_OLD, kind: 'grant', amountCents: 1000 },
-    ],
-  });
-  await db.checkIn.createMany({
-    data: [
-      {
-        id: CHECK_IN_OLD,
-        meetupId: MEETUP_OLD,
-        userId: LIVE_TWO,
-        result: 'pass',
-        distanceBucket: 'lt_50',
-      },
-    ],
-  });
-  await db.message.createMany({
-    data: [{ id: MESSAGE_OLD, meetupId: MEETUP_OLD, senderId: LIVE, body: 'see you there' }],
-  });
-  await db.dispute.createMany({
-    data: [
-      {
-        id: DISPUTE_OLD,
-        meetupId: MEETUP_OLD,
-        filedById: LIVE,
-        reason: 'old dispute',
-        status: 'resolved',
-        outcome: 'no_fault',
-        openedAt: at(-2562),
-        deadlineAt: at(-2557),
-        resolvedAt: at(-2560),
-      },
-      {
-        id: DISPUTE_STALE,
-        meetupId: MEETUP_RECENT,
-        filedById: LIVE_TWO,
-        reason: 'stale dispute',
-        status: 'resolved',
-        outcome: 'settle_by_checkins',
-        openedAt: at(-205),
-        deadlineAt: at(-200),
-        resolvedAt: at(-200),
-      },
-      {
-        id: DISPUTE_OPEN,
-        meetupId: MEETUP_RECENT,
-        filedById: GONE_KEPT,
-        reason: 'open dispute',
-        status: 'open',
-        openedAt: at(-2),
-        deadlineAt: at(3),
-      },
-    ],
-  });
-
-  // Reputation: the live participant's witness event must survive the purge with its meetup link
-  // nulled, the erased participant's must go, and the lone tombstone's must go with it.
-  await db.witnessEvent.createMany({
-    data: [
-      {
-        id: WITNESS_LIVE,
-        meetupId: MEETUP_OLD,
-        userId: LIVE,
-        counterpartId: GONE,
-        venueId: VENUE,
-        cityId: CITY,
-        completedAt: at(-2560),
-        countsForReputation: true,
-      },
-      {
-        id: WITNESS_GONE,
-        meetupId: MEETUP_OLD,
-        userId: GONE,
-        counterpartId: LIVE,
-        venueId: VENUE,
-        cityId: CITY,
-        completedAt: at(-2560),
-        countsForReputation: true,
-      },
-      {
-        id: WITNESS_LONE,
-        userId: GONE_FREE,
-        counterpartId: LIVE,
-        venueId: VENUE,
-        cityId: CITY,
-        completedAt: at(-100),
-        countsForReputation: true,
-      },
-    ],
-  });
-  await db.pairHistory.createMany({
-    data: [
-      {
-        userLowId: LIVE,
-        userHighId: GONE,
-        completedCount: 1,
-        firstCompletedAt: at(-2560),
-        lastCompletedAt: at(-2558),
-      },
-      {
-        userLowId: LIVE_TWO,
-        userHighId: GONE_KEPT,
-        completedCount: 1,
-        firstCompletedAt: at(-10),
-        lastCompletedAt: at(-10),
-      },
-      {
-        userLowId: LIVE,
-        userHighId: LIVE_TWO,
-        completedCount: 1,
-        firstCompletedAt: at(-2560),
-        lastCompletedAt: at(-2558),
-      },
-    ],
-  });
-
-  await db.report.createMany({
-    data: [
-      {
-        id: REPORT_OLD,
-        reporterId: GONE,
-        reportedId: LIVE,
-        reason: 'old report',
-        createdAt: at(-200),
-      },
-      {
-        id: REPORT_RECENT,
-        reporterId: LIVE_TWO,
-        reportedId: LIVE,
-        reason: 'recent report',
-        createdAt: at(-10),
-      },
-      {
-        id: REPORT_LINKED,
-        reporterId: LIVE_TWO,
-        reportedId: LIVE,
-        reason: 'linked report',
-        meetupId: MEETUP_OLD,
-        createdAt: at(-10),
-      },
-    ],
-  });
-
-  await db.lodgingActivityFact.createMany({
-    data: [
-      {
-        id: FACT_OLD,
-        lodgingId: LODGING_TWO,
-        meetupId: MEETUP_RECENT,
-        pairKey: 'pair-old',
-        completedAt: at(-130),
-      },
-      {
-        id: FACT_FOR_OLD_MEETUP,
-        lodgingId: LODGING,
-        meetupId: MEETUP_OLD,
-        pairKey: 'pair-meetup',
-        completedAt: at(-10),
-      },
-      {
-        id: FACT_RECENT,
-        lodgingId: LODGING,
-        meetupId: MEETUP_RECENT,
-        pairKey: 'pair-recent',
-        completedAt: at(-10),
-      },
-    ],
-  });
-
-  await db.operatorAccessLog.createMany({
-    data: [
-      {
-        id: ACCESS_OLD,
-        operatorId: LIVE,
-        lodgingClaimId: CLAIM_TERMINAL,
-        accessedAt: at(-400),
-        purpose: 'manual_verification_call',
-      },
-      {
-        id: ACCESS_RECENT,
-        operatorId: LIVE,
-        lodgingClaimId: CLAIM_TERMINAL,
-        accessedAt: at(-10),
-        purpose: 'manual_verification_call',
-      },
-    ],
-  });
-
-  // A resolved claim with booking details to erase and call rows to strip, and one whose call may
-  // still be running: the second must come through the run untouched.
-  await db.lodgingClaim.createMany({
-    data: [
-      {
-        id: CLAIM_TERMINAL,
-        userId: LIVE,
-        lodgingId: LODGING,
-        stayFrom: new Date('2026-10-01T00:00:00.000Z'),
-        stayTo: new Date('2026-10-10T00:00:00.000Z'),
-        bookingNameCiphertext: 'name-ciphertext',
-        bookingReferenceCiphertext: 'reference-ciphertext',
-        callConsentAt: at(-5),
-        status: 'verified',
-        resolvedAt: at(-1),
-      },
-      {
-        id: CLAIM_LIVE,
-        userId: LIVE_TWO,
-        lodgingId: LODGING,
-        stayFrom: new Date('2026-11-01T00:00:00.000Z'),
-        stayTo: new Date('2026-11-20T00:00:00.000Z'),
-        bookingNameCiphertext: 'live-name-ciphertext',
-        bookingReferenceCiphertext: 'live-reference-ciphertext',
-        callConsentAt: at(-1),
-        status: 'calling',
-      },
-    ],
-  });
-  await db.callTask.createMany({
-    data: [
-      {
-        id: TASK_LODGING_OLD,
-        kind: 'lodging_stay_verification',
-        lodgingId: LODGING,
-        lodgingClaimId: CLAIM_TERMINAL,
-        status: 'completed',
-        attempts: 1,
-        nextAttemptAt: at(-1),
-        outcomeAt: at(-1),
-      },
-      {
-        id: TASK_LODGING_LIVE,
-        kind: 'lodging_stay_verification',
-        lodgingId: LODGING,
-        lodgingClaimId: CLAIM_LIVE,
-        status: 'in_progress',
-        attempts: 1,
-        nextAttemptAt: at(-1),
-      },
-    ],
-  });
-  await db.callAttempt.createMany({
-    data: [
-      {
-        id: ATTEMPT_LODGING_OLD,
-        callTaskId: TASK_LODGING_OLD,
-        twilioCallSid: LODGING_SID,
-        state: 'ended',
-        twilioFinalStatus: 'completed',
-        outcome: 'completed',
-        extractedFields: { guest: 'yes' },
-        summary: 'guest confirmed',
-        confidence: 'high',
-        durationSec: 42,
-        llmReservedMicros: 5000n,
-        startedAt: at(-1),
-        endedAt: at(-1),
-      },
-      {
-        id: ATTEMPT_LODGING_LIVE,
-        callTaskId: TASK_LODGING_LIVE,
-        twilioCallSid: 'CA-live-0001',
-        state: 'in_progress',
-        summary: 'in progress',
-        llmReservedMicros: 1000n,
-        startedAt: at(-1),
-      },
-    ],
-  });
-  await db.voiceCallbackEvent.createMany({
-    data: [
-      {
-        id: CALLBACK_FIRST,
-        callAttemptId: ATTEMPT_LODGING_OLD,
-        callSid: LODGING_SID,
-        callStatus: 'initiated',
-        sequenceNumber: 1,
-        receivedAt: at(-1),
-      },
-      {
-        id: CALLBACK_LAST,
-        callAttemptId: ATTEMPT_LODGING_OLD,
-        callSid: LODGING_SID,
-        callStatus: 'completed',
-        sequenceNumber: 2,
-        receivedAt: at(-1),
-      },
-    ],
-  });
-
-  // Call metadata at both ends of the 365-day rule, and a transcript due only after the clock moves.
-  await db.callTask.createMany({
-    data: [
-      {
-        id: TASK_MENU_OLD,
-        kind: 'menu_prices',
-        placeId: PLACE,
-        status: 'completed',
-        attempts: 1,
-        nextAttemptAt: at(-400),
-        outcomeAt: at(-400),
-      },
-      {
-        id: TASK_MENU_RECENT,
-        kind: 'menu_prices',
-        placeId: PLACE,
-        status: 'completed',
-        attempts: 2,
-        nextAttemptAt: at(-10),
-        outcomeAt: at(-10),
-      },
-      {
-        id: TASK_MENU_REVIEW,
-        kind: 'menu_prices',
-        placeId: PLACE,
-        status: 'needs_review',
-        attempts: 1,
-        nextAttemptAt: at(-400),
-        outcomeAt: at(-400),
-      },
-    ],
-  });
-  await db.callAttempt.createMany({
-    data: [
-      {
-        id: ATTEMPT_MENU_OLD,
-        callTaskId: TASK_MENU_OLD,
-        state: 'ended',
-        outcome: 'completed',
-        transcript: 'old transcript',
-        transcriptDeleteAt: at(-400),
-        startedAt: at(-400),
-        endedAt: at(-400),
-      },
-      {
-        id: ATTEMPT_MENU_RECENT,
-        callTaskId: TASK_MENU_RECENT,
-        state: 'ended',
-        outcome: 'completed',
-        transcript: 'recent transcript',
-        transcriptDeleteAt: at(-1),
-        startedAt: at(-10),
-        endedAt: at(-10),
-      },
-      {
-        id: ATTEMPT_MENU_LATER,
-        callTaskId: TASK_MENU_RECENT,
-        state: 'ended',
-        outcome: 'completed',
-        transcript: 'later transcript',
-        transcriptDeleteAt: at(1),
-        startedAt: at(-2),
-        endedAt: at(-2),
-      },
-      {
-        id: ATTEMPT_MENU_UNDATED,
-        callTaskId: TASK_MENU_RECENT,
-        state: 'ended',
-        outcome: 'completed',
-        transcript: 'undated transcript',
-        startedAt: at(-40),
-        endedAt: at(-40),
-      },
-    ],
-  });
-
-  await db.magicLinkToken.createMany({
-    data: [
-      {
-        id: MAGIC_PURGED,
-        tokenHash: 'hash-purged',
-        emailCiphertext: 'email-ciphertext',
-        emailLookupHash: 'lookup-purged',
-        deliveryTokenCiphertext: 'delivery-purged',
-        expiresAt: hoursAgo(25),
-      },
-      {
-        id: MAGIC_DISARMED,
-        tokenHash: 'hash-disarmed',
-        emailCiphertext: 'email-ciphertext',
-        emailLookupHash: 'lookup-disarmed',
-        deliveryTokenCiphertext: 'delivery-disarmed',
-        expiresAt: hoursAgo(2),
-      },
-      {
-        id: MAGIC_SENT,
-        tokenHash: 'hash-sent',
-        emailCiphertext: 'email-ciphertext',
-        emailLookupHash: 'lookup-sent',
-        expiresAt: hoursAgo(2),
-      },
-      {
-        id: MAGIC_LIVE,
-        tokenHash: 'hash-live',
-        emailCiphertext: 'email-ciphertext',
-        emailLookupHash: 'lookup-live',
-        deliveryTokenCiphertext: 'delivery-live',
-        expiresAt: at(5),
-      },
-    ],
-  });
-  await db.session.createMany({
-    data: [
-      {
-        id: SESSION_PURGED,
-        userId: LIVE,
-        refreshTokenHash: 'refresh-purged',
-        expiresAt: hoursAgo(25),
-      },
-      { id: SESSION_KEPT, userId: LIVE, refreshTokenHash: 'refresh-kept', expiresAt: at(10) },
-    ],
-  });
-
-  await db.stripeEvent.createMany({
-    data: [
-      {
-        id: STRIPE_OLD,
-        type: 'payment_intent.succeeded',
-        status: 'processed',
-        receivedAt: at(-2558),
-      },
-      {
-        id: STRIPE_RECENT,
-        type: 'payment_intent.succeeded',
-        status: 'processed',
-        receivedAt: at(-10),
-      },
-    ],
-  });
+/** One hourly retention case: its name, and the body that seeds, runs and asserts it. */
+interface HourlyCase {
+  readonly name: string;
+  readonly check: () => Promise<void>;
 }
 
-describe('data-expiry', () => {
-  beforeAll(async () => {
-    await seed();
-  }, 60_000);
+/**
+ * One entry per hourly rule of `data-expiry.ts`, each seeding the record its rule is due to reach
+ * and, beside it, the record just inside the window the rule must not: one minute either side of the
+ * rule's own edge, which is what makes the rule's count move when its window moves (AAP 0.5.2).
+ */
+const HOURLY_CASES: readonly HourlyCase[] = [
+  {
+    name: 'erases a resolved claim’s booking details and keeps a live claim’s',
+    check: async () => {
+      const db = testApp.services.db;
+      const guest = await makeUser(testApp);
+      const lodging = await makeLodging(testApp, { cityId: CITY });
+      const resolved = await makeClaim(testApp, guest, lodging, {
+        status: 'verified',
+        bookingReference: 'FIXTURE-REFERENCE-1',
+      });
+      const calling = await makeClaim(testApp, guest, lodging, {
+        status: 'calling',
+        bookingReference: 'FIXTURE-REFERENCE-2',
+      });
+      // The claim resolved a minute before the run. The rule keys off the status rather than the
+      // instant, which is what keeps it well inside the 24-hour limit criterion 14 measures.
+      const erasedAt = testApp.time.advance({ minutes: 1 });
 
+      const read = () =>
+        Promise.all([
+          db.lodgingClaim.findUniqueOrThrow({ where: { id: resolved.id } }),
+          db.lodgingClaim.findUniqueOrThrow({ where: { id: calling.id } }),
+        ]);
+      const [resolvedBefore, liveBefore] = await read();
+      const [after, live] = await hourlyPass(read, { bookingDetailsErased: 1 });
+
+      expect(resolvedBefore.bookingNameCiphertext).not.toBeNull();
+      expect(after).toEqual({
+        ...resolvedBefore,
+        bookingNameCiphertext: null,
+        bookingReferenceCiphertext: null,
+        detailsErasedAt: erasedAt,
+      });
+      // A claim still `calling` may have a live call, and its details are what a manual check reads.
+      expect(liveBefore.bookingReferenceCiphertext).not.toBeNull();
+      expect(live).toEqual(liveBefore);
+    },
+  },
+  {
+    name: 'strips a resolved claim’s lodging call rows field by field and keeps a live claim’s',
+    check: async () => {
+      const db = testApp.services.db;
+      const guest = await makeUser(testApp);
+      const lodging = await makeLodging(testApp, { cityId: CITY });
+      const resolved = await makeClaim(testApp, guest, lodging, { status: 'verified' });
+      const calling = await makeClaim(testApp, guest, lodging, { status: 'calling' });
+      const deleted = await makeClaim(testApp, guest, lodging, { status: 'rejected' });
+      const outcomeAt = testApp.time.now();
+
+      const taskOf = (lodgingClaimId: string | null) =>
+        makeCallTask(testApp, {
+          kind: 'lodging_stay_verification',
+          lodgingId: lodging.id,
+          ...(lodgingClaimId === null ? {} : { lodgingClaimId }),
+          status: 'completed',
+          attempts: 1,
+          outcomeAt,
+        });
+      const stripped = await taskOf(resolved.id);
+      const live = await taskOf(calling.id);
+      const orphaned = await taskOf(deleted.id);
+      // Deleting the claim is what nulls the task's link, through the foreign key's own SET NULL.
+      await db.lodgingClaim.delete({ where: { id: deleted.id } });
+      await db.callTask.updateMany({
+        where: { id: { in: [stripped.id, live.id, orphaned.id] } },
+        data: { resolvedBy: 'agent' },
+      });
+
+      const strippedAttempt = await makeCallAttempt(testApp, stripped, {
+        ...LODGING_CALL_CONTENT,
+        twilioCallSid: STRIPPED_CALL_SID,
+      });
+      const liveAttempt = await makeCallAttempt(testApp, live, {
+        ...LODGING_CALL_CONTENT,
+        twilioCallSid: LIVE_CALL_SID,
+      });
+      const orphanedAttempt = await makeCallAttempt(testApp, orphaned, LODGING_CALL_CONTENT);
+      await db.voiceCallbackEvent.createMany({
+        data: [
+          {
+            callAttemptId: strippedAttempt.id,
+            callSid: STRIPPED_CALL_SID,
+            callStatus: 'answered',
+            sequenceNumber: 1,
+            receivedAt: outcomeAt,
+          },
+          {
+            callAttemptId: strippedAttempt.id,
+            callSid: STRIPPED_CALL_SID,
+            callStatus: 'completed',
+            sequenceNumber: 2,
+            receivedAt: outcomeAt,
+          },
+          {
+            callAttemptId: liveAttempt.id,
+            callSid: LIVE_CALL_SID,
+            callStatus: 'completed',
+            sequenceNumber: 1,
+            receivedAt: outcomeAt,
+          },
+        ],
+      });
+
+      const read = async () => ({
+        strippedTask: await db.callTask.findUniqueOrThrow({ where: { id: stripped.id } }),
+        liveTask: await db.callTask.findUniqueOrThrow({ where: { id: live.id } }),
+        orphanedTask: await db.callTask.findUniqueOrThrow({ where: { id: orphaned.id } }),
+        strippedAttempt: await db.callAttempt.findUniqueOrThrow({
+          where: { id: strippedAttempt.id },
+        }),
+        liveAttempt: await db.callAttempt.findUniqueOrThrow({ where: { id: liveAttempt.id } }),
+        orphanedAttempt: await db.callAttempt.findUniqueOrThrow({
+          where: { id: orphanedAttempt.id },
+        }),
+        callbacks: await db.voiceCallbackEvent.findMany({ orderBy: { sequenceNumber: 'asc' } }),
+      });
+      const before = await read();
+      expect(before.callbacks).toHaveLength(3);
+      const after = await hourlyPass(read, {
+        lodgingCallCallbacksDeleted: 2,
+        lodgingCallAttemptsStripped: 2,
+        lodgingCallTasksStripped: 2,
+      });
+
+      // The task keeps its identity, its target, its status, its attempt count, its outcome stamp,
+      // its blocked reason and its resolver, and loses only its claim link and gains the run's stamp.
+      expect(after.strippedTask).toEqual({
+        ...before.strippedTask,
+        lodgingClaimId: null,
+        updatedAt: outcomeAt,
+      });
+      // The attempt keeps its identity and its outcome and loses every field that described the guest
+      // or the conversation (AAP 0.12.2).
+      expect(after.strippedAttempt).toEqual({ ...before.strippedAttempt, ...STRIPPED_ATTEMPT });
+      // A callback that arrives later matches no row, so it is acknowledged without effect.
+      expect(after.callbacks.map((callback) => callback.callSid)).toEqual([LIVE_CALL_SID]);
+      // A claim whose call may still be running is left in every field.
+      expect(after.liveTask).toEqual(before.liveTask);
+      expect(after.liveAttempt).toEqual(before.liveAttempt);
+      // A task whose claim row is gone is stripped by the same rule, with its link already null.
+      expect(after.orphanedTask).toEqual({
+        ...before.orphanedTask,
+        lodgingClaimId: null,
+        updatedAt: outcomeAt,
+      });
+      expect(after.orphanedAttempt).toEqual({
+        ...before.orphanedAttempt,
+        ...STRIPPED_ATTEMPT,
+      });
+    },
+  },
+  {
+    name: 'deletes a menu call’s transcript at thirty days and keeps one inside the window',
+    check: async () => {
+      const db = testApp.services.db;
+      const place = await makePlace(testApp, { cityId: CITY, category: 'restaurant' });
+      const task = await makeCallTask(testApp, {
+        kind: 'menu_prices',
+        placeId: place.id,
+        status: 'completed',
+        attempts: 1,
+        outcomeAt: testApp.time.now(),
+      });
+      const due = await makeCallAttempt(testApp, task, {
+        outcome: 'completed',
+        confidence: 'high',
+        summary: 'Fixture summary',
+        extractedFields: { slots: 3 },
+      });
+      const inside = await makeCallAttempt(testApp, task, { outcome: 'completed' });
+      const undated = await makeCallAttempt(testApp, task, { outcome: 'completed' });
+
+      await db.callAttempt.update({
+        where: { id: due.id },
+        data: { transcript: 'Fixture transcript', transcriptDeleteAt: minutesFromNow(-1) },
+      });
+      await db.callAttempt.update({
+        where: { id: inside.id },
+        data: { transcript: 'Fixture transcript', transcriptDeleteAt: minutesFromNow(60) },
+      });
+      const dated = await makeCallAttempt(testApp, task, { outcome: 'completed' });
+      // A transcript whose deadline was never written goes on the data's own age instead, with the
+      // rows a minute either side of the thirty-day window.
+      await db.callAttempt.update({
+        where: { id: undated.id },
+        data: { transcript: 'Fixture transcript', startedAt: atAge(-30, -1) },
+      });
+      await db.callAttempt.update({
+        where: { id: dated.id },
+        data: { transcript: 'Fixture transcript', startedAt: atAge(-30, 1) },
+      });
+
+      const read = async () => ({
+        due: await db.callAttempt.findUniqueOrThrow({ where: { id: due.id } }),
+        inside: await db.callAttempt.findUniqueOrThrow({ where: { id: inside.id } }),
+        undated: await db.callAttempt.findUniqueOrThrow({ where: { id: undated.id } }),
+        dated: await db.callAttempt.findUniqueOrThrow({ where: { id: dated.id } }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { menuTranscriptsDeleted: 2 });
+
+      // Only the transcript goes: the call's own outcome, summary and extracted fields stand.
+      expect(after.due).toEqual({ ...before.due, transcript: null, transcriptDeleteAt: null });
+      expect(after.inside).toEqual(before.inside);
+      expect(after.undated).toEqual({
+        ...before.undated,
+        transcript: null,
+        transcriptDeleteAt: null,
+      });
+      expect(after.dated).toEqual(before.dated);
+    },
+  },
+  {
+    name: 'disarms an expired magic link, purges the row a day later, and keeps a fresh one',
+    check: async () => {
+      const db = testApp.services.db;
+      const tokenOf = (label: string, expiresAt: Date) =>
+        db.magicLinkToken.create({
+          data: {
+            tokenHash: `fixture-token-hash-${label}`,
+            emailCiphertext: 'fixture-email-ciphertext',
+            emailLookupHash: `fixture-email-lookup-${label}`,
+            deliveryTokenCiphertext: 'fixture-delivery-token-ciphertext',
+            expiresAt,
+          },
+          select: { id: true },
+        });
+      const expired = await tokenOf('expired', minutesFromNow(-1));
+      const beyondGrace = await tokenOf('beyond-grace', minutesFromNow(-DAY_MINUTES - 1));
+      const withinGrace = await tokenOf('within-grace', minutesFromNow(-DAY_MINUTES + 1));
+      const fresh = await tokenOf('fresh', minutesFromNow(5));
+
+      const read = async () => ({
+        expired: await db.magicLinkToken.findUniqueOrThrow({ where: { id: expired.id } }),
+        beyondGrace: await db.magicLinkToken.findUnique({ where: { id: beyondGrace.id } }),
+        withinGrace: await db.magicLinkToken.findUniqueOrThrow({ where: { id: withinGrace.id } }),
+        fresh: await db.magicLinkToken.findUniqueOrThrow({ where: { id: fresh.id } }),
+      });
+      const before = await read();
+      // Three of the four are disarmed: the token past its grace loses its ciphertext in this same
+      // pass, before the row itself is purged.
+      const after = await hourlyPass(read, {
+        magicLinkTokensDisarmed: 3,
+        magicLinkTokensPurged: 1,
+      });
+
+      // An expired token loses its ciphertext, and the row goes only once the grace has run out.
+      expect(before.expired.deliveryTokenCiphertext).not.toBeNull();
+      expect(after.expired).toEqual({
+        ...before.expired,
+        deliveryTokenCiphertext: null,
+      });
+      expect(after.withinGrace).toEqual({
+        ...before.withinGrace,
+        deliveryTokenCiphertext: null,
+      });
+      expect(after.beyondGrace).toBeNull();
+      expect(after.fresh).toEqual(before.fresh);
+    },
+  },
+  {
+    name: 'purges a session a day after it expired and keeps one inside the grace',
+    check: async () => {
+      const db = testApp.services.db;
+      const guest = await makeUser(testApp);
+      const sessionOf = (label: string, expiresAt: Date) =>
+        db.session.create({
+          data: {
+            userId: guest.id,
+            refreshTokenHash: `fixture-refresh-hash-${label}`,
+            expiresAt,
+          },
+          select: { id: true },
+        });
+      const beyondGrace = await sessionOf('beyond-grace', minutesFromNow(-DAY_MINUTES - 1));
+      const withinGrace = await sessionOf('within-grace', minutesFromNow(-DAY_MINUTES + 1));
+
+      const read = async () => ({
+        beyondGrace: await db.session.findUnique({ where: { id: beyondGrace.id } }),
+        withinGrace: await db.session.findUniqueOrThrow({ where: { id: withinGrace.id } }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { sessionsPurged: 1 });
+
+      expect(before.beyondGrace).not.toBeNull();
+      expect(after.beyondGrace).toBeNull();
+      expect(after.withinGrace).toEqual(before.withinGrace);
+    },
+  },
+  {
+    name: 'purges a menu call and its attempt at 365 days and keeps one a day inside',
+    check: async () => {
+      const db = testApp.services.db;
+      const place = await makePlace(testApp, { cityId: CITY, category: 'cafe' });
+      const taskOf = (outcomeAt: Date) =>
+        makeCallTask(testApp, {
+          kind: 'menu_prices',
+          placeId: place.id,
+          status: 'completed',
+          attempts: 1,
+          outcomeAt,
+        });
+      const stale = await taskOf(atAge(-365, -1));
+      const current = await taskOf(atAge(-365, 1));
+      const staleAttempt = await makeCallAttempt(testApp, stale, { outcome: 'completed' });
+      const currentAttempt = await makeCallAttempt(testApp, current, { outcome: 'completed' });
+      // Every instant on the row is set to the same boundary, so the rule's own COALESCE reads any of
+      // them and still ages the call by the outcome that ended it.
+      const ageAttempt = (id: string, at: Date) =>
+        db.callAttempt.update({ where: { id }, data: { startedAt: at, endedAt: at } });
+      await ageAttempt(staleAttempt.id, atAge(-365, -1));
+      await ageAttempt(currentAttempt.id, atAge(-365, 1));
+
+      const read = async () => ({
+        staleTask: await db.callTask.findUnique({ where: { id: stale.id } }),
+        staleAttempt: await db.callAttempt.findUnique({ where: { id: staleAttempt.id } }),
+        currentTask: await db.callTask.findUniqueOrThrow({ where: { id: current.id } }),
+        currentAttempt: await db.callAttempt.findUniqueOrThrow({
+          where: { id: currentAttempt.id },
+        }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { callAttemptsPurged: 1, callTasksPurged: 1 });
+
+      expect(before.staleTask).not.toBeNull();
+      expect(after.staleTask).toBeNull();
+      expect(after.staleAttempt).toBeNull();
+      expect(after.currentTask).toEqual(before.currentTask);
+      expect(after.currentAttempt).toEqual(before.currentAttempt);
+    },
+  },
+  {
+    name: 'purges an already-stripped lodging call at 365 days and keeps one a day inside',
+    check: async () => {
+      const db = testApp.services.db;
+      const lodging = await makeLodging(testApp, { cityId: CITY });
+      const taskOf = (outcomeAt: Date) =>
+        makeCallTask(testApp, {
+          kind: 'lodging_stay_verification',
+          lodgingId: lodging.id,
+          status: 'completed',
+          attempts: 1,
+          outcomeAt,
+        });
+      const stale = await taskOf(atAge(-365, -1));
+      const current = await taskOf(atAge(-365, 1));
+      const staleAttempt = await makeCallAttempt(testApp, stale, { outcome: 'completed' });
+      const currentAttempt = await makeCallAttempt(testApp, current, { outcome: 'completed' });
+      // The strip's own shape, which is what the age rule selects on: no provider id, no duration and
+      // every instant on the boundary. A row that still held a sid would be stripped by the hourly
+      // rule first, which is what makes this case about the age rule alone.
+      const strip = (id: string, at: Date) =>
+        db.callAttempt.update({
+          where: { id },
+          data: { twilioCallSid: null, durationSec: null, startedAt: at, endedAt: at },
+        });
+      await strip(staleAttempt.id, atAge(-365, -1));
+      await strip(currentAttempt.id, atAge(-365, 1));
+
+      const read = async () => ({
+        staleTask: await db.callTask.findUnique({ where: { id: stale.id } }),
+        staleAttempt: await db.callAttempt.findUnique({ where: { id: staleAttempt.id } }),
+        currentTask: await db.callTask.findUniqueOrThrow({ where: { id: current.id } }),
+        currentAttempt: await db.callAttempt.findUniqueOrThrow({
+          where: { id: currentAttempt.id },
+        }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { callAttemptsPurged: 1, callTasksPurged: 1 });
+
+      expect(before.staleTask).not.toBeNull();
+      expect(after.staleTask).toBeNull();
+      expect(after.staleAttempt).toBeNull();
+      expect(after.currentTask).toEqual(before.currentTask);
+      expect(after.currentAttempt).toEqual(before.currentAttempt);
+    },
+  },
+  {
+    name: 'clears report and resolved-dispute reason text at 180 days and keeps an open dispute’s',
+    check: async () => {
+      const db = testApp.services.db;
+      const reporter = await makeUser(testApp);
+      const reported = await makeUser(testApp);
+      const venue = await makeVenue(testApp, { cityId: CITY });
+      const reportOf = (label: string, createdAt: Date) =>
+        db.report.create({
+          data: {
+            reporterId: reporter.id,
+            reportedId: reported.id,
+            reason: `Fixture report ${label}`,
+            createdAt,
+          },
+          select: { id: true },
+        });
+      const due = await reportOf('due', atAge(-180, -1));
+      const inside = await reportOf('inside', atAge(-180, 1));
+
+      const older = await makeMeetup(testApp, {
+        status: 'completed',
+        initiator: reporter,
+        recipient: reported,
+        venue,
+      });
+      const newer = await makeMeetup(testApp, {
+        status: 'completed',
+        initiator: reporter,
+        recipient: reported,
+        venue,
+      });
+      const resolvedDue = await makeDispute(testApp, older, reporter, {
+        status: 'resolved',
+        outcome: 'settle_by_checkins',
+      });
+      const resolvedInside = await makeDispute(testApp, newer, reporter, {
+        status: 'resolved',
+        outcome: 'settle_by_checkins',
+      });
+      const open = await makeDispute(testApp, older, reporter, { openedAt: daysFromNow(-200) });
+      // A dispute's clock runs from its resolution, so both resolved rows date their text from there.
+      await db.dispute.update({
+        where: { id: resolvedDue.id },
+        data: { resolvedAt: atAge(-180, -1) },
+      });
+      await db.dispute.update({
+        where: { id: resolvedInside.id },
+        data: { resolvedAt: atAge(-180, 1) },
+      });
+
+      const read = async () => ({
+        reportDue: await db.report.findUniqueOrThrow({ where: { id: due.id } }),
+        reportInside: await db.report.findUniqueOrThrow({ where: { id: inside.id } }),
+        disputeDue: await db.dispute.findUniqueOrThrow({ where: { id: resolvedDue.id } }),
+        disputeInside: await db.dispute.findUniqueOrThrow({ where: { id: resolvedInside.id } }),
+        disputeOpen: await db.dispute.findUniqueOrThrow({ where: { id: open.id } }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { reportReasonsCleared: 1, disputeReasonsCleared: 1 });
+
+      // The row stays and only its text goes. Both columns are NOT NULL, so a cleared reason is the
+      // empty string rather than null.
+      expect(before.reportDue.reason).toBe('Fixture report due');
+      expect(after.reportDue).toEqual({ ...before.reportDue, reason: '' });
+      expect(after.reportInside).toEqual(before.reportInside);
+      expect(after.disputeDue).toEqual({ ...before.disputeDue, reason: '' });
+      expect(after.disputeInside).toEqual(before.disputeInside);
+      // An open dispute keeps its text whatever its age: the operator resolving it reads it.
+      expect(after.disputeOpen).toEqual(before.disputeOpen);
+    },
+  },
+  {
+    name: 'purges the booking-detail access log at 365 days and keeps one a day inside',
+    check: async () => {
+      const db = testApp.services.db;
+      const operator = await makeUser(testApp, { role: 'operator' });
+      const guest = await makeUser(testApp);
+      const lodging = await makeLodging(testApp, { cityId: CITY });
+      const claim = await makeClaim(testApp, guest, lodging, { status: 'pending_call' });
+      const logOf = (label: string, accessedAt: Date) =>
+        db.operatorAccessLog.create({
+          data: {
+            operatorId: operator.id,
+            lodgingClaimId: claim.id,
+            purpose: 'manual_verification_call',
+            accessedAt,
+          },
+          select: { id: true },
+        });
+      const stale = await logOf('stale', atAge(-365, -1));
+      const current = await logOf('current', atAge(-365, 1));
+
+      const read = async () => ({
+        stale: await db.operatorAccessLog.findUnique({ where: { id: stale.id } }),
+        current: await db.operatorAccessLog.findUniqueOrThrow({ where: { id: current.id } }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { operatorAccessLogsPurged: 1 });
+
+      expect(before.stale).not.toBeNull();
+      expect(after.stale).toBeNull();
+      expect(after.current).toEqual(before.current);
+    },
+  },
+  {
+    name: 'purges a lodging activity fact at 120 days and keeps one inside the leaderboard window',
+    check: async () => {
+      const db = testApp.services.db;
+      const lodging = await makeLodging(testApp, { cityId: CITY });
+      const left = await makeUser(testApp);
+      const right = await makeUser(testApp);
+      // Two facts for one pair: the unique key is the lodging with the meetup, so both stand.
+      await makeActivityFacts(testApp, lodging, [
+        { pair: [left, right], completedAt: atAge(-120, -1) },
+        { pair: [left, right], completedAt: atAge(-120, 1) },
+      ]);
+
+      const read = async () => ({
+        stale: await db.lodgingActivityFact.findFirst({
+          where: { lodgingId: lodging.id, completedAt: atAge(-120, -1) },
+        }),
+        current: await db.lodgingActivityFact.findFirstOrThrow({
+          where: { lodgingId: lodging.id, completedAt: atAge(-120, 1) },
+        }),
+      });
+      const before = await read();
+      const after = await hourlyPass(read, { lodgingActivityFactsPurged: 1 });
+
+      expect(before.stale).not.toBeNull();
+      expect(after.stale).toBeNull();
+      expect(after.current).toEqual(before.current);
+    },
+  },
+];
+
+describe('the hourly retention step (AAP 0.5.2)', () => {
+  it.each(rows(HOURLY_CASES))('$name', async (hourlyCase) => {
+    await hourlyCase.check();
+  });
+});
+
+/* The queue processor (AAP 0.5.6) */
+
+describe('the data-expiry queue processor (AAP 0.5.6)', () => {
   it('refuses a job name the queue does not accept, and data that contradicts its name', async () => {
-    await expect(process({ name: 'fortnightly', data: { step: 'hourly' } }, ctx)).rejects.toThrow(
-      /data-expiry\/fortnightly/,
-    );
-    await expect(process({ name: 'hourly', data: { step: 'daily' } }, ctx)).rejects.toThrow(
+    await expect(
+      runDataExpiry({ name: 'fortnightly', data: { step: 'hourly' } }, ctx),
+    ).rejects.toThrow(/data-expiry\/fortnightly/);
+    await expect(runDataExpiry({ name: 'hourly', data: { step: 'daily' } }, ctx)).rejects.toThrow(
       /data-expiry\/hourly/,
     );
   });
 
-  it('runs the hourly step as the `hourly` job: details erased, call rows stripped, windows applied', async () => {
-    const counts = await process({ name: 'hourly', data: { step: 'hourly' } }, ctx);
-
-    expect(counts).toEqual({
-      bookingDetailsErased: 1,
-      lodgingCallCallbacksDeleted: 2,
-      lodgingCallAttemptsStripped: 1,
-      lodgingCallTasksStripped: 1,
-      menuTranscriptsDeleted: 3,
-      magicLinkTokensDisarmed: 2,
-      magicLinkTokensPurged: 1,
-      sessionsPurged: 1,
-      callAttemptsPurged: 1,
-      callTasksPurged: 1,
-      reportReasonsCleared: 1,
-      disputeReasonsCleared: 2,
-      operatorAccessLogsPurged: 1,
-      lodgingActivityFactsPurged: 1,
-    });
-    expect(logs.at(-1)).toMatchObject({ event: 'data_expiry', step: 'hourly', counts });
-
-    // Rule 1: the resolved claim lost its booking details and gained the erasure stamp; the claim
-    // whose call may still be running lost nothing.
-    const [terminalClaim] = await db.$queryRaw<
-      { booking_name: string | null; booking_reference: string | null; erased_at: Date | null }[]
-    >`SELECT "booking_name_ciphertext" AS "booking_name",
-             "booking_reference_ciphertext" AS "booking_reference",
-             "details_erased_at" AS "erased_at"
-        FROM "lodging_claim" WHERE "id" = ${CLAIM_TERMINAL}::uuid`;
-    expect(terminalClaim?.booking_name).toBeNull();
-    expect(terminalClaim?.booking_reference).toBeNull();
-    expect(terminalClaim?.erased_at?.toISOString()).toBe(START.toISOString());
-
-    const [liveClaim] = await db.$queryRaw<
-      { booking_name: string | null; erased_at: Date | null }[]
-    >`SELECT "booking_name_ciphertext" AS "booking_name", "details_erased_at" AS "erased_at"
-        FROM "lodging_claim" WHERE "id" = ${CLAIM_LIVE}::uuid`;
-    expect(liveClaim?.booking_name).toBe('live-name-ciphertext');
-    expect(liveClaim?.erased_at).toBeNull();
-
-    // Rule 2: the attempt keeps its identity and loses everything about the call; the task keeps its
-    // own shape and loses the claim link; the callbacks are gone, so a later Twilio callback matches
-    // nothing (AAP 0.5.2, 0.12.2).
-    const [attempt] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_LODGING_OLD}::uuid`;
-    expect(attempt).toMatchObject({
-      id: ATTEMPT_LODGING_OLD,
-      call_task_id: TASK_LODGING_OLD,
-      state: 'ended',
-      superseded: false,
-      outcome: 'completed',
-      twilio_final_status: 'completed',
-      twilio_call_sid: null,
-      summary: null,
-      extracted_fields: null,
-      confidence: null,
-      duration_sec: null,
-      transcript: null,
-      transcript_delete_at: null,
-      llm_reserved_micros: 0n,
-    });
-    expect((attempt?.['started_at'] as Date).toISOString()).toBe(at(-1).toISOString());
-    expect((attempt?.['ended_at'] as Date).toISOString()).toBe(at(-1).toISOString());
-
-    const [task] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_task" WHERE "id" = ${TASK_LODGING_OLD}::uuid`;
-    expect(task).toMatchObject({
-      id: TASK_LODGING_OLD,
-      kind: 'lodging_stay_verification',
-      lodging_id: LODGING,
-      lodging_claim_id: null,
+  it('dispatches each step by name and leaves every financial record to the daily one', async () => {
+    const db = testApp.services.db;
+    const venue = await makeVenue(testApp, { cityId: CITY });
+    const initiator = await makeUser(testApp);
+    const recipient = await makeUser(testApp);
+    const meetup = await makeMeetup(testApp, {
       status: 'completed',
-      attempts: 1,
-      vendor_failures: 0,
-      resolved_by: null,
-    });
-    expect((task?.['outcome_at'] as Date).toISOString()).toBe(at(-1).toISOString());
-
-    expect(await ids`SELECT "id"::text AS "id" FROM "voice_callback_event"`).toEqual([]);
-
-    const [liveAttempt] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_LODGING_LIVE}::uuid`;
-    expect(liveAttempt).toMatchObject({
-      twilio_call_sid: 'CA-live-0001',
-      summary: 'in progress',
-      llm_reserved_micros: 1000n,
+      initiator,
+      recipient,
+      venue,
     });
 
-    const [liveTask] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_task" WHERE "id" = ${TASK_LODGING_LIVE}::uuid`;
-    expect(liveTask).toMatchObject({ lodging_claim_id: CLAIM_LIVE, status: 'in_progress' });
+    // Finalised long before the cut-off, so only the daily step may take it.
+    testApp.time.advance({ days: env.FINANCIAL_RETENTION_DAYS + 1 });
 
-    // Rule 3, and rule 6 deleting the aged attempt whose transcript it had just cleared. The undated
-    // attempt is deleted too, on the data's own age rather than on a date nobody recorded.
-    const [clearedTranscript] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_MENU_RECENT}::uuid`;
-    expect(clearedTranscript).toMatchObject({ transcript: null, transcript_delete_at: null });
-
-    const [undatedTranscript] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_MENU_UNDATED}::uuid`;
-    expect(undatedTranscript).toMatchObject({ transcript: null, transcript_delete_at: null });
-
-    const [pendingTranscript] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_MENU_LATER}::uuid`;
-    expect(pendingTranscript).toMatchObject({ transcript: 'later transcript' });
-    expect((pendingTranscript?.['transcript_delete_at'] as Date).toISOString()).toBe(
-      at(1).toISOString(),
+    const hourly = await runDataExpiry(
+      { name: JOB[QUEUE.dataExpiry].hourly, data: { step: 'hourly' } },
+      ctx,
     );
+    // The hourly step carries no financial rule at all: none of the daily step's keys are in it.
+    expect(hourly).not.toHaveProperty('meetupsPurged');
+    expect(await db.meetup.findUnique({ where: { id: meetup.id } })).not.toBeNull();
+    expect(await db.deposit.count({ where: { meetupId: meetup.id } })).toBe(2);
 
-    expect(
-      await ids`SELECT "id"::text AS "id" FROM "call_attempt" WHERE "call_task_id" = ${TASK_MENU_OLD}::uuid`,
-    ).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "call_task" ORDER BY "id"`).toEqual([
-      TASK_LODGING_OLD,
-      TASK_LODGING_LIVE,
-      TASK_MENU_RECENT,
-      TASK_MENU_REVIEW,
-    ]);
-
-    // Rule 4 and rule 5: the purged token is gone in this run, the one inside the grace period is
-    // disarmed but kept, a token the mailer already cleared and one that has not expired are
-    // untouched, and the expired session's row is gone.
-    expect(
-      await ids`SELECT "id"::text AS "id" FROM "magic_link_token" WHERE "id" = ${MAGIC_PURGED}::uuid`,
-    ).toEqual([]);
-    const tokenRows = await db.$queryRaw<
-      { id: string; delivery_token_ciphertext: string | null }[]
-    >`SELECT "id"::text AS "id", "delivery_token_ciphertext" AS "delivery_token_ciphertext"
-        FROM "magic_link_token" ORDER BY "id"`;
-    expect(tokenRows).toEqual([
-      { id: MAGIC_DISARMED, delivery_token_ciphertext: null },
-      { id: MAGIC_SENT, delivery_token_ciphertext: null },
-      { id: MAGIC_LIVE, delivery_token_ciphertext: 'delivery-live' },
-    ]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "session" ORDER BY "id"`).toEqual([
-      SESSION_KEPT,
-    ]);
-
-    // Rule 7: an old report and a resolved dispute lose their text, a recent one and an open one keep
-    // theirs, and the dispute the daily step is about to delete has already been emptied.
-    const reasonRows = await db.$queryRaw<{ id: string; reason: string }[]>`
-      SELECT "id"::text AS "id", "reason" AS "reason" FROM "report" ORDER BY "id"`;
-    expect(reasonRows).toEqual([
-      { id: REPORT_OLD, reason: '' },
-      { id: REPORT_RECENT, reason: 'recent report' },
-      { id: REPORT_LINKED, reason: 'linked report' },
-    ]);
-    const disputeRows = await db.$queryRaw<{ id: string; reason: string }[]>`
-      SELECT "id"::text AS "id", "reason" AS "reason" FROM "dispute" ORDER BY "id"`;
-    expect(disputeRows).toEqual([
-      { id: DISPUTE_OLD, reason: '' },
-      { id: DISPUTE_STALE, reason: '' },
-      { id: DISPUTE_OPEN, reason: 'open dispute' },
-    ]);
-
-    // Rules 8 and 9.
-    expect(await ids`SELECT "id"::text AS "id" FROM "operator_access_log" ORDER BY "id"`).toEqual([
-      ACCESS_RECENT,
-    ]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "lodging_activity_fact" ORDER BY "id"`).toEqual(
-      [FACT_FOR_OLD_MEETUP, FACT_RECENT],
+    const daily = await runDataExpiry(
+      { name: JOB[QUEUE.dataExpiry].daily, data: { step: 'daily' } },
+      ctx,
     );
+    expect(daily.meetupsPurged).toBe(1);
+    expect(await db.meetup.findUnique({ where: { id: meetup.id } })).toBeNull();
   });
+});
 
-  it('changes nothing when the hourly step runs a second time at the same instant', async () => {
-    const counts = await runHourlyExpiry(ctx);
+/* The daily financial purge (AAP 0.5.2, criterion 10) */
 
-    expect(Object.values(counts).every((value) => value === 0)).toBe(true);
-    const [attempt] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_LODGING_OLD}::uuid`;
-    expect(attempt).toMatchObject({ call_task_id: TASK_LODGING_OLD, twilio_call_sid: null });
-  });
+describe('the daily financial purge (AAP 0.5.2)', () => {
+  it('purges what is past the retention period and leaves a live account’s counters unchanged', async () => {
+    const db = testApp.services.db;
+    const venue = await makeVenue(testApp, { cityId: CITY });
+    const ana = await makeUser(testApp);
+    const clara = await makeUser(testApp);
+    const bea = await makeUser(testApp, { deleted: true });
+    const duarte = await makeUser(testApp, { deleted: true });
+    const startedAt = testApp.time.now();
 
-  it('follows the injected clock past a transcript’s date and a grace period’s end', async () => {
-    clock.advance(2 * DAY_MS);
-    const counts = await runHourlyExpiry(ctx);
-
-    expect(counts).toEqual({
-      bookingDetailsErased: 0,
-      lodgingCallCallbacksDeleted: 0,
-      lodgingCallAttemptsStripped: 0,
-      lodgingCallTasksStripped: 0,
-      menuTranscriptsDeleted: 1,
-      magicLinkTokensDisarmed: 0,
-      magicLinkTokensPurged: 2,
-      sessionsPurged: 0,
-      callAttemptsPurged: 0,
-      callTasksPurged: 0,
-      reportReasonsCleared: 0,
-      disputeReasonsCleared: 0,
-      operatorAccessLogsPurged: 0,
-      lodgingActivityFactsPurged: 0,
+    // At the start instant: a completed meetup whose whole family the purge takes, an unattended one,
+    // and one Stripe event. `makeMeetup` stamps each meetup's `finalAt` from the clock, which is the
+    // clock the daily step cuts on.
+    const first = await makeMeetup(testApp, {
+      status: 'completed',
+      initiator: ana,
+      recipient: bea,
+      venue,
+    });
+    const unattended = await makeMeetup(testApp, {
+      status: 'unattended',
+      initiator: clara,
+      recipient: duarte,
+      venue,
+    });
+    // No fixture status writes a witness event and a credit entry on one meetup, and the purge's
+    // credit delete needs a row to remove.
+    await db.tableCreditEntry.create({
+      data: { userId: ana.id, meetupId: first.id, kind: 'grant', amountCents: 1_000 },
+    });
+    const message = await db.message.create({
+      data: { meetupId: first.id, senderId: ana.id, body: 'Fixture message' },
+      select: { id: true },
+    });
+    const dispute = await db.dispute.create({
+      data: {
+        meetupId: first.id,
+        filedById: ana.id,
+        kind: 'other',
+        reason: 'Fixture dispute',
+        status: 'resolved',
+        outcome: 'settle_by_checkins',
+        openedAt: startedAt,
+        deadlineAt: new Date(startedAt.getTime() + 5 * DAY_MS),
+        resolvedAt: startedAt,
+      },
+      select: { id: true },
+    });
+    const report = await db.report.create({
+      data: {
+        reporterId: ana.id,
+        reportedId: bea.id,
+        reason: 'Fixture report',
+        meetupId: first.id,
+        createdAt: startedAt,
+      },
+      select: { id: true },
+    });
+    // A finished account-deletion operation, which the same cut-off takes: while it exists its
+    // `user_id` keeps the erased account's tombstone alive.
+    await db.paymentOperation.create({
+      data: {
+        userId: duarte.id,
+        kind: 'delete_customer',
+        seq: 1,
+        stripeCustomerId: 'cus_fixture_erased',
+        idempotencyKey: 'fixture-delete-customer',
+        status: 'succeeded',
+        completedAt: startedAt,
+      },
+    });
+    const oldEvent = await db.stripeEvent.create({
+      data: { id: 'evt_fixture_older', type: 'payment_intent.succeeded', receivedAt: startedAt },
+      select: { id: true },
     });
 
-    const [later] = await db.$queryRaw<Record<string, unknown>[]>`
-      SELECT * FROM "call_attempt" WHERE "id" = ${ATTEMPT_MENU_LATER}::uuid`;
-    expect(later).toMatchObject({ transcript: null, transcript_delete_at: null });
-    expect(
-      await ids`SELECT "id"::text AS "id" FROM "magic_link_token" WHERE "id" = ${MAGIC_DISARMED}::uuid`,
-    ).toEqual([]);
-  });
+    // Two days later: a meetup that is still inside the period when the purge runs, and a second event.
+    testApp.time.at(new Date(startedAt.getTime() + 2 * DAY_MS));
+    const second = await makeMeetup(testApp, {
+      status: 'completed',
+      initiator: ana,
+      recipient: clara,
+      venue,
+    });
+    const newEvent = await db.stripeEvent.create({
+      data: {
+        id: 'evt_fixture_newer',
+        type: 'payment_intent.succeeded',
+        receivedAt: testApp.time.now(),
+      },
+      select: { id: true },
+    });
 
-  it('runs the daily step as the `daily` job: the financial purge, the events and the tombstones', async () => {
-    const counts = await process({ name: 'daily', data: { step: 'daily' } }, ctx);
+    // Onto the day the period has run: the first and third meetups are past the cut-off, the second is
+    // one day inside it. A session minted at the start instant is long expired by now and the auth
+    // plugin refuses one, so the two live accounts are given a session for the instant being read at.
+    testApp.time.at(new Date(startedAt.getTime() + (env.FINANCIAL_RETENTION_DAYS + 1) * DAY_MS));
+    await db.session.updateMany({
+      where: { userId: { in: [ana.id, clara.id] } },
+      data: { expiresAt: daysFromNow(1) },
+    });
 
-    expect(counts).toEqual({
-      meetupsPurged: 1,
-      depositOperationsPurged: 1,
-      depositsPurged: 1,
-      settlementsPurged: 1,
+    const reputation = async (user: UserFixture) => {
+      const answer = await callRoute(testApp.app, {
+        method: 'GET',
+        url: '/v1/me',
+        as: await testApp.tokenFor(user),
+      });
+      expect(answer.status).toBe(200);
+      return MeDto.parse(answer.json()).reputation;
+    };
+    const countersBefore = { ana: await reputation(ana), clara: await reputation(clara) };
+
+    const counts = await runDailyExpiry(ctx);
+
+    // Every rule of the daily step, counted.
+    expect(counts).toMatchObject({
+      meetupsPurged: 2,
+      depositsPurged: 4,
+      depositOperationsPurged: 8,
+      settlementsPurged: 2,
       creditEntriesPurged: 1,
-      checkInsPurged: 1,
+      checkInsPurged: 2,
       messagesPurged: 1,
       disputesPurged: 1,
       witnessEventsUnlinked: 2,
       reportsUnlinked: 1,
-      activityFactsPurgedForMeetups: 1,
       customerOperationsPurged: 1,
       stripeEventsPurged: 1,
-      tombstoneWitnessEventsPurged: 2,
+      tombstoneWitnessEventsPurged: 1,
       pairHistoryRowsPurged: 1,
       tombstonesPurged: 1,
     });
-    expect(logs.at(-1)).toMatchObject({ event: 'data_expiry', step: 'daily', counts });
 
-    // The meetup past the retention period and its whole family are gone; the recent one is not.
-    expect(await ids`SELECT "id"::text AS "id" FROM "meetup" ORDER BY "id"`).toEqual([
-      MEETUP_RECENT,
-    ]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "deposit"`).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "payment_operation" ORDER BY "id"`).toEqual([
-      CUSTOMER_RECENT,
-    ]);
-    expect(await ids`SELECT "meetup_id"::text AS "id" FROM "meetup_settlement"`).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "table_credit_entry"`).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "check_in"`).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "message"`).toEqual([]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "dispute" ORDER BY "id"`).toEqual([
-      DISPUTE_STALE,
-      DISPUTE_OPEN,
-    ]);
+    // The meetup past the period and its whole family are gone; the recent one keeps everything.
+    expect(await db.meetup.findUnique({ where: { id: first.id } })).toBeNull();
+    expect(await db.meetup.findUnique({ where: { id: unattended.id } })).toBeNull();
+    expect(await db.deposit.count({ where: { meetupId: first.id } })).toBe(0);
+    expect(await db.deposit.count({ where: { meetupId: unattended.id } })).toBe(0);
+    expect(await db.tableCreditEntry.count({ where: { meetupId: first.id } })).toBe(0);
+    expect(await db.checkIn.count({ where: { meetupId: first.id } })).toBe(0);
+    expect(await db.message.findUnique({ where: { id: message.id } })).toBeNull();
+    expect(await db.dispute.findUnique({ where: { id: dispute.id } })).toBeNull();
+    expect(await db.meetup.findUnique({ where: { id: second.id } })).not.toBeNull();
+    expect(await db.deposit.count({ where: { meetupId: second.id } })).toBe(2);
+    expect(await db.meetupSettlement.count({ where: { meetupId: second.id } })).toBe(1);
+    expect(await db.checkIn.count({ where: { meetupId: second.id } })).toBe(2);
+    expect(await db.witnessEvent.count({ where: { meetupId: second.id } })).toBe(2);
+    expect(await db.stripeEvent.findUnique({ where: { id: oldEvent.id } })).toBeNull();
+    expect(await db.stripeEvent.findUnique({ where: { id: newEvent.id } })).not.toBeNull();
 
-    // The live participant's reputation row survives with its meetup link nulled, which is what keeps
-    // a live account's counters where they were; the erased participant's and the lone tombstone's go.
-    const witnessRows = await db.$queryRaw<{ id: string; meetup_id: string | null }[]>`
-      SELECT "id"::text AS "id", "meetup_id"::text AS "meetup_id"
-        FROM "witness_event" ORDER BY "id"`;
-    expect(witnessRows).toEqual([{ id: WITNESS_LIVE, meetup_id: null }]);
+    // Only the erased account's own witness event goes. The live account's stands, unlinked from the
+    // purged meetup and still naming its counterpart, which is what keeps both the counter and that
+    // counterpart's tombstone alive (AAP 0.5.2). A report keeps its text and loses its meetup link.
+    const kept = await db.witnessEvent.findFirstOrThrow({
+      where: { userId: ana.id, counterpartId: bea.id },
+    });
+    expect(kept.meetupId).toBeNull();
+    expect(kept.countsForReputation).toBe(true);
+    expect(await db.witnessEvent.count({ where: { userId: ana.id } })).toBe(2);
+    expect(await db.witnessEvent.count({ where: { userId: bea.id } })).toBe(0);
+    expect(await db.report.findUniqueOrThrow({ where: { id: report.id } })).toMatchObject({
+      meetupId: null,
+      reason: 'Fixture report',
+    });
+    expect(await db.user.findUnique({ where: { id: bea.id } })).not.toBeNull();
+    expect(await db.user.findUnique({ where: { id: duarte.id } })).toBeNull();
 
-    // The retained report keeps its text and loses the meetup link; the erased pairs go, the pair of
-    // two live accounts stays; the tombstone nothing references any more is deleted.
-    const [linkedReport] = await db.$queryRaw<{ meetup_id: string | null; reason: string }[]>`
-      SELECT "meetup_id"::text AS "meetup_id", "reason" AS "reason"
-        FROM "report" WHERE "id" = ${REPORT_LINKED}::uuid`;
-    expect(linkedReport).toEqual({ meetup_id: null, reason: 'linked report' });
+    // Counters never decay: what the purge removed moved nothing a live account reads.
+    const state = async () => ({
+      meetups: await db.meetup.count(),
+      deposits: await db.deposit.count(),
+      operations: await db.paymentOperation.count(),
+      settlements: await db.meetupSettlement.count(),
+      checkIns: await db.checkIn.count(),
+      credits: await db.tableCreditEntry.count(),
+      witnessEvents: await db.witnessEvent.count(),
+      pairHistory: await db.pairHistory.count(),
+      stripeEvents: await db.stripeEvent.count(),
+      users: await db.user.count(),
+      ana: await reputation(ana),
+      clara: await reputation(clara),
+    });
+    const settled = await state();
 
-    const pairRows = await db.$queryRaw<{ low: string; high: string }[]>`
-      SELECT "user_low_id"::text AS "low", "user_high_id"::text AS "high"
-        FROM "pair_history" ORDER BY "user_low_id", "user_high_id"`;
-    expect(pairRows).toEqual([
-      { low: LIVE, high: LIVE_TWO },
-      { low: LIVE_TWO, high: GONE_KEPT },
-    ]);
+    expect(settled.ana).toEqual(countersBefore.ana);
+    expect(settled.clara).toEqual(countersBefore.clara);
+    expect(settled.ana).toMatchObject({
+      witnessedMeetups: 2,
+      distinctCounterparts: 2,
+      distinctVenues: 1,
+      distinctCities: 1,
+      noShows90d: 0,
+    });
 
-    expect(await ids`SELECT "id"::text AS "id" FROM "user" ORDER BY "id"`).toEqual([
-      LIVE,
-      LIVE_TWO,
-      GONE,
-      GONE_KEPT,
-    ]);
-    expect(await ids`SELECT "id" AS "id" FROM "stripe_event" ORDER BY "id"`).toEqual([
-      STRIPE_RECENT,
-    ]);
-    expect(await ids`SELECT "id"::text AS "id" FROM "lodging_activity_fact" ORDER BY "id"`).toEqual(
-      [FACT_RECENT],
-    );
-  });
-
-  it('changes nothing when the daily step runs a second time', async () => {
-    const counts = await runDailyExpiry(ctx);
-
-    expect(Object.values(counts).every((value) => value === 0)).toBe(true);
-    expect(await ids`SELECT "id"::text AS "id" FROM "meetup"`).toEqual([MEETUP_RECENT]);
+    // A second run of the same step reports zeros and changes nothing at all.
+    const again = residual(await runDailyExpiry(ctx));
+    expect(again, 'a second pass of the daily step still changed rows').toEqual([]);
+    expect(await state(), 'a second pass of the daily step changed rows').toEqual(settled);
   });
 });
