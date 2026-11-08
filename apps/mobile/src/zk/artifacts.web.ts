@@ -378,8 +378,11 @@ export async function ensureArtifacts(
 
   // Best effort, and the answer is not read: a granted persistence makes the browser far less likely
   // to evict a gigabyte-scale key under storage pressure, and a refusal costs nothing (AAP 0.5.5).
+  // Deliberately not awaited: Firefox settles this promise only once its persistent-storage prompt is
+  // answered, so a session that never answers one — an automated browser — would otherwise sit in the
+  // download phase forever. Persistence is an optimisation, never a condition of proving.
   try {
-    await storage.persist?.();
+    void Promise.resolve(storage.persist?.()).catch(() => undefined);
   } catch {
     // Intentionally ignored: persistence is an optimisation, never a condition of proving.
   }
