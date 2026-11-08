@@ -93,6 +93,305 @@ naming the lock path and, for the directory, the remedy.
 
 The circuit itself, the registry and the issuer records are in `docs/zk-proofs.md`.
 
+## 1. Local stack
+
+1. Copy the environment template and fill the internal secrets. The four `openssl` commands the
+   template names are the whole of it: `FIELD_ENCRYPTION_KEY` is standard base64 of 32 bytes;
+   `JWT_SECRET`, `ANALYTICS_SALT`, `EMAIL_LOOKUP_PEPPER` and `EXPERIMENT_SALT` are 32 hex bytes. Set
+   `NULLIFIER_SALT=1` in the local stack, which is the salt the committed circuit fixtures were built
+   with; any other environment sets its own. The defaults `APP_ENV=demo`, `STRIPE_MODE=mock`,
+   `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` reach no third party, so no provider credential is
+   needed to start.
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Build the proving artefacts once per checkout with `pnpm circuits:build` (above). The `api` and
+   `artifacts` services bind-mount `packages/circuits/build`, with `create_host_path: false`, so a
+   stack started before the build fails loudly rather than serving an empty directory.
+
+3. Start every default service:
+
+   ```bash
+   docker compose up -d --wait
+   ```
+
+   | Service                       | Role                                                                                              |
+   | ----------------------------- | ------------------------------------------------------------------------------------------------- |
+   | `postgres`                    | PostgreSQL 16 with PostGIS 3.4, the single source of truth                                        |
+   | `redis`                       | Redis 7, no eviction: rate-limit counters, WebSocket fan-out, BullMQ queues                       |
+   | `mailpit`                     | SMTP capture on 1025 and its web UI/API on 8025                                                   |
+   | `migrate`                     | One-shot `pnpm db:deploy && pnpm db:seed`; `api` and `workers` wait for it to succeed             |
+   | `api`                         | REST and WebSocket, proof verification, Stripe holds, the in-process settlement worker            |
+   | `workers`                     | Place and lodging refresh, menu ingestion, call dispatch, notifications, data expiry, erasure     |
+   | `web`                         | The Expo web export on nginx, including `/ops`                                                    |
+   | `venue-console`               | The venue and lodging console pages on nginx                                                      |
+   | `artifacts`                   | The circuit wasm, proving key and manifest, served with the web origin as its only allowed origin |
+   | `stripe-mock`, `stripe-proxy` | The credential-free payment path `STRIPE_MODE=mock` uses, reached by the API alone                |
+
+4. Ports. Each host-side port is the variable of its own name, so checkouts running side by side take
+   separate blocks, and every one of them binds the loopback interface alone.
+
+   | Variable                                 | Default    | Service             |
+   | ---------------------------------------- | ---------- | ------------------- |
+   | `API_PORT`                               | 3000       | `api`               |
+   | `WEB_PORT`                               | 8080       | `web`               |
+   | `VENUE_CONSOLE_PORT`                     | 8090       | `venue-console`     |
+   | `ARTIFACTS_PORT`                         | 8070       | `artifacts`         |
+   | `MAILPIT_HTTP_PORT`, `MAILPIT_SMTP_PORT` | 8025, 1025 | `mailpit`           |
+   | `POSTGRES_PORT`, `REDIS_PORT`            | 5432, 6379 | `postgres`, `redis` |
+
+5. Health and logs. `curl -s http://localhost:3000/v1/health` answers
+   `{"status":"ok","checks":{"database":"ok","redis":"ok"}}`; a degraded answer names the dependency
+   that failed and nothing else, and the compose healthcheck reads the same route. Logs are pino JSON,
+   one line per event with a request id on every API line; authorization headers, console secrets,
+   credential-bearing environment keys, booking fields, coordinates, email addresses and message
+   bodies are censored as `[redacted]` before they are written. A `pubsub_subscribe_failed` warning
+   shortly after startup is the pub/sub subscription retrying against Redis, and it clears itself.
+
+6. Profiles, which a plain `up` never starts.
+
+   | Profile       | Start                                               | What it adds                                                                        |
+   | ------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
+   | `stripe-test` | `docker compose --profile stripe-test up -d --wait` | The Stripe CLI, forwarding the seven test-mode events to `POST /v1/webhooks/stripe` |
+   | `test`        | `docker compose --profile test up -d --wait`        | The scripted telephony simulator, for `TELEPHONY_MODE=simulator`                    |
+   | `perf`        | `pnpm perf`                                         | Seeds the stack and runs the k6 load profile at 50 requests per second              |
+
+   Confirming a card in the UI needs `STRIPE_MODE=test` with test-mode keys in `.env`, and the
+   `stripe-test` profile alongside it; the credential-free default never confirms one.
+
+## 2. Seeding and console secrets
+
+1. `pnpm db:seed` loads `config/cities.json` and `config/fixtures/<cityId>.json`: the five launch
+   cities, their partner venues, their lodgings and their priced places, plus the fixture hosts'
+   crawl-domain decisions. The compose `migrate` service runs the same seed on every `up`, and a run
+   is idempotent, so it updates the rows it made rather than adding more. It logs one `seed complete`
+   line with the counts and the path of the console-secret file, and it logs no secret.
+
+2. Fixtures load only while `APP_ENV` is `test` or `demo`. In `staging` and `production` the run
+   refuses before its first write, and the fixture guard keeps `is_fixture` rows out of every read.
+   `pnpm db:seed --no-fixtures` loads the configuration without them. Every fixture row is named
+   "Fixture …", and every fixture phone number comes from the ranges reserved for fiction
+   (`+120255501xx`, `+131255501xx`, `+141555501xx`), which only the test environment's `CALL_ALLOWLIST`
+   admits.
+
+3. Each seeded venue and lodging receives a random 32-byte console secret, written to the git-ignored
+   `.local/fixture-secrets.json` (mode 0600) so a demo can open each console:
+
+   ```json
+   {
+     "appEnv": "demo",
+     "generatedAt": "2026-11-07T09:00:00.000Z",
+     "venues": [
+       { "id": "<uuid>", "cityId": "lisbon", "name": "Fixture …", "secret": "<venue-secret>" }
+     ],
+     "lodgings": []
+   }
+   ```
+
+   No secret enters the repository. A reseed keeps a row's existing secret whenever the stored
+   ciphertext still decrypts to the digest the row carries, so `docker compose up` never rotates a
+   console out from under a running demo. Rotating one is the registry screen's job (section 6).
+
+4. A console is opened at `http://localhost:8090/venue` or `http://localhost:8090/lodging`: the operator
+   types the secret in once, the page keeps it in that tab's `sessionStorage`, and every request
+   carries it as `X-Venue-Secret` or `X-Lodging-Secret`. The code screen renders the server's
+   `{ code, expiresAt }` and asks again at `expiresAt`, and its countdown is measured against the
+   server clock taken from the `Date` response header, so a device clock minutes off affects the
+   countdown and never a validation. The pages themselves are described under
+   [Partner console pages](#partner-console-pages).
+
+## 3. Operator access
+
+1. The person signs in once by magic link: `POST /auth/magic-link`, then the link it mails, which is
+   single use and expires in 15 minutes. The first `POST /auth/verify` is what creates the account
+   row. In the local stack Mailpit captures the mail at `http://localhost:8025`.
+
+2. Then grant the role — the only way an account obtains it:
+
+   ```bash
+   pnpm --filter @tablemate/api grant-operator -- <email>                        # on the host
+   docker compose exec api node apps/api/dist/scripts/grant-operator.js <email>  # in the container
+   ```
+
+   `--revoke` demotes the account to `traveler` instead. The address goes through the same lookup
+   hash as sign-in, so spelling and casing variations reach one account, and the person must have
+   signed in at least once. The command writes exactly one line of JSON,
+   `{"userId":…,"role":…,"changed":…}`, and exits `1` on a refusal, naming neither the address nor a
+   token. A change revokes every session of that account, so the operator signs in again to get an
+   access token that carries the role. The runtime image ships no `tsx`, which is why the container
+   form runs the compiled script with `node`. The host form reads the API's own environment from its
+   shell, so source `.env` first; inside the container compose supplies it.
+
+3. `/ops` exists on the web build alone: its layout redirects every non-web platform and every
+   session that is not a signed-in operator to `/discover`, and every `/v1/admin/*` route answers
+   `403 operator_only` without the role. Open `http://localhost:8080/ops`; its bar carries Dashboard,
+   Queues, Registry and Back to app.
+
+## 4. Dashboard (`/ops`)
+
+The filters at the top are the date range (`From` and `To` as `YYYY-MM-DD`, applied to the meetups'
+`startsAt`), a city row over `GET /cities` that starts at "All cities", and a variant-pairing row over
+`social`, `punitive` and `mixed`.
+
+The headline is the pilot's one measure: **completion rate = meetups with both attendees checked in ÷
+meetups with both deposits locked** (`lockedAt`). Both terms come from the check-ins and `lockedAt`,
+never from the meetup's status, so a later lost hold or an operator resolution moves neither. Meetups
+still inside their check-in window stay in the denominator, and their number is shown beside the rate.
+`PILOT_LOCK_RATE_THRESHOLD` and `PILOT_COMPLETION_THRESHOLD` draw reference lines on the two rate
+bars, labelled as reference values the build reports against and never enforces.
+
+| Panel                     | What it shows                                                                                                                                                                                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deposit funnel            | Proposals sent, viewed by the recipient, accepted, both holds locked, both checked in, and the accepted-to-locked rate                                                                                                                                                       |
+| Counts                    | No-shows (late cancellations included), early cancellations, late cancellations, holds lost, disputes opened                                                                                                                                                                 |
+| Active proofs per city    | Travelers with a proof valid now, by city                                                                                                                                                                                                                                    |
+| Meetups per partner venue | The pilot's venue distribution                                                                                                                                                                                                                                               |
+| Prices and suggestions    | Places with a fresh price per city, partner-venue neighbourhoods with at least 10 priced places, meetups with suggestions viewed, places opened                                                                                                                              |
+| Calls                     | Outcomes (completed, refused, do not call, unreachable, needs review, no answer), the lifecycle panel (queued without an outcome, in progress, cancelled, blocked by reason), calls per day against the cap, language-model spend against the cap, and the suspension banner |
+| Lodging claims            | Submitted, verified, rejected, unreachable, and the median time to resolve                                                                                                                                                                                                   |
+| Signups (secondary)       | Accounts created, below the fold                                                                                                                                                                                                                                             |
+
+## 5. Queues (`/ops/queues`)
+
+One screen, five tabs: Disputes, Reports, Call tasks, Lodging claims, Crawl domains. Each resolution
+is a POST to the matching `/v1/admin/*` route, and a refusal is `403 operator_only`, `404` for an id
+that no longer exists, or `422 invalid_outcome` when the lifecycle does not allow the transition —
+the row's own banner states which, and the queue is refreshed after every attempt.
+
+### Disputes
+
+A traveler may file until 24 hours after the start; later than that the route answers
+`409 dispute_window_closed`, on a meetup that is still `proposed` it answers `409 not_locked`, and
+with one already open `409 dispute_open`. The tab lists the open disputes nearest deadline first and,
+behind them, the resolved ones newest first, each with the venue, the city, the kind
+(`venue_unavailable` or `other`), the filer's reason, the filing and deadline instants and every
+participant's handle and check-in result — the check-ins are what a `settle_by_checkins` resolution
+decides on. The deadline is `openedAt + 5 days`, and a dispute past it counts in the overdue banner;
+the escalation job fires 24 hours before it.
+
+| Outcome              | On a `locked` meetup                                                                                                                                                        | On a `forfeited` meetup                                                                     | On a `completed` or `unattended` meetup |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `settle_by_checkins` | Closes the dispute; settles at once once `startsAt + 45 min` has passed, and before that leaves the meetup `locked` with check-in open, so the outcome waits for the window | Closes it and changes nothing: the forfeit already happened                                 | Closes it and changes nothing           |
+| `no_fault`           | Releases both holds and changes no reputation — the resolution for a venue that could not witness                                                                           | Reverses the absent party's capture, voids the Table Credit grant, then releases both holds | `422 invalid_outcome`                   |
+
+Two resolutions happen without an operator: a hold that expires while a dispute is open moves the
+meetup to `lock_lost` and resolves the dispute with the note `hold_expired`, and a block resolves it
+`no_fault` with `cancelled_by_block`. An operator resolution is durable even when the provider cannot
+be reached — the money plan is written in the same transaction and the sweeper resumes it — and it is
+what releases an account deletion that was waiting on the dispute.
+
+### Reports
+
+Newest first, up to 200 in one read, with no cursor: an older report is read from the database by
+hand. Both handles are null once that account has been erased, the reason is null once the 180-day
+purge has emptied it, and the meetup is absent when the report concerns none. The tab is read-only —
+a report is written once by the safety route that files it and never changes.
+
+### Call tasks
+
+The tab lists every `needs_review` and `unreachable` task no operator has resolved yet, with its
+target, city, attempts, the latest outcome and the fields its latest attempt extracted.
+
+| `blockedReason`      | Meaning                                                                                                                                                                           |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `not_allowlisted`    | The number is outside `CALL_ALLOWLIST` in a non-production environment                                                                                                            |
+| `no_phone`           | The target has no callable number                                                                                                                                                 |
+| `do_not_call`        | The number asked not to be called; every task of that target is stopped                                                                                                           |
+| `invalid_number`     | The number is not valid: the task goes straight to `unreachable` with this reason                                                                                                 |
+| `vendor_unavailable` | Eight definite vendor refusals before a call was created                                                                                                                          |
+| `dispatch_unknown`   | The dispatch's outcome is unknown; any listing the provider returns is a candidate for the operator to judge, never evidence, and the slot stays consumed — do not redial blindly |
+| `no_final_status`    | No final call status arrived and the provider's own fetch by the adopted call id failed                                                                                           |
+
+Resolution applies to a `menu_prices` task only, and only while it is `needs_review` or `unreachable`;
+a `lodging_stay_verification` task answers `422 invalid_outcome` for every outcome and is resolved
+through its claim below. `Record prices from the call` (outcome `completed`) stores the prices the
+operator was told as an `operator_entry` batch — each row needs the item name, category, the price
+quoted verbatim, a currency and the amount in minor units, and a ticket also needs whether it admits
+one person and its ticket type. `Refused` closes the task, `Do not call` also flags the place and
+cancels its other tasks, and `Unreachable` records that no prices were obtainable. A task in any other
+status, or one an operator already resolved, answers `422`. A price a call quoted with low confidence
+stays in this queue and is excluded from suggestions until it is approved or re-entered here.
+
+### Lodging claims
+
+Claims whose call ended without a clear yes or no arrive here — as do claims for a lodging with no
+phone or a `doNotCall` one — while the traveler still sees `pending_call`. The row shows the lodging,
+its phone, the stay dates, when the claim was opened and when it expires; the claim resolves
+`verified`, `rejected` or `unreachable` only while it is `pending_call` or `calling`, and an
+unresolved claim becomes `unreachable` 72 hours after creation without penalty.
+
+For a manual verification call, open the booking details from the row. The details are readable only
+while the claim is open and before they are erased, every read is written to the operator access log
+with the purpose `manual_verification_call`, and the name and reference are wiped by the hourly expiry
+run within 24 hours of the claim becoming terminal. Read them for the call and do not copy them
+anywhere else; a claim that is already terminal answers `409 details_unavailable`.
+
+### Crawl domains
+
+A menu domain the crawler meets for the first time is recorded `uncertain` / `awaiting_review` before
+its first fetch and is never fetched while it stays there. Read the site's terms, then record
+`allowed` or `prohibited` — `prohibited` and `uncertain` domains leave their places to the phone
+fallback. A domain on `config/crawl-blocklist.json` stays `prohibited` whatever is recorded against
+it: the blocklist outranks this queue. A decision is never rechecked automatically, so it stands until
+an operator writes another.
+
+## 6. Registry (`/ops/registry`)
+
+1. **Venues.** Create one with its city, name, address, coordinates and active-partner flag, edit
+   those fields later, and issue its console secret from the row. The secret is shown once and never
+   again; issuing a new one replaces the current one, and the console that held the old one stops
+   authenticating at once — hand the new value to the venue over a channel you trust. Adding a venue,
+   moving it or activating it enqueues that city's place refresh, which is what puts its neighbourhood
+   into the price pipeline.
+
+2. **Lodgings.** A lodging entered here carries no OpenStreetMap identity, and its phone source is
+   recorded as `operator`. The weekly refresh never replaces an operator phone, a `doNotCall` flag,
+   a console secret, a fixture or a manually entered row. Issuing a console secret makes the lodging
+   a partner lodging for price ingestion, and enqueues the same refresh.
+
+3. **Price jobs.** Per city, `Run menu ingestion` (`menus`) fans out the menu pipeline and
+   `Run price calls` (`calls`) queues the phone work; both answer `202` with a job id, which the row
+   shows as `Queued (job …)`. `429 daily_cap_reached` means the city's local day has used up the cap
+   the kind is counted against — `CAP_CALLS_PER_CITY_DAY` for calls, `CAP_LLM_USD_PER_CITY_DAY` of
+   committed language-model spend for menus. The route's check is an early refusal for the operator;
+   the enforcement point is the reservation each dispatch makes, and work over a cap runs from 09:00
+   local the next day. With `TELEPHONY_MODE=off` a `calls` job waits in its queue until the mode
+   changes.
+
+## 7. Configuration changes
+
+| Change              | Procedure                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cities and fixtures | Edit `config/cities.json` or `config/fixtures/<cityId>.json`, then `pnpm db:seed`. A city whose aliases changed also needs `pnpm circuits:registry`; fixtures remain `test`- and `demo`-only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Issuers             | Put real confirmation emails in the git-ignored `packages/circuits/samples/<issuer>/`, fill the key records with `pnpm --filter @tablemate/circuits fetch-dkim-key -- <issuer> --write`, author the template from the same samples, then `pnpm circuits:samples`. Only when that check passes, set `verificationStatus` to `verified` in `config/issuers/<issuer>.json`, run `pnpm circuits:registry`, and restart the API. The circuit itself, the registry and the current issuer statuses are in [./zk-proofs.md](./zk-proofs.md); Booking.com and Airbnb stay `awaiting_samples` until samples exist, and no proof can name an issuer without a registry leaf. |
+| Caps and calling    | `CAP_CALLS_PER_CITY_DAY`, `CAP_CALL_SECONDS`, `CAP_LLM_USD_PER_CITY_DAY` and `LLM_MAX_TURNS_PER_CALL` are read by `api` and `workers` at startup, so restart both.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Experiment split    | `EXPERIMENT_SOCIAL_SHARE` (0.5 by default; `1.0` is all-social). It decides the variant of accounts created _after_ the change: an existing assignment is never recomputed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Telephony           | `TELEPHONY_MODE` is `off`, `simulator` or `twilio`. Outside production only numbers in `CALL_ALLOWLIST` are dialled; production calls additionally need `CALLS_PRODUCTION_APPROVED=true`, which legal review governs.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Language model      | `LLM_PROVIDER` is `fake` or `openai`; `openai` needs `LLM_API_KEY`, `LLM_MODEL` and both prices, and `LLM_MODEL` must be one of the models the adapter meters — any other value makes the process refuse to start.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+**Language-model suspension.** A provider-reported input-token count that differs from the count the
+request was reserved for is charged in full, logged as `llm_count_mismatch`, and suspends
+language-model use in every city: menu jobs defer, and a call that cannot reserve its next turn ends
+politely. The dashboard's Calls panel shows the banner and the mismatch count. The flag is the Redis
+key `llm:suspended`, which `api` and `workers` share and which holds `{"since","reason"}`, and
+`llm:count_mismatches` counts the mismatches; the implemented re-enable step removes that key. **No
+admin route and no script calls it today**, so there is no supported operator surface for clearing the
+suspension — recorded here as a gap for `apps/api` and `packages/server-core`, whose owner must add
+one. Until then, do not clear the flag from a shell without first establishing why the count changed:
+the suspension is what stops spend the cap can no longer bound.
+
+## 8. Delivery status
+
+Notifications reach a traveler over Expo push on a native device, and over email on the web and for
+every magic link. Push is switched off by configuration, not by a flag: with no `EXPO_ACCESS_TOKEN`
+the process sends none, and web users still get email. Email goes through `SMTP_URL` with
+`EMAIL_FROM`, plain text only; the local stack captures it in Mailpit at `http://localhost:8025`.
+
+**Delivery verified with Mailpit only** — no dated result exists for real push or SMTP delivery yet,
+because neither credential has been supplied. Replace this line with the dated results once they are.
+
 ## Partner console pages
 
 `apps/venue-console` serves the two pages the plan names for it, each behind the operator-issued
