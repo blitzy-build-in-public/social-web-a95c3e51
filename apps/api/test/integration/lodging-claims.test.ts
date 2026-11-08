@@ -365,13 +365,15 @@ describe('a claim that is filed (AAP 0.5.4)', () => {
     expect(decryptField(t.services.keyring, storedReference)).toBe(reference);
 
     // One outbox row, carrying the claim's id alone: the workers' instruction to verify this claim
-    // by phone, undelivered because no background poller runs in a suite (AAP 0.3.2, 0.5.6).
+    // by phone. The row is written in the claim's own transaction and delivered by the outbox pass
+    // the commit kicks, which this case settles before it reads the row (AAP 0.3.2, 0.5.6).
+    await t.services.outbox.runOnce();
     const outbox = await t.services.db.outboxMessage.findMany({
       select: { kind: true, payload: true, dispatchedAt: true },
     });
     expect(outbox.map((message) => message.kind)).toEqual(['create_call_task']);
     expect(outbox[0]?.payload).toEqual({ lodgingClaimId: created.claimId });
-    expect(outbox[0]?.dispatchedAt).toBeNull();
+    expect(outbox[0]?.dispatchedAt).not.toBeNull();
 
     // One `lodging_claim_submitted` event, the claim measures' only source (AAP 0.5.7), attributed
     // to a salted hash rather than to an account.
