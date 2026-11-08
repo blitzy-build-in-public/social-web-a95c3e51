@@ -153,12 +153,12 @@ One row per engine, written from `.local/e2e/web-proving/<engine>.json` by `scri
 
 <!-- BEGIN e2e:web-proving -->
 
-Web proving in the end-to-end suite. Run 2026-11-08T10:54:09.180Z · commit be61372-dirty · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
+Web proving in the end-to-end suite. Run 2026-11-08T18:06:00.950Z · commit 580b819 · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
 
 | Engine   | Version      | Total (s) | Result |
 | -------- | ------------ | --------- | ------ |
-| chromium | 156.0.8078.4 | 253.8     | pass   |
-| firefox  | 157.0        | 264.9     | pass   |
+| chromium | 156.0.8078.4 | 258.9     | pass   |
+| firefox  | 157.0        | 270.5     | pass   |
 | webkit   | 27.2         | n/a       | fail   |
 
 Timings are informational: the 90-second target names only the phone classes (AAP 0.5.5). Each row is one `.local/e2e/web-proving/<engine>.json` that this run wrote, and an engine whose file is missing is `pending`. Chrome, Firefox and Safari at their current and previous branded versions are recorded by hand (AAP 0.3.4).
