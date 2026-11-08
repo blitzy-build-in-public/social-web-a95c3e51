@@ -168,6 +168,20 @@ const TRUNCATION_EXCLUSIONS: ReadonlySet<string> = new Set([
 const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
 
 /**
+ * How many times {@link truncatePublicTables} takes the tables again after losing a lock race, and
+ * how long each retry waits, growing linearly (AAP 0.11.2).
+ */
+const TRUNCATE_ATTEMPTS = 5;
+const TRUNCATE_RETRY_MS = 25;
+
+/**
+ * The SQLSTATEs of a lock conflict a retry clears: a deadlock, and a serialization failure. Both mean
+ * two transactions took each other's locks and PostgreSQL ended one of them; the other one finishes
+ * within milliseconds and the statement succeeds on the next attempt.
+ */
+const TRANSIENT_SQL_STATES: ReadonlySet<string> = new Set(['40P01', '40001']);
+
+/**
  * The instant a suite starts at (AAP 0.11.1): a Monday at midday UTC, so a suite that reasons about a
  * weekday, about a city's local day or about a date's month reads the same value wherever it runs. A
  * suite that needs another instant moves the clock — `./proofs.ts` `instantDuringStay`, or
@@ -967,6 +981,11 @@ function stripeContext(env: ApiEnv): StripeContext {
  * `CASCADE` covers the foreign keys between the tables, `RESTART IDENTITY` returns every sequence to
  * its first value, and both belong here rather than a delete per table — a suite that resets state
  * should not have to know the schema's order or its keys.
+ *
+ * It is retried while the conflict it lost is a transient one. A commit inside a case kicks the outbox
+ * dispatcher without awaiting it (AAP 0.3.2), so a pass that writes `outbox_message` can still be in
+ * flight when the next case truncates: PostgreSQL ends one of the two, and a reset that gave up there
+ * would fail a case for a race it is not about (AAP 0.11.2).
  */
 async function truncatePublicTables(db: DbClient): Promise<void> {
   const rows = await db.$queryRaw<{ tablename: string }[]>`
@@ -980,5 +999,36 @@ async function truncatePublicTables(db: DbClient): Promise<void> {
   }
 
   const identifiers = Prisma.join(tables.map((name) => Prisma.raw(`"${name}"`)));
-  await db.$executeRaw(Prisma.sql`TRUNCATE ${identifiers} RESTART IDENTITY CASCADE`);
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await db.$executeRaw(Prisma.sql`TRUNCATE ${identifiers} RESTART IDENTITY CASCADE`);
+      return;
+    } catch (error) {
+      if (attempt >= TRUNCATE_ATTEMPTS || !isTransientLockFailure(error)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TRUNCATE_RETRY_MS * attempt));
+    }
+  }
+}
+
+/**
+ * Whether a failed statement lost a lock race rather than failing on its own (AAP 0.11.2).
+ *
+ * Prisma reports a raw PostgreSQL failure as `P2010` with the database's own SQLSTATE in `meta.code`,
+ * which is where {@link TRANSIENT_SQL_STATES} appear. The message is checked too, so a failure that
+ * arrives without the meta object is not mistaken for a permanent one.
+ */
+function isTransientLockFailure(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
+    return false;
+  }
+
+  const code = (error.meta as { code?: unknown } | undefined)?.code;
+  if (typeof code === 'string' && TRANSIENT_SQL_STATES.has(code)) {
+    return true;
+  }
+
+  return [...TRANSIENT_SQL_STATES].some((state) => error.message.includes(`Code: \`${state}\``));
 }
