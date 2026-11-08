@@ -336,7 +336,7 @@ describe('an unreviewed host is never fetched', () => {
         event: 'menu_fetch_refused',
         host: UNREVIEWED_HOST,
         kind: 'html',
-        reason: 'policy_uncertain',
+        dropReason: 'policy_uncertain',
       },
     ]);
 

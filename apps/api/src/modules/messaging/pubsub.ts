@@ -41,6 +41,7 @@ import { z } from 'zod';
 
 import { ServerFrame, Uuid, chatChannel, userChannel } from '@tablemate/shared';
 import type { MessageFrame } from '@tablemate/shared';
+import { throttleRedisFailure } from '@tablemate/server-core';
 import type { Logger } from '@tablemate/server-core';
 
 import { dropCachedSessions } from '../../plugins/auth.ts';
@@ -664,9 +665,19 @@ export function createPubSub(services: PubSubServices): PubSub {
     subscriber.on('error', onError);
   }
 
-  /** A connection-level error, recorded without the connection string and without a message. */
+  /**
+   * A connection-level error, recorded without the connection string and without a message.
+   *
+   * Throttled, because a Redis that is down fires this listener on every reconnect attempt and the
+   * subscriber's own connection failure is the same outage the connection warnings report: the first
+   * line is written at once and a later one waits out the throttle's window, so an outage lasting
+   * minutes costs a handful of lines here rather than one per attempt, and the first one — the one an
+   * operator reads — stays where they can find it.
+   */
   function onError(error: Error): void {
-    logger.warn({ event: 'pubsub_error', err: { name: error.name } }, 'pubsub_error');
+    throttleRedisFailure('pubsub:subscriber', () => {
+      logger.warn({ event: 'pubsub_error', err: { name: error.name } }, 'pubsub_error');
+    });
   }
 
   /** One attempt at holding both patterns; `true` when the instance is subscribed. */

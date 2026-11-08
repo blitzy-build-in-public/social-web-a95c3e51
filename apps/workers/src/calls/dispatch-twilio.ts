@@ -460,7 +460,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
     return settle(
       deps,
       'not_eligible',
-      { taskId, reason: 'target_missing' },
+      { taskId, blockedReason: 'target_missing' },
       {
         kind: 'not_eligible',
         reason: 'target_missing',
@@ -486,7 +486,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
     return settle(
       deps,
       'not_claimed',
-      { taskId, reason: 'local_day_rolled' },
+      { taskId, blockedReason: 'local_day_rolled' },
       {
         kind: 'not_claimed',
       },
@@ -513,7 +513,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
         ? settle(
             deps,
             'not_eligible',
-            { taskId, reason: claim.reason },
+            { taskId, blockedReason: claim.reason },
             {
               kind: 'not_eligible',
               reason: claim.reason,
@@ -1066,6 +1066,10 @@ async function deferTask(sql: RawSqlClient, taskId: string, until: Date, now: Da
 /**
  * Log one dispatch decision and hand the caller's result straight back (AAP 0.11.1), so a dispatch
  * reads as a sequence of decisions without a branch wrapped around every one of them.
+ *
+ * The code travels under `blockedReason`, not `reason`: the logger's redaction list censors `reason`
+ * (a dispute's or a report's free text), and a code that has to be read back is logged under a name
+ * the list does not cover (AAP 0.11.1).
  */
 function settle(
   deps: DispatchDeps,
@@ -1073,7 +1077,7 @@ function settle(
   fields: {
     readonly taskId: string;
     readonly attemptId?: string;
-    readonly reason?: string;
+    readonly blockedReason?: string;
     readonly until?: string;
   },
   result: DispatchResult,

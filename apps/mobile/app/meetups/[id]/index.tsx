@@ -23,6 +23,7 @@ import type { AnyTierProfile, HoldView, MeetupDto, MeetupStatus, Variant } from 
 import { apiClient } from '../../../src/api/client';
 import { isApiError, userMessageFor } from '../../../src/api/errors';
 import {
+  CHECKED_IN_NOTICE,
   SAFETY_NOTICE,
   SAFETY_TIPS,
   SAFETY_TIPS_TITLE,
@@ -487,6 +488,11 @@ export default function MeetupDetailScreen(): ReactElement {
           <>
             <Card testID="meetup-summary">
               <Text {...STATUS_LINE}>{STATUS_TEXT[meetup.status]}</Text>
+              {meetup.checkedIn && (
+                <Text testID="meetup-checked-in" style={styles.muted}>
+                  {CHECKED_IN_NOTICE}
+                </Text>
+              )}
             </Card>
             <ListItem {...counterpartRow(meetup.counterpart)} />
             <Card testID="meetup-terms">

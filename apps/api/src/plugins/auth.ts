@@ -37,8 +37,8 @@
  *    (AAP 0.3.2, 0.5.3). All three are called after the revoking transaction commits.
  *
  * Nothing in this module logs a token, an email address, an `Authorization` header or a
- * `Sec-WebSocket-Protocol` header: a refusal writes one `auth_rejected` line carrying its reason and
- * nothing else, and a success writes nothing per request (AAP 0.11.1).
+ * `Sec-WebSocket-Protocol` header: a refusal writes one `auth_rejected` line carrying its reason
+ * under `guardReason` and nothing else, and a success writes nothing per request (AAP 0.11.1).
  */
 
 import { SignJWT, jwtVerify } from 'jose';
@@ -183,11 +183,11 @@ export interface AuthServices {
 }
 
 /**
- * Why a guard refused a request, as the `auth_rejected` line records it: `missing` for an absent or
- * unusable `Authorization` header, `invalid` for a token that fails signature, lifetime or shape,
- * `session` for a token whose session is unknown, revoked, expired or deleted, `age_gate` for a
- * signed-in account that has not recorded the 18+ confirmation, and `role` for a traveler reaching
- * an operator route. Never a value the caller supplied.
+ * Why a guard refused a request, as the `auth_rejected` line's `guardReason` records it: `missing`
+ * for an absent or unusable `Authorization` header, `invalid` for a token that fails signature,
+ * lifetime or shape, `session` for a token whose session is unknown, revoked, expired or deleted,
+ * `age_gate` for a signed-in account that has not recorded the 18+ confirmation, and `role` for a
+ * traveler reaching an operator route. Never a value the caller supplied.
  */
 export type AuthRejectionReason = 'missing' | 'invalid' | 'session' | 'age_gate' | 'role';
 
@@ -645,9 +645,15 @@ function authServicesOf(request: FastifyRequest): AuthServices {
   return (request.server as unknown as { readonly services: AuthServices }).services;
 }
 
-/** Ends a request with `code`, after one `auth_rejected` line carrying the reason and nothing else. */
+/**
+ * Ends a request with `code`, after one `auth_rejected` line carrying the reason and nothing else.
+ *
+ * The reason travels under `guardReason`, not `reason`: the logger's redaction list censors `reason`
+ * (a dispute's or a report's free text), and a code that has to be read back is logged under a name
+ * the list does not cover (AAP 0.11.1).
+ */
 function refuse(request: FastifyRequest, reason: AuthRejectionReason, code: ErrorCode): never {
-  request.log.info({ event: 'auth_rejected', reason }, 'auth_rejected');
+  request.log.info({ event: 'auth_rejected', guardReason: reason }, 'auth_rejected');
   throw new AppError(code);
 }
 

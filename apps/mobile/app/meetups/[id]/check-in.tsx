@@ -21,16 +21,16 @@ import type { CheckInResponse, MeetupDto } from '@tablemate/shared';
 
 import { apiClient } from '../../../src/api/client';
 import { isApiError, isNetworkError, userMessageFor } from '../../../src/api/errors';
+import { serverNow } from '../../../src/api/server-clock';
 import { LocationError, currentCoords } from '../../../src/checkin/location';
 import { holdCode, isOnline } from '../../../src/checkin/offline-code';
 import type { HeldCode } from '../../../src/checkin/offline-code';
+import { BOTH_CHECKED_IN_NOTICE, CHECKED_IN_NOTICE } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
 
 const SCREEN_TITLE = 'Check in';
 const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
-const CHECKED_IN_TITLE = "You're checked in.";
-const BOTH_CHECKED_IN_TEXT = "You're both checked in.";
 const OFFLINE_NOTICE =
   "You're offline. We'll send this code when you reconnect (up to 60 seconds).";
 const EXPIRED_NOTICE = "That code has expired. Enter the current code from the venue's screen.";
@@ -163,9 +163,12 @@ export default function CheckInScreen(): ReactElement {
   const [scanning, setScanning] = useState(false);
   const inFlight = useRef(false);
   const held = useRef<HeldCode | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  // The tick only re-renders this screen; the reading itself comes from `serverNow()` at every
+  // render, so the window line follows the server clock and an offset recorded by a response that
+  // lands after this screen mounted takes effect without waiting for the next tick (AAP 0.5.1).
+  const [, setTick] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 15_000);
+    const id = setInterval(() => setTick(Date.now()), 15_000);
     return () => clearInterval(id);
   }, []);
   useEffect(() => () => held.current?.cancel(), []);
@@ -174,11 +177,11 @@ export default function CheckInScreen(): ReactElement {
   const known = Number.isFinite(startsAt);
   const city = citiesQ.data?.items.find((item) => item.id === detail?.venue.cityId);
   const startText = known && detail ? startTimeText(detail.startsAt, city?.timezone) : null;
-  const left = known ? windowText(now, startsAt) : null;
+  const left = known ? windowText(serverNow(), startsAt) : null;
   const loadMessage = detail === null && meetupQ.isError ? messageFor(meetupQ.error) : null;
   const errorMessage = failure ?? loadMessage;
   const canSubmit = code.length === CODE_DIGITS && !holding;
-  const both = result !== null && result.bothCheckedIn ? BOTH_CHECKED_IN_TEXT : null;
+  const both = result !== null && result.bothCheckedIn ? BOTH_CHECKED_IN_NOTICE : null;
   useEffect(() => {
     if (loadMessage !== null) announce(loadMessage);
   }, [loadMessage]);
@@ -187,7 +190,9 @@ export default function CheckInScreen(): ReactElement {
   const succeed = (resp: CheckInResponse): void => {
     setResult(resp);
     setCode('');
-    announce(resp.bothCheckedIn ? `${CHECKED_IN_TITLE} ${BOTH_CHECKED_IN_TEXT}` : CHECKED_IN_TITLE);
+    announce(
+      resp.bothCheckedIn ? `${CHECKED_IN_NOTICE} ${BOTH_CHECKED_IN_NOTICE}` : CHECKED_IN_NOTICE,
+    );
     void Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.meetup(meetupId) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.meetupsAll }),
@@ -288,12 +293,12 @@ export default function CheckInScreen(): ReactElement {
         errorMessage === null ? (
           <Text style={styles.notice}>{LOADING_NOTICE}</Text>
         ) : null
+      ) : result !== null ? (
+        <OutcomeCard title={CHECKED_IN_NOTICE} testID="checkin-result" note={both} onBack={back} />
       ) : detail.checkedIn ? (
-        <OutcomeCard title={CHECKED_IN_TITLE} testID="checkin-result" onBack={back} />
+        <OutcomeCard title={CHECKED_IN_NOTICE} testID="checkin-result" onBack={back} />
       ) : detail.status !== 'locked' ? (
         <OutcomeCard title={NOT_LOCKED_NOTICE} testID="checkin-not-locked" onBack={back} />
-      ) : result !== null ? (
-        <OutcomeCard title={CHECKED_IN_TITLE} testID="checkin-result" note={both} onBack={back} />
       ) : (
         form
       )}

@@ -9,6 +9,7 @@ import type { MeetupDto, MeetupStatus, NextAction, ParticipantRole } from '@tabl
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
+import { CHECKED_IN_NOTICE } from '../../src/copy/strings';
 import { meetupsInPages, queryKeys, useMeetups } from '../../src/state/meetup-store';
 import { Avatar, Banner, Button, ListItem, Screen, announce } from '../../src/ui';
 const CITIES_STALE_TIME_MS = 60 * 60 * 1000;
@@ -85,6 +86,8 @@ function meetupRow(meetup: MeetupDto, cityZones: ReadonlyMap<string, string>): R
   const nextAction = NEXT_ACTION_HINT[meetup.nextAction];
   const zone = cityZones.get(meetup.venue.cityId);
   const where = `${meetup.venue.name} · ${formatStart(meetup.startsAt, zone)}`;
+  const subtitle = [where, STATUS_LABEL[meetup.status], ROLE_LABEL[meetup.role]];
+  if (meetup.checkedIn) subtitle.push(CHECKED_IN_NOTICE);
   return (
     <ListItem
       key={meetup.id}
@@ -100,7 +103,7 @@ function meetupRow(meetup: MeetupDto, cityZones: ReadonlyMap<string, string>): R
           {...(hasPhoto ? { userId: counterpart.id, hasPhoto: true } : {})}
         />
       }
-      subtitle={`${where} · ${STATUS_LABEL[meetup.status]} · ${ROLE_LABEL[meetup.role]}`}
+      subtitle={subtitle.join(' · ')}
       trailing={nextAction === null ? undefined : <Text style={styles.trailing}>{nextAction}</Text>}
     />
   );

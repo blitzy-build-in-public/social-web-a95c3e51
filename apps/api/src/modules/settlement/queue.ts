@@ -45,6 +45,7 @@ import {
   createRedisConnection,
   isJobName,
   parseJobData,
+  throttleRedisFailure,
 } from '@tablemate/server-core';
 import type { JobDataByQueueAndName, JobName } from '@tablemate/server-core';
 import { NotificationKind } from '@tablemate/shared';
@@ -159,7 +160,9 @@ const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
  * @returns A function that closes the worker and its connection, resolving on every later call too.
  */
 export function startSettlementWorker(services: AppServices): () => Promise<void> {
-  const connection = createRedisConnection(services.env.REDIS_URL, 'worker');
+  const connection = createRedisConnection(services.env.REDIS_URL, 'worker', {
+    logger: services.logger,
+  });
   const worker: SettlementWorker = new Worker<unknown, SettlementJobResult, string>(
     QUEUE.settlement,
     (job: SettlementJob) => processSettlementJob(services, job.name, job.data),
@@ -169,7 +172,10 @@ export function startSettlementWorker(services: AppServices): () => Promise<void
   // The `failed` listener logs the job's name and id, the attempts made and the failure's own short
   // token; the `error` listener logs that token alone, because no job is in hand. Neither logs an
   // error message or a stack. The `error` listener is not optional: an 'error' event with no listener
-  // is thrown, and a Redis outage must never take the API process down (AAP 0.3.2).
+  // is thrown, and a Redis outage must never take the API process down (AAP 0.3.2). It is throttled
+  // because that outage fires it on every reconnect attempt: the first failure is written at once and
+  // a later one waits out the throttle's window, so the API reports the outage without writing a line
+  // per attempt into the same log every request line goes to.
   worker.on('failed', (job: SettlementJob | undefined, error: Error) => {
     services.logger.warn({
       event: 'settlement_job_failed',
@@ -180,7 +186,9 @@ export function startSettlementWorker(services: AppServices): () => Promise<void
     });
   });
   worker.on('error', (error: Error) => {
-    services.logger.error({ event: 'settlement_worker_error', code: failureToken(error) });
+    throttleRedisFailure('settlement-worker', () => {
+      services.logger.error({ event: 'settlement_worker_error', code: failureToken(error) });
+    });
   });
 
   let stopping: Promise<void> | null = null;

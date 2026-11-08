@@ -848,11 +848,14 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     } catch (error) {
       // One line per refused fetch, whatever hop refused it, and never a path or a query string.
       if (error instanceof SafeFetchError) {
+        // `dropReason`, not `reason`: the logger's redaction list censors `reason` (a dispute's free
+        // text), and a code that has to be read back is logged under a name it does not cover (AAP
+        // 0.11.1). `./fetch-page.ts` logs the same code the same way.
         deps.logger.warn({
           event: 'menu_fetch_refused',
           host: error.host,
           kind: opts.kind,
-          reason: error.reason,
+          dropReason: error.reason,
         });
       }
       throw error;

@@ -38,7 +38,6 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { performance } from 'node:perf_hooks';
 
 import { Queue } from 'bullmq';
 import Fastify from 'fastify';
@@ -55,6 +54,7 @@ import {
   createSqlSpendStore,
   createTelephonyClient,
   keyringFromEnv,
+  reportRedisUnavailable,
   systemClock,
   waitForRedisReady,
 } from '@tablemate/server-core';
@@ -147,9 +147,6 @@ const SWEEPER_INTERVAL_MS = 60_000;
 
 /** The period the outbox poller runs at (AAP 0.3.2, 0.5.6). */
 const OUTBOX_POLL_INTERVAL_MS = 2_000;
-
-/** The shortest gap between two `redis_unavailable` warnings for one role. */
-const REDIS_UNAVAILABLE_LOG_INTERVAL_MS = 30_000;
 
 /**
  * The header and metric of the Stripe timing report AAP 0.12.2 measures writes with: the load test
@@ -305,35 +302,23 @@ export interface ApiRedis {
  * Build the API's Redis connections lazily (AAP 0.3.2): nothing connects until the first command is
  * issued, which is what lets `buildApp` open no socket at all.
  *
- * Every connection carries an `'error'` listener, because ioredis otherwise prints an "Unhandled
- * error event" line and, with no listener at all, throws the event into the process. The listener
- * writes one `redis_unavailable` line per role per {@link REDIS_UNAVAILABLE_LOG_INTERVAL_MS} and
- * nothing else: an offline `ready()` cannot crash the process and a flapping connection cannot flood
- * the log. The URL is never logged — the line carries the role, which is what an operator needs to
- * tell a rate-limit store failure from a queue failure.
+ * Every connection is built with the process logger, which is what its failures are reported through
+ * (AAP 0.3.2, 0.11.1): `createRedisConnection` attaches the `'error'` listener itself and writes one
+ * throttled `redis_unavailable` warning per role, carrying the role and a bounded failure token and
+ * never the error. So an offline `ready()` cannot crash the process and a flapping connection cannot
+ * flood the log — the role's connections and the producer that re-reports their failures share one
+ * window — while every line reaches the process logger, with its `service` binding, its ISO time and
+ * the workspace's redaction paths applied. The URL is never logged: the line carries the role, which
+ * is what an operator needs to tell a rate-limit store failure from a queue failure.
  *
  * @param url - `REDIS_URL` from the validated environment.
- * @param logger - the process logger the warnings are written through.
+ * @param logger - the process logger the connection warnings are written through.
  * @returns the holder {@link AppServices} exposes as `services.redis`.
  */
 export function createApiRedis(url: string, logger: Logger): ApiRedis {
-  /** When each role's failure was last reported, by `performance.now()` — a monotonic reading, never the wall clock. */
-  const lastReportedAt = new Map<RedisRole, number>();
-
-  /** Report one connection failure, at most once per role per interval, and never with its error. */
-  function reportUnavailable(role: RedisRole): void {
-    const now = performance.now();
-    const previous = lastReportedAt.get(role);
-    if (previous !== undefined && now - previous < REDIS_UNAVAILABLE_LOG_INTERVAL_MS) {
-      return;
-    }
-    lastReportedAt.set(role, now);
-    logger.warn({ event: 'redis_unavailable', role }, 'redis_unavailable');
-  }
-
-  /** Create one connection of `role`, with the throttled reporter as its error listener. */
+  /** Create one connection of `role`, with the process logger as its failure sink. */
   function connect(role: RedisRole): Redis {
-    return createRedisConnection(url, role, { onError: () => reportUnavailable(role) });
+    return createRedisConnection(url, role, { logger });
   }
 
   let client: Redis | undefined;
@@ -416,11 +401,21 @@ export interface ApiQueues {
 /**
  * Build the queue registry over an already-built Redis holder (AAP 0.3.2, 0.5.1).
  *
+ * Every producer created here carries an `'error'` listener, and that listener is not optional: a
+ * BullMQ `Queue` re-emits the failures of the connection behind it, and `QueueBase.emit` answers an
+ * `'error'` event with no listener by calling `console.error` — the raw error object and its stack,
+ * written straight to stderr outside this process's logger, outside its redaction paths and, during a
+ * Redis outage, once per reconnect attempt from every process holding a producer. The listener
+ * records the failure as the throttled `redis_unavailable` warning instead, under the same `producer`
+ * role the connection's own listener reports, so a producer failure is the one line per window rather
+ * than a dump beside it.
+ *
  * @param redis - the app's connections; only the `producer` is read, and only when a queue is first
  *   asked for.
+ * @param logger - the process logger producer failures are reported through.
  * @returns the registry {@link AppServices} exposes as `services.queues`.
  */
-function createApiQueues(redis: ApiRedis): ApiQueues {
+function createApiQueues(redis: ApiRedis, logger: Logger): ApiQueues {
   const created = new Map<QueueName, Queue>();
 
   return {
@@ -431,6 +426,9 @@ function createApiQueues(redis: ApiRedis): ApiQueues {
           connection: redis.producer,
           defaultJobOptions: QUEUE_JOB_OPTIONS[name],
         });
+        // Without this listener BullMQ dumps the raw error to stderr instead of recording it: the
+        // note on this function says why, and the role is what shares the connection's own window.
+        queue.on('error', (error: Error) => reportRedisUnavailable(logger, 'producer', error));
         created.set(name, queue);
       }
       return queue;
@@ -580,7 +578,7 @@ export function buildApp(deps: AppDeps): App {
   const llm = deps.llm ?? createLlmAdapter(llmAdapterConfig(env));
   const telephony = telephonyFor(env, deps.twilioHttpClient);
   const keyring = keyringFromEnv(env);
-  const queues = createApiQueues(redis);
+  const queues = createApiQueues(redis, logger);
   const faults = deps.faults ?? noFaults;
 
   // The four members built on first read: each is memoized here so every reader sees one instance,
@@ -681,6 +679,12 @@ export function buildApp(deps: AppDeps): App {
     if (writesState(request)) {
       reply.header(SERVER_TIMING_HEADER, stripeTimingValue());
     }
+    // `Date` is the instant a client measures its own clock against — the venue console's countdown
+    // and the app's check-in window line are both read from it (AAP 0.3.2, 0.5.1) — and every instant
+    // a response body carries comes from the injected clock, so the header has to come from it too.
+    // Node stamps it from the system clock instead, which agrees in production and not under the
+    // flowing test clock of `APP_ENV=test`.
+    reply.header('Date', request.receivedAt.toUTCString());
     done(null, payload);
   });
 

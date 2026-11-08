@@ -54,7 +54,9 @@ import {
   createSqlSpendStore,
   createTelephonyClient,
   keyringFromEnv,
+  reportRedisUnavailable,
   systemClock,
+  throttleRedisFailure,
 } from '@tablemate/server-core';
 import type {
   CallGuard,
@@ -323,11 +325,7 @@ export async function createWorkerContext(
     createPrismaClient({ databaseUrl: env.DATABASE_URL, appEnv: env.APP_ENV }),
   );
   const redis = override(overrides.redis, () =>
-    createRedisConnection(env.REDIS_URL, 'client', {
-      onError: (error: Error) => {
-        logger.warn({ event: 'redis_unavailable', role: 'client', code: failureToken(error) });
-      },
-    }),
+    createRedisConnection(env.REDIS_URL, 'client', { logger }),
   );
   const keyring = override(overrides.keyring, () => keyringFromEnv(env));
   const llm = override(overrides.llm, () => createLlmAdapter(llmAdapterConfig(env)));
@@ -340,11 +338,16 @@ export async function createWorkerContext(
       let queue = producer.queues.get(name);
 
       if (queue === undefined) {
-        producer.connection ??= createRedisConnection(env.REDIS_URL, 'producer');
+        producer.connection ??= createRedisConnection(env.REDIS_URL, 'producer', { logger });
         queue = new Queue(name, {
           connection: producer.connection,
           defaultJobOptions: QUEUE_JOB_OPTIONS[name],
         });
+        // Not optional: a `Queue` re-emits the failures of the connection behind it, and BullMQ
+        // answers an `'error'` event with no listener by dumping the raw error and its stack to
+        // stderr, outside this process's logger. `producer` is the role whose window the producer
+        // connection reports through, so the queue and its connection share the one throttled line.
+        queue.on('error', (error: Error) => reportRedisUnavailable(logger, 'producer', error));
         producer.queues.set(name, queue);
       }
 
@@ -534,9 +537,15 @@ export function startWorkers(
  * Neither logs the job's data nor an error's own message: the message of a failure raised below, by a
  * browser, a database or a mail transport, can quote the value it objected to, and this listener
  * covers every queue in the process.
+ *
+ * The `error` listener is throttled per queue, because a Redis that is down fires it on every
+ * reconnect attempt: ten workers on one outage would otherwise write a line each per attempt and bury
+ * the first failure, which is the one an operator reads. Keying the window by queue keeps that
+ * readable without hiding a queue's own failure — each one still reports its first, and a queue whose
+ * failure is different from its siblings' is not silenced by whichever reported first.
  */
 function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker {
-  const connection = createRedisConnection(ctx.env.REDIS_URL, 'worker');
+  const connection = createRedisConnection(ctx.env.REDIS_URL, 'worker', { logger: ctx.logger });
   const worker = new Worker<unknown, unknown, string>(
     queue,
     (job: Job<unknown, unknown, string>) => runJob(queue, job, ctx),
@@ -556,7 +565,9 @@ function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker 
     });
   });
   worker.on('error', (error: Error) => {
-    ctx.logger.warn({ event: 'worker_error', queue, code: failureToken(error) });
+    throttleRedisFailure(`worker:${queue}`, () => {
+      ctx.logger.warn({ event: 'worker_error', queue, code: failureToken(error) });
+    });
   });
 
   return { queue, worker, connection };

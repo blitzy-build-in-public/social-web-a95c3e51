@@ -55,6 +55,7 @@ import type { DbClient } from '@tablemate/db';
 import { runSeed, type SeedSummary } from '@tablemate/db/seed';
 import {
   createFakeLlmAdapter,
+  createLogger,
   createRedisConnection,
   createTestClock,
   loadApiEnv,
@@ -565,9 +566,13 @@ async function redisDockerContainer() {
  *
  * A command issued before a fail-fast connection reached `ready` is refused rather than queued, which
  * is that connection's documented contract, so the readiness wait comes first and the ping after it.
+ * The connection is built with a silent process logger, because a readiness probe records nothing
+ * (AAP 0.11.1) — the caller learns of a real failure from the rejection below, not from a line.
  */
 async function awaitRedisPing(): Promise<void> {
-  const connection = createRedisConnection(inject('redisUrl'), 'client');
+  const connection = createRedisConnection(inject('redisUrl'), 'client', {
+    logger: createLogger({ name: 'api', level: 'silent', appEnv: 'test' }),
+  });
   try {
     await waitForRedisReady(connection, REDIS_PING_TIMEOUT_MS);
     await connection.ping();

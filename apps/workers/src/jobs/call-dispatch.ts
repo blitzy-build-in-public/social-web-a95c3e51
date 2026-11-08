@@ -456,7 +456,7 @@ async function applyVerdict(
 ): Promise<DispatchDecision> {
   if (verdict.kind === 'unreachable') {
     await markUnreachable(ctx.db, taskId, verdict.blockedReason, now);
-    logDecision(ctx, { taskId, decision: 'unreachable', reason: verdict.blockedReason });
+    logDecision(ctx, { taskId, decision: 'unreachable', blockedReason: verdict.blockedReason });
 
     return 'unreachable';
   }
@@ -465,7 +465,7 @@ async function applyVerdict(
     // The task keeps its status and moves to the next calling window, so a number the guard refuses
     // today is rechecked once a day instead of filling every two-minute batch (AAP 0.5.6).
     await markNotAllowlisted(ctx.db, taskId, nextCallingWindow(timezone, now));
-    logDecision(ctx, { taskId, decision: 'allowlist_block', reason: verdict.guardReason });
+    logDecision(ctx, { taskId, decision: 'allowlist_block', blockedReason: verdict.guardReason });
 
     return 'allowlist_block';
   }
@@ -474,7 +474,7 @@ async function applyVerdict(
   logDecision(ctx, {
     taskId,
     decision: 'deferred',
-    reason: verdict.reason,
+    blockedReason: verdict.reason,
     until: verdict.until.toISOString(),
   });
 
@@ -513,21 +513,21 @@ async function applyDispatchRefusal(
     case 'do_not_call':
     case 'no_phone': {
       await markUnreachable(ctx.db, taskId, reason, now);
-      logDecision(ctx, { taskId, decision: 'unreachable', reason });
+      logDecision(ctx, { taskId, decision: 'unreachable', blockedReason: reason });
 
       return 'unreachable';
     }
 
     case 'not_callable': {
       await markNotAllowlisted(ctx.db, taskId, nextCallingWindow(timezone, now));
-      logDecision(ctx, { taskId, decision: 'allowlist_block', reason });
+      logDecision(ctx, { taskId, decision: 'allowlist_block', blockedReason: reason });
 
       return 'allowlist_block';
     }
 
     case 'claim_not_open': {
       await cancelQueuedTask(ctx.db, taskId);
-      logDecision(ctx, { taskId, decision: 'claim_cancelled', reason });
+      logDecision(ctx, { taskId, decision: 'claim_cancelled', blockedReason: reason });
 
       return 'claim_cancelled';
     }
@@ -704,7 +704,7 @@ async function openVerificationTask(
   logDecision(ctx, {
     claimId,
     decision: 'task_created',
-    reason: blockedReason ?? 'queued',
+    blockedReason: blockedReason ?? 'queued',
   });
 
   return { result: { created: true, status: created.status }, claimCreatedAt: claim.created_at };
@@ -930,8 +930,12 @@ function count(counts: Record<DispatchDecision, number>, decision: DispatchDecis
 /**
  * Records one decision under the one `call_dispatch` event (AAP 0.11.1).
  *
- * The fields are ids and codes — a task, a claim, a decision, a reason, an instant — and never a phone
- * number, a URL or a vendor error body (AAP 0.12.2).
+ * The fields are ids and codes — a task, a claim, a decision, a blocked reason, an instant — and never
+ * a phone number, a URL or a vendor error body (AAP 0.12.2).
+ *
+ * The code travels under `blockedReason`, not `reason`: the logger's redaction list censors `reason`
+ * (a dispute's or a report's free text), and a code that has to be read back is logged under a name
+ * the list does not cover (AAP 0.11.1).
  */
 function logDecision(
   ctx: WorkerContext,
@@ -939,7 +943,7 @@ function logDecision(
     readonly taskId?: string;
     readonly claimId?: string;
     readonly decision: string;
-    readonly reason?: string;
+    readonly blockedReason?: string;
     readonly until?: string;
   },
 ): void {

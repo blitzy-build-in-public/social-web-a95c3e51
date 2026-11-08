@@ -10,12 +10,22 @@
  *
  * The URL comes from the host process's validated environment (`REDIS_URL`) and may carry a
  * password: it is never logged, echoed in an error or folded into a connection name.
+ *
+ * A connection reports a failure through the process logger its caller hands in, and that argument
+ * is required: this module owns no logger, because `api`, `workers` and the seed each build theirs
+ * with `createLogger`, which is what binds `service`, writes an ISO `time` and applies the
+ * workspace's redaction paths. The line is {@link reportRedisUnavailable}, throttled per role to
+ * {@link REDIS_UNAVAILABLE_LOG_INTERVAL_MS} by {@link throttleRedisFailure}, carrying the role and a
+ * bounded failure token rather than the error itself. That one throttle is what bounds every listener
+ * reporting the same outage — a `Queue`'s, a `Worker`'s, the in-process settlement worker's and the
+ * pub/sub subscriber's — so a Redis that is down writes a few lines a minute rather than hundreds.
  */
 
-import { Redis } from 'ioredis';
-import { pino } from 'pino';
+import { performance } from 'node:perf_hooks';
 
-import { LOGGER_REDACT_CENSOR, LOGGER_REDACT_PATHS } from '../logger.ts';
+import { Redis } from 'ioredis';
+
+import type { Logger } from '../logger.ts';
 
 /**
  * What a connection is for, which fixes its options (AAP 0.3.2): `worker` for a BullMQ `Worker` or
@@ -85,33 +95,114 @@ const ROLE_OPTIONS: Readonly<Record<RedisRole, RoleConnectionOptions>> = Object.
 });
 
 /**
- * The logger {@link logConnectionError} writes through. A library module owns no process logger —
- * `api`, `workers` and the seed each build theirs with `createLogger` — so this one is built here
- * with the workspace's own redaction paths and censor: the line is JSON on stdout carrying the
- * error's name, message and stack, and every field a process log line censors is censored here too.
- * It writes only when a connection fails and the caller supplied no handler.
+ * The shortest gap between two Redis-failure lines for one {@link throttleRedisFailure} key.
+ *
+ * ioredis reconnects on its own strategy — an attempt every `times × 50 ms`, capped at 2 s — and
+ * emits one `'error'` per failed attempt, so an unreachable Redis would otherwise write a line every
+ * couple of seconds for as long as the outage lasts and bury the first failure, which is the one an
+ * operator reads. The first failure is written immediately; 30 000 ms then holds a key to at most two
+ * lines a minute, which still reports the latest failure but never floods the log.
+ *
+ * The window belongs to a key, and a connection reports under one key per role, so every connection
+ * of a role shares one window while the producer side, each BullMQ `Worker` and the in-process
+ * settlement worker keep their own. The interval is exported so the number and its reason live in one
+ * place, beside the throttle everything uses.
  */
-const fallbackLogger = pino({
-  level: 'error',
-  redact: { paths: [...LOGGER_REDACT_PATHS], censor: LOGGER_REDACT_CENSOR },
-});
+export const REDIS_UNAVAILABLE_LOG_INTERVAL_MS = 30_000;
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
- * Where an `'error'` event goes when the caller names no handler, so a connection failure is never
- * dropped silently.
+ * A failed connection's own short token, for the `redis_unavailable` line (AAP 0.11.1).
  *
- * The listener is attached on every connection because ioredis otherwise prints an "Unhandled error
- * event" line, connection details included, for an event nobody listens to. A handler that the
- * listener skipped whenever the option was omitted would leave that listener doing nothing but
- * silencing ioredis, and the failure would reach neither the caller nor a log; this sink is what
- * makes "no handler named" mean "recorded here" rather than "lost".
- *
- * It records the error object the caller would have received. A connection failure's own error
- * carries its name, message (host and port) and errno fields and never the URL's credentials, so no
- * password reaches the line.
+ * It is the error's own `code` when that is a plain short identifier (`ECONNREFUSED`, `ETIMEDOUT`,
+ * `ENOTFOUND`), its class name otherwise, and `Error` for anything that is neither. The error's
+ * message and stack are deliberately not logged: pino writes both as strings, which key-based
+ * redaction cannot rewrite, and a connection failure's message names the host and port it could not
+ * reach while a driver's can quote the value it objected to. A code or a class name tells an operator
+ * which failure to look for without carrying one, the same rule every other failure listener in this
+ * workspace follows.
  */
-function logConnectionError(error: Error): void {
-  fallbackLogger.error({ err: error }, 'redis_connection_error');
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  return typeof token === 'string' && FAILURE_TOKEN_PATTERN.test(token) ? token : 'Error';
+}
+
+/**
+ * When each key last wrote a Redis-failure line, as a `performance.now()` reading.
+ *
+ * One map for the whole process rather than one reading per connection, because the connections of a
+ * role observe the same outage and the listeners beside them report the same failures: this is what
+ * holds them to one line per window between them. The readings are monotonic, never the wall clock, so
+ * a system time change cannot silence the next failure or repeat a line, and the keys are the fixed
+ * role names, the queue names and the two named consumers, so the map is bounded by what the process
+ * watches rather than by how long the outage lasts.
+ */
+const lastReportedAtByKey = new Map<string, number>();
+
+/**
+ * Run `report()` at most once per `key` per {@link REDIS_UNAVAILABLE_LOG_INTERVAL_MS} window.
+ *
+ * A Redis that is down makes every consumer of it fail at once and keep failing: ioredis emits one
+ * `'error'` per reconnect attempt on every connection it owns, and the one outage reaches a `Queue`,
+ * a `Worker`, the in-process settlement worker and the pub/sub subscriber together. An unthrottled
+ * listener therefore writes hundreds of lines a minute and buries the first one, which is the one an
+ * operator reads. The first call for a key runs `report()` at once, and a later one inside the window
+ * is dropped, so a long outage still reports itself on that cadence rather than not at all.
+ *
+ * The window is per key for the whole process, so callers watching the same failure share it:
+ * {@link reportRedisUnavailable} keys a connection failure by role, and the queue, worker and
+ * subscriber listeners key their own by what they watch.
+ *
+ * @param key - what failed, as `<scope>:<name>` — a connection's role, a queue, or a named consumer.
+ * @param report - the line to write; it runs only when the window allows one.
+ */
+export function throttleRedisFailure(key: string, report: () => void): void {
+  const now = performance.now();
+  const reportedAt = lastReportedAtByKey.get(key);
+
+  if (reportedAt !== undefined && now - reportedAt < REDIS_UNAVAILABLE_LOG_INTERVAL_MS) {
+    return;
+  }
+
+  lastReportedAtByKey.set(key, now);
+  report();
+}
+
+/**
+ * Report one Redis connection failure through the process logger, once per role per window.
+ *
+ * The line is the shape every other failure listener in this workspace writes — an `event`, the scope
+ * it happened in and a bounded token — so it is a structured line inside the process logger's JSON,
+ * with the `service` binding, the ISO `time` and the workspace's redaction paths applied (AAP 0.3.2,
+ * 0.11.1). It carries the connection's `role` and the failure's own short `code`, and never the error:
+ * no message and no stack, because pino writes both as strings that key-based redaction cannot rewrite
+ * and a connection failure's message names the host and port it could not reach.
+ *
+ * The throttle key is the role, not the connection: a `Queue` re-reports its connection's failures
+ * under the same role, and the connections of one role observe one outage, so all of them together
+ * write one line per {@link REDIS_UNAVAILABLE_LOG_INTERVAL_MS}. That is what makes the first line an
+ * operator reads the whole report of that outage, whether it was noticed by a connection, a producer
+ * or a consumer.
+ *
+ * @param logger - the process logger the warning is written through.
+ * @param role - the failing connection's role, written on the line.
+ * @param error - the failure; only its bounded {@link failureToken} reaches the line.
+ */
+export function reportRedisUnavailable(logger: Logger, role: RedisRole, error: unknown): void {
+  throttleRedisFailure(`connection:${role}`, () => {
+    logger.warn(
+      { event: 'redis_unavailable', role, code: failureToken(error) },
+      'redis_unavailable',
+    );
+  });
 }
 
 /**
@@ -127,21 +218,24 @@ function logConnectionError(error: Error): void {
  *
  * @param url - the Redis URL from the host process's validated environment (`REDIS_URL`).
  * @param role - the connection's role, which selects its options.
- * @param options - `onError` receives every `'error'` event, connection failures included. A
- * listener is always attached, because ioredis otherwise prints an "Unhandled error event" line
- * carrying connection details. A caller that names no handler does not lose the event: it is
- * recorded by this module's own `redis_connection_error` line instead, so a connection failure is
- * never dropped silently. The error object is passed through unchanged, so the URL never reaches a
- * caller through this argument.
+ * @param options - `logger` is the process logger this connection reports failures through and is
+ *   required, because this module owns no logger of its own and a connection whose failures would go
+ *   nowhere must not be buildable. `onError` receives every `'error'` event instead, for a caller
+ *   that has to react to one. A listener is attached either way, because ioredis otherwise prints an
+ *   "Unhandled error event" line carrying connection details, and a caller that names no handler does
+ *   not lose the event: it is recorded as the throttled {@link reportRedisUnavailable} warning, under
+ *   this connection's role. The error object is passed through unchanged, so the URL never reaches a
+ *   caller through this argument.
  * @returns the connection, still connecting and ready to be awaited.
  */
 export function createRedisConnection(
   url: string,
   role: RedisRole,
-  options?: { onError?: (error: Error) => void },
+  options: { logger: Logger; onError?: (error: Error) => void },
 ): Redis {
   const connection = new Redis(url, ROLE_OPTIONS[role]);
-  const onError = options?.onError ?? logConnectionError;
+  const onError =
+    options.onError ?? ((error: Error) => reportRedisUnavailable(options.logger, role, error));
   connection.on('error', (error: Error) => {
     onError(error);
   });

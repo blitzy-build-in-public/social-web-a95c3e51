@@ -25,7 +25,7 @@
  * Three rules hold throughout. Time comes from the injected clock and never from the wall clock
  * (AAP 0.11.1). No SMTP or Expo traffic runs inside a database transaction. And no log line carries
  * an email address, a token, a push token, a message body or a booking field: the fields logged are
- * the outbox id, the kind, the channel and a reason (AAP 0.11.1).
+ * the outbox id, the kind, the channel and, on a skip, the code under `skipReason` (AAP 0.11.1).
  *
  * @see AAP 0.3.2 for the outbox and the magic-link flow, 0.3.3 for SMTP and Expo push, 0.5.3 for the
  *   lifecycle a notification reports, 0.5.6 for the job table, 0.5.7 for the framing variant and
@@ -340,19 +340,22 @@ async function deliverMagicLink(
 
   if (token === null) {
     // Purged 24 hours after it expired (AAP 0.5.2): the link is long dead, so there is nothing to do.
-    ctx.logger.warn({ event: 'notification_skipped', ...log, reason: 'missing' });
+    // The code travels under `skipReason`, not `reason`: the logger's redaction list censors `reason`
+    // (a dispute's or a report's free text), and a code that has to be read back is logged under a
+    // name it does not cover (AAP 0.11.1).
+    ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'missing' });
     return { skipped: 'missing' };
   }
 
   if (token.expiresAt.getTime() <= ctx.clock.now().getTime()) {
     await clearDeliveryToken(ctx, tokenId);
-    ctx.logger.info({ event: 'notification_skipped', ...log, reason: 'expired' });
+    ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'expired' });
     return { skipped: 'expired' };
   }
 
   const ciphertext = token.deliveryTokenCiphertext;
   if (ciphertext === null) {
-    ctx.logger.info({ event: 'notification_skipped', ...log, reason: 'already_sent' });
+    ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'already_sent' });
     return { skipped: 'already_sent' };
   }
 
@@ -360,14 +363,14 @@ async function deliverMagicLink(
     // The earlier run claimed this channel and died before the row was cleared: clearing it here
     // finishes what that run started instead of mailing the link a second time.
     await clearDeliveryToken(ctx, tokenId);
-    ctx.logger.info({ event: 'notification_skipped', ...log, reason: 'already_sent' });
+    ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'already_sent' });
     return { skipped: 'already_sent' };
   }
 
   const secrets = magicLinkSecrets(ctx, token.emailCiphertext, ciphertext);
   if (secrets === null) {
     await clearDeliveryToken(ctx, tokenId);
-    ctx.logger.warn({ event: 'notification_skipped', ...log, reason: 'undecryptable' });
+    ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'undecryptable' });
     return { skipped: 'undecryptable' };
   }
 
@@ -411,13 +414,13 @@ async function deliverToUser(
   // An erased account is a tombstone and a deleting one is about to become one (AAP 0.5.2, 0.5.3):
   // neither is told anything, and the row is acknowledged rather than retried.
   if (user === null || user.deletedAt !== null || user.deletionRequestedAt !== null) {
-    ctx.logger.info({ event: 'notification_skipped', ...log, reason: 'user_deleted' });
+    ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'user_deleted' });
     return { skipped: 'user_deleted' };
   }
 
   const gathered = await gatherRenderData(ctx, payload, recipientId);
   if (gathered === null) {
-    ctx.logger.warn({ event: 'notification_skipped', ...log, reason: 'missing' });
+    ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'missing' });
     return { skipped: 'missing' };
   }
 
@@ -754,13 +757,13 @@ async function deliver(
     // No device to push to and no address to mail: the account holds no stored address. An erased
     // or deleting recipient is skipped before here, so this is a data gap rather than a tombstone,
     // and the row is recorded as undeliverable instead of being retried until it fails.
-    ctx.logger.warn({ event: 'notification_skipped', ...log, reason: 'no_channel' });
+    ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'no_channel' });
     return { skipped: 'no_channel' };
   }
 
   const to = decryptAddress(ctx, emailCiphertext);
   if (to === null) {
-    ctx.logger.warn({ event: 'notification_skipped', ...log, reason: 'undecryptable' });
+    ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'undecryptable' });
     return { skipped: 'undecryptable' };
   }
 

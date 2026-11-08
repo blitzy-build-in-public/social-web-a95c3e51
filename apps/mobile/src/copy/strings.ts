@@ -292,6 +292,21 @@ export function supportedIssuersText(names: readonly string[]): string {
     : `Supported booking sites: ${names.join(', ')}.`;
 }
 
+// --- Check-in: app/meetups/[id]/{check-in,index}.tsx, app/(tabs)/meetups.tsx ---------------------
+
+/**
+ * Confirms the caller's own check-in (AAP 0.5.7): the check-in screen's success card, and the line
+ * that marks the caller as checked in on the meetup detail card and on the Meetups list row.
+ */
+export const CHECKED_IN_NOTICE = "You're checked in.";
+
+/**
+ * The pair-completion sentence shown under {@link CHECKED_IN_NOTICE} in the same success card
+ * (AAP 0.5.7, 0.5.8): `CheckInResponse.bothCheckedIn` is true once the second pass check-in exists,
+ * which is the meetup the headline completion rate counts.
+ */
+export const BOTH_CHECKED_IN_NOTICE = "You're both checked in.";
+
 // --- Empty states (AAP 0.5.8, verbatim) ---------------------------------------------------------
 
 /** The Discover tab with no travelers holding a valid proof for the city (AAP 0.5.8). */

@@ -12,9 +12,9 @@
  * and no logging at all.
  *
  * It is client-safe and free of side effects: `fetch`, `AbortController`, `setTimeout` and
- * `encodeURIComponent` are the only platform APIs it touches, `./errors` and `@tablemate/shared` are
- * its only imports, and the base URL and auth hooks are read per call — which is what lets a plain
- * Node test import it with `EXPO_PUBLIC_API_URL` unset.
+ * `encodeURIComponent` are the only platform APIs it touches, `./errors`, `./server-clock` and
+ * `@tablemate/shared` are its only imports, and the base URL and auth hooks are read per call — which
+ * is what lets a plain Node test import it with `EXPO_PUBLIC_API_URL` unset.
  *
  * @see AAP 0.3.3 for the bearer token and the rotating refresh token, 0.5.3 for the `401
  * token_invalid` a deleted account receives, and 0.5.5 for the proof's private inputs.
@@ -91,6 +91,7 @@ import type {
 
 import { invalidResponse, isApiError, networkError, parseError } from './errors';
 import type { ApiError } from './errors';
+import { recordServerDate } from './server-clock';
 
 /** The path prefix every route is served under (AAP 0.5.4). */
 const API_PATH_PREFIX = '/v1';
@@ -395,8 +396,14 @@ async function send(
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
 
+  const sentAtMs = Date.now();
   try {
-    return await fetch(url, init);
+    const answer = await fetch(url, init);
+    // Every answer, a refusal included, carries the API's own clock in its `Date` header, which CORS
+    // exposes to the web origin (AAP 0.3.2): recording it here is what keeps the app's clock-derived
+    // copy — the check-in window line — on the server's clock (AAP 0.5.1).
+    recordServerDate(answer.headers.get('Date'), sentAtMs, Date.now());
+    return answer;
   } catch (error) {
     if (callerSignal !== undefined && callerSignal.aborted) throw error;
     throw networkError();
