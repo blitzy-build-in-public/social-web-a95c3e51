@@ -13,9 +13,10 @@
  *   which is the fallback when the automated call cannot (AAP 0.5.3). It is the operator's twin of
  *   `apps/workers/src/jobs/lodging-claims.ts`'s `resolveClaim` — the same guarded status change, the
  *   same cancellation of the verification work still outstanding, the same leaderboard backfill on
- *   `verified`, the same analytics event and the same notification — with two differences that are
- *   the operator's alone: the tasks it cancels record `resolvedBy = 'operator'`, and it runs inside
- *   the API's transaction helper rather than a worker's own.
+ *   `verified`, the same analytics event and the same notification — with three differences that are
+ *   the operator's alone: the tasks it cancels record `resolvedBy = 'operator'` and lose any
+ *   `blockedReason` they were carrying, and it runs inside the API's transaction helper rather than a
+ *   worker's own.
  * - {@link bookingDetails} answers the additive `GET /admin/lodging-claims/:id/booking-details`,
  *   whose read is the one exception to the zero-knowledge principle the product rests on and is
  *   therefore audited: every read writes an `OperatorAccessLog` row in the same transaction, and only
@@ -417,7 +418,9 @@ export async function resolveLodgingClaim(
  * `in_progress`, `needs_review` or `unreachable`. A task that is already terminal — `completed`,
  * `refused`, `do_not_call` or `cancelled` — is left exactly as it stands, and `outcomeAt` is never
  * written here, because a cancelled task was cancelled rather than reaching an outcome (AAP 0.5.3,
- * 0.5.7).
+ * 0.5.7). Its `blockedReason` is cleared with its status: the task is stopped, not blocked, and a
+ * reason written while a dial was still out of reach would describe a call that is never coming
+ * (AAP 0.5.3).
  *
  * A cancelled task's attempt in a possibly live state is marked `superseded`. That is the whole
  * handshake with the relay that may be speaking to the business right now: it reads the flag before
@@ -442,7 +445,7 @@ async function cancelOutstandingVerification(tx: DbTx, claimId: string): Promise
 
   await tx.callTask.updateMany({
     where: { id: { in: taskIds } },
-    data: { status: 'cancelled', resolvedBy: 'operator' },
+    data: { status: 'cancelled', resolvedBy: 'operator', blockedReason: null },
   });
 
   await tx.callAttempt.updateMany({

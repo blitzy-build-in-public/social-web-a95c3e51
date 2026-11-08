@@ -71,6 +71,7 @@
 
 import {
   AdminCallTaskDto,
+  AdminCallTasksQuery,
   AdminCallTasksResponse,
   AdminCrawlDomainDto,
   AdminCrawlDomainsResponse,
@@ -241,19 +242,27 @@ export default function adminRoutes(app: App): Promise<void> {
       ),
   );
 
-  // 4-5. The call queue and one operator outcome on a `menu_prices` task (AAP 0.5.4, 0.5.3). A
-  // lodging-verification task is refused by `resolveCallTask` with `422 invalid_outcome`, because a
-  // claim is resolved through its own route below.
+  // 4-5. The call queue and one operator outcome on a `menu_prices` task (AAP 0.5.4, 0.5.3). The read
+  // is the contract's only paginated operator queue: its strict query string carries the queue's own
+  // filters and its cursor, and a malformed cursor — like any other unusable value in that query —
+  // answers `400 invalid_field`. A lodging-verification task is refused by `resolveCallTask` with
+  // `422 invalid_outcome`, because a claim is resolved through its own route below.
   app.get(
     '/admin/call-tasks',
     {
       schema: {
         tags: [ADMIN_TAG],
         security: OPENAPI_SECURITY.bearer,
-        response: { 200: AdminCallTasksResponse, 401: ErrorEnvelope, 403: ErrorEnvelope },
+        querystring: AdminCallTasksQuery,
+        response: {
+          200: AdminCallTasksResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+        },
       },
     },
-    async (request) => listCallTasks(request.server.services),
+    async (request) => listCallTasks(request.server.services, request.query),
   );
 
   app.post(

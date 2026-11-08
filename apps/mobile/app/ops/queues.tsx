@@ -6,7 +6,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
 import {
   CHECK_IN_CLOSES_AFTER_MINUTES,
@@ -26,11 +26,13 @@ import {
 } from '@tablemate/shared';
 import type {
   AdminCallTaskDto,
+  AdminCallTasksQuery,
   AdminCrawlDomainDto,
   AdminDisputeDto,
   AdminLodgingClaimDto,
   AdminReportDto,
   BookingDetailsDto,
+  CallTaskKind,
   CrawlDecision,
   CrawlDomainDecisionUpdate,
   LodgingClaimStatus,
@@ -144,6 +146,18 @@ function formatMoment(iso: string): string {
   } catch {
     return iso;
   }
+}
+function createCountFormatter(): Intl.NumberFormat | null {
+  try {
+    return new Intl.NumberFormat();
+  } catch {
+    return null;
+  }
+}
+const COUNT_FORMATTER = createCountFormatter();
+/** A count as an operator reads it, grouped by the runtime's locale where it has number formats. */
+function formatCount(value: number): string {
+  return COUNT_FORMATTER?.format(value) ?? String(value);
 }
 const codeOf = (error: unknown): ClientErrorCode =>
   isApiError(error) ? error.code : 'invalid_response';
@@ -854,13 +868,178 @@ const REPORTS_QUEUE: QueueSpec<AdminReportDto> = {
     return <RowView title={who} facts={facts} />;
   },
 };
-const CALL_TASKS_QUEUE: QueueSpec<AdminCallTaskDto> = {
-  queryKey: queryKeys.adminCallTasks,
-  queryFn: () => apiClient.admin.listCallTasks(),
-  keyOf: (task) => task.id,
-  emptyText: 'No call tasks are waiting.',
-  renderItem: (task: AdminCallTaskDto) => <CallTaskRow task={task} currency={''} />,
-};
+
+/**
+ * The Call tasks tab's own controls and copy (AAP 0.5.4, 0.5.8), with `LABELS` for the chip wording so
+ * one status or kind reads the same here as it does on a row.
+ */
+const CALL_TASKS_EMPTY_TEXT = 'No call tasks are waiting.';
+const CALL_TASKS_SEARCH_LABEL = 'Search by name';
+const CALL_TASKS_STATUS_LABEL = 'Status';
+const CALL_TASKS_KIND_LABEL = 'Kind';
+/** The page one read of the queue asks for, inside the contract's own 1 to 500 bound (AAP 0.5.4). */
+const CALL_TASKS_PAGE_SIZE = 100;
+/** How long typing pauses before the search term is applied, in milliseconds. */
+const CALL_TASKS_SEARCH_DEBOUNCE_MS = 300;
+const CALL_TASKS_MORE = { label: 'Load more call tasks', variant: 'secondary' } as const;
+type CallTaskStatusFilter = 'all' | 'needs_review' | 'unreachable';
+type CallTaskKindFilter = 'all' | CallTaskKind;
+const CALL_TASKS_STATUS_FILTERS: readonly {
+  readonly value: CallTaskStatusFilter;
+  readonly label: string;
+}[] = [
+  { value: 'all', label: 'All' },
+  { value: 'needs_review', label: LABELS.callStatus.needs_review },
+  { value: 'unreachable', label: LABELS.callStatus.unreachable },
+];
+const CALL_TASKS_KIND_FILTERS: readonly {
+  readonly value: CallTaskKindFilter;
+  readonly label: string;
+}[] = [
+  { value: 'all', label: 'All' },
+  { value: 'menu_prices', label: LABELS.callKind.menu_prices },
+  { value: 'lodging_stay_verification', label: LABELS.callKind.lodging_stay_verification },
+];
+
+/**
+ * The queue's query string: only the filters that are actually set, because the route validates the
+ * query with a strict schema and answers `400 invalid_field` for a value it cannot read, and because
+ * `exactOptionalPropertyTypes` forbids handing it an empty one.
+ */
+function callTasksQuery(
+  status: CallTaskStatusFilter,
+  kind: CallTaskKindFilter,
+  term: string,
+): AdminCallTasksQuery {
+  const query: AdminCallTasksQuery = { limit: CALL_TASKS_PAGE_SIZE };
+
+  if (status !== 'all') query.status = status;
+  if (kind !== 'all') query.kind = kind;
+  if (term !== '') query.q = term;
+
+  return query;
+}
+
+/**
+ * The Call tasks tab (AAP 0.5.4, 0.5.8): the queue's own filters over one page at a time.
+ *
+ * The search term is applied from the change handler after a pause in typing, so one search reads one
+ * page rather than one per keystroke, and never from an effect. Every filter change moves the read to
+ * a new query key — the key stays under the one `queryKeys.adminCallTasks` prefix a resolution
+ * invalidates — so a new filter starts a fresh page and drops the pages before it. The count line
+ * says how many of the tasks the filters match are on screen, and the control below the rows loads
+ * the next page while the answer still carries a cursor. The rows themselves, with their resolve
+ * controls, are the ones the other queues render.
+ */
+function CallTasksPanel(): ReactElement {
+  const [search, setSearch] = useState('');
+  const [term, setTerm] = useState('');
+  const [status, setStatus] = useState<CallTaskStatusFilter>('all');
+  const [kind, setKind] = useState<CallTaskKindFilter>('all');
+  const pendingSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (pendingSearch.current !== null) clearTimeout(pendingSearch.current);
+    },
+    [],
+  );
+
+  const cities = useQuery({
+    queryKey: queryKeys.cities,
+    queryFn: () => apiClient.listCities(),
+    staleTime: 60 * 60 * 1000,
+  });
+  const currencies = useMemo(
+    () => new Map((cities.data?.items ?? []).map((city) => [city.id, city.currency] as const)),
+    [cities.data],
+  );
+
+  const filters = useMemo(() => callTasksQuery(status, kind, term), [status, kind, term]);
+  const queue = useInfiniteQuery({
+    queryKey: [...queryKeys.adminCallTasks, filters],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      apiClient.admin.listCallTasks(
+        pageParam === undefined ? filters : { ...filters, cursor: pageParam },
+      ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+
+  const pages = queue.data?.pages ?? [];
+  const rows = pages.flatMap((page) => page.items);
+  const total = pages[0]?.total ?? 0;
+  const errorMessage = queue.isError ? messageFor(queue.error) : null;
+  const announced = useRef<string | null>(null);
+  useEffect(() => {
+    if (errorMessage !== null && announced.current !== errorMessage) announce(errorMessage);
+    announced.current = errorMessage;
+  }, [errorMessage]);
+
+  const changeSearch = (text: string): void => {
+    setSearch(text);
+    if (pendingSearch.current !== null) clearTimeout(pendingSearch.current);
+    pendingSearch.current = setTimeout(() => {
+      pendingSearch.current = null;
+      setTerm(text.trim());
+    }, CALL_TASKS_SEARCH_DEBOUNCE_MS);
+  };
+
+  const showLoading = rows.length === 0 && errorMessage === null && queue.isPending;
+  const showEmpty = rows.length === 0 && errorMessage === null && !queue.isPending;
+  const retry = { ...RETRY_ACTION, onPress: () => void queue.refetch() };
+  const more = {
+    ...CALL_TASKS_MORE,
+    busy: queue.isFetchingNextPage,
+    onPress: () => void queue.fetchNextPage(),
+  };
+  // No count when the filters match a single task: it is on screen already, and the line would report
+  // one of one.
+  const countLine =
+    total <= 1 ? null : (
+      <Text style={styles.facts} testID="ops-call-tasks-count">
+        {`Showing ${formatCount(rows.length)} of ${formatCount(total)} call tasks`}
+      </Text>
+    );
+
+  return (
+    <>
+      <TextField
+        label={CALL_TASKS_SEARCH_LABEL}
+        value={search}
+        onChangeText={changeSearch}
+        testID="ops-call-tasks-search"
+      />
+      <ChoiceGroup
+        groupLabel={CALL_TASKS_STATUS_LABEL}
+        options={CALL_TASKS_STATUS_FILTERS}
+        value={status}
+        testIDPrefix="ops-call-tasks-status"
+        onSelect={setStatus}
+      />
+      <ChoiceGroup
+        groupLabel={CALL_TASKS_KIND_LABEL}
+        options={CALL_TASKS_KIND_FILTERS}
+        value={kind}
+        testIDPrefix="ops-call-tasks-kind"
+        onSelect={setKind}
+      />
+      {countLine}
+      {errorMessage === null ? null : (
+        <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
+      )}
+      {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
+      {showEmpty ? <Facts>{CALL_TASKS_EMPTY_TEXT}</Facts> : null}
+      {rows.map((task) => (
+        <Card key={task.id}>
+          <CallTaskRow task={task} currency={currencies.get(task.cityId) ?? ''} />
+        </Card>
+      ))}
+      {queue.hasNextPage ? <Button {...more} testID="ops-call-tasks-more" /> : null}
+    </>
+  );
+}
+
 const LODGING_CLAIMS_QUEUE: QueueSpec<AdminLodgingClaimDto> = {
   queryKey: queryKeys.adminLodgingClaims,
   queryFn: () => apiClient.admin.listLodgingClaims(),
@@ -875,22 +1054,6 @@ const CRAWL_DOMAINS_QUEUE: QueueSpec<AdminCrawlDomainDto> = {
   emptyText: 'No domains are waiting for a site-terms decision.',
   renderItem: (entry) => <CrawlDomainRow entry={entry} />,
 };
-function CallTasksPanel(): ReactElement {
-  const cities = useQuery({
-    queryKey: queryKeys.cities,
-    queryFn: () => apiClient.listCities(),
-    staleTime: 60 * 60 * 1000,
-  });
-  const currencies = useMemo(
-    () => new Map((cities.data?.items ?? []).map((city) => [city.id, city.currency] as const)),
-    [cities.data],
-  );
-  const renderItem = (task: AdminCallTaskDto): ReactElement => (
-    <CallTaskRow task={task} currency={currencies.get(task.cityId) ?? ''} />
-  );
-  return <QueuePanel spec={{ ...CALL_TASKS_QUEUE, renderItem }} />;
-}
-
 type TabButtonProps = { onSelect: (tab: QueueTab) => void; selected: boolean; tab: QueueTab };
 function TabButton({ tab, selected, onSelect }: TabButtonProps): ReactElement {
   const [focused, setFocused] = useState(false);

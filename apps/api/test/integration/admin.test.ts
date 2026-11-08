@@ -23,6 +23,7 @@
  *   log, 0.3.2 for the after-commit enqueue, 0.11.2 for the harness, and 0.8.1 for this file.
  */
 
+import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -53,6 +54,7 @@ import {
   SecretIssued,
 } from '@tablemate/shared';
 import type {
+  BlockedReason,
   CallTaskStatus,
   CheckInResult,
   DisputeOutcome,
@@ -635,10 +637,183 @@ function menuTask(status: CallTaskStatus): Promise<{ id: string }> {
   return makeCallTask(t, { kind: 'menu_prices', placeId: place.id, status });
 }
 
+/**
+ * A menu-price call task on the fixture place that is carrying the `blockedReason` its own dial hit:
+ * the state a task waits in when the dispatch cannot dial it, and the state from which an operator
+ * resolves it by hand (AAP 0.5.3).
+ */
+function blockedMenuTask(
+  status: CallTaskStatus,
+  blockedReason: BlockedReason,
+): Promise<{ id: string }> {
+  return makeCallTask(t, { kind: 'menu_prices', placeId: place.id, status, blockedReason });
+}
+
 /** `POST /admin/call-tasks/:id/resolve` as the operator. */
 function resolveTask(taskId: string, body: Record<string, unknown>): Promise<RouteResponse> {
   return asOperator('POST', `/v1/admin/call-tasks/${taskId}/resolve`, { body });
 }
+
+/** `GET /admin/call-tasks` as the operator, parsed into the contract's own page (AAP 0.5.4). */
+async function callTasks(query: Record<string, string> = {}): Promise<AdminCallTasksResponse> {
+  const response = await asOperator('GET', '/v1/admin/call-tasks', { query });
+  expect(response.status, response.body).toBe(200);
+  return AdminCallTasksResponse.parse(response.json());
+}
+
+/**
+ * Queue one menu task per entry for a paging case, at the outcome instant that entry names: entries
+ * sharing one instant exercise the id tie-break, and `null` is a task with no outcome yet, which the
+ * queue's order places last (AAP 0.5.4, 0.5.7).
+ */
+async function queuedTasks(outcomeAts: readonly (Date | null)[]): Promise<string[]> {
+  const ids: string[] = [];
+
+  for (const outcomeAt of outcomeAts) {
+    const task = await makeCallTask(t, {
+      kind: 'menu_prices',
+      placeId: place.id,
+      status: 'needs_review',
+      ...(outcomeAt === null ? {} : { outcomeAt }),
+    });
+    ids.push(task.id);
+  }
+
+  return ids;
+}
+
+/** The three tasks the filter cases narrow, by the id each of them asserts on (AAP 0.5.3). */
+interface QueueIds {
+  readonly review: string;
+  readonly unreachable: string;
+  readonly verification: string;
+}
+
+/**
+ * The queue the filter cases narrow: two menu tasks on the fixture place — one awaiting review, one
+ * unreachable for want of a number — and a lodging verification an operator also has to act on.
+ */
+async function filteringQueue(): Promise<QueueIds> {
+  const review = await makeCallTask(t, {
+    kind: 'menu_prices',
+    placeId: place.id,
+    status: 'needs_review',
+    outcomeAt: instant(-HOUR_MS),
+  });
+  const unreachable = await makeCallTask(t, {
+    kind: 'menu_prices',
+    placeId: place.id,
+    status: 'unreachable',
+    blockedReason: 'no_phone',
+  });
+  const verification = await makeCallTask(t, {
+    kind: 'lodging_stay_verification',
+    lodgingId: lodging.id,
+    status: 'needs_review',
+  });
+
+  return { review: review.id, unreachable: unreachable.id, verification: verification.id };
+}
+
+/**
+ * One filter over that same three-task queue: the query it sends and the rows that must come back.
+ *
+ * The name filter is typed in lower case although every fixture name begins "Fixture", which is what
+ * makes the row prove the match is case-insensitive rather than merely a prefix match.
+ */
+const QUEUE_FILTERS = rows<{
+  readonly name: string;
+  readonly query: (ids: QueueIds) => Record<string, string>;
+  readonly expected: (ids: QueueIds) => readonly string[];
+}>([
+  {
+    name: 'the status an operator still has to resolve',
+    query: () => ({ status: 'unreachable' }),
+    expected: (ids) => [ids.unreachable],
+  },
+  {
+    name: 'the task kind',
+    query: () => ({ kind: 'lodging_stay_verification' }),
+    expected: (ids) => [ids.verification],
+  },
+  {
+    name: "the target's name, in whatever case it is typed",
+    query: () => ({ q: place.name.toLowerCase() }),
+    expected: (ids) => [ids.review, ids.unreachable],
+  },
+]);
+
+/** A cursor-shaped value the queue's codec refuses: base64url of the payload the case hands it. */
+function cursorShaped(payload: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+/**
+ * Queries the read refuses before it runs (AAP 0.5.4): a cursor the codec cannot read — malformed
+ * text, a millisecond instant and an id that is not an id — a page size outside the contract's own
+ * bound, and a parameter the queue does not carry, which its strict schema answers rather than
+ * ignoring.
+ */
+const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<string, string> }>([
+  { name: 'a cursor that is not the position a page ended on', query: { cursor: 'not-a-cursor' } },
+  {
+    name: 'a cursor whose instant is not the one this queue writes',
+    query: { cursor: cursorShaped({ t: `${TODAY}T00:00:00.000Z`, i: randomUUID() }) },
+  },
+  {
+    name: 'a cursor whose id is not an id',
+    query: { cursor: cursorShaped({ t: null, i: 'nope' }) },
+  },
+  { name: 'a page size above the one the contract allows', query: { limit: '501' } },
+  { name: 'a parameter the queue does not carry', query: { page: '2' } },
+]);
+
+/**
+ * One operator resolution of a task that was carrying a `blockedReason`: the status it waits in, the
+ * reason its own dial hit, the outcome the operator records, and the body that outcome needs.
+ *
+ * Three rows pair the reason with the status the lifecycle gives it — a dispatch that could not be
+ * reconciled and a vendor that ran out of retries wait in `needs_review`, an invalid number is
+ * `unreachable` (AAP 0.5.3) — so the case proves the clearing from both statuses an operator resolves
+ * from, and the `do_not_call` row carries the `not_allowlisted` reason a resolved task was reported
+ * holding while its status said otherwise.
+ */
+const BLOCKED_RESOLUTIONS = rows<{
+  readonly name: string;
+  readonly status: CallTaskStatus;
+  readonly blockedReason: BlockedReason;
+  readonly outcome: OperatorCallTaskOutcome;
+  readonly body: Record<string, unknown>;
+}>([
+  {
+    name: 'completed',
+    status: 'needs_review',
+    blockedReason: 'dispatch_unknown',
+    outcome: 'completed',
+    body: { outcome: 'completed', prices: OPERATOR_PRICES },
+  },
+  {
+    name: 'refused',
+    status: 'needs_review',
+    blockedReason: 'vendor_unavailable',
+    outcome: 'refused',
+    body: { outcome: 'refused' },
+  },
+  {
+    name: 'do_not_call',
+    status: 'unreachable',
+    blockedReason: 'not_allowlisted',
+    outcome: 'do_not_call',
+    body: { outcome: 'do_not_call' },
+  },
+  {
+    name: 'unreachable',
+    status: 'unreachable',
+    blockedReason: 'invalid_number',
+    outcome: 'unreachable',
+    body: { outcome: 'unreachable' },
+  },
+]);
 
 describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
   it('lists the tasks an operator still has to act on, and nothing of a booking', async () => {
@@ -709,6 +884,70 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     expect(lodgingTask?.lastSummary).toBeNull();
     expect(lodgingTask?.blockedReason).toBe('no_phone');
     expect(response.body).not.toContain(name);
+  });
+
+  it('answers exactly the page its limit names, and says another page follows', async () => {
+    const ids = await queuedTasks([instant(-HOUR_MS), null, null]);
+
+    const page = await callTasks({ limit: '2' });
+
+    expect(page.items).toHaveLength(2);
+    expect(page.total).toBe(ids.length);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
+  it('walks the whole queue by its cursor, with no duplicate and no omission', async () => {
+    const at = instant(-HOUR_MS);
+    const ids = await queuedTasks([at, at, null, null, null]);
+    const whole = await callTasks({ limit: String(ids.length) });
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+
+    // One iteration per page and one more, so a cursor that never ends fails on the loop's own bound
+    // rather than hanging.
+    for (let page = 0; page <= ids.length; page += 1) {
+      const answer = await callTasks(cursor === null ? { limit: '2' } : { limit: '2', cursor });
+      seen.push(...answer.items.map((item) => item.id));
+      cursor = answer.nextCursor;
+      if (cursor === null) break;
+    }
+
+    // The queue read whole is the yardstick: two rows at a time must reproduce it row for row, so a
+    // cursor that skipped, repeated or reordered a row fails here, and the walk ends on a null cursor
+    // (AAP 0.5.4).
+    expect(seen).toEqual(whole.items.map((item) => item.id));
+    expect(new Set(seen).size).toBe(ids.length);
+    expect(whole.nextCursor).toBeNull();
+    expect(cursor).toBeNull();
+  });
+
+  it('counts the whole filtered queue while the page holds one of its rows', async () => {
+    const ids = await filteringQueue();
+
+    const page = await callTasks({ status: 'needs_review', limit: '1' });
+
+    // The count names both tasks the status matches and the page carries the first of them, so an
+    // operator reads how much of the queue is still behind the control (AAP 0.5.4).
+    expect(page.items.map((item) => item.id)).toEqual([ids.review]);
+    expect(page.total).toBe(2);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
+  it.each(QUEUE_FILTERS)('narrows the queue by $name', async (row) => {
+    const ids = await filteringQueue();
+    const expected = row.expected(ids);
+
+    const answer = await callTasks(row.query(ids));
+
+    expect(answer.total).toBe(expected.length);
+    expect(answer.items.map((item) => item.id).sort()).toEqual([...expected].sort());
+  });
+
+  it.each(QUEUE_BAD_QUERIES)('refuses $name with 400 invalid_field', async (row) => {
+    const response = await asOperator('GET', '/v1/admin/call-tasks', { query: row.query });
+
+    expectError(response, 400, 'invalid_field');
   });
 
   it('stores the prices an operator was told as one operator_entry batch', async () => {
@@ -790,9 +1029,38 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     expect(await t.services.db.priceRecord.count({ where: { placeId: place.id } })).toBe(0);
   });
 
+  it.each(BLOCKED_RESOLUTIONS)(
+    'clears the block reason of a task it resolves $name',
+    async (row) => {
+      const task = await blockedMenuTask(row.status, row.blockedReason);
+
+      const response = await resolveTask(task.id, row.body);
+      expect(response.status, response.body).toBe(200);
+
+      // The answer reports the task as the operator left it: the terminal status is what the row now
+      // means, and a reason written while the dial was out of reach no longer describes it, because a
+      // resolved task has left the dialing path either way (AAP 0.5.3, 0.5.4).
+      const resolved = AdminCallTaskDto.parse(response.json());
+      expect(resolved.status).toBe(row.outcome);
+      expect(resolved.blockedReason).toBeNull();
+
+      const stored = await t.services.db.callTask.findUniqueOrThrow({
+        where: { id: task.id },
+        select: { blockedReason: true, resolvedBy: true, status: true },
+      });
+      expect(stored.status).toBe(row.outcome);
+      expect(stored.resolvedBy).toBe('operator');
+      expect(stored.blockedReason).toBeNull();
+    },
+  );
+
   it('stops every other task of a place that asked not to be called', async () => {
     const task = await menuTask('needs_review');
-    const companion = await menuTask('queued');
+    // Both companions are waiting out a block of their own, in the two statuses a `do_not_call`
+    // cancels that carry one: a task held off by the allowlist while it stays `queued`, and one the
+    // dispatch could not reconcile (AAP 0.5.3, 0.5.6).
+    const companion = await blockedMenuTask('queued', 'not_allowlisted');
+    const held = await blockedMenuTask('needs_review', 'dispatch_unknown');
     const live = await makeCallAttempt(t, companion, { state: 'in_progress' });
 
     const response = await resolveTask(task.id, { outcome: 'do_not_call' });
@@ -806,14 +1074,19 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
 
     // The whole place is stopped, and the attempt that may be live right now is marked superseded —
     // the flag the relay reads before its next turn (AAP 0.5.3). A cancelled task was cancelled
-    // rather than reaching an outcome, so it records neither a resolver nor an instant.
-    const cancelled = await t.services.db.callTask.findUniqueOrThrow({
-      where: { id: companion.id },
-      select: { outcomeAt: true, resolvedBy: true, status: true },
-    });
-    expect(cancelled.status).toBe('cancelled');
-    expect(cancelled.resolvedBy).toBeNull();
-    expect(cancelled.outcomeAt).toBeNull();
+    // rather than reaching an outcome, so it records neither a resolver nor an instant, and the block
+    // reason it was carrying goes with the status: a task the place has asked to stop calling is
+    // stopped rather than blocked, and the lifecycle panel counts it as cancelled alone (AAP 0.5.7).
+    for (const other of [companion, held]) {
+      const cancelled = await t.services.db.callTask.findUniqueOrThrow({
+        where: { id: other.id },
+        select: { blockedReason: true, outcomeAt: true, resolvedBy: true, status: true },
+      });
+      expect(cancelled.status).toBe('cancelled');
+      expect(cancelled.resolvedBy).toBeNull();
+      expect(cancelled.outcomeAt).toBeNull();
+      expect(cancelled.blockedReason).toBeNull();
+    }
 
     const superseded = await t.services.db.callAttempt.findUniqueOrThrow({
       where: { id: live.id },
@@ -1084,6 +1357,33 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       select: { meetupId: true },
     });
     expect(facts.map((fact) => fact.meetupId)).toEqual(row.backfills ? [meetup.id] : []);
+  });
+
+  it('cancels an outstanding verification task of a resolved claim with no block reason left', async () => {
+    // Where a lodging verification reaches the operator queue when the lodging has no number at all:
+    // `unreachable` with `blockedReason = no_phone`, which is the reason the dashboard counts beside
+    // its open calls (AAP 0.5.3, 0.5.6). Resolving the claim ends the work still outstanding on it,
+    // and the reason goes with the status: a cancelled task is stopped rather than blocked, and no
+    // dial is coming for it (AAP 0.5.3).
+    const claim = await makeClaim(t, traveler, lodging, { status: 'calling' });
+    const task = await makeCallTask(t, {
+      kind: 'lodging_stay_verification',
+      lodgingId: lodging.id,
+      lodgingClaimId: claim.id,
+      status: 'unreachable',
+      blockedReason: 'no_phone',
+    });
+
+    const response = await resolveClaim(claim.id, 'verified');
+    expect(response.status, response.body).toBe(200);
+
+    const stored = await t.services.db.callTask.findUniqueOrThrow({
+      where: { id: task.id },
+      select: { blockedReason: true, resolvedBy: true, status: true },
+    });
+    expect(stored.status).toBe('cancelled');
+    expect(stored.resolvedBy).toBe('operator');
+    expect(stored.blockedReason).toBeNull();
   });
 
   it.each(

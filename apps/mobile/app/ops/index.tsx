@@ -6,6 +6,7 @@ import { Stack } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { Line, Rect } from 'react-native-svg';
 import {
+  BlockedReason,
   DateOnly,
   MIN_TOUCH_TARGET,
   VariantPairing,
@@ -42,6 +43,16 @@ const CALL_OUTCOMES: { key: keyof MetricsDto['calls']['byOutcome']; label: strin
   { key: 'needs_review', label: 'Needs review' },
   { key: 'no_answer', label: 'No answer' },
 ];
+/** Each blocked reason in the words the operations runbook gives it, so no enum key leads a row. */
+const BLOCKED_REASON_LABELS: Record<BlockedReason, string> = {
+  not_allowlisted: 'Number not on the call allowlist',
+  no_phone: 'No phone number',
+  do_not_call: 'Number asked not to be called',
+  invalid_number: 'Number is not valid',
+  vendor_unavailable: 'Calling provider unavailable',
+  dispatch_unknown: 'Dispatch unconfirmed',
+  no_final_status: 'No final call status',
+};
 const BAR_HEIGHT = 12;
 const BAR_FILL_INSET = 2;
 const BAR_FILL_RADIUS = (BAR_HEIGHT - BAR_FILL_INSET * 2) / 2;
@@ -96,6 +107,13 @@ function widthPercent(part: number, whole: number): string {
 function cityLabel(cities: readonly CityDto[], cityId: string): string {
   return cities.find((city) => city.id === cityId)?.name ?? cityId;
 }
+/** A reason this build does not know still reads as words, never as a raw enum key. */
+function blockedReasonLabel(reason: string): string {
+  const known = BlockedReason.options.find((option) => option === reason);
+  if (known !== undefined) return BLOCKED_REASON_LABELS[known];
+  const words = reason.replace(/_/g, ' ');
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
 const funnelStages = (f: MetricsDto['funnel']): readonly Stage[] => [
   ['Proposals sent', countText(f.proposalsSent), f.proposalsSent],
   ['Viewed by the recipient', countText(f.proposalsViewed), f.proposalsViewed],
@@ -130,7 +148,7 @@ const lifecycleRows = ({ calls: { lifecycle } }: MetricsDto): readonly Stat[] =>
   ['Cancelled', countText(lifecycle.cancelled)],
 ];
 const blockedRows = (blocked: readonly (readonly [string, number])[]): readonly Stat[] =>
-  blocked.map(([reason, count]): Stat => [reason, countText(count)]);
+  blocked.map(([reason, count]): Stat => [blockedReasonLabel(reason), countText(count)]);
 const lodgingRows = ({ lodgingClaims }: MetricsDto): readonly Stat[] => [
   ['Submitted', countText(lodgingClaims.submitted)],
   ['Verified', countText(lodgingClaims.verified)],

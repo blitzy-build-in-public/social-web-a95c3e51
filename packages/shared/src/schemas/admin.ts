@@ -49,6 +49,7 @@ import { VenueDto } from './cities.ts';
 import {
   CitySlug,
   Count,
+  Cursor,
   DateOnly,
   Domain,
   E164,
@@ -274,6 +275,27 @@ export const ResolveDispute = z.strictObject({ outcome: z.string() });
 export type ResolveDispute = z.infer<typeof ResolveDispute>;
 
 /**
+ * The query string of `GET /admin/call-tasks`, the operator's call queue (AAP 0.5.4).
+ *
+ * A strict object, so a parameter this contract does not carry is `400 invalid_field` rather than
+ * ignored, which is what keeps a client's misspelled filter from silently reading the whole queue.
+ *
+ * `status` narrows the queue to one of the two statuses an operator still has to resolve; omitted,
+ * both are read (AAP 0.5.3). `kind` selects one task kind. `q` searches the target business's name,
+ * case-insensitively, and is trimmed before it is bounded, so padding around a term never fails a
+ * check the term itself passes. `limit` is the page size and defaults to `ADMIN_CALL_TASKS_LIMIT`
+ * (200); `cursor` is the `nextCursor` a previous page answered (AAP 0.5.4).
+ */
+export const AdminCallTasksQuery = z.strictObject({
+  status: z.enum(['needs_review', 'unreachable']).optional(),
+  kind: CallTaskKind.optional(),
+  q: z.string().trim().min(1).max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  cursor: Cursor.optional(),
+});
+export type AdminCallTasksQuery = z.infer<typeof AdminCallTasksQuery>;
+
+/**
  * The partial fields one call extracted, as the queue shows them (AAP 0.5.4): a free-form map,
  * because what a call yields depends on the task kind and how far the dialogue got, and only JSON
  * scalars reach it. For a menu call these are the values the model extracted, with `priceText`
@@ -310,12 +332,23 @@ export const AdminCallTaskDto = z.object({
 export type AdminCallTaskDto = z.infer<typeof AdminCallTaskDto>;
 
 /**
- * The body of `GET /admin/call-tasks` (AAP 0.5.4): the operator's queue, oldest outcome first —
- * `outcomeAt` ascending, the task id breaking a same-instant tie, and a task with no outcome yet
- * last. The queue holds the tasks whose calls are already over, so the call-and-menu priority rule
+ * One page of the body of `GET /admin/call-tasks` (AAP 0.5.4): the operator's queue, oldest outcome
+ * first — `outcomeAt` ascending, the task id breaking a same-instant tie, and a task with no outcome
+ * yet last. The queue holds the tasks whose calls are already over, so the call-and-menu priority rule
  * of AAP 0.5.7, which orders `menu-ingest` and `call-dispatch`, does not order this read.
+ *
+ * `total` counts every task the request's filters match with the cursor ignored, so an operator reads
+ * how many rows the page leaves behind; it counts matching tasks rather than DTOs, so a row whose
+ * target the guarded client hides leaves `items` one element shorter than `total` (AAP 0.5.2).
+ * `nextCursor` continues the read and is null on the last page. Both fields are additive and `items`
+ * is unchanged, so a client that sends no query at all still reads one page of
+ * `ADMIN_CALL_TASKS_LIMIT` (200) tasks in the same order it always did (AAP 0.5.4).
  */
-export const AdminCallTasksResponse = z.object({ items: z.array(AdminCallTaskDto) });
+export const AdminCallTasksResponse = z.object({
+  items: z.array(AdminCallTaskDto),
+  total: Count,
+  nextCursor: Cursor.nullable(),
+});
 export type AdminCallTasksResponse = z.infer<typeof AdminCallTasksResponse>;
 
 /**

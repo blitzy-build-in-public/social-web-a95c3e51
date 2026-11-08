@@ -25482,6 +25482,62 @@
         "tags": [
           "admin"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "needs_review",
+                "unreachable"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "menu_prices",
+                "lodging_stay_verification"
+              ]
+            },
+            "in": "query",
+            "name": "kind",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          }
+        ],
         "security": [
           {
             "bearer": []
@@ -25607,10 +25663,118 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "nextCursor": {
+                      "nullable": true,
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
                     }
                   },
                   "required": [
-                    "items"
+                    "items",
+                    "total",
+                    "nextCursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_email",
+                            "proof_malformed",
+                            "invalid_field",
+                            "consent_missing",
+                            "booking_name_empty",
+                            "bad_signature",
+                            "token_invalid",
+                            "bad_venue_secret",
+                            "bad_lodging_secret",
+                            "hold_failed",
+                            "no_valid_proof",
+                            "not_recipient",
+                            "not_initiator",
+                            "not_participant",
+                            "messaging_locked",
+                            "blocked",
+                            "operator_only",
+                            "age_gate_required",
+                            "city_not_found",
+                            "user_not_found",
+                            "venue_not_found",
+                            "meetup_not_found",
+                            "lodging_not_found",
+                            "claim_not_found",
+                            "not_found",
+                            "nullifier_used",
+                            "meetup_exists",
+                            "not_proposed",
+                            "hold_pending",
+                            "already_settled",
+                            "dispute_open",
+                            "not_locked",
+                            "already_checked_in",
+                            "dispute_window_closed",
+                            "meetup_not_locked",
+                            "active_claim_exists",
+                            "call_in_progress",
+                            "no_verified_claim",
+                            "details_unavailable",
+                            "proposal_lapsed",
+                            "outside_window",
+                            "photo_too_large",
+                            "proof_invalid",
+                            "issuer_not_allowlisted",
+                            "stay_out_of_range",
+                            "self_proposal",
+                            "venue_not_partner",
+                            "starts_at_invalid",
+                            "deposit_invalid",
+                            "invalid_code",
+                            "outside_geofence",
+                            "invalid_outcome",
+                            "budget_out_of_range",
+                            "claim_dates_invalid",
+                            "lodging_other_city",
+                            "rate_limited",
+                            "daily_cap_reached",
+                            "internal_error",
+                            "payment_unavailable",
+                            "service_unavailable",
+                            "suggestions_unavailable"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
                   ],
                   "additionalProperties": false
                 }

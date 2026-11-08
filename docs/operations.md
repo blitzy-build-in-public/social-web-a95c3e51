@@ -295,7 +295,12 @@ a report is written once by the safety route that files it and never changes.
 ### Call tasks
 
 The tab lists every `needs_review` and `unreachable` task no operator has resolved yet, with its
-target, city, attempts, the latest outcome and the fields its latest attempt extracted.
+target, city, attempts, the latest outcome and the fields its latest attempt extracted. It reads 100
+tasks at a time: the line above the rows says how many of the tasks the current filters match and how
+many of them are on screen, and `Load more call tasks` appends the next page until the queue runs out.
+A search over the target's name, a status filter (All, Needs review, Unreachable) and a kind filter
+(All, Menu prices, Stay verification) narrow the queue, and changing any of the three starts again
+from the first page.
 
 | `blockedReason`      | Meaning                                                                                                                                                                           |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

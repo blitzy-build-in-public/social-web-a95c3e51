@@ -3,13 +3,18 @@
  * `admin/call-tasks.ts`, 0.5.4 `GET /admin/call-tasks` and `POST /admin/call-tasks/:id/resolve`,
  * 0.5.3 "Call-task lifecycle").
  *
- * {@link listCallTasks} reads what an operator still has to act on — every `needs_review` and
- * `unreachable` task no operator has resolved yet, with the business dialed, its city, the latest
- * attempt's outcome and the values that attempt extracted. {@link resolveCallTask} records one
- * outcome on a `menu_prices` task: `completed` stores the prices the operator was told on the phone
- * or approves the `phone_quote` records a call left for review, `refused` closes the task,
- * `do_not_call` flags the place and stops every other task of it, and `unreachable` records that
- * the operator could not obtain prices either.
+ * {@link listCallTasks} reads one page of what an operator still has to act on — the `needs_review`
+ * and `unreachable` tasks no operator has resolved yet, narrowed by the request's status, kind and
+ * target-name filters and continued by a keyset cursor over the queue's own order. Each row carries
+ * the business dialed, its city, the latest attempt's outcome and the values that attempt extracted,
+ * and the answer carries the number of tasks those filters match (AAP 0.5.4). {@link resolveCallTask}
+ * records one outcome on a `menu_prices` task: `completed` stores the prices the operator was told on
+ * the phone or approves the `phone_quote` records a call left for review, `refused` closes the task,
+ * `do_not_call` flags the place and stops every other task of it, and `unreachable` records that the
+ * operator could not obtain prices either.
+ *
+ * Whichever outcome a resolution records, the task leaves the dialing path with no `blockedReason`,
+ * and the tasks a `do_not_call` stops are cleared with it (AAP 0.5.3).
  *
  * The checks run in the order the plan fixes (AAP 0.5.3, 0.5.4), and each is stated where it is
  * made: an outcome outside `OperatorCallTaskOutcome` is `422 invalid_outcome`, an unknown task id is
@@ -37,13 +42,20 @@ import { randomUUID } from 'node:crypto';
 import { Prisma } from '@tablemate/db';
 import type { CallTask, DbClient, DbTx, Place } from '@tablemate/db';
 import type { Logger } from '@tablemate/server-core';
-import { OperatorCallTaskOutcome } from '@tablemate/shared';
+import {
+  CURSOR_INSTANT_FORMAT,
+  decodeNullableKeysetCursor,
+  encodeNullableKeysetCursor,
+  OperatorCallTaskOutcome,
+} from '@tablemate/shared';
 import type {
   AdminCallTaskDto,
+  AdminCallTasksQuery,
   AdminCallTasksResponse,
   CallAttemptState,
   CallTaskStatus,
   ExtractedFields,
+  NullableKeysetCursorPosition,
   PriceItemInput,
   ResolveCallTask,
 } from '@tablemate/shared';
@@ -63,17 +75,25 @@ import type { TransactServices } from '../outbox/write.ts';
 export type CallTaskServices = TransactServices;
 
 /**
- * What {@link listCallTasks} needs: the guarded client, narrowed to the delegate it reads, and the
- * process logger the one warning a row the contract cannot carry is reported through (AAP 0.11.1).
+ * What {@link listCallTasks} needs: the guarded client, narrowed to what one page of the queue is
+ * read with, and the process logger the one warning a row the contract cannot carry is reported
+ * through (AAP 0.11.1).
  */
 export interface CallTaskQueueReader {
-  /** The guarded Prisma client, of which only the `callTask` delegate is read. */
-  readonly db: Pick<DbClient, 'callTask'>;
+  /**
+   * The guarded Prisma client: the `callTask` delegate for the page and its count, and the raw reader
+   * for the exact `outcome_at` of the row a page ended on, which no `Date` carries
+   * ({@link exactOutcomeAt}).
+   */
+  readonly db: Pick<DbClient, 'callTask' | '$queryRaw'>;
   /** The process logger, of which only `warn` is written through. */
   readonly logger: Pick<Logger, 'warn'>;
 }
 
-/** The most tasks one read of the queue returns, the contract carrying no cursor (AAP 0.5.4). */
+/**
+ * The page one read of the queue returns when the query names no `limit`, the quantity the contract's
+ * first answer already carried (AAP 0.5.4).
+ */
 export const ADMIN_CALL_TASKS_LIMIT = 200;
 
 /** The two task statuses an operator still has to resolve (AAP 0.5.3). */
@@ -317,7 +337,105 @@ export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto | nu
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The operator's call queue, oldest outcome first, capped at {@link ADMIN_CALL_TASKS_LIMIT}.
+ * Decodes a queue cursor this file issued (AAP 0.5.4).
+ *
+ * A cursor is a value the client sends back, so the shared codec parses it strictly: canonical
+ * base64url of a `{t,i}` payload that `NullableKeysetCursor` accepts — an instant in exactly the form
+ * {@link CURSOR_INSTANT_FORMAT} writes, or `null` for the tasks that have no outcome, and a UUID —
+ * and nothing else.
+ *
+ * @param value - The `cursor` query parameter.
+ * @returns The position it names.
+ * @throws {AppError} `invalid_field` (400) for anything else, which is the contract's answer for a
+ *   bad query value (AAP 0.5.4).
+ */
+function decodeQueueCursor(value: string): NullableKeysetCursorPosition {
+  const position = decodeNullableKeysetCursor(value);
+
+  if (position === null) {
+    throw new AppError('invalid_field', 'The cursor is malformed.');
+  }
+
+  return position;
+}
+
+/**
+ * The keyset half of the read: every row ordered after `position` by `(outcomeAt asc, id asc)` with a
+ * task that has no outcome last (AAP 0.5.4).
+ *
+ * A missing instant sorts last, so a cursor taken from a row with none continues inside the block of
+ * those rows by id alone, while a cursor with an instant continues with the tasks that reached an
+ * outcome later, the tasks that reached it at the same instant under a larger id, and then that whole
+ * block of tasks without an outcome.
+ */
+function afterCursor(position: NullableKeysetCursorPosition): Prisma.CallTaskWhereInput {
+  if (position.instant === null) {
+    return { outcomeAt: null, id: { gt: position.id } };
+  }
+
+  return {
+    OR: [
+      { outcomeAt: { gt: position.instant } },
+      { outcomeAt: position.instant, id: { gt: position.id } },
+      { outcomeAt: null },
+    ],
+  };
+}
+
+/**
+ * The exact stored `outcome_at` of one task, as {@link CURSOR_INSTANT_FORMAT} renders it, or `null`
+ * when that task has no outcome.
+ *
+ * Why a string and not the row's own `Date`: Prisma answers a `timestamptz(6)` column as a `Date`,
+ * which holds milliseconds, while a row whose `outcome_at` the database's own `now()` wrote keeps
+ * microseconds. A cursor built from a truncated value would leave the equality branch of
+ * {@link afterCursor} unable to match the boundary row at all, and every row sharing its millisecond
+ * would be skipped from the middle of the list. PostgreSQL therefore formats the value here, as
+ * `meetups/queries.ts` reads the `created_at` its own cursor continues from (AAP 0.5.4).
+ *
+ * @param db - The guarded client; a page is built outside any transaction.
+ * @param id - The boundary row's id.
+ * @returns Its `outcomeAt` as `YYYY-MM-DDTHH:MM:SS.ffffffZ`, or null when it has none.
+ * @throws Error when the row is gone, which no request in the pilot can cause and which leaves no
+ *   cursor to continue from.
+ */
+async function exactOutcomeAt(db: Pick<DbClient, '$queryRaw'>, id: string): Promise<string | null> {
+  const rows = await db.$queryRaw<{ exact: string | null }[]>`
+    SELECT to_char("outcome_at" AT TIME ZONE 'UTC', ${CURSOR_INSTANT_FORMAT}) AS "exact"
+      FROM "call_task"
+     WHERE "id" = ${id}::uuid
+  `;
+
+  const exact = rows[0]?.exact;
+
+  if (exact === undefined) {
+    throw new Error('The call task a page ended on is no longer there.');
+  }
+
+  return exact;
+}
+
+/**
+ * The cursor that continues after the page ending at `boundary`, or null when no page follows.
+ *
+ * The exact instant is read only when another page follows, so the last page costs nothing extra.
+ */
+async function nextQueueCursor(
+  db: Pick<DbClient, '$queryRaw'>,
+  boundary: CallTaskQueueRow | undefined,
+): Promise<string | null> {
+  if (boundary === undefined) {
+    return null;
+  }
+
+  return encodeNullableKeysetCursor({
+    instant: await exactOutcomeAt(db, boundary.id),
+    id: boundary.id,
+  });
+}
+
+/**
+ * One page of the operator's call queue, oldest outcome first, narrowed by the request's filters.
  *
  * Both kinds are listed, so an operator sees a lodging verification's state too; only a
  * `menu_prices` task is resolvable from here, because a claim is resolved through its own route
@@ -330,33 +448,82 @@ export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto | nu
  * near locked meetup that `calls/priority.ts` applies to `menu-ingest` and to `call-dispatch`, where
  * `callTaskOrderSql` picks the next task to dial, orders that path and not this read.
  *
- * A row whose target {@link toAdminCallTaskDto} cannot carry is left out of the answer and reported
- * under {@link CALL_TASK_TARGET_UNRESOLVED} with its own id, so the reply is always a body the
- * response schema accepts (AAP 0.5.2, 0.5.4) and the defect stays visible. The cap bounds the rows
- * read, so one skipped row leaves the answer one item short of it.
+ * The filter is one `AND` list so each piece stands on its own and the fixtures guard's own `AND`
+ * composes with it rather than replacing it, which is what keeps a business the guard hides out of
+ * both the page and the count (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2). `limit + 1` rows are
+ * read, so the presence of a next page is known without a second query: the extra row proves another
+ * page exists and is not returned, and the cursor is encoded from the page's last row read whether or
+ * not its DTO could be built, so paging can never stand still on a row it cannot carry.
  *
- * @param services - the guarded client the queue is read from, and the logger a skipped row is
- *   reported to.
- * @returns At most {@link ADMIN_CALL_TASKS_LIMIT} tasks, in the order above.
+ * `total` counts the tasks the filters match with the cursor ignored, so an operator reads how many
+ * rows the page leaves behind. A row whose target {@link toAdminCallTaskDto} cannot carry is left out
+ * of the answer and reported under {@link CALL_TASK_TARGET_UNRESOLVED} with its own id, so the reply
+ * is always a body the response schema accepts (AAP 0.5.2, 0.5.4) while the defect stays visible —
+ * and such a row makes `items` one element shorter than `total`.
+ *
+ * @param services - the guarded client the queue and its count are read from, and the logger a
+ *   skipped row is reported to.
+ * @param query - The parsed query string: the status, kind, search, page size and cursor filters.
+ * @returns One page of the queue, the number of tasks the filters match, and the cursor that
+ *   continues the read — null on the last page.
+ * @throws {AppError} `invalid_field` (400) for a malformed cursor.
  */
 export async function listCallTasks(
   services: CallTaskQueueReader,
+  query: AdminCallTasksQuery,
 ): Promise<AdminCallTasksResponse> {
-  const rows = await services.db.callTask.findMany({
-    where: {
-      status: { in: OPERATOR_QUEUE_STATUSES },
-      // Null before any result exists and `agent` once the pipeline recorded one; only an operator's
-      // own resolution takes a task out of the queue (AAP 0.5.3).
-      OR: [{ resolvedBy: null }, { resolvedBy: { not: 'operator' } }],
-    },
-    select: CALL_TASK_SELECT,
-    orderBy: [{ outcomeAt: { sort: 'asc', nulls: 'last' } }, { id: 'asc' }],
-    take: ADMIN_CALL_TASKS_LIMIT,
-  });
+  const cursor = query.cursor === undefined ? null : decodeQueueCursor(query.cursor);
+  const limit = query.limit ?? ADMIN_CALL_TASKS_LIMIT;
+  const search = query.q;
+
+  const filters: Prisma.CallTaskWhereInput[] = [
+    // The two statuses an operator still has to resolve, or the one the request narrowed to
+    // (AAP 0.5.3).
+    { status: query.status === undefined ? { in: OPERATOR_QUEUE_STATUSES } : query.status },
+    // Null before any result exists and `agent` once the pipeline recorded one; only an operator's
+    // own resolution takes a task out of the queue (AAP 0.5.3).
+    { OR: [{ resolvedBy: null }, { resolvedBy: { not: 'operator' } }] },
+  ];
+
+  if (query.kind !== undefined) {
+    filters.push({ kind: query.kind });
+  }
+
+  if (search !== undefined) {
+    // The target's own name, matched case-insensitively: a menu task names a place and a
+    // verification task a lodging, and no task carries both.
+    filters.push({
+      OR: [
+        { place: { is: { name: { contains: search, mode: 'insensitive' } } } },
+        { lodging: { is: { name: { contains: search, mode: 'insensitive' } } } },
+      ],
+    });
+  }
+
+  // Taken before the keyset half joins the list, and as a copy of it: `total` is how many tasks the
+  // request's filters match, never how many of them follow the cursor.
+  const matching: Prisma.CallTaskWhereInput = { AND: [...filters] };
+
+  if (cursor !== null) {
+    filters.push(afterCursor(cursor));
+  }
+
+  const [rows, total] = await Promise.all([
+    services.db.callTask.findMany({
+      where: { AND: filters },
+      select: CALL_TASK_SELECT,
+      orderBy: [{ outcomeAt: { sort: 'asc', nulls: 'last' } }, { id: 'asc' }],
+      take: limit + 1,
+    }),
+    services.db.callTask.count({ where: matching }),
+  ]);
+
+  const page = rows.slice(0, limit);
+  const boundary = rows.length > limit ? page[page.length - 1] : undefined;
 
   const items: AdminCallTaskDto[] = [];
 
-  for (const row of rows) {
+  for (const row of page) {
     const dto = toAdminCallTaskDto(row);
 
     if (dto === null) {
@@ -369,7 +536,7 @@ export async function listCallTasks(
     items.push(dto);
   }
 
-  return { items };
+  return { items, total, nextCursor: await nextQueueCursor(services.db, boundary) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -576,7 +743,10 @@ async function completeTask(
  * marking a live call's attempt superseded so the relay speaks its closing line and ends the call.
  *
  * The cancelled tasks are neither `resolved_by` anyone nor given an `outcome_at`: nobody resolved
- * them, and the metrics count them in the cancelled lifecycle panel (AAP 0.5.7).
+ * them, and the metrics count them in the cancelled lifecycle panel (AAP 0.5.7). Their
+ * `blocked_reason` is cleared with the status: a task the place asked to stop calling is cancelled
+ * rather than blocked, and a reason written while a dial was still possible would describe a call
+ * that is never coming (AAP 0.5.3).
  */
 async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>): Promise<void> {
   if (task.placeId === null) {
@@ -606,11 +776,19 @@ async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>
     data: { superseded: true },
   });
 
-  await tx.callTask.updateMany({ where: { id: { in: taskIds } }, data: { status: 'cancelled' } });
+  await tx.callTask.updateMany({
+    where: { id: { in: taskIds } },
+    data: { status: 'cancelled', blockedReason: null },
+  });
 }
 
 /**
  * Records one operator outcome on a `menu_prices` call task (AAP 0.5.3, 0.5.4).
+ *
+ * Every outcome clears the task's `blockedReason`, because a task an operator resolved has left the
+ * dialing path whatever status it now stands in, and the answer reports it that way (AAP 0.5.3,
+ * 0.5.4). Nothing else about a resolution moves: the checks above and their order, the errors, the
+ * `do_not_call` side effects and the DTO are unaffected.
  *
  * @param services - the app's services; the transaction, its fence and the log line read them.
  * @param operatorId - the acting operator, whose own write fence runs first (AAP 0.5.3).
@@ -681,10 +859,13 @@ export async function resolveCallTask(
       }
 
       // The update answers with the refreshed row, so the reply is the task as it now stands (AAP
-      // 0.5.4) and no second read is needed.
+      // 0.5.4) and no second read is needed. `blockedReason` is cleared for every outcome, including
+      // the three whose effect is the status alone: the task has left the dialing path, and the
+      // status the operator applied is what the row now means, so a reason written while its dial was
+      // still out of reach would contradict the state the operator sees (AAP 0.5.3, 0.5.7).
       const row = await tx.callTask.update({
         where: { id: taskId },
-        data: { status: outcome, resolvedBy: 'operator', outcomeAt: now },
+        data: { status: outcome, resolvedBy: 'operator', blockedReason: null, outcomeAt: now },
         select: CALL_TASK_SELECT,
       });
 

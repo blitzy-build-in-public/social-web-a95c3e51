@@ -117,10 +117,12 @@ const ADMIN_LODGINGS_TRUNCATED = 'admin_lodgings_truncated';
  *
  * The operator queue reads in the sibling admin modules use the same batch size
  * (`ADMIN_CALL_TASKS_LIMIT` in `admin/call-tasks.ts`, `ADMIN_LODGING_CLAIMS_LIMIT` in
- * `admin/lodging-claims.ts`). Both reads are ordered by (city, name, id), so the bound answers
- * deterministically: the same rows come back from every read, and an operator that needs an older
- * row reads it in the database. The contract AAP 0.5.4 fixes for this route group carries no cursor
- * and no filter, so a cap is the resolution here rather than a contract change.
+ * `admin/lodging-claims.ts`). Both registries here answer in (city, name, id) order, so this bound
+ * answers deterministically: the same rows come back from every read, and an operator that needs
+ * an older row reads it in the database. The call-task queue's limit is a page size continued by a
+ * keyset cursor over that queue's own order (`?limit=&cursor=`, `nextCursor`, `total`), while the
+ * lodging-claim queue and both registries are capped: AAP 0.5.4 fixes no cursor for them, so a cap
+ * is the resolution there rather than a contract change.
  *
  * Each read asks for one row beyond this bound and treats that row as a sentinel: it is dropped
  * before the ids reach `readPoints`, and its presence is what reports the truncation. A registry

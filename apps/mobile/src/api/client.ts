@@ -62,6 +62,7 @@ import {
   ZkConfig,
 } from '@tablemate/shared';
 import type {
+  AdminCallTasksQuery,
   CheckInRequest,
   ClientEventRequest,
   ConsentsRequest,
@@ -695,9 +696,23 @@ export const apiClient = {
     listReports: (): Promise<AdminReportsResponse> =>
       request('GET', '/admin/reports', { response: AdminReportsResponse }),
 
-    /** `GET /admin/call-tasks` — the operator's queue, oldest outcome first (AAP 0.5.4). */
-    listCallTasks: (): Promise<AdminCallTasksResponse> =>
-      request('GET', '/admin/call-tasks', { response: AdminCallTasksResponse }),
+    /**
+     * `GET /admin/call-tasks` — one page of the operator's queue, oldest outcome first, narrowed by
+     * the filters it is given (AAP 0.5.4). A filter that is not set is left out of the request rather
+     * than sent empty, so the server reads its own default page of 200 tasks, and `cursor` continues
+     * from the page a previous read answered.
+     */
+    listCallTasks: (query: AdminCallTasksQuery = {}): Promise<AdminCallTasksResponse> =>
+      request('GET', '/admin/call-tasks', {
+        response: AdminCallTasksResponse,
+        query: {
+          status: query.status,
+          kind: query.kind,
+          q: query.q,
+          limit: query.limit,
+          cursor: query.cursor,
+        },
+      }),
 
     /** `POST /admin/call-tasks/:id/resolve` — an operator outcome, with prices when completed. */
     resolveCallTask: (id: string, body: ResolveCallTask): Promise<void> =>

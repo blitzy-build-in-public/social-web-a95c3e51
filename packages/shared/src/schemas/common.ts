@@ -315,6 +315,95 @@ export function decodeKeysetCursor(value: string): KeysetCursorPosition | null {
   return { createdAt: parsed.data.t, id: parsed.data.i };
 }
 
+/**
+ * The one payload shape of a keyset cursor over an ordered column that may hold no instant
+ * (AAP 0.5.4).
+ *
+ * There is one cursor form per shape of ordered column, because the instant a cursor carries is what
+ * the next page's bound compares: {@link KeysetCursor} carries one that is always there, and this
+ * variant carries one that may be absent. `CallTask.outcomeAt` is such a column — null until a task
+ * reaches its first outcome, and the operator queue orders by it (AAP 0.5.2, 0.5.7) — so that queue's
+ * cursors are encoded here, and a cursor whose instant is `null` continues inside the block of tasks
+ * that have no outcome, which the queue's order places last.
+ *
+ * A strict object, as {@link KeysetCursor} is: a cursor carrying a third key, or a payload of any
+ * other shape, is refused rather than interpreted, and the two fields are named `t` and `i` to keep
+ * the encoded form short.
+ */
+export const NullableKeysetCursor = z.strictObject({ t: CursorInstant.nullable(), i: Uuid });
+export type NullableKeysetCursor = z.infer<typeof NullableKeysetCursor>;
+
+/**
+ * A decoded position on a nullable ordered column: where one page ended and the next one continues
+ * (AAP 0.5.4).
+ *
+ * `instant` stays text and does not become a `Date`, for the reason {@link KeysetCursorPosition}
+ * states: the microseconds of a `timestamptz(6)` column are what make the bound exact. It is `null`
+ * when the boundary row held no instant, which the order that column is read under places after
+ * every row that holds one.
+ */
+export interface NullableKeysetCursorPosition {
+  /** The boundary row's instant, as {@link CURSOR_INSTANT_FORMAT} renders it, or null when it has none. */
+  readonly instant: string | null;
+  /** The boundary row's id, the tie-breaker under the instant. */
+  readonly id: string;
+}
+
+/**
+ * Encodes a position on a nullable ordered column as the opaque cursor a client echoes back
+ * unchanged (AAP 0.5.4).
+ *
+ * The position goes through {@link NullableKeysetCursor} first, so one this codec could not read
+ * back — a millisecond instant, say — is never issued. The payload is base64url text, so it survives
+ * a query string unmangled and stays well inside the contract's 200-character `Cursor`.
+ *
+ * @param position - The boundary row's instant, as the statement rendered it or `null` when the row
+ *   had none, and its id.
+ * @returns The cursor that continues after that row.
+ * @throws ZodError when the position is not one this codec could read back.
+ */
+export function encodeNullableKeysetCursor(position: NullableKeysetCursorPosition): string {
+  const payload = NullableKeysetCursor.parse({ t: position.instant, i: position.id });
+
+  return encodeBase64Url(JSON.stringify(payload));
+}
+
+/**
+ * Decodes a cursor over a nullable ordered column, or answers `null` for anything that is not one
+ * (AAP 0.5.4).
+ *
+ * A cursor is client-supplied text, so every step is checked rather than trusted: canonical base64url
+ * over ASCII, the JSON object inside it, and a {@link NullableKeysetCursor} payload — an instant in
+ * exactly the form a statement writes or `null`, and a UUID. The refusal is `null` rather than an
+ * error because each caller answers it in its own words, as the `400 invalid_field` the contract
+ * gives that route.
+ *
+ * @param value - The `cursor` query parameter, echoed back from a previous page.
+ * @returns The position to continue after, or null when `value` is not a cursor this codec wrote.
+ */
+export function decodeNullableKeysetCursor(value: string): NullableKeysetCursorPosition | null {
+  const decoded = decodeBase64Url(value);
+
+  if (decoded === null) {
+    return null;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(decoded) as unknown;
+  } catch {
+    return null;
+  }
+
+  const parsed = NullableKeysetCursor.safeParse(payload);
+
+  if (!parsed.success) {
+    return null;
+  }
+
+  return { instant: parsed.data.t, id: parsed.data.i };
+}
+
 /** The 64 characters of base64url, in encoding order (RFC 4648 §5), with no padding character. */
 const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
