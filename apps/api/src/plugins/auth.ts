@@ -455,7 +455,7 @@ export async function invalidateSession(
 /**
  * Registers the request decorator the guards write to and nothing else.
  * No global `onRequest` hook is added here, and that is the invariant this function exists to keep:
- * `app.addHook('onRequest', requireTraveler)` is called by a route group inside its own plugin, so the age gate covers the
+ * `guardRouteGroup` is called by a route group inside its own plugin, so the age gate covers the
  * traveler feature routes and the guarded routes outside them — `GET /me`, `POST /me/consents`, the public routes, the
  * provider webhooks, the console routes and `/admin/*` — never inherit it. The container is accepted for the shape the
  * composition root registers every plugin with, while the guards read the running instance's services, so nothing is captured
@@ -585,8 +585,9 @@ export async function requireWebSocketBearer(request: FastifyRequest): Promise<v
 /**
  * Refuses a write by an account that has requested deletion or has been deleted.
  * **Called first inside the transaction**, before any write: by `transact(services, fn, { fenceUserId })` in
- * `modules/outbox/write.ts`, by every mutating handler, by the two state-writing reads (`GET /meetups/:id` and
- * `GET /meetups/:id/suggestions`) and by every WebSocket write. It takes `SELECT ... FOR SHARE` on the acting user's row, and
+ * `modules/outbox/write.ts`, by every mutating handler, by every state-writing read (`GET /meetups/:id`,
+ * `GET /meetups/:id/suggestions`, and the operator's audited `GET /admin/lodging-claims/:id/booking-details`, which
+ * passes `{ fenceUserId: operatorId }`) and by every WebSocket write. It takes `SELECT ... FOR SHARE` on the acting user's row, and
  * `DELETE /me` takes `FOR UPDATE` on that same row, which orders the two: a mutation already in flight holds its share lock,
  * so the deletion waits for it to commit and erases what it wrote; any mutation starting later waits for the deletion, then
  * reads the flag and is refused.

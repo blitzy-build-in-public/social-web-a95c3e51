@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { INTEREST_TAGS_MAX, REASON_MAX_CHARS } from '../constants.ts';
 import { InterestTag } from '../interests.ts';
 import type { DisclosureTier } from '../tiers.ts';
-import { CitySlug, Count, CountryCode, DateOnly, Uuid } from './common.ts';
+import { CitySlug, Count, CountryCode, DateOnly, FreeText, Uuid } from './common.ts';
 /** The witnessed-presence counters a traveler shows on their profile. `witnessedMeetups` counts `WitnessEvent` rows whose `countsForReputation` is set and the three distinct counters come from those same rows; a pair counts once until the anti-farming window has passed, so neither number can be inflated by meeting one person repeatedly. */
 export const Reputation = z.object({
   witnessedMeetups: Count,
@@ -69,7 +69,7 @@ export const PROFILE_SCHEMA_BY_TIER = {
  * a `meetupId` that is not a UUID is refused (AAP 0.5.4).
  */
 export const ReportRequest = z.strictObject({
-  reason: z.string().trim().min(1).max(REASON_MAX_CHARS),
+  reason: FreeText.trim().min(1).max(REASON_MAX_CHARS),
   meetupId: Uuid.optional(),
 });
 export type ReportRequest = z.infer<typeof ReportRequest>;

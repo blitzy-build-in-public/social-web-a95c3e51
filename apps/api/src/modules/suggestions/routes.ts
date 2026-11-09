@@ -1,7 +1,7 @@
 /**
  * `GET /v1/meetups/:id/suggestions` — the pair's day plan near the meetup's venue.
  *
- * The second of the two reads that write: a supplied `perPersonBudgetCents` is stored as the pair's shared budget, where the latest
+ * One of the reads that write: a supplied `perPersonBudgetCents` is stored as the pair's shared budget, where the latest
  * write by either attendee wins, and the first read stamps `suggestionsFirstViewedAt`, which feeds the dashboard's metric. Both writes
  * run in one `transact` behind the account-deletion write fence, so nothing commits once `DELETE /me` has been called, and neither
  * runs when there is nothing to write.
@@ -27,7 +27,7 @@ import {
 import { requireTraveler } from '../../plugins/auth.ts';
 import { AppError, isAppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { loadForParticipant } from '../meetups/queries.ts';
 import { transact } from '../outbox/write.ts';
 import { assertBudgetInRange, effectiveBudget } from './budget.ts';
@@ -81,11 +81,11 @@ export function suggestionsEligible(
  * on this plugin's context, never globally, so no other route can inherit the age gate by accident.
  */
 export default function suggestionsRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireTraveler);
+  guardRouteGroup(app, requireTraveler);
   app.get(
     '/meetups/:id/suggestions',
     {
-      // Both state-writing reads count as mutating routes (AAP 0.5.4): they carry the per-user and
+      // Every state-writing read counts as a mutating route (AAP 0.5.4): they carry the per-user and
       // per-IP counters, so the counter cannot be dropped from the one read that writes.
       ...mutatingLimits(app),
       config: { stateWritingRead: true },

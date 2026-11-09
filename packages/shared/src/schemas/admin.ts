@@ -34,6 +34,7 @@ import {
   DateOnly,
   Domain,
   E164,
+  FreeText,
   IsoDateTime,
   Latitude,
   Longitude,
@@ -181,7 +182,7 @@ export type ResolveDispute = z.infer<typeof ResolveDispute>;
 export const AdminCallTasksQuery = z.strictObject({
   status: z.enum(['needs_review', 'unreachable']).optional(),
   kind: CallTaskKind.optional(),
-  q: z.string().trim().min(1).max(80).optional(),
+  q: FreeText.trim().min(1).max(80).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   cursor: Cursor.optional(),
 });
@@ -304,7 +305,7 @@ export type AdminLodgingDto = z.infer<typeof AdminLodgingDto>;
 /** The query string of `GET /admin/lodgings`, the operator's lodging registry: a strict object, so a parameter this contract does not carry is `400 invalid_field` rather than ignored, which keeps a client's misspelled filter from silently reading the whole registry. `q` searches the lodging's name and is trimmed before it is bounded; `limit` defaults to the read's own bound. */
 export const AdminLodgingsQuery = z.strictObject({
   cityId: CitySlug.optional(),
-  q: z.string().trim().min(1).max(80).optional(),
+  q: FreeText.trim().min(1).max(80).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
   cursor: Cursor.optional(),
 });
@@ -319,8 +320,8 @@ export type AdminLodgingsResponse = z.infer<typeof AdminLodgingsResponse>;
 /** The body of `POST /admin/venues`: operator-led venue onboarding. `placeId` links the new venue to a place the price pipeline already ingested, so suggestions can find its neighbours; a venue entered without one is a stand-alone partner until a refresh matches it. `422 venue_not_partner` is what rejects a proposal at a venue that is not an active partner. */
 export const CreateVenueRequest = z.strictObject({
   cityId: CitySlug,
-  name: z.string().min(1).max(120),
-  address: z.string().min(1).max(200),
+  name: FreeText.min(1).max(120),
+  address: FreeText.min(1).max(200),
   lat: Latitude,
   lng: Longitude,
   placeId: Uuid.optional(),
@@ -330,8 +331,8 @@ export type CreateVenueRequest = z.infer<typeof CreateVenueRequest>;
 /** The body of `PATCH /admin/venues/:id`: any subset of the editable fields, and at least one of them, because a client that sends an empty body has misread the route. `lat` and `lng` are supplied together, since moving a venue half-way would leave the 150 m check-in geofence measured from a point that is not the venue anymore. Deactivating a venue leaves existing `locked` meetups to settle where they are. */
 export const UpdateVenueRequest = z
   .strictObject({
-    name: z.string().min(1).max(120).optional(),
-    address: z.string().min(1).max(200).optional(),
+    name: FreeText.min(1).max(120).optional(),
+    address: FreeText.min(1).max(200).optional(),
     lat: Latitude.optional(),
     lng: Longitude.optional(),
     isActivePartner: z.boolean().optional(),
@@ -354,9 +355,9 @@ export type UpdateVenueRequest = z.infer<typeof UpdateVenueRequest>;
 /** The body of `POST /admin/lodgings`: manual lodging entry. Such a lodging has no OpenStreetMap identity and is stored with `phoneSource = operator`, so the weekly refresh never overwrites it and never removes it for having disappeared from a query. `phone` is required as a key and may be null: a lodging with no callable number is legitimate, and a claim against one waits in the operator queue instead of being dialed. */
 export const CreateLodgingRequest = z.strictObject({
   cityId: CitySlug,
-  name: z.string().min(1).max(120),
+  name: FreeText.min(1).max(120),
   kind: LodgingKind,
-  address: z.string().min(1).max(200),
+  address: FreeText.min(1).max(200),
   phone: E164.nullable(),
   lat: Latitude,
   lng: Longitude,

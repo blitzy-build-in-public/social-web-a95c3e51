@@ -7,8 +7,9 @@
  * handler passes that function the app's services, the authenticated operator's id and `request.receivedAt`, and
  * `plugins/errors.ts` renders a module's `AppError` into the shared envelope with the status the contract fixes.
  *
- * The guard is group-level and never global: `app.addHook('onRequest', requireOperator)` covers exactly the routes
- * below and cannot reach the traveler routes, the public routes, the provider webhooks or the console routes.
+ * The guard is group-level and never global: `guardRouteGroup(app, requireOperator)` puts the group's per-IP counter ahead
+ * of `requireOperator`, which covers exactly the routes below and cannot reach the traveler routes, the public routes, the
+ * provider webhooks or the console routes.
  * `/admin/*` is outside the 18+ age gate. Reads are unlimited and writes are counted: every POST and PATCH spreads
  * `mutatingLimits(app)`.
  *
@@ -58,7 +59,7 @@ import { cityList } from '../cities/routes.ts';
 import { requireOperator, type AuthContext } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 
 import { listCallTasks, resolveCallTask } from './call-tasks.ts';
 import { decideCrawlDomain, listCrawlDomains } from './crawl-domains.ts';
@@ -109,14 +110,14 @@ function operatorAuth(request: FastifyRequest): AuthContext {
 }
 
 /**
- * The guard comes first and covers this context alone: `requireOperator` reads the access token and
- * the account's role, and installing it here rather than globally is what keeps `/admin/*` guarded
+ * The group's per-IP counter runs ahead of the guard, and both cover this context alone: `requireOperator` reads the
+ * access token and the account's role, and installing it here rather than globally is what keeps `/admin/*` guarded
  * while the traveler, public, provider and console routes stay outside it (AAP 0.5.4). Every handler
  * below then delegates: it hands the module function the app's services, the operator's id where the
  * rule is audited or fenced on it, and `request.receivedAt`.
  */
 export default function adminRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireOperator);
+  guardRouteGroup(app, requireOperator);
   app.get(
     '/admin/metrics',
     {
@@ -280,6 +281,8 @@ export default function adminRoutes(app: App): Promise<void> {
       // A read that writes: the `OperatorAccessLog` row an auditable disclosure needs, committed in
       // the same transaction as the read (AAP 0.5.2), is why this GET carries the mutating limits.
       ...mutatingLimits(app),
+      // The `OperatorAccessLog` row this read writes: `stateWritingRead` is what declares it.
+      config: { stateWritingRead: true },
       schema: {
         tags: [ADMIN_TAG],
         security: OPENAPI_SECURITY.bearer,

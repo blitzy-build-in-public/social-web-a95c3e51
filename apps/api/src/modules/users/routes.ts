@@ -13,9 +13,9 @@
  * cannot be used to probe who exists, who is blocked, or who has a photo. `POST /users/:id/block` and
  * `POST /users/:id/report` hand their work to `./safety.ts`, which owns the `Block` and `Report` rows.
  *
- * All four are traveler feature routes, so the guard is installed once on this encapsulated context as
- * `app.addHook('onRequest', requireTraveler)` and never globally; a refusal is `401 token_invalid` or
- * `403 age_gate_required`. The two reads carry no counter, while the block and the report spread `mutatingLimits(app)`
+ * All four are traveler feature routes, so `guardRouteGroup(app, requireTraveler)` installs the group's per-IP counter and
+ * the guard once on this encapsulated context, never globally; a refusal is `401 token_invalid` or `403 age_gate_required`.
+ * The two reads carry no counter, while the block and the report spread `mutatingLimits(app)`
  * for their per-IP and per-user allowances. The instant the profile read is judged at is `request.receivedAt`, so a
  * proof's validity and the tier it feeds cannot be decided across the boundary of the proof's own window. Nothing
  * here logs: not a profile field, not a report reason, not a contact handle, not a photo byte.
@@ -35,7 +35,7 @@ import {
 import { requireTraveler } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { loadProfile } from './disclosure/serialize.ts';
 import type { ReaderServices } from './disclosure/serialize.ts';
 import { computeTier } from './disclosure/tier.ts';
@@ -155,8 +155,8 @@ async function photoForViewer(
 /**
  * Registers the four user routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1` (AAP 0.5.1).
  *
- * The guard comes first, on this context alone: `requireTraveler` reads the access token and the age
- * gate, and installing it here rather than globally is what keeps `GET /users/*` guarded while the
+ * The group's per-IP counter runs ahead of the guard, and both cover this context alone: `requireTraveler` reads the
+ * access token and the age gate, and installing it here rather than globally is what keeps `GET /users/*` guarded while the
  * bearer-only, public, provider, console and operator routes stay outside the gate (AAP 0.5.4).
  *
  * Registration is synchronous, as in every other plugin the composition root installs — `clock.ts`,
@@ -167,7 +167,7 @@ async function photoForViewer(
  * `await` (AAP 0.11.2: `@typescript-eslint/require-await`).
  */
 export default function usersRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireTraveler);
+  guardRouteGroup(app, requireTraveler);
   app.get(
     '/users/:userId',
     {

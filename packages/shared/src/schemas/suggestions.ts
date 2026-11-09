@@ -9,7 +9,7 @@ import {
   SuggestionEmptyReason,
   TicketType,
 } from '../enums.ts';
-import { Count, CurrencyCode, IsoDateTime, UsdCents, Uuid } from './common.ts';
+import { Count, CurrencyCode, FreeText, IsoDateTime, UsdCents, Uuid } from './common.ts';
 /** The query string of `GET /meetups/:id/suggestions`. The numeric range is deliberately absent: the handler checks `BUDGET_MIN_CENTS` through `BUDGET_MAX_CENTS` (500 to 10000 cents) and answers `422 budget_out_of_range`, which leaves `400 invalid_field` for a non-integer. */
 export const SuggestionsQuery = z.strictObject({
   perPersonBudgetCents: z.coerce.number().int().optional(),
@@ -90,8 +90,19 @@ export function ticketRule(value: TicketFields, ctx: z.core.$RefinementCtx): voi
 /** An extracted item that passed the ticket rule; the extractor drops any item this schema rejects rather than store a half-described price. */
 export const ExtractedMenuItem = ExtractedMenuItemBase.superRefine(ticketRule);
 export type ExtractedMenuItem = z.infer<typeof ExtractedMenuItem>;
-/** One price an operator enters through `POST /admin/call-tasks/:id/resolve` with outcome `completed`: the extracted item shape plus `localAmountMinor`, the amount in the currency's minor unit as read from the source. */
+/**
+ * One price an operator enters through `POST /admin/call-tasks/:id/resolve` with outcome `completed`: the extracted
+ * item shape plus `localAmountMinor`, the amount in the currency's minor unit as read from the source.
+ *
+ * `name` and `priceText` are the free-text guard's here, because this schema is a client boundary and
+ * `ExtractedMenuItemBase` is not: the extractor's items come from a page the pipeline fetched, while the operator's
+ * entry is a request body. Left as the bare strings, a NUL byte in either reaches `price_record` and is answered `500`
+ * where the boundary owes the caller `400 invalid_field`. The base object keeps its own strings, so the strict JSON
+ * schema the language model answers under is unchanged (AAP 0.11.2 input validation on every route).
+ */
 export const PriceItemInput = ExtractedMenuItemBase.extend({
+  name: FreeText,
+  priceText: FreeText,
   localAmountMinor: z.number().int().nonnegative(),
 }).superRefine(ticketRule);
 export type PriceItemInput = z.infer<typeof PriceItemInput>;

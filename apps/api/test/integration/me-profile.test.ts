@@ -275,6 +275,8 @@ const INVALID_PROFILE_ROWS = rows<ProfileRow>([
   { name: 'a home city of 81 characters', body: { homeCity: 'c'.repeat(HOME_CITY_MAX_CHARS + 1) } },
   { name: 'a lowercase country code', body: { homeCountryCode: 'pt' } },
   { name: 'a photo that is not an image', body: { photoBase64: NOT_A_PHOTO_BASE64 } },
+  { name: 'a nickname holding a NUL byte', body: { nickname: 'a\u0000b' } },
+  { name: 'a bio holding a control character', body: { bio: 'a\u001fb' } },
 ]);
 
 interface LimitRow {
@@ -410,6 +412,10 @@ const INVALID_PUSH_ROWS = rows<PushRow>([
   {
     name: 'an extra key',
     body: { token: 'ExponentPushToken[fixture-2]', platform: 'ios', extra: true },
+  },
+  {
+    name: 'a token holding a NUL byte',
+    body: { token: 'ExponentPushToken[a\u0000b]', platform: 'ios' },
   },
 ]);
 

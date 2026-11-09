@@ -20,7 +20,15 @@ import {
 } from '../constants.ts';
 import { LodgingClaimStatus, ProofStatus, PushPlatform, UserRole, Variant } from '../enums.ts';
 import { InterestTag } from '../interests.ts';
-import { CitySlug, CountryCode, DateOnly, IsoDateTime, Uuid, UsdCents } from './common.ts';
+import {
+  CitySlug,
+  CountryCode,
+  DateOnly,
+  FreeText,
+  IsoDateTime,
+  UsdCents,
+  Uuid,
+} from './common.ts';
 import { Reputation } from './users.ts';
 /**
  * The caller's own account, profile, consents and proof state: the response of `GET /me` and the `user`
@@ -100,12 +108,12 @@ export type MeDto = z.infer<typeof MeDto>;
  */
 export const ProfileUpdate = z
   .strictObject({
-    nickname: z.string().max(NICKNAME_MAX_CHARS).nullable().optional(),
-    bio: z.string().max(BIO_MAX_CHARS).nullable().optional(),
-    homeCity: z.string().max(HOME_CITY_MAX_CHARS).nullable().optional(),
+    nickname: FreeText.max(NICKNAME_MAX_CHARS).nullable().optional(),
+    bio: FreeText.max(BIO_MAX_CHARS).nullable().optional(),
+    homeCity: FreeText.max(HOME_CITY_MAX_CHARS).nullable().optional(),
     homeCountryCode: CountryCode.nullable().optional(),
-    fullName: z.string().max(FULL_NAME_MAX_CHARS).nullable().optional(),
-    externalContact: z.string().max(EXTERNAL_CONTACT_MAX_CHARS).nullable().optional(),
+    fullName: FreeText.max(FULL_NAME_MAX_CHARS).nullable().optional(),
+    externalContact: FreeText.max(EXTERNAL_CONTACT_MAX_CHARS).nullable().optional(),
     interestTags: z.array(InterestTag).max(INTEREST_TAGS_MAX).optional(),
     photoBase64: z.base64().nullable().optional(),
   })
@@ -128,7 +136,7 @@ export const ConsentsRequest = z.strictObject({
 export type ConsentsRequest = z.infer<typeof ConsentsRequest>;
 /** The body of `POST /me/push-tokens`: the device's Expo push token and the platform it belongs to. Native builds register a token on iOS and Android; the web build is served email instead, so it sends no token. */
 export const PushTokenRequest = z.strictObject({
-  token: z.string().min(1).max(200),
+  token: FreeText.min(1).max(200),
   platform: PushPlatform,
 });
 export type PushTokenRequest = z.infer<typeof PushTokenRequest>;

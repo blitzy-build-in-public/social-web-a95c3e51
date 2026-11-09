@@ -22,7 +22,7 @@ import { ClientEventRequest, ErrorEnvelope, type AnalyticsProps } from '@tablema
 
 import { AppError } from '../../plugins/errors.ts';
 import { requireTraveler } from '../../plugins/auth.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
 import { transact } from '../outbox/write.ts';
 import { emit } from './emit.ts';
@@ -42,7 +42,7 @@ const ANALYTICS_TAG = 'analytics' satisfies OpenApiTag;
  * `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
  */
 export default function analyticsRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireTraveler);
+  guardRouteGroup(app, requireTraveler);
   app.post(
     '/events',
     {

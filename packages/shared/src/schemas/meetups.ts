@@ -18,7 +18,16 @@ import { z } from 'zod';
 import { REASON_MAX_CHARS } from '../constants.ts';
 import { DisputeKind, HoldView, MeetupStatus, NextAction, ParticipantRole } from '../enums.ts';
 import { VenueDto } from './cities.ts';
-import { Cursor, IsoDateTime, Latitude, Longitude, Uuid, UsdCents, paginated } from './common.ts';
+import {
+  Cursor,
+  FreeText,
+  IsoDateTime,
+  Latitude,
+  Longitude,
+  Uuid,
+  UsdCents,
+  paginated,
+} from './common.ts';
 import { AnyTierProfile } from './users.ts';
 /** The body of `POST /meetups`: the handler applies this route's guards in order, each with its own code — `422 self_proposal` for `recipientId` equal to the caller, `422 starts_at_invalid` outside `START_HORIZON_DAYS` (5), `422 deposit_invalid` outside `DEPOSIT_LEVELS_CENTS` (500, 1000, 2000). `depositCents` therefore accepts any integer here. Deposits are always charged in USD. */
 export const ProposeMeetup = z.strictObject({
@@ -90,7 +99,7 @@ export type CheckInResponse = z.infer<typeof CheckInResponse>;
  * check in.
  */
 export const DisputeRequest = z.strictObject({
-  reason: z.string().trim().min(1).max(REASON_MAX_CHARS),
+  reason: FreeText.trim().min(1).max(REASON_MAX_CHARS),
   kind: DisputeKind.default('other'),
 });
 export type DisputeRequest = z.infer<typeof DisputeRequest>;

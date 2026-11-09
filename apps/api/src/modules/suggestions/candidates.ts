@@ -11,12 +11,21 @@
  * failure here reaches `routes.ts` alone, which answers `503 suggestions_unavailable`. Two conventions are load-bearing:
  * every identifier comes from a helper of `@tablemate/db` and every value is a bound parameter, so the read carries the
  * fixture guard `$queryRaw` does not add itself; and because `opening_hours` reads a `Date`'s process-local fields, every
- * instant handed to it is shifted into the city's own zone first, whatever the host's `TZ` is.
+ * instant handed to it is shifted into the city's own zone first by `toCityWallClock` of `@tablemate/server-core`, the
+ * one home of the city-wall-clock shift, whatever the host's `TZ` is.
  */
 
 import { Prisma, distanceMeters, fixturePredicate, geoColumn, withinMeters } from '@tablemate/db';
 import type { DbClient } from '@tablemate/db';
-import { addLocalDays, localDateKey, localTimeOn, startOfLocalDay } from '@tablemate/server-core';
+import {
+  addLocalDays,
+  formatCityWallTime,
+  fromCityWallClock,
+  localDateKey,
+  localTimeOn,
+  startOfLocalDay,
+  toCityWallClock,
+} from '@tablemate/server-core';
 import type { ApiEnv, Logger } from '@tablemate/server-core';
 import {
   DAY_MS,
@@ -32,7 +41,6 @@ import {
   TicketType,
 } from '@tablemate/shared';
 import type { AppEnv, CityConfig, SuggestionEmptyReason } from '@tablemate/shared';
-import { DateTime } from 'luxon';
 import OpeningHours from 'opening_hours';
 import { z } from 'zod';
 
@@ -310,19 +318,6 @@ function parseOpeningHours(city: CityConfig, value: string): OpeningHours | null
   }
 }
 
-/**
- * An instant carrying `tz`'s wall-clock fields, for handing to the library, and its inverse below: `opening_hours` reads a
- * `Date`'s *local* fields, so writing the city's fields in the process zone gives it exactly the fields it must read,
- * whatever `TZ` the process runs in.
- */
-function toCityWallClock(at: Date, tz: string): Date {
-  return DateTime.fromJSDate(at, { zone: tz }).setZone('local', { keepLocalTime: true }).toJSDate();
-}
-
-function fromCityWallClock(at: Date, tz: string): Date {
-  return DateTime.fromJSDate(at).setZone(tz, { keepLocalTime: true }).toJSDate();
-}
-
 /** The known-open intervals of `oh` inside `from`–`to`, as instants in `tz`; an interval the library marks `unknown` is
  * dropped, because "open, times to be confirmed" is not evidence that a place is open. */
 function openIntervals(
@@ -333,13 +328,13 @@ function openIntervals(
 ): Array<readonly [Date, Date]> {
   const intervals: Array<readonly [Date, Date]> = [];
   for (const [start, end, unknown] of oh.getOpenIntervals(
-    toCityWallClock(from, tz),
-    toCityWallClock(to, tz),
+    toCityWallClock(tz, from),
+    toCityWallClock(tz, to),
   )) {
     if (unknown) {
       continue;
     }
-    intervals.push([fromCityWallClock(start, tz), fromCityWallClock(end, tz)]);
+    intervals.push([fromCityWallClock(tz, start), fromCityWallClock(tz, end)]);
   }
   return intervals;
 }
@@ -367,14 +362,13 @@ function formatOpeningHoursOn(oh: OpeningHours, tz: string, startsAt: Date): str
   }
   return intervals
     .map(([start, end]) => {
-      const closing = end.getTime() === to.getTime() ? MIDNIGHT_WALL_TIME : wallTime(tz, end);
-      return `${wallTime(tz, start)}${INTERVAL_DASH}${closing}`;
+      const closing =
+        end.getTime() === to.getTime()
+          ? MIDNIGHT_WALL_TIME
+          : formatCityWallTime(tz, end, WALL_TIME_FORMAT);
+      return `${formatCityWallTime(tz, start, WALL_TIME_FORMAT)}${INTERVAL_DASH}${closing}`;
     })
     .join(INTERVAL_SEPARATOR);
-}
-
-function wallTime(tz: string, at: Date): string {
-  return DateTime.fromJSDate(at, { zone: tz }).toFormat(WALL_TIME_FORMAT);
 }
 
 /**

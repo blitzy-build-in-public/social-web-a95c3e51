@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { MESSAGE_MAX_CHARS } from '../constants.ts';
 import { HoldView, MeetupStatus } from '../enums.ts';
 import { ErrorCode } from '../errors.ts';
-import { Uuid } from './common.ts';
+import { FreeText, Uuid } from './common.ts';
 import { Message } from './messaging.ts';
 /** The first entry of the `Sec-WebSocket-Protocol` list a client offers when it opens the chat socket. The client sends `['bearer', <accessToken>]`, the API validates the JWT from the second entry and echoes this one back as the selected subprotocol, because a browser `WebSocket` cannot set an `Authorization` header. */
 export const WS_BEARER_SUBPROTOCOL = 'bearer' as const;
@@ -75,7 +75,7 @@ export function userChannel(userId: string): string {
 export const ChatSend = z.strictObject({
   type: z.literal('chat_send').default('chat_send'),
   meetupId: Uuid,
-  body: z.string().trim().min(1).max(MESSAGE_MAX_CHARS),
+  body: FreeText.trim().min(1).max(MESSAGE_MAX_CHARS),
 });
 export type ChatSend = z.infer<typeof ChatSend>;
 /** Every frame a client may send on the chat socket, discriminated on `type`; the discriminant is optional on a client frame, where {@link ChatSend} fills it in, so both the contract's `{ meetupId, body }` frame and the app's `{ type: 'chat_send', meetupId, body }` frame are accepted on the wire. */

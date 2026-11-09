@@ -1,16 +1,19 @@
-import { Settings } from 'luxon';
+import { DateTime, Settings } from 'luxon';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   addLocalDays,
   assertValidZone,
   endOfLocalDay,
+  formatCityWallTime,
+  fromCityWallClock,
   isWithinLocalWindow,
   localDateKey,
   localTimeOn,
   nextLocalDayAt,
   nextOccurrenceOf,
   startOfLocalDay,
+  toCityWallClock,
 } from '../../src/time/city-time.ts';
 const LIS = 'Europe/Lisbon';
 const MEX = 'America/Mexico_City';
@@ -185,6 +188,41 @@ describe('the 09:00–20:00 calling window', () => {
   });
 });
 
+describe('the city wall clock', () => {
+  // The instants the shift pair is asserted over: one midday instant per launch zone, plus a Lisbon instant either side of each DST transition. The shifted wall times are unambiguous ones on purpose, because the repeated autumn hour reads twice and the spring gap not at all.
+  const SHIFT_CASES: ReadonlyArray<[string, string]> = [
+    [LIS, '2026-11-04T12:00:00.000Z'],
+    [MEX, '2026-11-04T12:00:00.000Z'],
+    [BOG, '2026-11-04T12:00:00.000Z'],
+    [BKK, '2026-11-04T12:00:00.000Z'],
+    [MAK, '2026-11-04T12:00:00.000Z'],
+    [LIS, '2026-03-29T01:00:00.000Z'],
+    [LIS, '2026-10-25T02:30:00.000Z'],
+  ];
+  const READING_FORMAT = 'yyyy-LL-dd HH:mm';
+  it.each(SHIFT_CASES)('%s: the shift pair gives %s back unchanged', (tz, instant) => {
+    // `opening_hours` is handed a shifted instant and hands its intervals back, so the inverse must land on the instant it came from (AAP 0.11.1).
+    expect(iso(fromCityWallClock(tz, toCityWallClock(tz, at(instant))))).toBe(instant);
+  });
+  it.each(SHIFT_CASES)('%s: the shifted %s reads as the city wall clock', (tz, instant) => {
+    // The shift exists for the library, which reads a `Date`'s process-local getters, so those fields must carry the city's reading whatever `TZ` the host runs in: the expectation is luxon's own local reading, never a hard-coded offset.
+    const shifted = toCityWallClock(tz, at(instant));
+    expect(DateTime.fromJSDate(shifted).toFormat(READING_FORMAT)).toBe(
+      DateTime.fromJSDate(at(instant), { zone: tz }).toFormat(READING_FORMAT),
+    );
+  });
+  it.each([
+    [LIS, '2026-03-29T01:00:00.000Z', 'HH:mm', '02:00'],
+    [LIS, '2026-10-25T02:30:00.000Z', 'HH:mm', '02:30'],
+    [BKK, '2026-11-04T02:00:00.000Z', 'HH:mm', '09:00'],
+    [MAK, '2026-11-04T01:00:00.000Z', 'ccc d LLL, HH:mm', 'Wed 4 Nov, 09:00'],
+    [MEX, '2026-11-04T15:00:00.000Z', 'ccc d LLL, HH:mm', 'Wed 4 Nov, 09:00'],
+  ])('%s: %s as %s is %s', (tz, instant, format, expected) => {
+    // The `HH:mm` a suggestion shows for its opening intervals and the labelled meetup start a notification shows (AAP 0.5.7); both Lisbon rows sit on a transition, and every zone here differs from UTC.
+    expect(formatCityWallTime(tz, at(instant), format)).toBe(expected);
+  });
+});
+
 describe('invalid input', () => {
   const FAILING_CALLS: ReadonlyArray<[string, () => unknown]> = [
     ['a zone luxon does not know', () => assertValidZone('Mars/Olympus')],
@@ -196,6 +234,24 @@ describe('invalid input', () => {
     ['hour 24 on a 24-hour clock', () => localTimeOn(LIS, '2026-11-04', '24:00')],
     ['a one-digit hour', () => localTimeOn(LIS, '2026-11-04', '9:00')],
     ['a date the month does not have', () => localTimeOn(LIS, '2026-02-30', '09:00')],
+    [
+      'a zone the runtime cannot resolve, shifting an instant',
+      () => toCityWallClock('Not/AZone', at('2026-11-04T12:00:00.000Z')),
+    ],
+    ['an invalid Date shifted into a city zone', () => toCityWallClock(LIS, new Date('nope'))],
+    [
+      'a zone the runtime cannot resolve, reading a wall clock back',
+      () => fromCityWallClock('Not/AZone', at('2026-11-04T12:00:00.000Z')),
+    ],
+    ['an invalid Date read back from a wall clock', () => fromCityWallClock(LIS, new Date('nope'))],
+    [
+      'a zone the runtime cannot resolve, formatting an instant',
+      () => formatCityWallTime('Not/AZone', at('2026-11-04T12:00:00.000Z'), 'HH:mm'),
+    ],
+    [
+      'an invalid Date formatted as a wall time',
+      () => formatCityWallTime(LIS, new Date('nope'), 'HH:mm'),
+    ],
   ];
   it.each(FAILING_CALLS)('throws RangeError for %s', (_case, call) => {
     expect(call).toThrow(RangeError);

@@ -2,9 +2,10 @@
  * The six lodging routes: a city's lodging directory, one lodging's detail page with its opted-in guest list, the three routes of
  * a stay claim, and the staying-visibility toggle.
  *
- * Every route here is a traveler feature route, so the whole plugin carries one guard: `app.addHook('onRequest', requireTraveler)`
- * admits a caller with a valid session *and* a recorded age gate, and answers `401 token_invalid` or `403 age_gate_required`
- * otherwise. The hook is installed on this plugin's context, never globally.
+ * Every route here is a traveler feature route, so the whole plugin carries one guard: `guardRouteGroup(app, requireTraveler)`
+ * registers the group's per-IP counter and then `requireTraveler`, which admits a caller with a valid session *and* a recorded
+ * age gate and answers `401 token_invalid` or `403 age_gate_required` otherwise. Both hooks are installed on this plugin's
+ * context, never globally.
  *
  * Four invariants hold across the file: the caller's own proof gates the disclosure, so the directory, the detail and a claim all
  * require a proof valid for the city in question and answer `403 no_valid_proof` otherwise; reads are unlimited and writes are
@@ -37,7 +38,7 @@ import {
 import { requireTraveler } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { hasValidProof } from '../proofs/validity.ts';
 import { createClaim, deleteClaim, getClaim } from './claims.ts';
 import { leaderboard, lodgingSummary } from './leaderboard.ts';
@@ -69,7 +70,7 @@ function callerId(request: FastifyRequest): string {
  * the declared `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
  */
 export default function lodgingRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireTraveler);
+  guardRouteGroup(app, requireTraveler);
   app.get(
     '/cities/:cityId/lodgings',
     {

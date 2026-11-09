@@ -25,7 +25,12 @@ import {
 import { requireBearer } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { ipOnlyLimits, magicLinkLimits, mutatingLimits } from '../../plugins/rate-limit.ts';
+import {
+  guardRouteGroup,
+  ipOnlyLimits,
+  magicLinkLimits,
+  mutatingLimits,
+} from '../../plugins/rate-limit.ts';
 import { requestMagicLink, verifyMagicLink } from './magic-link.ts';
 import { logout, refresh } from './sessions.ts';
 
@@ -113,7 +118,7 @@ export default function authRoutes(app: App): Promise<void> {
   // never globally, and the age gate stays off.
   app.register((instance) => {
     const scope = instance.withTypeProvider<ZodTypeProvider>();
-    scope.addHook('onRequest', requireBearer);
+    guardRouteGroup(scope, requireBearer);
     scope.post(
       '/auth/logout',
       {

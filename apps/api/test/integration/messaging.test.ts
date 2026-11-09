@@ -638,6 +638,13 @@ const FRAME_REFUSALS: readonly FrameRefusal[] = [
     code: 'invalid_field',
     carriesMeetupId: false,
   },
+  {
+    name: 'a locked-meetup send whose body holds a NUL byte',
+    setup: 'locked',
+    frame: (meetupId) => JSON.stringify({ type: 'chat_send', meetupId, body: 'a\u0000b' }),
+    code: 'invalid_field',
+    carriesMeetupId: false,
+  },
 ];
 
 describe('WS /v1/chat', () => {

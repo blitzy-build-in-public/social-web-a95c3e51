@@ -68,6 +68,7 @@ const BAD_REPORT_BODIES: readonly BadReportBody[] = [
     name: 'an unknown key beside the reason',
     body: { reason: 'a fixture complaint', extra: true },
   },
+  { name: 'a reason holding a NUL byte', body: { reason: 'a\u0000b' } },
 ];
 
 interface BlockerCase {

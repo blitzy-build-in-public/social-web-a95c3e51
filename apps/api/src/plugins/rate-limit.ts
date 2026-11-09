@@ -1,6 +1,6 @@
 /**
  * Rate limiting: the per-IP, per-user, webhook and magic-link allowances a limited route carries.
- * AAP 0.5.4 fixes the allowances: every mutating route — POST, PUT, PATCH and DELETE, plus the two state-writing reads — is
+ * AAP 0.5.4 fixes the allowances: every mutating route — POST, PUT, PATCH and DELETE, plus the reads that write — is
  * limited per user at {@link RATE_LIMIT_USER_PER_MIN} requests a minute and per IP at `RATE_LIMIT_IP_PER_MIN`; webhook routes,
  * which carry no user, get {@link RATE_LIMIT_WEBHOOK_IP_PER_MIN} a minute per IP; and `POST /auth/magic-link` gets
  * {@link MAGIC_LINK_MAX_PER_EMAIL_PER_HOUR} an hour for one address. Exceeding a limit answers `429 rate_limited` with
@@ -18,6 +18,12 @@
  * anything. Where a hook runs is part of the contract: the per-IP counters are `onRequest` hooks, so an unauthenticated or
  * oversized request is refused before any body is parsed, and the per-user and per-email counters are `preHandler` hooks, after
  * the bearer guard has put the caller's account on the request and after the route's schema has validated the body.
+ * Where a route group carries a guard it registers that guard through {@link guardRouteGroup}, which puts the group's per-IP
+ * counter ahead of it on the group's own context. The order is the invariant: Fastify builds a route's hook chain as the
+ * enclosing context's hooks followed by the route's own, so a counter left on the route alone runs after the guard and a
+ * request the guard refuses reaches no counter at all — it would cost a token verification and nothing else. The group's
+ * counter charges the group's mutating routes alone, and a counter charges one request once however many of its hooks that
+ * request reaches, which is what lets each route keep its own copy of the per-IP hook without halving the allowance.
  */
 import rateLimit from '@fastify/rate-limit';
 
@@ -55,9 +61,11 @@ import type {
 declare module 'fastify' {
   interface FastifyContextConfig {
     /**
-     * Marks one of the two reads that write: `GET /v1/meetups/:id`, whose recipient's first read records `recipientViewedAt` and
-     * emits `proposal_viewed`, and `GET /v1/meetups/:id/suggestions`, which stores a supplied budget and sets
-     * `suggestionsFirstViewedAt`. Both count as mutating routes, so both spread {@link mutatingLimits} and set this flag.
+     * Marks a read that writes: `GET /v1/meetups/:id`, whose recipient's first read records `recipientViewedAt` and
+     * emits `proposal_viewed`; `GET /v1/meetups/:id/suggestions`, which stores a supplied budget and sets
+     * `suggestionsFirstViewedAt`; and the operator's audited `GET /admin/lodging-claims/:id/booking-details`, which
+     * writes an `OperatorAccessLog` row. All three count as mutating routes, so all three spread {@link mutatingLimits}
+     * and set this flag.
      */
     stateWritingRead?: boolean;
   }
@@ -123,6 +131,15 @@ export interface RateLimitHost {
   hasDecorator(name: string | symbol): boolean;
   createRateLimit: FastifyInstance['createRateLimit'];
   readonly rateLimitHooks: RateLimitHooks;
+}
+
+/**
+ * The context a guarded route group registers itself on: what {@link guardRouteGroup} adds the group's counter and its
+ * guard to. Structural like {@link RateLimitHost} and for the same reason — a call site hands it the app's own instance,
+ * or a `withTypeProvider` child of it — so the one `addHook` overload this module calls is the one declared here.
+ */
+export interface RateLimitRouteGroup extends RateLimitHost {
+  addHook(name: 'onRequest', hook: RateLimitHook): unknown;
 }
 
 /** The limiter factory `createRateLimit` is, as the plugin declares it on every instance. */
@@ -311,8 +328,8 @@ export function registerRateLimit<
 }
 
 /**
- * The hooks a mutating traveler or operator route spreads into its options: every POST, PUT, PATCH and DELETE, plus the two
- * state-writing reads, which also set `config.stateWritingRead`.
+ * The hooks a mutating traveler or operator route spreads into its options: every POST, PUT, PATCH and DELETE, plus the reads
+ * that write, which also set `config.stateWritingRead`.
  * The per-IP counter runs `onRequest`, so an unauthenticated caller is refused before its body is parsed; the per-user counter
  * runs in `preHandler`, after the bearer guard has put the account on the request and the body is validated.
  */
@@ -343,6 +360,50 @@ export function webhookLimits(app: RateLimitHost): RateLimitRouteOptions {
 export function magicLinkLimits(app: RateLimitHost): RateLimitRouteOptions {
   const { perIp, perEmail } = hooksOf(app);
   return { onRequest: [perIp], preHandler: [perEmail] };
+}
+
+/**
+ * Registers a route group's guard with the group's per-IP counter ahead of it, on the group's own context, in that order —
+ * see the file header for why the counter cannot be left to the routes alone.
+ *
+ * The guard is the one the group carried before this call, `requireBearer`, `requireTraveler` or `requireOperator`, and the
+ * counter is {@link RateLimitHooks.perIp}, wrapped so the group's reads that do not write stay uncounted. A group that
+ * carries no guard registers no counter here: its limited routes keep spreading their own.
+ */
+export function guardRouteGroup(group: RateLimitRouteGroup, guard: RateLimitHook): void {
+  group.addHook('onRequest', groupPerIp(group));
+  group.addHook('onRequest', guard);
+}
+
+/**
+ * The per-IP counter a route group registers on itself: the shared {@link RateLimitHooks.perIp} hook, wrapped so that the
+ * group's routes which are not mutating make no Redis round trip at all. A group carries every route of its module, and
+ * only its mutating routes consume the allowance (AAP 0.5.4).
+ */
+function groupPerIp(group: RateLimitHost): RateLimitHook {
+  const perIp = hooksOf(group).perIp;
+  return async (request, reply) => {
+    if (!countsAsMutatingRoute(request)) return;
+    await perIp(request, reply);
+  };
+}
+
+/**
+ * Whether the route a request matched is one a group's per-IP counter charges: every method but `GET`, `HEAD` and
+ * `OPTIONS`, plus the reads that write, which mark themselves in their route config because their method cannot say so
+ * (AAP 0.5.4). A group carries its plain reads too, and those must stay uncounted down to the absent rate-limit headers.
+ * `HEAD` is read exactly as `GET`, because Fastify derives a `HEAD` route from every `GET` and runs that route's handler
+ * with the body dropped (`lib/route.js`, `head-route.js`): a `HEAD` to a read that writes performs that read's write, so
+ * leaving it out would hand the write a second, unbounded way in from the same address. Every value read here is
+ * guarded: a matched route always carries a `config`, and a request that reached a group hook always matched one, but
+ * the predicate must not depend on either.
+ */
+function countsAsMutatingRoute(request: FastifyRequest): boolean {
+  const method = request.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    return request.routeOptions.config?.stateWritingRead === true;
+  }
+  return method !== 'OPTIONS';
 }
 
 /** One counter: what it allows, over what window, and which key it counts under. */
@@ -379,9 +440,11 @@ function buildHooks(app: RateLimitHost, services: RateLimitServices): RateLimitH
 }
 
 /**
- * Turns one plan into the hook a route carries: count the request, and refuse it once the count is over the allowance. The
- * plugin's limiter leaves no per-request mark, so one request can be counted by two of these hooks; see the file header. Every
- * counted request carries the window's rate-limit headers, and a count over the allowance throws `429 rate_limited`.
+ * Turns one plan into the hook a route carries: count the request, and refuse it once the count is over the allowance. A
+ * counter charges a request once, however many times its hook reaches that request ({@link countedCounters}): a guarded
+ * group registers the per-IP hook ahead of its guard while the route keeps its own copy of it, and a second charge would
+ * halve the allowance the request is entitled to. Every counted request carries the window's rate-limit headers, and a
+ * count over the allowance throws `429 rate_limited`.
  */
 function createLimit(app: RateLimitHost, plan: LimitPlan): RateLimitHook {
   const limiter = app.createRateLimit({
@@ -389,13 +452,37 @@ function createLimit(app: RateLimitHost, plan: LimitPlan): RateLimitHook {
     timeWindow: plan.timeWindowMs,
     keyGenerator: plan.key,
   });
-  return async (request, reply) => {
+  const counter: RateLimitHook = async (request, reply) => {
+    // The mark is made before the limiter is called, not after it: the second hook to reach an admitted request must
+    // cost no round trip, and a request this hook refused is already answered and never reaches a second one.
+    const counted = countedCounters(request);
+    if (counted.has(counter)) return;
+    counted.add(counter);
     const state = await limiter(request);
     if (state.isAllowed) return;
     setRateLimitHeaders(reply, state);
     if (!state.isExceeded) return;
     throw new AppError('rate_limited', rateLimitedMessage(retryAfterText(state.ttlInSeconds)));
   };
+  return counter;
+}
+
+/**
+ * The counter hooks that have already charged one request. Each hook is a single function shared by every route that
+ * spreads it, so the hook identity is what tells "counted already" from "not counted yet" for that counter alone. The set
+ * is held as a symbol-keyed, non-enumerable own property of the request: no other module can name it, nothing serializes
+ * it, and it lives exactly as long as the request it belongs to.
+ */
+const COUNTED_COUNTERS: unique symbol = Symbol('tablemate.rate_limit_counted_counters');
+
+/** The counters this request has already been charged by, created by the first counter to reach it. */
+function countedCounters(request: FastifyRequest): Set<RateLimitHook> {
+  const marked = request as { readonly [COUNTED_COUNTERS]?: Set<RateLimitHook> };
+  const counted = marked[COUNTED_COUNTERS];
+  if (counted !== undefined) return counted;
+  const created = new Set<RateLimitHook>();
+  Object.defineProperty(request, COUNTED_COUNTERS, { value: created, enumerable: false });
+  return created;
 }
 
 /**

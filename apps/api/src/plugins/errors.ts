@@ -7,6 +7,9 @@
  * {@link loggedFailure} builds, never the thrown object, whose message and stack pino writes as strings that key-based
  * redaction cannot rewrite.
  */
+import { STATUS_CODES } from 'node:http';
+import type { Socket } from 'node:net';
+
 import {
   hasZodFastifySchemaValidationErrors,
   isResponseSerializationError,
@@ -20,7 +23,7 @@ import {
   type ErrorFrame,
 } from '@tablemate/shared';
 
-import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
+import type { ConnectionError, FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { App } from '../app.ts';
 
@@ -219,27 +222,109 @@ function isLoggableCause(value: unknown): value is object {
  */
 export function registerErrorHandling(app: App): void {
   app.setErrorHandler((error: unknown, request, reply) => {
-    const failure = classifyFailure(error, request);
-    if (ERROR_STATUS[failure.code] >= SERVER_FAULT_STATUS) {
-      // Our own defect, logged with its cause and only there. A response that failed its own schema
-      // is a defect with a name of its own, so an operator can tell it from an unexpected throw.
-      const message = isResponseSerializationError(error)
-        ? 'response_serialization_failed'
-        : 'request_failed';
-      // The narrowed record stands in for `{ err: error }`: pino writes a message and a stack as strings and redaction
-      // never rewrites a string, so the raw object would put a provider error quoting a token in the log verbatim.
-      request.log.error({ err: loggedFailure(error), code: failure.code }, message);
-    } else {
-      // The caller's mistake: the original error is deliberately not logged — it can hold the submitted body.
-      request.log.info({ code: failure.code }, 'request_rejected');
-    }
-    sendEnvelope(reply, failure.code, failure.message);
+    answerFailure(error, request, reply);
   });
   // A route that does not exist answers the same envelope a route's own 404 does, so a client parses
   // one shape for every failure (AAP 0.5.4).
   app.setNotFoundHandler((_request, reply) => {
     sendEnvelope(reply, 'not_found', 'Route not found.');
   });
+}
+
+/**
+ * The one path every failure this plugin answers takes: it resolves the failure to a code and a message, logs it at
+ * the level its status calls for, and writes the envelope. `setErrorHandler` and {@link frameworkErrorHandler} both
+ * come through here, so a failure the router raised where a route is looked up is classified, logged and answered
+ * exactly as a handler's own throw is.
+ */
+function answerFailure(error: unknown, request: FastifyRequest, reply: FastifyReply): void {
+  const failure = classifyFailure(error, request);
+  if (ERROR_STATUS[failure.code] >= SERVER_FAULT_STATUS) {
+    // Our own defect, logged with its cause and only there. A response that failed its own schema
+    // is a defect with a name of its own, so an operator can tell it from an unexpected throw.
+    const message = isResponseSerializationError(error)
+      ? 'response_serialization_failed'
+      : 'request_failed';
+    // The narrowed record stands in for `{ err: error }`: pino writes a message and a stack as strings and redaction
+    // never rewrites a string, so the raw object would put a provider error quoting a token in the log verbatim.
+    request.log.error({ err: loggedFailure(error), code: failure.code }, message);
+  } else {
+    // The caller's mistake: the original error is deliberately not logged — it can hold the submitted body.
+    request.log.info({ code: failure.code }, 'request_rejected');
+  }
+  sendEnvelope(reply, failure.code, failure.message);
+}
+
+/**
+ * Answers a failure the HTTP layer raised before any request existed — a header value the parser refused, a header
+ * block past the server's limit — in the envelope every other failure answers with (AAP 0.5.4).
+ *
+ * Fastify binds this function to the server's `clientError` event as it constructs the instance, and its option is the
+ * only way to install one. That is the reason {@link registerErrorHandling} cannot reach these failures: no request and
+ * no reply is ever created for them, so its `setErrorHandler` is never called and the framework would otherwise write
+ * its own body. The status is {@link DEFAULT_REQUEST_ERROR}'s own, because `ERROR_STATUS` gives each code exactly one.
+ *
+ * Neither the failure nor anything it carries is logged: a parser error holds `rawPacket`, the raw request bytes, which
+ * are the offending header value itself — a secret, when the header that failed is `X-Venue-Secret` — and this module
+ * writes no log line that could hold one.
+ */
+export function clientErrorHandler(error: ConnectionError, socket: Socket): void {
+  // The framework's own guard: a reset connection, or one already gone, has nowhere to carry an answer.
+  if (error.code === 'ECONNRESET' || socket.destroyed) return;
+  const status = ERROR_STATUS[DEFAULT_REQUEST_ERROR];
+  const envelope: ErrorEnvelope = {
+    error: { code: DEFAULT_REQUEST_ERROR, message: clientFailureMessage(error) },
+  };
+  const body = JSON.stringify(envelope);
+  // The same head the framework's own handler writes, carrying our body; the connection closes after it,
+  // because the bytes that follow the refused one cannot be parsed either.
+  if (socket.writable) {
+    socket.write(
+      [
+        `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? 'Bad Request'}`,
+        'Content-Type: application/json',
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        'Connection: close',
+        '',
+        body,
+      ].join('\r\n'),
+    );
+  }
+  socket.destroy(error);
+}
+
+/**
+ * Answers a failure the router raised as it looked the request up — a URL it cannot parse (`FST_ERR_BAD_URL`), a path
+ * parameter past the route's limit (`FST_ERR_MAX_PARAM_LENGTH`) — in the envelope every other failure answers with
+ * (AAP 0.5.4).
+ *
+ * `app.ts` passes this to Fastify's `frameworkErrors` option, and the framework reads that option as it builds the
+ * router. Without it the router writes those answers itself, before any handler and without ever reaching
+ * {@link registerErrorHandling}: the body carries an `error` string, the framework's own `code` and `statusCode`
+ * fields, and the request path it quotes back, none of which the contract's `{ error: { code, message } }` allows.
+ * The three arguments are the framework's own, and the request and reply it builds for them let
+ * {@link classifyFailure} read the failure exactly as it reads a thrown one — both codes land on
+ * `invalid_field`, whose message is this module's own sentence and never the path.
+ */
+export function frameworkErrorHandler(
+  error: FastifyError,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): void {
+  answerFailure(error, request, reply);
+}
+
+/**
+ * The message the envelope carries for a request the HTTP layer refused, keyed on the parser's own code — the same
+ * sentence {@link classifyFailure} answers every other client failure with. Nothing else of the failure is read: its
+ * message quotes the bytes it could not parse.
+ */
+function clientFailureMessage(error: ConnectionError): string {
+  if (error.code === 'HPE_HEADER_OVERFLOW') return 'Request headers too large.';
+  // Unreachable while Fastify's `requestTimeout` stays at its default of 0, and answered anyway: a
+  // deployment that set one would otherwise put the framework's own timeout body on the wire.
+  if (error.code === 'ERR_HTTP_REQUEST_TIMEOUT') return 'Request timed out.';
+  return 'Invalid request.';
 }
 
 /**

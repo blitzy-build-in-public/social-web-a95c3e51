@@ -24,7 +24,7 @@ import { ErrorEnvelope, ProofAccepted, ProofSubmission, ZkConfig } from '@tablem
 import { requireTraveler } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { transact } from '../outbox/write.ts';
 import { zkConfig } from './registry.ts';
 import { proofValidity } from './validity.ts';
@@ -157,7 +157,7 @@ export default function proofsRoutes(app: App): Promise<void> {
     // from the route's schema, so the handler reads the parsed `ProofSubmission` rather than an
     // `unknown` it would have to re-check (AAP 0.3.1, 0.11.1).
     const traveler = instance.withTypeProvider<ZodTypeProvider>();
-    traveler.addHook('onRequest', requireTraveler);
+    guardRouteGroup(traveler, requireTraveler);
     traveler.post(
       '/itinerary-proofs',
       {

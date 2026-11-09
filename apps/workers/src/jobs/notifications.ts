@@ -20,14 +20,13 @@
  * field — the fields logged are the outbox id, the kind, the channel and, on a skip, the code under `skipReason`.
  */
 
-import { DateTime } from 'luxon';
-
 import type { DbTx } from '@tablemate/db';
 import {
   QUEUE,
   FieldDecryptionError,
   QueuePayloadError,
   decryptField,
+  formatCityWallTime,
   isJobName,
   parseJobData,
   parseOutboxPayload,
@@ -369,7 +368,7 @@ async function gatherRenderData(
 
 /** The meetup start as it is shown: wall-clock time in the venue city's zone (AAP 0.5.7). */
 function formatLocalStart(startsAt: Date, timezone: string): string {
-  return DateTime.fromJSDate(startsAt, { zone: timezone }).toFormat('ccc d LLL, HH:mm');
+  return formatCityWallTime(timezone, startsAt, 'ccc d LLL, HH:mm');
 }
 
 /** Whether the copy of `kind` is framed in the recipient's variant (AAP 0.5.7, 0.5.8). */

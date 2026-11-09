@@ -274,6 +274,12 @@ const creationRows = rows<CreationRow>([
     code: 'invalid_field',
     body: () => claimBody({ roomNumber: '12' }),
   },
+  {
+    name: 'a booking name holding a NUL byte',
+    status: 400,
+    code: 'invalid_field',
+    body: () => claimBody({ bookingName: 'a\u0000b' }),
+  },
 ]);
 
 describe('POST /me/lodging-claims refusals (AAP 0.5.4)', () => {

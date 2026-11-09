@@ -326,6 +326,7 @@ const BAD_BODIES: readonly BadBody[] = [
     name: 'a kind outside the two the contract names',
     body: { reason: 'A fixture complaint.', kind: 'refund' },
   },
+  { name: 'a reason holding a NUL byte', body: { reason: 'a\u0000b' } },
 ];
 
 /** The filing window's own boundary: still open at the instant, closed one second later. */

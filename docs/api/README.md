@@ -63,8 +63,8 @@ off `GET /me`, `POST /me/consents`, `POST /auth/logout` and `DELETE /me`; off th
 themselves, as does `GET /lodgings/:id`.
 
 **Rate limits.** `plugins/rate-limit.ts` registers `@fastify/rate-limit` with `global: false`, so only
-the routes that ask for a counter have one: every POST, PUT, PATCH and DELETE, and the two reads that
-write (below). Those are limited to 60 requests a minute per user and `RATE_LIMIT_IP_PER_MIN` (600 by
+the routes that ask for a counter have one: every POST, PUT, PATCH and DELETE, and the reads that write
+(below). Those are limited to 60 requests a minute per user and `RATE_LIMIT_IP_PER_MIN` (600 by
 default) per IP. `POST /auth/verify` and `POST /auth/refresh` are limited per IP alone,
 `POST /auth/magic-link` per IP and at five an hour per address, and the webhook routes at the provider
 allowance of 6,000 a minute per IP. Exceeding a counter answers `429 rate_limited` with `Retry-After`.
@@ -72,13 +72,14 @@ The limiter keeps `skipOnError: false`, so while its Redis store is unreachable 
 `503 service_unavailable` (**Addition**) instead of running uncounted. Reads, `/health` and `/test/*`
 carry no counter.
 
-**The two reads that write.** `GET /meetups/:id` sets `recipientViewedAt` and emits `proposal_viewed`
+**The reads that write.** `GET /meetups/:id` sets `recipientViewedAt` and emits `proposal_viewed`
 on the recipient's first read. `GET /meetups/:id/suggestions` stores a supplied budget and stamps
-`suggestionsFirstViewedAt`. Each makes that write in a transaction behind the deletion fence, and each
-carries the mutating counters above.
+`suggestionsFirstViewedAt`. The operator's audited `GET /admin/lodging-claims/:id/booking-details`
+writes an `OperatorAccessLog` row on every read. Each makes that write in a transaction behind the
+deletion fence, and each carries the mutating counters above.
 
 **The account-deletion write fence.** `DELETE /me` sets `deletion_requested_at` and revokes every
-session. From then on every mutation, both state-writing reads and every WebSocket write by that
+session. From then on every mutation, every state-writing read and every WebSocket write by that
 account answers `401 token_invalid` (**Addition**): the fence takes `SELECT … FOR SHARE` on the user's
 row inside the transaction that would write, so it reads PostgreSQL and never the 30-second session
 cache. No row below repeats it.

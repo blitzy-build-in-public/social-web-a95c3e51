@@ -36,7 +36,11 @@ import { API_PATH_PREFIX as API_PREFIX, HealthResponse } from '@tablemate/shared
 import { registerAuth } from './plugins/auth.ts';
 import { registerClock } from './plugins/clock.ts';
 import { registerCompression } from './plugins/compression.ts';
-import { registerErrorHandling } from './plugins/errors.ts';
+import {
+  clientErrorHandler,
+  frameworkErrorHandler,
+  registerErrorHandling,
+} from './plugins/errors.ts';
 import { registerOpenApi, type OpenApiTag } from './plugins/openapi.ts';
 import { registerRateLimit } from './plugins/rate-limit.ts';
 import { registerSecurity } from './plugins/security.ts';
@@ -119,7 +123,7 @@ const SERVER_TIMING_HEADER = 'server-timing';
 const STRIPE_TIMING_METRIC = 'stripe';
 
 /**
- * The methods whose responses carry the timing header whatever the route says: every one of them mutates. The two
+ * The methods whose responses carry the timing header whatever the route says: every one of them mutates. The
  * reads that write are not in this set; they mark themselves with `stateWritingRead` instead.
  */
 const STATE_WRITING_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -481,6 +485,12 @@ export function buildApp(deps: AppDeps): App {
     // the client: `X-Forwarded-For` would otherwise decide an IP rate limit.
     trustProxy: false,
     bodyLimit: BODY_LIMIT_BYTES,
+    // Bound to the server's `clientError` event as the instance is constructed, so a failure that no
+    // handler can receive still carries the envelope (AAP 0.5.4).
+    clientErrorHandler,
+    // Read as the router is built: without it, a URL the router cannot parse or a path parameter past a
+    // route's limit is answered with the framework's own body, before any handler runs (AAP 0.5.4).
+    frameworkErrors: frameworkErrorHandler,
     // During `close()` a request in flight is refused with 503 rather than hanging on a closing server, which is what
     // makes the shutdown below bounded.
     return503OnClosing: true,
@@ -711,7 +721,7 @@ function timezoneOfCity(cityId: string): string {
 }
 
 /**
- * Whether a response carries the Stripe timing: every mutating method, and the two reads that write, which mark
+ * Whether a response carries the Stripe timing: every mutating method, and the reads that write, which mark
  * themselves in their route config because their method cannot say so.
  */
 function writesState(request: FastifyRequest): boolean {

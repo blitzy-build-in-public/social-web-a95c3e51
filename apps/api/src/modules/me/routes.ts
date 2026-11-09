@@ -26,7 +26,7 @@ import {
 import { requireBearer, requireTraveler, type AuthContext } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { transact } from '../outbox/write.ts';
 import { recordConsents } from './consents.ts';
 import { requestDeletion } from './deletion.ts';
@@ -70,7 +70,7 @@ export default function meRoutes(app: App): Promise<void> {
   // route's schema (AAP 0.3.1, 0.11.1).
   app.register((instance) => {
     const scope = instance.withTypeProvider<ZodTypeProvider>();
-    scope.addHook('onRequest', requireBearer);
+    guardRouteGroup(scope, requireBearer);
     scope.get(
       '/me',
       {
@@ -138,7 +138,7 @@ export default function meRoutes(app: App): Promise<void> {
   // guard adds the age gate to the token and answers `403 age_gate_required` (AAP 0.5.4).
   app.register((instance) => {
     const scope = instance.withTypeProvider<ZodTypeProvider>();
-    scope.addHook('onRequest', requireTraveler);
+    guardRouteGroup(scope, requireTraveler);
     scope.put(
       '/me/profile',
       {

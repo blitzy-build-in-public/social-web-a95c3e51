@@ -21,13 +21,30 @@ export type UsdCents = z.infer<typeof UsdCents>;
 /** A non-negative integer count in a response DTO, such as `attempts` or a metric (AAP 0.5.4). */
 export const Count = z.number().int().nonnegative();
 export type Count = z.infer<typeof Count>;
+/** A WGS-84 latitude in decimal degrees (AAP 0.5.2). */
 export const Latitude = z.number().min(-90).max(90);
 export type Latitude = z.infer<typeof Latitude>;
+/** A WGS-84 longitude in decimal degrees (AAP 0.5.2). */
 export const Longitude = z.number().min(-180).max(180);
 export type Longitude = z.infer<typeof Longitude>;
 /** A coordinate pair, as configuration carries it (`CityConfig.centroid`, AAP 0.5.2). */
 export const LatLng = z.strictObject({ lat: Latitude, lng: Longitude });
 export type LatLng = z.infer<typeof LatLng>;
+/** What a text value may not carry: every C0 control (U+0000 to U+001F) except TAB, LF and CR, plus DEL (U+007F). U+0000 is the one PostgreSQL's UTF-8 `text` cannot hold at all; the rest are invisible in a column, a log line and a call script alike. */
+const CONTROL_CHARACTER_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+/**
+ * Free text a client supplies — a nickname, a report reason, a search term, a venue name — carrying no character of
+ * {@link CONTROL_CHARACTER_RE}.
+ *
+ * PostgreSQL's UTF-8 `text` cannot hold U+0000, so a value carrying it raises SQLSTATE 22021 inside the database and
+ * would be answered `500` where the boundary owes the caller `400 invalid_field`. The same rule keeps the other
+ * invisible controls out of the columns, the log lines and the call scripts. Each field narrows this primitive with
+ * its own `.min()` and `.max()` (AAP 0.11.2 input validation on every route and frame).
+ */
+export const FreeText = z
+  .string()
+  .refine((value) => !CONTROL_CHARACTER_RE.test(value), 'Must not contain control characters.');
+export type FreeText = z.infer<typeof FreeText>;
 /** An E.164 phone number, `+` and 7 to 15 digits (AAP 0.5.2 `Place.phone`, `Lodging.phone`). */
 export const E164 = z.string().regex(/^\+[1-9]\d{6,14}$/);
 export type E164 = z.infer<typeof E164>;

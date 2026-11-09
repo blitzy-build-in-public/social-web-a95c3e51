@@ -137,3 +137,29 @@ export function isWithinLocalWindow(
     to.getTime() <= localTimeOn(tz, day, endHHmm).getTime()
   );
 }
+/**
+ * An instant whose *process-local* fields carry `tz`'s wall-clock reading of `at`; only those local fields mean anything,
+ * because the instant itself is not `at`, and {@link fromCityWallClock} is its inverse.
+ *
+ * The shift exists for `opening_hours` alone, which reads a `Date`'s process-local getters: writing the city's fields
+ * into the process zone gives it exactly the fields it must read, whatever `TZ` the process runs in.
+ */
+export function toCityWallClock(tz: string, at: Date): Date {
+  assertValidZone(tz);
+  assertValidDate(at);
+  return toDate(DateTime.fromJSDate(at, { zone: tz }).setZone('local', { keepLocalTime: true }));
+}
+/** The inverse of {@link toCityWallClock}: the real instant that reads as `at`'s process-local wall clock in `tz`, which
+ * turns an interval the library handed back into an instant of the meetup. */
+export function fromCityWallClock(tz: string, at: Date): Date {
+  assertValidZone(tz);
+  assertValidDate(at);
+  return toDate(DateTime.fromJSDate(at).setZone(tz, { keepLocalTime: true }));
+}
+/** `at` written in `tz`'s wall clock with luxon's `format` tokens, the one place a zone-formatted reading is produced: a
+ * suggestion's `HH:mm` interval and a notification's meetup start both come from here. */
+export function formatCityWallTime(tz: string, at: Date, format: string): string {
+  assertValidZone(tz);
+  assertValidDate(at);
+  return DateTime.fromJSDate(at, { zone: tz }).toFormat(format);
+}

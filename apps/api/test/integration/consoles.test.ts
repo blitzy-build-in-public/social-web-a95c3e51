@@ -40,6 +40,22 @@ const VENUE_CODE_PATH = '/v1/venue/check-in-code';
 
 const LODGING_STATS_PATH = '/v1/lodging-console/stats';
 
+/** An origin neither client is served from: the allowlist holds exactly `WEB_ORIGIN` and `VENUE_CONSOLE_ORIGIN` (AAP 0.3.2). */
+const FOREIGN_ORIGIN = 'https://elsewhere.example.test';
+
+/**
+ * Every CORS response header `@fastify/cors` can write, and so the whole set an origin outside the allowlist must receive none of:
+ * the allowed origin, the approved methods and request headers, how long a preflight answer may be cached, and the response header
+ * the caller's script would be allowed to read (AAP 0.3.2).
+ */
+const CORS_RESPONSE_HEADERS: readonly string[] = [
+  'access-control-allow-origin',
+  'access-control-allow-methods',
+  'access-control-allow-headers',
+  'access-control-max-age',
+  'access-control-expose-headers',
+];
+
 /** One of the five seeded launch cities: a console belongs to one venue or lodging, not to a city. */
 const CITY_ID = 'lisbon';
 
@@ -227,13 +243,39 @@ describe('console CORS', () => {
       url: VENUE_CODE_PATH,
       headers: {
         [VENUE_SECRET_HEADER]: issued(venue.secret),
-        origin: 'https://elsewhere.example.test',
+        origin: FOREIGN_ORIGIN,
       },
     });
     // The route still answers — CORS is the browser's rule, not the server's — but withholds the
     // allow-origin header, so a page on that origin cannot read the answer.
     expect(response.status).toBe(200);
     expect(header(response.headers, 'access-control-allow-origin')).toBe('');
+    // The same root cause reaches a simple request: the plugin writes the exposed-headers header before it
+    // withholds the allow-origin one, so a refused origin could read `Date` out of an answer it was never
+    // allowed to read (AAP 0.3.2).
+    expect(header(response.headers, 'access-control-expose-headers')).toBe('');
+  });
+  it('answers a preflight from an origin outside the allowlist without any CORS header', async () => {
+    // A preflight is an `OPTIONS` the browser sends before the real request, which `callRoute`'s
+    // method union does not carry, so it goes through the app's own `inject`.
+    const preflight = await t.app.inject({
+      method: 'OPTIONS',
+      url: VENUE_CODE_PATH,
+      headers: {
+        origin: FOREIGN_ORIGIN,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': VENUE_SECRET_HEADER,
+      },
+    });
+    // The allowlist governs the whole answer, not only `access-control-allow-origin`: a refused origin learns
+    // neither the methods and request headers the API approves, nor how long an approval may be cached, nor
+    // which response header it would be allowed to read. The plugin's own wildcard `OPTIONS` route steps aside
+    // once its origin resolver refused the request, so this reaches the app's not-found handler and gets the
+    // shared envelope instead of the `204` an approved preflight gets (AAP 0.3.2, 0.5.4).
+    expect(preflight.statusCode).toBe(404);
+    for (const name of CORS_RESPONSE_HEADERS) {
+      expect(header(preflight.headers, name)).toBe('');
+    }
   });
 });
 

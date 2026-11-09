@@ -11,7 +11,7 @@
  * - **The guard is route-group level, never global.** `requireTraveler` is added to this encapsulated context alone, so the age
  *   gate covers exactly these nine traveler features and an unverified traveler still reaches their own meetups.
  * - **Every POST, and the one read that writes, carries the mutating counters.** The plain list read carries none.
- * - **`GET /meetups/:id` is one of the two state-writing reads.** A recipient's first read of a visible proposal records
+ * - **`GET /meetups/:id` is one of the state-writing reads.** A recipient's first read of a visible proposal records
  *   `recipientViewedAt` and emits `proposal_viewed` in a transaction behind the account-deletion write fence, and the row is read
  *   back, so the answer reports what committed.
  * - **Every route declares `schema.response`.** The composition root refuses to start with a non-WebSocket route that does not.
@@ -42,7 +42,7 @@ import {
 import { requireTraveler, type AuthContext } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
-import { mutatingLimits } from '../../plugins/rate-limit.ts';
+import { guardRouteGroup, mutatingLimits } from '../../plugins/rate-limit.ts';
 import { transact } from '../outbox/write.ts';
 import { acceptMeetup, declineMeetup, retryInitiatorHold } from './accept.ts';
 import { cancelMeetup } from './cancel.ts';
@@ -72,7 +72,7 @@ function authContext(request: FastifyRequest): AuthContext {
 /** Registers the nine meetup routes on the context `app.ts` mounts under `/v1`: registration is synchronous, as in every other
  * plugin, and every handler passes `request.receivedAt` as its `now`. */
 export default function meetupsRoutes(app: App): Promise<void> {
-  app.addHook('onRequest', requireTraveler);
+  guardRouteGroup(app, requireTraveler);
   app.get(
     '/meetups',
     {
@@ -98,7 +98,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
   app.get(
     '/meetups/:id',
     {
-      // One of the two reads that write (AAP 0.5.4): the counter cannot be dropped from the route
+      // One of the reads that write (AAP 0.5.4): the counter cannot be dropped from the route
       // that records the recipient's first view.
       ...mutatingLimits(app),
       config: { stateWritingRead: true },

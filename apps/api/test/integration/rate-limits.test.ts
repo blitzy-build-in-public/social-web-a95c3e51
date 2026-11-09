@@ -22,6 +22,7 @@ import {
   rows,
 } from '../support/factories.ts';
 
+import type { ErrorCode } from '@tablemate/shared';
 import type { TestApp } from '../support/app.ts';
 import type { RouteResponse } from '../support/factories.ts';
 
@@ -35,6 +36,12 @@ const ATTEMPT_ID = '01890a5d-ac96-774b-bcce-b302099a8057';
 
 /** How many plain reads one case issues, to show that no counter is taken for any of them. */
 const PLAIN_READS_PER_CASE = 100;
+
+/**
+ * The per-IP allowance the guard rows run on: small enough to spend inside one row, and read back from the address's
+ * counter in Redis, which is where a counter that never ran is absent rather than `0`.
+ */
+const GUARDED_ROUTE_IP_PER_MIN = 5;
 
 /** How long one refused request may take: the store's one-second bound plus the session cache's 250 ms. */
 const OUTAGE_CASE_TIMEOUT_MS = 30_000;
@@ -93,7 +100,7 @@ async function fromAddress(
   harness: TestApp,
   remoteAddress: string,
   request: {
-    readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    readonly method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE';
     readonly url: string;
     readonly as?: string;
     readonly body?: object;
@@ -212,6 +219,79 @@ async function awaitAnswering(connection: Connection): Promise<void> {
   throw new Error('a Redis connection did not answer after the outage');
 }
 
+/**
+ * One mutating route whose group refuses the caller before its handler runs: the guard that group carries, what that guard
+ * answers with, and the address the row drives from.
+ *
+ * The routes' own allowances are the same in every row; what varies is which guard refuses, because a guard is registered
+ * on its group's own context and Fastify runs a context's `onRequest` hooks before a route's own `onRequest` options. The
+ * counter therefore has to be registered on the group ahead of its guard — `rate-limit.ts`'s `guardRouteGroup` — and the
+ * address's counter in Redis, not the status alone, is what says it was.
+ */
+interface GuardedRouteCase {
+  /** The guard and the route, as the case is named. */
+  readonly label: string;
+  /** The address the row sends from; one address per row, so no row reads another's counter. */
+  readonly address: string;
+  /** The method the route answers: `POST` for a write, `GET` for the audited read that writes, `HEAD` for that read one method over. */
+  readonly method: 'GET' | 'HEAD' | 'POST';
+  /** The refusal the guard answers with: the status, and the code wherever the method answers a body to carry it. */
+  readonly refusal: readonly [number, ErrorCode];
+  /** The credential the caller presents; a row that omits it sends no `Authorization` header at all. */
+  readonly credential?: (harness: TestApp) => Promise<string>;
+  /** The mutating route, which the guard refuses before its body is read, so a row sends none. */
+  readonly url: string;
+}
+
+const GUARDED_ROUTE_CASES: readonly GuardedRouteCase[] = [
+  {
+    label: 'requireBearer on POST /v1/me/consents',
+    address: '198.51.100.11',
+    method: 'POST',
+    refusal: [401, 'token_invalid'],
+    url: '/v1/me/consents',
+  },
+  {
+    label: 'requireTraveler on POST /v1/events',
+    address: '198.51.100.12',
+    method: 'POST',
+    refusal: [403, 'age_gate_required'],
+    // An account that has not consented is exactly what the age gate refuses, and it needs no saved card.
+    credential: async (harness) =>
+      (await makeUser(harness, { consents: false, card: 'none' })).accessToken,
+    url: '/v1/events',
+  },
+  {
+    label: 'requireOperator on POST /v1/admin/price-jobs',
+    address: '198.51.100.13',
+    method: 'POST',
+    refusal: [403, 'operator_only'],
+    credential: async (harness) => (await makeUser(harness, { card: 'none' })).accessToken,
+    url: '/v1/admin/price-jobs',
+  },
+  {
+    // The audited read: a GET whose method alone cannot say it writes, so it is a counter case only because
+    // the route declares `config.stateWritingRead`. The guard refuses it before the id is validated, so a
+    // well-formed id no claim carries is enough.
+    label: 'requireOperator on GET /v1/admin/lodging-claims/:id/booking-details',
+    address: '198.51.100.14',
+    method: 'GET',
+    refusal: [401, 'token_invalid'],
+    url: '/v1/admin/lodging-claims/00000000-0000-7000-8000-000000000000/booking-details',
+  },
+  {
+    // The audited read one method over. Fastify derives a `HEAD` route from every `GET` and runs that route's
+    // handler with the body dropped, so a `HEAD` here performs the same `OperatorAccessLog` write and is refused
+    // by the same guard — which is why the counter has to charge the method the same way. That dropped body is
+    // also why the case pins this row to the refusal's status: a `HEAD` answers no envelope to read a code from.
+    label: 'requireOperator on HEAD /v1/admin/lodging-claims/:id/booking-details',
+    address: '198.51.100.15',
+    method: 'HEAD',
+    refusal: [401, 'token_invalid'],
+    url: '/v1/admin/lodging-claims/00000000-0000-7000-8000-000000000000/booking-details',
+  },
+];
+
 describe('the per-user and per-IP allowances', () => {
   it('allows 60 writes for one account and refuses the 61st', async () => {
     const user = await makeUser(t);
@@ -283,11 +363,53 @@ describe('the per-user and per-IP allowances', () => {
     expectError(voice, 400, 'bad_signature');
     expect(Number(voice.headers['x-ratelimit-limit'])).toBe(RATE_LIMIT_WEBHOOK_IP_PER_MIN);
   });
+  it.each(rows(GUARDED_ROUTE_CASES))('counts an address refused by $label', async (refused) => {
+    const limited = await createTestApp({
+      env: { RATE_LIMIT_IP_PER_MIN: String(GUARDED_ROUTE_IP_PER_MIN) },
+    });
+    try {
+      // The counters live in Redis, and this app is fresh: its first counted request would otherwise race the
+      // connection and answer `503` where the row expects the guard's own refusal.
+      await awaitAnswering(limited.services.redis.client);
+      // No credential at all where the row asks for none: the guard refuses it, and the group's counter counts it.
+      const as = refused.credential === undefined ? undefined : await refused.credential(limited);
+      const send = () =>
+        fromAddress(limited, refused.address, {
+          method: refused.method,
+          url: refused.url,
+          ...(as === undefined ? {} : { as }),
+        });
+      // A `HEAD` answers no body — Fastify's derived HEAD route drops the payload a response would have carried, the
+      // error envelope included — so a HEAD row's refusal is its status alone and `expectError`, which reads the code
+      // out of the body, cannot be used for it. Every other row answers the envelope and the code with it.
+      const expectRefusal = (answer: RouteResponse, status: number, code: ErrorCode): void => {
+        if (refused.method === 'HEAD') expect(answer.status).toBe(status);
+        else expectError(answer, status, code);
+      };
+      for (let request = 0; request < GUARDED_ROUTE_IP_PER_MIN; request += 1) {
+        expectRefusal(await send(), refused.refusal[0], refused.refusal[1]);
+      }
+      // What the five refusals left behind: the group's counter ran ahead of the guard, so the address paid for
+      // each of them. Read as the count and not as `> 0`, because it pins the charge to one per request — the
+      // route of each of these groups carries the same per-IP hook again, and a second charge would leave ten.
+      expect(await limited.services.redis.client.get(`rl:ip:${refused.address}`)).toBe(
+        String(GUARDED_ROUTE_IP_PER_MIN),
+      );
+      // The allowance is spent, so the sixth request never reaches the guard: the counter refuses it first.
+      const beyondAllowance = await send();
+      expectRefusal(beyondAllowance, 429, 'rate_limited');
+      expect(Number(beyondAllowance.headers['x-ratelimit-limit'])).toBe(GUARDED_ROUTE_IP_PER_MIN);
+      expect(Number(beyondAllowance.headers['retry-after'])).toBeGreaterThan(0);
+    } finally {
+      await limited.close();
+    }
+  });
 });
 
 /**
- * The two reads that write, both limited per caller: the proposal detail records its recipient's first view and the suggestion route stores a
- * supplied budget. Each is marked `config.stateWritingRead`, which is how the limiter knows the method alone cannot tell them from plain reads.
+ * The contract's two reads that write, both limited per caller: the proposal detail records its recipient's first view and the suggestion route stores a
+ * supplied budget. Each is marked `config.stateWritingRead`, which is how the limiter knows the method alone cannot tell them from plain reads. The
+ * operator's audited booking-details read is a third such route, covered by the guard table above.
  */
 const STATE_WRITING_READS: readonly (readonly [string, (meetupId: string) => string])[] = [
   ['GET /v1/meetups/:id', (meetupId) => `/v1/meetups/${meetupId}`],

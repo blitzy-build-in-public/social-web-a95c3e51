@@ -22,6 +22,7 @@ import {
   Count,
   DateOnly,
   E164,
+  FreeText,
   IsoDateTime,
   Latitude,
   Longitude,
@@ -94,8 +95,8 @@ export const LodgingClaimRequest = z.strictObject({
   lodgingId: Uuid,
   stayFrom: DateOnly,
   stayTo: DateOnly,
-  bookingName: z.string().max(BOOKING_NAME_MAX_CHARS),
-  bookingReference: z.string().max(BOOKING_REFERENCE_MAX_CHARS).optional(),
+  bookingName: FreeText.max(BOOKING_NAME_MAX_CHARS),
+  bookingReference: FreeText.max(BOOKING_REFERENCE_MAX_CHARS).optional(),
   callConsent: z.boolean().optional(),
 });
 export type LodgingClaimRequest = z.infer<typeof LodgingClaimRequest>;

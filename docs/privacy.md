@@ -100,7 +100,8 @@ score from `LodgingActivityFact`. `tests/system/account-deletion.test.ts` and
   outbox row that announces the erasure. A session row _is_ the refresh token, so revoking the rows
   ends both.
 - **The write fence closes the account to writes the moment that commits.** Every mutating handler,
-  the two state-writing reads (proposal detail and suggestions) and every WebSocket write first takes
+  the state-writing reads (proposal detail, suggestions and the operator's audited booking-details
+  read) and every WebSocket write first takes
   `SELECT … FOR SHARE` on the acting account's row and refuses with `401 token_invalid` once deletion
   is requested. The check reads PostgreSQL, never the cache, and a mutation already in flight holds its
   share lock, so the deletion waits for it to commit: nothing the account wrote can commit after the

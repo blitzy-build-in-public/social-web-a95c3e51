@@ -101,6 +101,8 @@ const LISBON = 'lisbon';
 /** A second launch city, whose lodging exists only to prove a hand-entered row carries no OSM ids. */
 const MEXICO_CITY = 'mexico-city';
 const TODAY = DEFAULT_TEST_NOW.slice(0, 10);
+/** A NUL byte between two letters: the one code point PostgreSQL's UTF-8 `text` cannot hold, so a text field carrying it is refused at the boundary rather than answered `500` by the insert. */
+const NUL_TEXT = 'a\u0000b';
 
 let t: TestApp;
 /** The operator every `/admin/*` case acts as; no card, so no case places a hold for them. */
@@ -635,6 +637,36 @@ const OPERATOR_PRICES = [
 ];
 
 /**
+ * One price an operator enters, with the two free-text fields left to the row that supplies them: a `main` item whose
+ * two ticket fields are both null, which is what the ticket rule admits (AAP 0.5.6).
+ */
+function operatorPriceEntry(name: string, priceText: string): Record<string, unknown> {
+  return {
+    name,
+    category: 'main',
+    priceText,
+    currency: 'USD',
+    alcoholic: null,
+    perPerson: null,
+    ticketType: null,
+    localAmountMinor: 1250,
+  };
+}
+
+/**
+ * An operator's price holding a NUL byte in one of its two free-text fields, one row per field: the byte passes a bare
+ * `z.string()` and PostgreSQL refuses the insert with SQLSTATE 22021, so `400 invalid_field` at the boundary is what
+ * the caller is owed instead of a `500` from the batch insert (AAP 0.11.2).
+ */
+const NUL_OPERATOR_PRICE_ROWS = rows<{
+  readonly name: string;
+  readonly prices: readonly Record<string, unknown>[];
+}>([
+  { name: 'a price name', prices: [operatorPriceEntry(NUL_TEXT, '$12.50')] },
+  { name: 'a price text', prices: [operatorPriceEntry('Bacalhau à Brás', NUL_TEXT)] },
+]);
+
+/**
  * Write one attempt's extraction, which the builder's own option does not admit: it types the payload as a flat record of scalars,
  * while a menu call's extraction is a list of items.
  */
@@ -765,6 +797,7 @@ const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<s
   },
   { name: 'a page size above the one the contract allows', query: { limit: '501' } },
   { name: 'a parameter the queue does not carry', query: { page: '2' } },
+  { name: 'a search term holding a NUL byte', query: { q: NUL_TEXT } },
 ]);
 
 /**
@@ -1136,6 +1169,26 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     });
     expect(target.doNotCall).toBe(false);
   });
+
+  it.each(NUL_OPERATOR_PRICE_ROWS)(
+    'refuses $name holding a NUL byte with 400 invalid_field',
+    async (row) => {
+      const task = await menuTask('needs_review');
+      const response = await resolveTask(task.id, { outcome: 'completed', prices: row.prices });
+      // The refusal is the entry's own schema, so the resolution never ran: the task keeps the status
+      // it was queued in, with no resolver and no outcome instant, and the batch insert it would have
+      // made never happens, so nothing is stored for the task's place (AAP 0.11.2, 0.5.4).
+      expectError(response, 400, 'invalid_field');
+      const stored = await t.services.db.callTask.findUniqueOrThrow({
+        where: { id: task.id },
+        select: { outcomeAt: true, resolvedBy: true, status: true },
+      });
+      expect(stored.status).toBe('needs_review');
+      expect(stored.resolvedBy).toBeNull();
+      expect(stored.outcomeAt).toBeNull();
+      expect(await t.services.db.priceRecord.count({ where: { placeId: place.id } })).toBe(0);
+    },
+  );
 
   it.each(BLOCKED_RESOLUTIONS)(
     'clears the block reason of a task it resolves $name',
@@ -1728,6 +1781,61 @@ const REGISTRY_BAD_QUERIES = rows<{
   { name: 'a page size above the one the contract allows', query: { limit: '501' } },
   { name: 'a page size that is not a number', query: { limit: 'many' } },
   { name: 'a parameter the registry does not carry', query: { city: LISBON } },
+  { name: 'a search term holding a NUL byte', query: { q: NUL_TEXT } },
+]);
+
+/** A venue an operator enters, with the two free-text fields left to the row that supplies them. */
+function venueEntry(name: string, address: string): Record<string, unknown> {
+  return { cityId: LISBON, name, address, lat: 38.71, lng: -9.14 };
+}
+
+/**
+ * The onboarding bodies that carry a NUL byte in a free-text field, one row per route and field: the byte passes a
+ * bare `z.string()` and PostgreSQL refuses it with SQLSTATE 22021, so `400 invalid_field` at the boundary is what the
+ * caller is owed instead of a `500` from the insert (AAP 0.11.2). Each row sends its own request, because the edit
+ * route needs a venue that already exists.
+ */
+const NUL_ONBOARDING_ROWS = rows<{
+  readonly name: string;
+  readonly send: () => Promise<RouteResponse>;
+}>([
+  {
+    name: 'a venue name',
+    send: () =>
+      asOperator('POST', '/v1/admin/venues', { body: venueEntry(NUL_TEXT, '3 Fixture Street') }),
+  },
+  {
+    name: 'a venue address',
+    send: () =>
+      asOperator('POST', '/v1/admin/venues', {
+        body: venueEntry('Fixture NUL Address Venue', NUL_TEXT),
+      }),
+  },
+  {
+    name: 'a venue name on the edit route',
+    send: async () => {
+      const created = await asOperator('POST', '/v1/admin/venues', {
+        body: venueEntry('Fixture NUL Edit Venue', '3 Fixture Street'),
+      });
+      const onboarded = AdminVenueDto.parse(created.json());
+      return asOperator('PATCH', `/v1/admin/venues/${onboarded.id}`, { body: { name: NUL_TEXT } });
+    },
+  },
+  {
+    name: 'a lodging name',
+    send: () =>
+      asOperator('POST', '/v1/admin/lodgings', {
+        body: {
+          cityId: LISBON,
+          name: NUL_TEXT,
+          kind: 'hostel',
+          address: '4 Fixture Street',
+          phone: null,
+          lat: 38.71,
+          lng: -9.14,
+        },
+      }),
+  },
 ]);
 
 describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
@@ -1876,6 +1984,13 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     const response = await asOperator('GET', '/v1/admin/lodgings', { query: row.query });
     expectError(response, 400, 'invalid_field');
   });
+
+  it.each(NUL_ONBOARDING_ROWS)(
+    'refuses $name holding a NUL byte with 400 invalid_field',
+    async (row) => {
+      expectError(await row.send(), 400, 'invalid_field');
+    },
+  );
 
   it('pages a registry larger than one page, so the lodging just entered stays reachable', async () => {
     for (let seeded = 0; seeded < REGISTRY_PAGE - 1; seeded += 1) {
