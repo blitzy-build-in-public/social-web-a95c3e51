@@ -1,8 +1,6 @@
 -- Why this is a new migration directory rather than an edit of 20261104000000_init: that migration is already
 -- applied in every database of this run and `prisma migrate deploy` skips an applied migration by name, so a change
--- appended to it can never reach an existing database. Measured: with an index appended to the init file, deploy
--- answered "No pending migrations to apply." and the index stayed absent; from this directory the migration applies
--- and the index exists.
+-- appended to it can never reach an existing database.
 --
 -- Two kinds of object live here: the single-column indexes the retention, metric and reference-check predicates
 -- need, which the datamodel also declares and which a new directory is the only way to add once the init directory

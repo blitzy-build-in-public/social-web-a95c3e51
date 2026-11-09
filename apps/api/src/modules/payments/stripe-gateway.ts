@@ -676,6 +676,21 @@ export function createStripeGateway(
     return toIntentState(intent);
   }
   /**
+   * The unix-seconds timestamp a `stripe-signature` header carries, or `null` when the header carries none this
+   * build can read. The header is the provider's own bytes, so it is read the way the SDK reads it — split on `,`,
+   * split each part on `=`, the last `t=` wins, `Number.parseInt(value, 10)` — which is what makes the bound below
+   * agree with the age the SDK computes from the same header. No `t=` at all and a `t=` that is not a base-10
+   * integer both answer `null`.
+   */
+  function headerTimestamp(signature: string): number | null {
+    let timestamp: number | null = null;
+    for (const part of signature.split(',')) {
+      const [key, value] = part.split('=');
+      if (key === 't') timestamp = Number.parseInt(value ?? '', 10);
+    }
+    return timestamp !== null && Number.isInteger(timestamp) ? timestamp : null;
+  }
+  /**
    * Verify a Stripe event's signature and normalize it. Synchronous, because nothing about a signature check waits
    * and the endpoint must answer `2xx` quickly; the tolerance is judged against `receivedAt`, the request's
    * injected-clock instant, which is what lets a suite on the test clock sign an event with a timestamp from it.
@@ -689,6 +704,18 @@ export function createStripeGateway(
     signature: string,
     receivedAt: Date,
   ): VerifiedWebhookEvent | null {
+    // The SDK bounds staleness alone — it throws only when `floor(receivedAt / 1000) - t` exceeds the tolerance — so a
+    // timestamp in the future passes with a negative age and the window would be one-sided. Its own parse turns a `t=`
+    // that is not a base-10 integer into `NaN`, which every comparison lets through, so such a header is malformed
+    // rather than old. Both are refused here, which makes the window symmetric about the delivery's instant:
+    // `-SIGNATURE_TOLERANCE_SECONDS <= floor(receivedAt / 1000) - t <= SIGNATURE_TOLERANCE_SECONDS`.
+    const headerSeconds = headerTimestamp(signature);
+    if (
+      headerSeconds === null ||
+      Math.floor(receivedAt.getTime() / 1000) - headerSeconds < -SIGNATURE_TOLERANCE_SECONDS
+    ) {
+      throw new BadSignatureError();
+    }
     let parsed: unknown;
     try {
       parsed = client.webhooks.constructEvent(

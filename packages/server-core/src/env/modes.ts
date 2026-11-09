@@ -24,6 +24,8 @@ const PRICE_REASON = 'must be a positive decimal with at most 6 fraction digits'
 const ALLOWLIST_REASON =
   'must list at least one operator-owned E.164 number when TELEPHONY_MODE=twilio outside production';
 const E164_REASON = 'must be an E.164 number';
+const SIMULATOR_REASON = 'simulator is accepted only outside production';
+const VOICE_SIM_URL_REASON = 'is required when TELEPHONY_MODE=simulator';
 function hasValue(env: NormalizedEnv, variable: string): boolean {
   return env[variable] !== undefined;
 }
@@ -195,13 +197,22 @@ export interface TelephonyEnvValues {
   readonly VOICE_SIM_URL?: string | undefined;
 }
 const TWILIO_CREDENTIAL_VARIABLES = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'] as const;
-/** Report what the configured `TELEPHONY_MODE` requires of `process` (AAP 0.6.2, 0.11.2). */
+/**
+ * Report what the configured `TELEPHONY_MODE` requires of `process` (AAP 0.6.2, 0.11.2): `simulator` needs
+ * `VOICE_SIM_URL` from `workers`, and is refused in production because its transport is built from the
+ * fixed public token of {@link TWILIO_SIMULATOR} (AAP 0.11.2).
+ */
 export function telephonyIssues(env: NormalizedEnv, process: EnvProviderProcess): EnvIssue[] {
   const mode = env.TELEPHONY_MODE;
   if (mode === 'simulator') {
-    return process === 'workers' && !hasValue(env, 'VOICE_SIM_URL')
-      ? [{ variable: 'VOICE_SIM_URL', reason: 'is required when TELEPHONY_MODE=simulator' }]
-      : [];
+    const issues: EnvIssue[] = [];
+    if (env.APP_ENV === PRODUCTION) {
+      issues.push({ variable: 'TELEPHONY_MODE', reason: SIMULATOR_REASON });
+    }
+    if (process === 'workers' && !hasValue(env, 'VOICE_SIM_URL')) {
+      issues.push({ variable: 'VOICE_SIM_URL', reason: VOICE_SIM_URL_REASON });
+    }
+    return issues;
   }
   if (mode !== 'twilio') {
     return [];

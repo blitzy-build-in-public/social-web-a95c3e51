@@ -5,7 +5,7 @@
  * it: the received bytes are what was signed, never a re-serialized payload; `stripe_event.id` is the dedupe key, inserted `ON CONFLICT DO
  * NOTHING`; events are never ordered by their own `created`; and the handler answers 2xx quickly and does its work after the commit.
  */
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, inject } from 'vitest';
 
@@ -369,6 +369,50 @@ describe(`${MODE} POST ${WEBHOOK_URL} — signature`, () => {
       expect(await t.services.db.stripeEvent.count()).toBe(0);
     },
   );
+
+  it.each(rows([{ offsetSeconds: 3600 }, { offsetSeconds: -3600 }]))(
+    'refuses a delivery whose signature timestamp is $offsetSeconds seconds from the delivery',
+    async ({ offsetSeconds }) => {
+      // The tolerance bounds the window a captured signature stays usable in, so it holds on either
+      // side of the delivery's instant. The SDK bounds staleness alone — it throws only when
+      // `timestampAge > tolerance` — so a timestamp in the future passes it with a negative age and
+      // is refused here as an old one is refused by the SDK (AAP 0.3.2, 0.3.3).
+      const event = transportEvent();
+      const payload = JSON.stringify(event);
+      const signature = signStripePayload(
+        payload,
+        t.stripe.webhookSecret,
+        nowSec() + offsetSeconds,
+      );
+      expectError(await post(payload, signature), 400, 'bad_signature');
+      await expectNoEventRow(event.id);
+    },
+  );
+
+  it('accepts a signature timestamped inside the tolerance in the future', async () => {
+    // Inside the window on the future side, which the bound must not refuse: the tolerance is the
+    // same number of seconds on either side of the delivery's instant (AAP 0.3.2, 0.3.3).
+    const event = transportEvent();
+    const payload = JSON.stringify(event);
+    const signature = signStripePayload(payload, t.stripe.webhookSecret, nowSec() + 60);
+    const response = await post(payload, signature);
+    expect(response.status, `the webhook answered ${response.status}: ${response.body}`).toBe(200);
+    await expectProcessedOnce(event.id);
+  });
+
+  it('refuses a header whose timestamp is not a number', async () => {
+    // The SDK's own parse of a `t=` that is not a base-10 integer is `NaN`, which no comparison
+    // refuses, and it then signs over `NaN.<payload>`: the delivery below carries a signature valid
+    // for the bytes the SDK would compute, so a header with no readable timestamp would be applied —
+    // it is malformed rather than old and is refused here (AAP 0.3.2, 0.3.3).
+    const event = transportEvent();
+    const payload = JSON.stringify(event);
+    const signature = createHmac('sha256', t.stripe.webhookSecret)
+      .update(`NaN.${payload}`)
+      .digest('hex');
+    expectError(await post(payload, `t=soon,v1=${signature}`), 400, 'bad_signature');
+    await expectNoEventRow(event.id);
+  });
 });
 
 describe(`${MODE} POST ${WEBHOOK_URL} — idempotency`, () => {

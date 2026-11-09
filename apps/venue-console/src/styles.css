@@ -203,10 +203,9 @@ input:focus-visible {
 }
 
 /* One cell per digit, each the width of one tabular digit, so the six cells are equal and the row is
-   centred on their advances. The 0.1em the code used to take from letter-spacing is the gap between
-   the cells, with none after the last, which keeps the per-digit pitch exactly what it was. The
-   cells stay inline-level, because a flex row would make them block-level and change how the
-   element's own text reads. */
+   centred on their advances. A single 0.1em gap between the cells, and none after the last, gives
+   each digit the same pitch and keeps the row centred. The cells stay inline-level, because a flex
+   row would make them block-level and change how the element's own text reads. */
 .code-digit {
   display: inline-block;
   width: 1ch;

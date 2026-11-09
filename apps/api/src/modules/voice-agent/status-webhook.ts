@@ -34,7 +34,13 @@ import {
   type TwilioCallStatus,
 } from '@tablemate/shared';
 
-import { Prisma, isUniqueViolation, type CallAttempt, type DbTx } from '@tablemate/db';
+import {
+  Prisma,
+  fixturePredicate,
+  isUniqueViolation,
+  type CallAttempt,
+  type DbTx,
+} from '@tablemate/db';
 
 import { localDateKey, type LlmReservation } from '@tablemate/server-core';
 
@@ -394,6 +400,10 @@ function readField(body: unknown, field: string): unknown {
  * zeroes it, and the second already sees it zero. A task naming no resolvable city throws, which its foreign keys make
  * unreachable, and a callback that cannot release against a counter is refused and retried rather than recorded against
  * none.
+ * The read joins `place` and `lodging`, so it carries the shared {@link fixturePredicate} for each alias: raw SQL bypasses the
+ * guarded client's fixture extension, while the fixture rule is written as every venue, lodging, place and price-record query
+ * (AAP 0.5.2). Both are written NULL-safe, because each join is a `LEFT JOIN` — for a task whose target is the other table the
+ * alias's columns are NULL, and a bare predicate would evaluate to NULL and drop that row rather than filter a fixture one.
  */
 async function dialogueReservation(
   tx: DbTx,
@@ -405,7 +415,9 @@ async function dialogueReservation(
       FROM "call_task" AS "t"
       LEFT JOIN "place" AS "p" ON "p"."id" = "t"."place_id"
       LEFT JOIN "lodging" AS "l" ON "l"."id" = "t"."lodging_id"
-     WHERE "t"."id" = ${attempt.callTaskId}::uuid`);
+     WHERE "t"."id" = ${attempt.callTaskId}::uuid
+       AND ("p"."id" IS NULL OR ${fixturePredicate(services.env.APP_ENV, 'p')})
+       AND ("l"."id" IS NULL OR ${fixturePredicate(services.env.APP_ENV, 'l')})`);
   const cityId = rows[0]?.cityId;
   if (cityId === undefined) {
     throw new Error('voice_status_webhook_target_missing');

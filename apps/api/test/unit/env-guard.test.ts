@@ -316,6 +316,18 @@ const API_MODE_CASES: readonly ApiCase[] = [
     (env) => expect(env.telephony).toEqual(SIMULATOR_TELEPHONY),
   ],
   [
+    'simulator: production refuses the mode',
+    'production',
+    { TELEPHONY_MODE: 'simulator', VOICE_SIM_URL: 'http://voice-sim.tablemate.test' },
+    ['TELEPHONY_MODE'],
+  ],
+  [
+    'simulator: staging still loads it',
+    'staging',
+    { TELEPHONY_MODE: 'simulator' },
+    (env) => expect(env.telephony.mode).toBe('simulator'),
+  ],
+  [
     'off: the mode carries nothing',
     'demo',
     {},
@@ -498,6 +510,16 @@ describe('workers: no Stripe variable in any mode', () => {
   it('requires VOICE_SIM_URL in simulator mode', () => {
     const raw = workersRaw('demo', { TELEPHONY_MODE: 'simulator' });
     expectEnvError(() => loadWorkersEnv(raw), ['VOICE_SIM_URL'], raw);
+  });
+  it('refuses the simulator in production and loads it in staging', () => {
+    const simulator: RawMap = {
+      TELEPHONY_MODE: 'simulator',
+      VOICE_SIM_URL: 'http://voice-sim.tablemate.test',
+    };
+    const production = workersRaw('production', simulator);
+    expectEnvError(() => loadWorkersEnv(production), ['TELEPHONY_MODE'], production);
+    const staging = loadWorkersEnv(workersRaw('staging', simulator));
+    expect(staging.telephony.mode).toBe('simulator');
   });
   it('requires both credentials, the caller id and the allowlist in twilio mode', () => {
     const raw = workersRaw('demo', { TELEPHONY_MODE: 'twilio' });

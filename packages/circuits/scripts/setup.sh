@@ -477,9 +477,9 @@ write_doc_block() {
     begin="<!-- BEGIN $name -->"
     end="<!-- END $name -->"
     mkdir -p "$(dirname "$file")"
-    # The temp file stays in the document's own directory, so the rename below is atomic, but its name is generated
-    # rather than derived from this process's pid and the document's name: a symlink planted at a predictable name can
-    # then no longer make this script truncate a file outside the repository (CWE-377, CWE-59). mktemp creates it 0600.
+    # The temp file stays in the document's own directory, so the rename below is atomic. Its name comes from mktemp,
+    # never from this process's pid and the document's name: a symlink planted at a predictable name cannot make this
+    # script truncate a file outside the repository (CWE-377, CWE-59). mktemp creates it 0600.
     tmp="$(mktemp "${file}.tmp.XXXXXX")" || die "could not create a temporary file next to $file"
     chmod 0644 "$tmp"
     if [ -f "$file" ] && grep -qF "$begin" "$file" && grep -qF "$end" "$file"; then

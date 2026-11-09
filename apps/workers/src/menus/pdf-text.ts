@@ -10,9 +10,8 @@
  * Both halves hold nothing afterwards: pdf.js's loading task is destroyed in a `finally`, and the directory
  * {@link rasterizePdf} creates for `pdftoppm` is removed in a `finally` whatever the outcome. Errors are reason codes only,
  * and no PDF text, field value or extracted string is logged or attached to one (AAP 0.5.6, "Never log extracted text").
- * The document may not be trusted to run code, and the option that used to say so is deliberately absent: `isEvalSupported`
- * was removed from pdf.js and pdfjs-dist 6.5.438 ships neither an `eval(` nor a `new Function(` call, so an attacker-supplied
- * file has no code path that executes.
+ * No `isEvalSupported` option is passed: pdf.js removed the option and the capability with it, and pdfjs-dist 6.5.438 ships
+ * neither an `eval(` nor a `new Function(` call, so an attacker-supplied file has no code path that executes.
  */
 
 import { execFile } from 'node:child_process';

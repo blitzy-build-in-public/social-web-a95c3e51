@@ -12,7 +12,7 @@
  * write, and no log line carries a phone number, a URL or a vendor error body.
  */
 
-import { Prisma } from '@tablemate/db';
+import { Prisma, fixturePredicate } from '@tablemate/db';
 import { TWILIO_SIMULATOR, localDateKey } from '@tablemate/server-core';
 import {
   CALL_VENDOR_BACKOFF_BASE_SECONDS,
@@ -34,16 +34,17 @@ import type {
   WorkersEnv,
 } from '@tablemate/server-core';
 import type {
+  AppEnv,
   BlockedReason,
   CallAttemptState,
   CallTaskKind,
   LodgingClaimStatus,
 } from '@tablemate/shared';
 
-// The four environment fields one dispatch reads: the public base URL Twilio is told to call back and fetch the TwiML from, the call's hard time limit, the day's per-city call cap, and the telephony posture naming the mode, credentials and caller id. `API_PUBLIC_URL` may be `null`, and {@link apiPublicUrlFor} is what refuses a dispatch without it.
+// The five environment fields one dispatch reads: the public base URL Twilio is told to call back and fetch the TwiML from, the call's hard time limit, the day's per-city call cap, the telephony posture naming the mode, credentials and caller id, and `APP_ENV`, the field that decides whether a fixture-bearing target row is visible to the raw target read (AAP 0.5.2). `API_PUBLIC_URL` may be `null`, and {@link apiPublicUrlFor} is what refuses a dispatch without it.
 export type DispatchEnv = Pick<
   WorkersEnv,
-  'API_PUBLIC_URL' | 'CAP_CALLS_PER_CITY_DAY' | 'CAP_CALL_SECONDS' | 'telephony'
+  'API_PUBLIC_URL' | 'APP_ENV' | 'CAP_CALLS_PER_CITY_DAY' | 'CAP_CALL_SECONDS' | 'telephony'
 >;
 // The number a call is placed from: a blank `simulator` caller id falls back to {@link TWILIO_SIMULATOR}, `twilio` mode dials from `TWILIO_FROM_NUMBER` (which the environment loader already requires), and `off` throws on purpose — dispatch must never run with telephony switched off.
 export function fromNumberFor(env: Pick<WorkersEnv, 'telephony'>): string {
@@ -187,7 +188,7 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   // Resolved before anything is read, reserved or claimed: a configuration naming no caller id or no public base URL must fail the job outright, never leave an attempt, a call slot and a budget behind it.
   const from = fromNumberFor(deps.env);
   const apiPublicUrl = apiPublicUrlFor(deps.env);
-  const target = await readTargetCity(deps.db, taskId, now);
+  const target = await readTargetCity(deps.db, taskId, now, deps.env.APP_ENV);
   if (target === null) {
     return settle(deps, 'not_claimed', { taskId }, { kind: 'not_claimed' });
   }
@@ -294,11 +295,12 @@ export async function dispatch(taskId: string, deps: DispatchDeps): Promise<Disp
   );
 }
 
-/** The cheap pre-read of step 1: the city the task's place or lodging sits in, but only while the task is still `queued` and due — `null` for a task another runner has claimed, an operator has resolved or a previous deferral pushed into the future, and for a task whose target row is gone, so the caller returns `not_claimed` without reserving a budget it would have to release. A raw read rather than a Prisma one, because it keys a budget counter rather than exposing a business to a user; the guard's own target read in {@link claimTask} stays the one place fixture rows are hidden. */
+/** The cheap pre-read of step 1: the city the task's place or lodging sits in, but only while the task is still `queued` and due — `null` for a task another runner has claimed, an operator has resolved or a previous deferral pushed into the future, and for a task whose target row is gone, so the caller returns `not_claimed` without reserving a budget it would have to release. A raw read, which the guarded client's fixture extension cannot see, so it carries the shared {@link fixturePredicate} for both joined fixture-bearing tables (AAP 0.5.2); both predicates are written NULL-safe, because each join is a `LEFT JOIN` and a bare predicate would evaluate to NULL for a task whose target is the other table and drop that row. */
 async function readTargetCity(
   db: DbClient,
   taskId: string,
   now: Date,
+  appEnv: AppEnv,
 ): Promise<TargetCityRow | null> {
   const rows = await db.$queryRaw<TargetCityRow[]>(Prisma.sql`
     SELECT COALESCE("p"."city_id", "l"."city_id") AS "city_id"
@@ -307,7 +309,9 @@ async function readTargetCity(
       LEFT JOIN "lodging" AS "l" ON "l"."id" = "t"."lodging_id"
      WHERE "t"."id" = ${taskId}::uuid
        AND "t"."status" = 'queued'
-       AND "t"."next_attempt_at" <= CAST(${now} AS timestamptz)`);
+       AND "t"."next_attempt_at" <= CAST(${now} AS timestamptz)
+       AND ("p"."id" IS NULL OR ${fixturePredicate(appEnv, 'p')})
+       AND ("l"."id" IS NULL OR ${fixturePredicate(appEnv, 'l')})`);
   return rows[0] ?? null;
 }
 

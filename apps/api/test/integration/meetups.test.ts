@@ -852,7 +852,8 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
           : fixture.startsAt.getTime();
       expect(instantOf(stored.recipientDeadline)).toBe(expected);
       expect(instantOf(stored.recipientDeadline)).toBeLessThanOrEqual(fixture.startsAt.getTime());
-      // The invisible-window lapse was replaced by one at the deadline it now holds (AAP 0.5.3).
+      // The lapse timer is armed at the stored `recipientDeadline`, the earlier of 48 hours and the
+      // start (AAP 0.5.3).
       await expectTimer(lapseJobId(meetupId), JOB.settlement.lapse, expected - now.getTime());
     },
   );

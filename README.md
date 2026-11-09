@@ -112,12 +112,12 @@ Workspace-scoped commands the documents reference:
 The four posture variables below are read per process and validated at startup, so a process refuses
 to start rather than run on a value it cannot honour. Their defaults need no external credential.
 
-| Variable         | Values                                  | Default | Effect                                                                                                                                        |
-| ---------------- | --------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APP_ENV`        | `test`, `demo`, `staging`, `production` | `demo`  | Selects the posture; fixtures load only in `test` and `demo`, and the test-only switches are refused in every other mode                      |
-| `STRIPE_MODE`    | `mock`, `test`, `live`                  | `mock`  | `mock` reaches `stripe-mock` through the stateful proxy and needs no key; `test` takes `sk_test_` keys; `live` is accepted only in production |
-| `TELEPHONY_MODE` | `off`, `simulator`, `twilio`            | `off`   | `off` dials nothing and leaves every call task queued; `simulator` drives the scripted answerer; `twilio` places real calls                   |
-| `LLM_PROVIDER`   | `fake`, `openai`                        | `fake`  | `fake` needs no credential, so the stack and the automated suite run no model                                                                 |
+| Variable         | Values                                  | Default | Effect                                                                                                                                                   |
+| ---------------- | --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_ENV`        | `test`, `demo`, `staging`, `production` | `demo`  | Selects the posture; fixtures load only in `test` and `demo`, and the test-only switches are refused in every other mode                                 |
+| `STRIPE_MODE`    | `mock`, `test`, `live`                  | `mock`  | `mock` reaches `stripe-mock` through the stateful proxy and needs no key; `test` takes `sk_test_` keys; `live` is accepted only in production            |
+| `TELEPHONY_MODE` | `off`, `simulator`, `twilio`            | `off`   | `off` dials nothing and leaves every call task queued; `simulator` drives the scripted answerer and is refused in production; `twilio` places real calls |
+| `LLM_PROVIDER`   | `fake`, `openai`                        | `fake`  | `fake` needs no credential, so the stack and the automated suite run no model                                                                            |
 
 Rules that hold in every mode: the `workers` process receives no Stripe variable, only the API holds
 a Stripe secret, calls outside production reach only numbers in `CALL_ALLOWLIST`, and Stripe runs in
