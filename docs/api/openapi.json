@@ -9156,10 +9156,6 @@
                         "zkey"
                       ],
                       "additionalProperties": false
-                    },
-                    "manifestUrl": {
-                      "type": "string",
-                      "format": "uri"
                     }
                   },
                   "required": [
@@ -9167,8 +9163,7 @@
                     "unsupportedIssuers",
                     "registry",
                     "nullifierSalt",
-                    "artifacts",
-                    "manifestUrl"
+                    "artifacts"
                   ],
                   "additionalProperties": false
                 }
@@ -25251,6 +25246,263 @@
                   },
                   "required": [
                     "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_email",
+                            "proof_malformed",
+                            "invalid_field",
+                            "consent_missing",
+                            "booking_name_empty",
+                            "bad_signature",
+                            "token_invalid",
+                            "bad_venue_secret",
+                            "bad_lodging_secret",
+                            "hold_failed",
+                            "no_valid_proof",
+                            "not_recipient",
+                            "not_initiator",
+                            "not_participant",
+                            "messaging_locked",
+                            "blocked",
+                            "operator_only",
+                            "age_gate_required",
+                            "city_not_found",
+                            "user_not_found",
+                            "venue_not_found",
+                            "meetup_not_found",
+                            "lodging_not_found",
+                            "claim_not_found",
+                            "not_found",
+                            "nullifier_used",
+                            "meetup_exists",
+                            "not_proposed",
+                            "hold_pending",
+                            "already_settled",
+                            "dispute_open",
+                            "not_locked",
+                            "already_checked_in",
+                            "dispute_window_closed",
+                            "meetup_not_locked",
+                            "active_claim_exists",
+                            "call_in_progress",
+                            "no_verified_claim",
+                            "details_unavailable",
+                            "proposal_lapsed",
+                            "outside_window",
+                            "photo_too_large",
+                            "proof_invalid",
+                            "issuer_not_allowlisted",
+                            "stay_out_of_range",
+                            "self_proposal",
+                            "venue_not_partner",
+                            "starts_at_invalid",
+                            "deposit_invalid",
+                            "invalid_code",
+                            "outside_geofence",
+                            "invalid_outcome",
+                            "budget_out_of_range",
+                            "claim_dates_invalid",
+                            "lodging_other_city",
+                            "rate_limited",
+                            "daily_cap_reached",
+                            "internal_error",
+                            "fx_rate_unavailable",
+                            "payment_unavailable",
+                            "service_unavailable",
+                            "suggestions_unavailable"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_email",
+                            "proof_malformed",
+                            "invalid_field",
+                            "consent_missing",
+                            "booking_name_empty",
+                            "bad_signature",
+                            "token_invalid",
+                            "bad_venue_secret",
+                            "bad_lodging_secret",
+                            "hold_failed",
+                            "no_valid_proof",
+                            "not_recipient",
+                            "not_initiator",
+                            "not_participant",
+                            "messaging_locked",
+                            "blocked",
+                            "operator_only",
+                            "age_gate_required",
+                            "city_not_found",
+                            "user_not_found",
+                            "venue_not_found",
+                            "meetup_not_found",
+                            "lodging_not_found",
+                            "claim_not_found",
+                            "not_found",
+                            "nullifier_used",
+                            "meetup_exists",
+                            "not_proposed",
+                            "hold_pending",
+                            "already_settled",
+                            "dispute_open",
+                            "not_locked",
+                            "already_checked_in",
+                            "dispute_window_closed",
+                            "meetup_not_locked",
+                            "active_claim_exists",
+                            "call_in_progress",
+                            "no_verified_claim",
+                            "details_unavailable",
+                            "proposal_lapsed",
+                            "outside_window",
+                            "photo_too_large",
+                            "proof_invalid",
+                            "issuer_not_allowlisted",
+                            "stay_out_of_range",
+                            "self_proposal",
+                            "venue_not_partner",
+                            "starts_at_invalid",
+                            "deposit_invalid",
+                            "invalid_code",
+                            "outside_geofence",
+                            "invalid_outcome",
+                            "budget_out_of_range",
+                            "claim_dates_invalid",
+                            "lodging_other_city",
+                            "rate_limited",
+                            "daily_cap_reached",
+                            "internal_error",
+                            "fx_rate_unavailable",
+                            "payment_unavailable",
+                            "service_unavailable",
+                            "suggestions_unavailable"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/cities": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "maxLength": 40,
+                            "pattern": "^[a-z]+(-[a-z]+)*$"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "countryCode": {
+                            "type": "string",
+                            "pattern": "^[A-Z]{2}$"
+                          },
+                          "timezone": {
+                            "type": "string"
+                          },
+                          "currency": {
+                            "type": "string",
+                            "pattern": "^[A-Z]{3}$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "countryCode",
+                          "timezone",
+                          "currency"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
                   ],
                   "additionalProperties": false
                 }

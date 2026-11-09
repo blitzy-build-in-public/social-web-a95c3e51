@@ -142,6 +142,34 @@ const RESULT_TEXT = {
   unattended: 'Neither of you checked in. Both holds are released.',
   no_fault: 'An operator closed this meetup. No deposit was taken.',
 } satisfies Record<ResultStatus, string>;
+/**
+ * Whether this meetup's screen is a deposit screen: the states whose deposit is still on it, and
+ * which therefore carry the framing pair.
+ *
+ * AAP 0.5.7: the request's own framing sentence, with the meetup's amount, "on every deposit screen
+ * and deposit notification". AAP 0.5.8: shown "Always on deposit screens, by the viewer's variant",
+ * with the safety notice before every proposal and every lock.
+ *
+ * True for the five states a deposit was held for. `proposed` is the screen the recipient accepts
+ * from and that the initiator reads once their own hold stands; `locked` is both deposits held;
+ * `completed`, `forfeited` and `unattended` are the outcomes of held deposits, and each keeps
+ * showing the amount beside the hold's final state. False for the five states whose own sentence
+ * already carries the money story: `declined` and `lapsed` ended before a lock, `cancelled` released
+ * both holds and says so, `no_fault` states "No deposit was taken", and `lock_lost` states that "no
+ * deposit applies". Framing a deposit on one of those would frame one that is not there.
+ */
+export const DEPOSIT_FRAMED = {
+  proposed: true,
+  locked: true,
+  declined: false,
+  lapsed: false,
+  cancelled: false,
+  completed: true,
+  forfeited: true,
+  unattended: true,
+  lock_lost: false,
+  no_fault: false,
+} satisfies Record<MeetupStatus, boolean>;
 const ownHoldOf = (meetup: MeetupDto): HoldView =>
   meetup.role === 'initiator' ? meetup.initiatorHold : meetup.recipientHold;
 const counterpartHoldOf = (meetup: MeetupDto): HoldView =>
@@ -328,13 +356,17 @@ const AcceptActions = (props: AcceptProps): ReactElement => (
     <Button {...DECLINE} disabled={props.busy} onPress={props.onDecline} />
   </View>
 );
-type CancelBase = BusyProps & { readonly late: boolean };
+type CancelBase = { readonly busy: boolean; readonly late: boolean };
 type CancelPanelProps = CancelBase & { readonly confirm: () => void; readonly keep: () => void };
 const KEEP = { label: 'Keep meetup', variant: 'secondary' as const };
+/**
+ * The confirmation panel a pending cancellation opens. Its own statement carries the late
+ * cancellation, and the deposit framing stays in the pair above: a locked meetup is framed there in
+ * every state, so a sentence here would be a second `deposit-copy` on the same screen.
+ */
 const CancelPanel = (props: CancelPanelProps): ReactElement => (
   <Card testID="meetup-cancel-panel">
     <Text style={styles.body}>{props.late ? COPY.cancelLateStatement : COPY.cancelPlain}</Text>
-    {props.late && <DepositCopyLine variant={props.variant} depositCents={props.depositCents} />}
     <Button {...CANCEL_BUTTON} busy={props.busy} onPress={props.confirm} />
     <Button {...KEEP} testID="meetup-cancel-keep" disabled={props.busy} onPress={props.keep} />
   </Card>
@@ -385,15 +417,22 @@ function PrimaryAction(props: PrimaryProps): ReactElement | null {
         </View>
       );
     case 'check_in':
-      return <Button label={COPY.checkIn} testID="meetup-check-in" onPress={checkIn} />;
+      // A `check_in` next action exists only for a locked meetup, whose deposits are held, so the
+      // pair that frames the deposit comes before the control as it does in every other branch.
+      return (
+        <View style={styles.block}>
+          <DepositFraming variant={variant} depositCents={depositCents} />
+          <Button label={COPY.checkIn} testID="meetup-check-in" onPress={checkIn} />
+        </View>
+      );
     case 'none':
     default:
-      // The initiator of a proposed meetup whose own hold is already placed is offered nothing to
-      // do (`nextAction: none`), but the meetup is still a deposit screen: their variant's sentence
-      // with this meetup's amount and the safety notice belong on it, as they do for the recipient.
-      // Every other state reaching here — settled, declined, lapsed, a hold being recovered — keeps
-      // the bare null.
-      return role === 'initiator' && status === 'proposed' ? (
+      // The states a deposit was held for frame it, whichever side is reading: the initiator of a
+      // proposed meetup whose own hold stands and the recipient of one already past its deadline are
+      // offered nothing to do, and a locked meetup whose caller has checked in, whose window has
+      // closed or which has settled reaches here as well. The states no deposit applies to, or none
+      // was taken for, keep the bare null: their own result sentence states the money outcome.
+      return DEPOSIT_FRAMED[status] ? (
         <View style={styles.block}>
           <DepositFraming variant={variant} depositCents={depositCents} />
         </View>
@@ -643,8 +682,6 @@ export default function MeetupDetailScreen(): ReactElement {
               (cancelConfirm ? (
                 <CancelPanel
                   late={late}
-                  variant={variant}
-                  depositCents={meetup.depositCents}
                   busy={busy}
                   confirm={() => void runCancel()}
                   keep={() => setCancelConfirm(false)}

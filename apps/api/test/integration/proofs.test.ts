@@ -403,7 +403,12 @@ describe('GET /v1/zk/config (AAP 0.5.4)', () => {
   async function fetchZkConfig(target: TestApp): Promise<ZkConfig> {
     const response = await callRoute(target.app, { method: 'GET', url: ZK_CONFIG_ROUTE });
     expect(response.status).toBe(200);
-    return ZkConfig.parse(response.json());
+    const body = response.json();
+    const parsed = ZkConfig.parse(body);
+    // The parse drops an unknown key, so the round-trip is what holds the body itself to the contract:
+    // a field the schema no longer publishes must be absent from the response, not merely stripped here.
+    expect(parsed).toEqual(body);
+    return parsed;
   }
   it('answers everything a device proves with, and nothing of the server key', async () => {
     const config = await fetchZkConfig(app);
@@ -432,8 +437,6 @@ describe('GET /v1/zk/config (AAP 0.5.4)', () => {
       expect(link.size).toBe(file.size);
       expect(link.sha256).toBe(file.sha256);
     }
-    expect(config.manifestUrl.startsWith(base)).toBe(true);
-    expect(config.manifestUrl.endsWith('artifacts.manifest.json')).toBe(true);
   });
   it('publishes the production registry, and no test issuer, outside the test-only switch', async () => {
     const production = await createTestApp({ env: { ZK_ALLOW_TEST_ISSUER: 'false' } });

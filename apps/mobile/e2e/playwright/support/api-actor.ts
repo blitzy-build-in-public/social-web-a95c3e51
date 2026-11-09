@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { chromium } from '@playwright/test';
 import { buildCircuitInputs } from '@tablemate/circuits';
 import {
+  ARTIFACTS_MANIFEST_FILE,
   AdminDisputeDto,
   AdminDisputesResponse,
   ArtifactsManifest,
@@ -970,7 +971,7 @@ function artefacts(): Artefacts {
   const dir = join(repoRoot(), BUILD_DIR);
   const wasm = join(dir, 'tablemate_itinerary.wasm');
   const zkey = join(dir, 'tablemate_itinerary.zkey');
-  const manifestFile = join(dir, 'artifacts.manifest.json');
+  const manifestFile = join(dir, ARTIFACTS_MANIFEST_FILE);
   if (!existsSync(wasm) || !existsSync(zkey) || !existsSync(manifestFile)) {
     throw new Error(MISSING_ARTEFACTS);
   }

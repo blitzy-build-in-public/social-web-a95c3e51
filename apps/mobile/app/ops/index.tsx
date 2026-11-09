@@ -362,7 +362,9 @@ export default function OpsDashboardScreen(): ReactElement {
   const query = metricsQuery(filters);
   const fetchMetrics = (): Promise<MetricsDto> => apiClient.admin.getMetrics(query);
   const metrics = useQuery({ queryKey: queryKeys.adminMetrics(query), queryFn: fetchMetrics });
-  const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
+  // The operator's own read of the catalogue (AAP 0.5.4): the age-gated `GET /cities` would refuse an
+  // operator who has recorded no consents, which is precisely the session this area admits.
+  const cities = useQuery({ queryKey: queryKeys.adminCities, queryFn: apiClient.admin.listCities });
   // The operator's re-enable (AAP 0.5.6): the flag is cleared server-side, the news is spoken, and
   // the dashboard is re-read so the banner and the spend figures report the state it answered.
   const reEnable = useMutation({

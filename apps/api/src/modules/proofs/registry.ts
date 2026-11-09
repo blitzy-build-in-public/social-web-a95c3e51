@@ -30,7 +30,13 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 
 import { buildRegistry } from '@tablemate/circuits';
-import { ArtifactsManifest, CitiesFile, IssuerConfig, RegistryFile } from '@tablemate/shared';
+import {
+  ARTIFACTS_MANIFEST_FILE,
+  ArtifactsManifest,
+  CitiesFile,
+  IssuerConfig,
+  RegistryFile,
+} from '@tablemate/shared';
 import type {
   ArtifactLink,
   ArtifactRef,
@@ -49,12 +55,6 @@ const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
 const JSON_SUFFIX = '.json';
 
 const BUILD_DIR = 'packages/circuits/build';
-
-/**
- * The manifest `packages/circuits/scripts/setup.sh` writes beside the circuit build's files: the sizes
- * and SHA-256 digests a client checks its downloads against, published by `GET /v1/zk/config`.
- */
-const MANIFEST_FILE = 'artifacts.manifest.json';
 
 const VERIFICATION_KEY_FILE = 'verification_key.json';
 
@@ -391,7 +391,7 @@ export async function readArtifactsManifest(): Promise<ArtifactsManifest | null>
  */
 async function manifestPresent(): Promise<boolean> {
   try {
-    await stat(repoPath(BUILD_DIR, MANIFEST_FILE));
+    await stat(repoPath(BUILD_DIR, ARTIFACTS_MANIFEST_FILE));
     return true;
   } catch {
     return false;
@@ -403,7 +403,7 @@ async function manifestPresent(): Promise<boolean> {
  * synchronous on purpose, so the start cannot leave a rejected promise unhandled (AAP 0.5.5).
  */
 function readArtifactsManifestSync(): ArtifactsManifest | null {
-  if (!existsSync(circuitsBuildPath(MANIFEST_FILE))) {
+  if (!existsSync(circuitsBuildPath(ARTIFACTS_MANIFEST_FILE))) {
     return null;
   }
   return cachedArtifactsManifest();
@@ -414,7 +414,7 @@ function cachedArtifactsManifest(): ArtifactsManifest {
   if (cached !== undefined) {
     return cached;
   }
-  const parsed = parseAt(`${BUILD_DIR}/${MANIFEST_FILE}`, ArtifactsManifest);
+  const parsed = parseAt(`${BUILD_DIR}/${ARTIFACTS_MANIFEST_FILE}`, ArtifactsManifest);
   cachedManifest = parsed;
   return parsed;
 }
@@ -515,7 +515,7 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
   const manifest = await readArtifactsManifest();
   if (manifest === null) {
     throw new AppError('service_unavailable', undefined, {
-      cause: new Error(`zk_artifacts_missing: ${MANIFEST_FILE}`),
+      cause: new Error(`zk_artifacts_missing: ${ARTIFACTS_MANIFEST_FILE}`),
     });
   }
   const cached = zkConfigCache.get(allowTestIssuer);
@@ -545,7 +545,6 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
       wasm: artifactLink(manifest.files.wasm, base),
       zkey: artifactLink(manifest.files.zkey, base),
     },
-    manifestUrl: new URL(MANIFEST_FILE, base).toString(),
   };
   zkConfigCache.set(allowTestIssuer, config);
   return config;
@@ -676,7 +675,7 @@ export function checkZkConfiguration(env: ZkEnv): void {
   if (env.APP_ENV === 'staging' || env.APP_ENV === 'production') {
     requireBuildFile(VERIFICATION_KEY_FILE);
     if (readArtifactsManifestSync() === null) {
-      throw new ZkConfigurationError(`${BUILD_DIR}/${MANIFEST_FILE}: missing`);
+      throw new ZkConfigurationError(`${BUILD_DIR}/${ARTIFACTS_MANIFEST_FILE}: missing`);
     }
   }
 }

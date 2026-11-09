@@ -137,11 +137,18 @@ export const queryKeys = {
   /** `GET /admin/metrics` for one city, variant pairing and date range (AAP 0.5.7). */
   adminMetrics: (query: MetricsQuery) => ['admin', 'metrics', query] as const,
   /**
+   * `GET /admin/cities` — the operator's own read of the launch-city catalogue, which labels the
+   * dashboard's city filter, its per-city rows and the registry's city selects (AAP 0.5.4). Held
+   * apart from {@link queryKeys.cities} on purpose: that root belongs to the age-gated traveler route,
+   * which an operator who has recorded no consents may not read.
+   */
+  adminCities: ['admin', 'cities'] as const,
+  /**
    * The four operator queues and the two registries, each one `/admin` route of AAP 0.5.4:
    * `adminDisputes` is `GET /admin/disputes`, `adminReports` `GET /admin/reports`, `adminCallTasks`
    * `GET /admin/call-tasks`, `adminLodgingClaims` `GET /admin/lodging-claims`, `adminCrawlDomains`
-   * `GET /admin/crawl-domains`, `adminVenues` `GET /admin/venues` and `adminLodgings`
-   * `GET /admin/lodgings`.
+   * `GET /admin/crawl-domains`, `adminVenues` `GET /admin/venues`, `adminLodgings`
+   * `GET /admin/lodgings` and `adminCities` `GET /admin/cities`.
    */
   adminDisputes: ['admin', 'disputes'] as const,
   adminReports: ['admin', 'reports'] as const,

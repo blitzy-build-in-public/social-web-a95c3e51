@@ -192,7 +192,6 @@ beforeAll(() => {
       wasm: link('circuit.wasm', 'a'.repeat(64)),
       zkey: link('circuit.zkey', 'b'.repeat(64)),
     },
-    manifestUrl: 'http://127.0.0.1:1/manifest.json',
   };
   zkConfig = ZkConfig.parse({ ...base, issuers: [issuer], unsupportedIssuers: [] });
   // The shipped posture while the two booking sites await samples (AAP 0.5.5, AAP 0.5.8): no issuer

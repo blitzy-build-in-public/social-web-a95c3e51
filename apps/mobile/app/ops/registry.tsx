@@ -501,7 +501,10 @@ export default function OperatorRegistryScreen(): ReactElement {
   const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
   const wide = viewportWidth >= 900;
   const cardsStyle = [styles.cards, wide ? styles.cardsRow : null];
-  const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
+  // The operator's own read of the catalogue (AAP 0.5.4): the age-gated `GET /cities` would refuse an
+  // operator who has recorded no consents, which is precisely the session this area admits, and the
+  // venue and lodging forms below select a city from it.
+  const cities = useQuery({ queryKey: queryKeys.adminCities, queryFn: apiClient.admin.listCities });
   const venues = useQuery({ queryFn: apiClient.admin.listVenues, queryKey: queryKeys.adminVenues });
   const [venueFilter, setVenueFilter] = useState<string | null>(null);
   const [lodgingFilter, setLodgingFilter] = useState<string | null>(null);

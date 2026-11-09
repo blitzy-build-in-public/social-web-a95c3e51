@@ -1,5 +1,5 @@
 /** Plan the day — the day-plan suggestions for a locked meetup (AAP 0.5.8, AAP 0.8.1, criterion 13). */
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
@@ -85,6 +85,56 @@ type TextLinkProps = {
 const linkKeys = (onPress: () => void): { onKeyDown?: (e: { key?: string }) => void } =>
   Platform.OS === 'web' ? { onKeyDown: (event) => void (event.key === 'Enter' && onPress()) } : {};
 
+/** A keydown as react-native-web delivers it: only the fields this screen reads are named. */
+type WebKeyEvent = Readonly<{ key?: string; preventDefault?: () => void }>;
+
+/**
+ * Escape dismisses an expanded disclosure, which is the keyboard dismissal a disclosure owes — the
+ * WAI-ARIA disclosure pattern closes on Escape — and the press that follows it returns focus to the
+ * trigger, so a keyboard user keeps their place in a list of ten of them. A collapsed disclosure
+ * ignores the key, so an Escape pressed while the reader is somewhere else in the list never
+ * collapses a panel they are not in. React Native declares no key events, so the handler reaches a
+ * control on web only, and the object is empty off web, which never reads it.
+ */
+function dismissKeys(
+  expanded: boolean,
+  dismiss: () => void,
+): { onKeyDown?: (event: WebKeyEvent) => void } {
+  if (Platform.OS !== 'web') return {};
+  const onKeyDown = (event: WebKeyEvent): void => {
+    if (!expanded || event.key !== 'Escape') return;
+    event.preventDefault?.();
+    dismiss();
+  };
+  return { onKeyDown };
+}
+
+/**
+ * What an expanded disclosure tells the DOM about the panel it opens.
+ *
+ * The pair is the disclosure pattern's own — the state in `aria-expanded`, the element in
+ * `aria-controls` — and `aria-haspopup` is deliberately not part of it: the panel holds provenance
+ * rows and source links, not an ARIA menu widget, so a popup type would assert semantics the content
+ * does not have. React Native 0.76 declares `aria-expanded` on its view props but no `aria-controls`,
+ * so the attribute is spread from this explicitly typed object rather than through a cast, the way
+ * the profile-edit chips assert `aria-pressed`. It is carried while the panel it names is rendered
+ * and withheld while it is not, because a reference to an element that is absent is a violation of
+ * its own.
+ */
+type DisclosureControls = Readonly<{ 'aria-controls'?: string }>;
+const controlsAttributes = (expanded: boolean, panelId: string): DisclosureControls =>
+  expanded ? { 'aria-controls': panelId } : {};
+
+/**
+ * The DOM id of one panel, on web alone: `react-native-web` writes the `id` the trigger's
+ * `aria-controls` resolves, and iOS and Android have no idref to resolve — there the panel follows
+ * its trigger in reading order, which is how a screen reader reaches it. The value is built from the
+ * suggestion's `placeId`, a uuid, so it is unique in the list of ten.
+ */
+const webPanelId = (panelId: string): { id?: string } =>
+  Platform.OS === 'web' ? { id: panelId } : {};
+const panelIdFor = (placeId: string): string => `suggestion-prices-${placeId}`;
+
 /**
  * Keeps the browser's own focus outline off a focused control on web, where it would otherwise be
  * painted over the 2 px band the control's own border reserves and the ring a keyboard user sees
@@ -122,12 +172,23 @@ const LinkText = ({ label, name, onPress, testID }: TextLinkProps): ReactElement
     </Pressable>
   );
 };
-type ToggleProps = { readonly expanded: boolean; readonly onPress: () => void };
-function DisclosureToggle({ expanded, onPress }: ToggleProps): ReactElement {
+type ToggleProps = {
+  readonly expanded: boolean;
+  readonly panelId: string;
+  readonly onPress: () => void;
+  /** Called with the trigger's element on mount and with `null` on unmount. */
+  readonly registerRef: (node: View | null) => void;
+};
+function DisclosureToggle({ expanded, panelId, onPress, registerRef }: ToggleProps): ReactElement {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   return (
     <Pressable
+      // Escape is answered here as well as by the panel below, so the key dismisses the disclosure
+      // from either side of it, and both reach the same press.
+      {...dismissKeys(expanded, onPress)}
+      {...controlsAttributes(expanded, panelId)}
+      ref={registerRef}
       role="button"
       aria-label={expanded ? 'Hide prices used' : 'Show prices used'}
       aria-expanded={expanded}
@@ -160,6 +221,37 @@ function SuggestionCard({ item, expandedPlaceId, onToggle }: CardProps): ReactEl
   const expanded = expandedPlaceId === item.placeId;
   const category = `${CATEGORY_LABELS[item.category]} · ${formatDistance(item.distanceM)}`;
   const checked = `${SOURCE_LABELS[item.priceSource]} · Prices checked ${instantDay(item.priceVerifiedAt)}`;
+  const panelId = panelIdFor(item.placeId);
+  // The trigger's element. react-native-web gives a `Pressable`'s ref the browser element itself, and
+  // React Native's own `View` type carries `focus()`, so the handle is the same `View` type on both
+  // platforms, exactly as the profile-edit chips hold theirs.
+  const trigger = useRef<View | null>(null);
+  const registerTrigger = useCallback((node: View | null): void => {
+    trigger.current = node;
+  }, []);
+  // The press asks for the trigger's own focus back. The app lets go of the control a press arrived
+  // on, so that a navigation is not started from inside a screen that is being hidden
+  // (`app/_layout.tsx` blurs it as the browser's own click arrives), and a disclosure presses no route
+  // — so a trigger that did not ask would leave a keyboard user on the page body with the next Tab
+  // restarting at the page's first stop instead of continuing in the list of ten (AAP 0.5.8: focus
+  // order follows reading order). The profile-edit chips recover their focus for the same reason.
+  function activate(): void {
+    onToggle(item);
+    trigger.current?.focus();
+  }
+  // Escape pressed while the reader is inside the panel dismisses it as well, which is the key the
+  // trigger itself answers (see `dismissKeys`); the panel only exists while it is expanded, so this
+  // half has no expanded state to test.
+  const panelKeys: { onKeyDown?: (event: WebKeyEvent) => void } =
+    Platform.OS === 'web'
+      ? {
+          onKeyDown: (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault?.();
+            activate();
+          },
+        }
+      : {};
   return (
     <Card
       testID={`suggestion-${item.placeId}`}
@@ -170,9 +262,14 @@ function SuggestionCard({ item, expandedPlaceId, onToggle }: CardProps): ReactEl
       <Text style={styles.cost}>{estimateText(item.estimatedCostRange)}</Text>
       <Text style={styles.detail}>{checked}</Text>
       <Text style={styles.detail}>{item.openingHoursToday ?? 'Hours not listed'}</Text>
-      <DisclosureToggle expanded={expanded} onPress={() => onToggle(item)} />
+      <DisclosureToggle
+        expanded={expanded}
+        panelId={panelId}
+        onPress={activate}
+        registerRef={registerTrigger}
+      />
       {expanded ? (
-        <View style={styles.provenanceList}>
+        <View {...panelKeys} {...webPanelId(panelId)} style={styles.provenanceList}>
           {item.itemsUsed.map((used, index) => {
             const url = used.sourceUrl;
             const linkLabel = sourceLinkLabel(url);

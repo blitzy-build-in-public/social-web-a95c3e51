@@ -7,6 +7,8 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from 'rea
 import { Linking, Platform } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 
+import type { MeDto } from '@tablemate/shared';
+
 import { isApiError, isNetworkError, userMessageFor } from '../../src/api/errors';
 import { verifyToken } from '../../src/auth/session';
 import { Banner, Button, Screen, announce } from '../../src/ui';
@@ -51,6 +53,23 @@ function failureMessage(error: unknown): string {
   return isApiError(error) ? userMessageFor(error.code) : userMessageFor('network_error');
 }
 
+/**
+ * Where the session this link verified lands (AAP 0.5.4, AAP 0.5.8).
+ *
+ * An operator lands on the operator dashboard: the API guards that area by role and leaves `/admin/*`
+ * outside the 18+ age gate (AAP 0.5.4), so a destination chosen on consents alone would park an
+ * operator whose consents are still unset on the traveler's gate, which they have no reason to pass.
+ * The same destination is right on every platform, because `/ops` renders on web alone and the
+ * area's own layout sends a native session to the tabs (AAP 0.5.8).
+ *
+ * Everyone else keeps the rule this screen has always applied: the gate until `POST /me/consents`
+ * has succeeded, and Discover once it has.
+ */
+function landingRouteFor(user: MeDto): '/ops' | '/discover' | '/age-gate' {
+  if (user.role === 'operator') return '/ops';
+  return user.consents.ageConfirmedAt !== null ? '/discover' : '/age-gate';
+}
+
 function replaceHistoryEntry(): void {
   const entry: unknown = window.history.state;
   try {
@@ -90,10 +109,9 @@ export default function VerifyMagicLinkScreen(): ReactElement {
     setMessage(null);
     setRetryable(false);
     void (async () => {
-      let consented: boolean;
+      let landing: '/ops' | '/discover' | '/age-gate';
       try {
-        const user = await verifyToken(token);
-        consented = user.consents.ageConfirmedAt !== null;
+        landing = landingRouteFor(await verifyToken(token));
       } catch (error) {
         const failed = failureMessage(error);
         setMessage(failed);
@@ -102,7 +120,7 @@ export default function VerifyMagicLinkScreen(): ReactElement {
         announce(failed);
         return;
       }
-      router.replace(consented ? '/discover' : '/age-gate');
+      router.replace(landing);
     })();
   }, [token]);
   const goToSignIn = (): void => router.replace('/sign-in');

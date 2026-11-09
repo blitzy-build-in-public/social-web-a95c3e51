@@ -14,6 +14,8 @@
  */
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -40,6 +42,8 @@ import {
   AdminVenueDto,
   AdminVenuesResponse,
   BookingDetailsDto,
+  CitiesFile,
+  CitiesResponse,
   MetricsDto,
   SecretIssued,
 } from '@tablemate/shared';
@@ -47,6 +51,7 @@ import type {
   BlockedReason,
   CallTaskStatus,
   CheckInResult,
+  CityConfig,
   DisputeOutcome,
   DisputeStatus,
   ErrorCode,
@@ -82,6 +87,18 @@ import type {
   VenueFixture,
 } from '../support/factories.ts';
 import type { TestApp } from '../support/app.ts';
+
+const CITIES_CONFIG_PATH = fileURLToPath(
+  new URL('../../../../config/cities.json', import.meta.url),
+);
+
+/**
+ * The launch cities as `config/cities.json` lists them, parsed by the contract's own schema: the same
+ * file `GET /cities` answers in order, so a city added to the pilot changes what this suite expects.
+ */
+const LAUNCH_CITIES: readonly CityConfig[] = CitiesFile.parse(
+  JSON.parse(readFileSync(CITIES_CONFIG_PATH, 'utf8')) as unknown,
+).cities;
 
 const LISBON = 'lisbon';
 /** A second launch city, whose lodging exists only to prove a hand-entered row carries no OSM ids. */
@@ -172,6 +189,7 @@ const ADMIN_ROUTES = rows<AdminRouteCase>([
     method: 'GET',
     url: () => `/v1/admin/metrics?from=${TODAY}&to=${TODAY}`,
   },
+  { name: 'the city catalogue', method: 'GET', url: () => '/v1/admin/cities' },
   { name: 'the dispute queue', method: 'GET', url: () => '/v1/admin/disputes' },
   {
     name: 'a dispute resolution',
@@ -278,6 +296,24 @@ describe('the operator guard (AAP 0.5.4)', () => {
 });
 
 describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
+  it('answers the operator the same city catalogue the age-gated route serves a traveler', async () => {
+    // The operator area is entered by role alone and lies outside the age gate, so its own read of the
+    // catalogue is what labels the dashboard's city filter and per-city rows, and the registry's city
+    // selects (AAP 0.5.4). The two routes must answer one list, or the operator and the traveler would
+    // number the same cities differently.
+    const asOperatorCities = await asOperator('GET', '/v1/admin/cities');
+    expect(asOperatorCities.status, asOperatorCities.body).toBe(200);
+    const asTravelerCities = await callRoute(t.app, {
+      method: 'GET',
+      url: '/v1/cities',
+      as: traveler,
+    });
+    expect(asTravelerCities.status, asTravelerCities.body).toBe(200);
+    const operatorItems = CitiesResponse.parse(asOperatorCities.json()).items;
+    expect(operatorItems.map((city) => city.id)).toEqual(LAUNCH_CITIES.map((city) => city.id));
+    expect(operatorItems).toEqual(CitiesResponse.parse(asTravelerCities.json()).items);
+  });
+
   it('counts a late cancellation as a no-show and as a late cancellation', async () => {
     // A meetup starting in half an hour is already inside the two-hour free-cancellation window, so
     // the recipient's cancellation is late and the canceller is the absent party (AAP 0.5.3, 0.5.7).

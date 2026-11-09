@@ -696,8 +696,8 @@ export async function discardPendingEml(): Promise<void> {
 /* --- Published configuration helpers -------------------------------------------------------- */
 
 /**
- * The artefacts of an `artifacts.manifest.json` as the published configuration advertises them: one URL
- * per file built from `baseUrl`, carrying the size and SHA-256 the download is verified against.
+ * The artefacts of `manifest` as the published configuration advertises them: one URL per file
+ * built from `baseUrl`, carrying the size and SHA-256 the download is verified against.
  * `app/dev/zk-bench.tsx` uses it to prove against the local artefact service without calling the API,
  * which is what makes the benchmark and the native smoke check independent of the server.
  */

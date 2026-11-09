@@ -715,6 +715,16 @@ export const apiClient = {
         query: { from: query.from, to: query.to, cityId: query.cityId, variant: query.variant },
       }),
 
+    /**
+     * `GET /admin/cities` — the launch-city catalogue as the operator area reads it.
+     *
+     * The operator area is entered by role alone and lies outside the age gate, so it reads the
+     * catalogue here rather than through `GET /cities`, which the age gate guards (AAP 0.5.4). Both
+     * routes answer the same list.
+     */
+    listCities: (): Promise<CitiesResponse> =>
+      request('GET', '/admin/cities', { response: CitiesResponse }),
+
     /** `GET /admin/disputes` — the open disputes, nearest deadline first. */
     listDisputes: (): Promise<AdminDisputesResponse> =>
       request('GET', '/admin/disputes', { response: AdminDisputesResponse }),

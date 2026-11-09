@@ -34,7 +34,7 @@ import type { ResolvedArtifacts, ResolvedFile, ZkClientErrorCode } from './prove
 
 /**
  * Where to fetch it, how many bytes it has, and the SHA-256 it must hash to. The page builds this from
- * `GET /v1/zk/config` or from `artifacts.manifest.json`.
+ * `GET /v1/zk/config` or from the artefact manifest.
  */
 export interface WorkerArtifactRef {
   readonly url: string;

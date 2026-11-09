@@ -10,6 +10,7 @@ import { Redirect, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Text } from 'react-native';
 import {
+  ARTIFACTS_MANIFEST_FILE,
   ArtifactsManifest,
   FieldElement,
   IssuerConfig,
@@ -28,7 +29,6 @@ import testIssuerJson from '../../../../config/issuers/tablemate-test.json';
 import testRegistryJson from '../../../../config/registry/test.json';
 
 const UNKNOWN = 'unknown';
-const MANIFEST_FILE = 'artifacts.manifest.json';
 const RUNS_PARAM = /^\d{1,3}$/;
 const HTTP_URL = /^https?:\/\/\S+$/;
 const PHASE_DOWNLOAD = 'Downloading proving key';
@@ -111,7 +111,7 @@ async function loadFixtureBytes(): Promise<Uint8Array> {
   }
 }
 async function fetchManifest(artifactsUrl: string): Promise<ArtifactsManifest> {
-  const response = await fetch(`${artifactsUrl}/${MANIFEST_FILE}`).catch(() => {
+  const response = await fetch(`${artifactsUrl}/${ARTIFACTS_MANIFEST_FILE}`).catch(() => {
     throw new BenchError('manifest_fetch_failed');
   });
   if (!response.ok) throw new BenchError('manifest_fetch_failed');

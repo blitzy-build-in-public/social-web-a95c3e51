@@ -61,6 +61,12 @@ const CONNECTION_TEXT = {
  * into the `idle` entry, so a lost connection and a socket that was never opened stay apart. */
 const OFFLINE_TEXT = 'Offline';
 const MORE = { testID: 'user-more', label: 'More', variant: 'secondary' as const };
+/**
+ * The DOM id of the menu the More trigger opens, on web alone. It is carried by the menu itself, so
+ * it is in the document exactly while the menu is, which is what lets the trigger's `aria-controls`
+ * name an element that exists — a reference to an element that is absent resolves to nothing.
+ */
+const MENU_ID = 'chat-more-menu';
 const REPORT = { testID: 'user-report', label: 'Report', variant: 'secondary' as const };
 const BLOCK = { testID: 'user-block', label: 'Block', variant: 'danger' as const };
 const CANCEL = { testID: 'user-block-cancel', label: 'Cancel', variant: 'secondary' as const };
@@ -175,6 +181,66 @@ function sendOnEnter(onSend: () => void) {
     onSend();
   };
 }
+
+/** A keydown as react-native-web delivers it: only the fields this screen reads are named. */
+type WebKeyEvent = Readonly<{ key?: string; preventDefault?: () => void }>;
+
+/**
+ * A DOM focus event as this screen reads it: the element the handler is on, and where focus went.
+ * React Native declares no such event, and the two members are named here rather than typed as an
+ * opaque object so the containment test below is the browser's own.
+ */
+type WebFocusEvent = Readonly<{
+  currentTarget?: { contains: (node: Node | null) => boolean } | null;
+  relatedTarget?: Node | null;
+}>;
+
+/**
+ * Whether a blur moved focus to another element outside the region the handler sits on.
+ *
+ * A blur fires for every focus move inside the region too — react-native-web hands the DOM's own
+ * event to `View`, and React delivers it from the bubbling `focusout` — so the region is only left
+ * when the element focus went to is neither the region nor one of its descendants.
+ *
+ * A blur carrying no `relatedTarget` is deliberately not a departure. The app releases focus from the
+ * control a web press arrives on (`app/_layout.tsx` blurs the element the click lands on, in the
+ * click's capture phase, before the press is delivered), so a trigger pressed while its own menu is
+ * open blurs with nothing to move to — and dismissing there would apply the very state change the
+ * press that follows is about to invert, leaving the trigger unable to close its own menu by mouse or
+ * by keyboard. The press decides that case; this handler answers only a focus move that really went
+ * somewhere else, which is what a Tab out of the menu or a press on another control does.
+ */
+function focusLeftRegion(event: WebFocusEvent): boolean {
+  const region = event.currentTarget;
+  const next = event.relatedTarget;
+  if (region === null || region === undefined) return false;
+  if (next === null || next === undefined) return false;
+  return !(next instanceof Node) || !region.contains(next);
+}
+
+/**
+ * The menu's own DOM id, on web alone: `react-native-web` writes the `id` attribute the trigger's
+ * `aria-controls` resolves to. iOS and Android carry no `aria-controls` and have no idref to resolve,
+ * so the menu there is reached by reading order, from the trigger that reveals it.
+ */
+const webId = (menuId: string): { id?: string } => (Platform.OS === 'web' ? { id: menuId } : {});
+
+/**
+ * Moves keyboard focus to one of the screen's controls by its test id, on web alone.
+ *
+ * The menu's controls are reached by the `data-testid` they render, which is how this screen already
+ * finds the row it focuses when the menu opens: `Button` holds no ref a screen could take, and the
+ * trigger and the row it reveals are the two controls the menu's press moves between. The query is
+ * guarded because a document that cannot be queried leaves nothing focused, which is a state the
+ * screen tolerates rather than a failure it reports.
+ */
+function focusControl(testID: string): void {
+  if (Platform.OS !== 'web') return;
+  try {
+    document.querySelector<HTMLElement>(`[data-testid="${testID}"]`)?.focus();
+  } catch {}
+}
+
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -316,13 +382,31 @@ export default function ChatScreen(): ReactElement {
   useEffect(() => {
     if (!menuOpen) return;
     announce(CHAT_MENU_ANNOUNCEMENT);
-    requestAnimationFrame(() => {
-      if (Platform.OS !== 'web') return;
-      try {
-        document.querySelector<HTMLElement>('[data-testid="user-report"]')?.focus();
-      } catch {}
-    });
+    requestAnimationFrame(() => focusControl(REPORT.testID));
   }, [menuOpen]);
+  // Escape closes the menu and puts focus back on the trigger that owns its open state, and a focus
+  // move to another control outside the region closes it where it was left — the dismissals a
+  // disclosed menu owes, neither of which the trigger's own press can provide. React Native declares
+  // no key event and no DOM focus event, so both reach the region on web only, and the object is
+  // empty off web, which never reads it. Focus is moved by the Escape alone: a region closed because
+  // focus moved on must not pull focus back, or Tab would be undone the moment the reader presses it.
+  const menuRegion: {
+    onKeyDown?: (event: WebKeyEvent) => void;
+    onBlur?: (event: WebFocusEvent) => void;
+  } =
+    Platform.OS === 'web'
+      ? {
+          onKeyDown: (event) => {
+            if (!menuOpen || event.key !== 'Escape') return;
+            event.preventDefault?.();
+            setMenuOpen(false);
+            focusControl(MORE.testID);
+          },
+          onBlur: (event) => {
+            if (menuOpen && focusLeftRegion(event)) setMenuOpen(false);
+          },
+        }
+      : {};
   function onSend(): void {
     if (body === '' || body.length > MESSAGE_MAX_CHARS) return;
     setSendFailure(null);
@@ -365,31 +449,47 @@ export default function ChatScreen(): ReactElement {
         ) : (
           <KeyboardAvoidingView behavior={BEHAVIOR} style={styles.fill}>
             {counterpart === undefined ? null : (
-              <View style={styles.identity}>
-                <Avatar
-                  avatarSeed={counterpart.avatarSeed}
-                  handle={counterpart.handle}
-                  size={AVATAR_SIZE}
-                  {...(hasPhoto ? { userId: counterpart.id, hasPhoto: true } : {})}
-                />
-                <Text style={styles.handle}>{`@${counterpart.handle}`}</Text>
-                <Button {...MORE} hint={MORE_HINT} onPress={() => setMenuOpen((open) => !open)} />
+              // The trigger and the menu it opens are one region, so the menu's dismissal keys and its
+              // focus-out test cover the control that opened it as well as the rows it revealed.
+              <View {...menuRegion}>
+                <View style={styles.identity}>
+                  <Avatar
+                    avatarSeed={counterpart.avatarSeed}
+                    handle={counterpart.handle}
+                    size={AVATAR_SIZE}
+                    {...(hasPhoto ? { userId: counterpart.id, hasPhoto: true } : {})}
+                  />
+                  <Text style={styles.handle}>{`@${counterpart.handle}`}</Text>
+                  {/* The disclosure pair, and deliberately no `aria-haspopup`: the region holds two
+                      ordinary action buttons rather than an ARIA menu widget (no `role="menu"`, no
+                      roving arrow-key focus), so a popup type would assert semantics the content does
+                      not have. `aria-expanded` and `aria-controls` are the disclosure pattern's own
+                      attributes, and they are what make the open state programmatically
+                      determinable. */}
+                  <Button
+                    {...MORE}
+                    hint={MORE_HINT}
+                    expanded={menuOpen}
+                    {...(menuOpen ? { controls: MENU_ID } : {})}
+                    onPress={() => setMenuOpen((open) => !open)}
+                  />
+                </View>
+                {menuOpen ? (
+                  <View {...webId(MENU_ID)} style={styles.menu}>
+                    <Button {...REPORT} onPress={() => openReport(counterpart.id)} />
+                    {confirmingBlock ? (
+                      <View style={styles.confirm}>
+                        <Text style={styles.body}>{BLOCK_CONFIRM_TEXT}</Text>
+                        <Button {...confirmProps} onPress={() => block.mutate(counterpart.id)} />
+                        <Button {...CANCEL} onPress={() => setConfirmingBlock(false)} />
+                      </View>
+                    ) : (
+                      <Button {...BLOCK} onPress={() => setConfirmingBlock(true)} />
+                    )}
+                  </View>
+                ) : null}
               </View>
             )}
-            {menuOpen && counterpart !== undefined ? (
-              <View style={styles.menu}>
-                <Button {...REPORT} onPress={() => openReport(counterpart.id)} />
-                {confirmingBlock ? (
-                  <View style={styles.confirm}>
-                    <Text style={styles.body}>{BLOCK_CONFIRM_TEXT}</Text>
-                    <Button {...confirmProps} onPress={() => block.mutate(counterpart.id)} />
-                    <Button {...CANCEL} onPress={() => setConfirmingBlock(false)} />
-                  </View>
-                ) : (
-                  <Button {...BLOCK} onPress={() => setConfirmingBlock(true)} />
-                )}
-              </View>
-            ) : null}
             {errorText === undefined ? null : (
               <Banner tone="error" message={errorText} testID="chat-error" {...retryProp} />
             )}

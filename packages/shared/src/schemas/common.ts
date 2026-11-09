@@ -61,7 +61,7 @@ export type CountryCode = z.infer<typeof CountryCode>;
 export const CurrencyCode = z.string().regex(/^[A-Z]{3}$/);
 export type CurrencyCode = z.infer<typeof CurrencyCode>;
 
-/** A lowercase hex SHA-256 digest, the form `artifacts.manifest.json` records (AAP 0.5.5). */
+/** A lowercase hex SHA-256 digest, the form the artefact manifest records (AAP 0.5.5). */
 export const Sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
 export type Sha256Hex = z.infer<typeof Sha256Hex>;
 

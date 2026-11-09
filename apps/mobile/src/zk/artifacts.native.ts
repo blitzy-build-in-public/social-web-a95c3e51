@@ -4,7 +4,7 @@
  * `ResolvedArtifacts.wasm` is null (AAP 0.3.4).
  *
  * A key is proved against only after it has been checked: the downloading session compares its digest and size
- * with `artifacts.manifest.json`, every later session compares the stored size and modification time, and either
+ * with the artefact manifest, every later session compares the stored size and modification time, and either
  * check is redone whenever the file changed or the app version did, because an update can replace the circuit
  * without touching the key file. A download of this size is expected to be interrupted, so the platform's resume
  * token is persisted whenever a transfer pauses, and a token written for another artefact is discarded with the
@@ -28,7 +28,7 @@ import type {
   ZkClientErrorCode,
 } from './prover.ts';
 
-/** One downloadable artefact, as `artifacts.manifest.json` and `GET /v1/zk/config` publish it. */
+/** One downloadable artefact, as the artefact manifest and `GET /v1/zk/config` publish it. */
 type ZkeyLink = ZkConfig['artifacts']['zkey'];
 
 const ZK_DIRECTORY = 'zk';

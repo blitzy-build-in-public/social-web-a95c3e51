@@ -311,6 +311,10 @@ export default function ProposeScreen(): ReactElement {
   const applyFailure = useCallback(
     (code: ClientErrorCode): void => {
       if (code === 'hold_failed') return setPhase('card');
+      // Both codes mean one thing: Stripe's answer to a hold was lost and is being recovered. The
+      // create this screen sends, `POST /meetups`, answers `payment_unavailable` for a pending
+      // attempt; the repeated hold below, `retryHold` on `POST /meetups/:id/hold`, answers
+      // `hold_pending` while that attempt is still being recovered. Both enter the recovery.
       if (code === 'payment_unavailable' || code === 'hold_pending') return enterRecovering();
       if (code === 'not_proposed' && meetupIdRef.current !== null)
         return void router.replace(`/meetups/${meetupIdRef.current}`);

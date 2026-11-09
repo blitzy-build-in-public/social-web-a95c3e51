@@ -69,12 +69,38 @@ function isOpenRoute(segments: readonly string[], path: string): boolean {
 }
 const openToUnconsented = (area: string | undefined, second: string | undefined): boolean =>
   (area === '(auth)' && second === 'age-gate') || area === 'auth' || area === 'legal';
+/**
+ * Whether the route in view is the operator area, for the operator session that holds it (AAP
+ * 0.5.4).
+ *
+ * `/ops` is not a traveler feature route: the API guards the operator area by role rather than by
+ * consents, and leaves `/admin/*` outside the 18+ age gate. Without this exemption the consent
+ * branch below would send an operator whose consents are still unset to the traveler's own gate, so
+ * the dashboard would stay unreachable until they recorded traveler consents they do not need.
+ * Nothing is granted here: the area's own layout serves it to an operator session alone, and the
+ * server's role guard, which answers `403 operator_only` to anyone else, is the authority.
+ *
+ * Both halves are required, so a signed-out session, a non-operator session and every traveler route
+ * keep the answer the branch gives them today. The area test follows {@link isOpenRoute}: the
+ * resolved route's first segment, with the requested path's first segment as the fallback for a URL
+ * that resolves to the not-found route.
+ */
+function openToOperator(
+  session: SessionSnapshot,
+  segments: readonly string[],
+  path: string,
+): boolean {
+  return session.role === 'operator' && (segments[0] === 'ops' || path.split('/')[1] === 'ops');
+}
 function protectedRouteFor(session: SessionSnapshot, segments: readonly string[], path: string) {
   const [area, second] = segments;
   const open = isOpenRoute(segments, path);
   if (session.status === 'signed_out') return open ? null : '/sign-in';
   if (session.status !== 'signed_in') return null;
-  if (session.consented !== true) return openToUnconsented(area, second) ? null : '/age-gate';
+  if (session.consented !== true) {
+    const exempt = openToUnconsented(area, second) || openToOperator(session, segments, path);
+    return exempt ? null : '/age-gate';
+  }
   if (area === '(auth)') return '/discover';
   return path === '/' ? '/discover' : null;
 }

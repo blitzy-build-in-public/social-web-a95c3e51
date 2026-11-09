@@ -958,9 +958,11 @@ function CallTasksPanel(): ReactElement {
     [],
   );
 
+  // The operator's own read of the catalogue (AAP 0.5.4): the age-gated `GET /cities` would refuse an
+  // operator who has recorded no consents, which is precisely the session this area admits.
   const cities = useQuery({
-    queryKey: queryKeys.cities,
-    queryFn: () => apiClient.listCities(),
+    queryKey: queryKeys.adminCities,
+    queryFn: apiClient.admin.listCities,
     staleTime: 60 * 60 * 1000,
   });
   const currencies = useMemo(

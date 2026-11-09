@@ -333,7 +333,6 @@ beforeAll(() => {
       wasm: link('circuit.wasm', 'a'.repeat(64)),
       zkey: link('circuit.zkey', 'b'.repeat(64)),
     },
-    manifestUrl: 'http://127.0.0.1:1/manifest.json',
   });
   bytes = Uint8Array.from(Buffer.from(fx.valid, 'latin1'));
   state.root = registry.root;

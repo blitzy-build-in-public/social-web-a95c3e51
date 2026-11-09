@@ -38,6 +38,7 @@ import {
   AdminVenueDto,
   AdminVenuesResponse,
   BookingDetailsDto,
+  CitiesResponse,
   CrawlDomainDecisionUpdate,
   CreateLodgingRequest,
   CreateVenueRequest,
@@ -54,6 +55,8 @@ import {
   SecretIssued,
   UpdateVenueRequest,
 } from '@tablemate/shared';
+
+import { cityList } from '../cities/routes.ts';
 
 import { requireOperator, type AuthContext } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
@@ -131,6 +134,22 @@ export default function adminRoutes(app: App): Promise<void> {
       },
     },
     async (request) => computeMetrics(request.server.services, request.query, request.receivedAt),
+  );
+  // The operator's own read of the launch-city catalogue, and the same list the age-gated
+  // `GET /cities` answers: the dashboard's city filter, the per-city labels, the registry's city
+  // selects and the call-task currency map are all labelled from it (AAP 0.5.4). The operator area is
+  // not a traveler feature route, so it reads the catalogue here rather than through the route the
+  // age gate guards.
+  app.get(
+    '/admin/cities',
+    {
+      schema: {
+        tags: [ADMIN_TAG],
+        security: OPENAPI_SECURITY.bearer,
+        response: { 200: CitiesResponse, 401: ErrorEnvelope, 403: ErrorEnvelope },
+      },
+    },
+    async (request) => cityList(request.server.services),
   );
   app.get(
     '/admin/disputes',

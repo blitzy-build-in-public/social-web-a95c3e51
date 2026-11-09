@@ -76,9 +76,14 @@ const CITY_VENUES_TRUNCATED = 'city_venues_truncated';
  * file — while the file fixes their order, so a city the configuration no longer lists sorts after
  * every configured one instead of vanishing from the response.
  *
+ * Exported because the operator's own read of the same catalogue, `GET /admin/cities`, answers with it
+ * (AAP 0.5.4): the operator area is entered by role alone and lies outside the age gate that guards
+ * this route, so it cannot read the list from here, and a second implementation of the order and the
+ * field allowlist would let the two answers drift apart.
+ *
  * @throws {ZkConfigurationError} When `config/cities.json` cannot be read.
  */
-async function cityList(services: CityListServices): Promise<CitiesResponse> {
+export async function cityList(services: CityListServices): Promise<CitiesResponse> {
   const rows = await services.db.city.findMany({
     select: { id: true, name: true, countryCode: true, timezone: true, currency: true },
   });

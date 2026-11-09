@@ -135,8 +135,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // Expo SDK 52's default for a new app, and the architecture the native prover
     // module is built against.
     newArchEnabled: true,
-    // No icon, splash, adaptive icon or favicon: the app ships no image assets, so
-    // Expo's own defaults stand in.
+    // No app icon, splash or adaptive icon: the native targets ship no image assets,
+    // so Expo's own defaults stand in. The web export does serve a favicon, copied
+    // verbatim from `apps/mobile/public/favicon.ico` into the export's root.
     ios: {
       bundleIdentifier: 'com.tablemate.app',
       // Phones only: every screen is a single column.

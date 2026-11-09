@@ -260,8 +260,9 @@ export const RegistryFile = z.strictObject({
 export type RegistryFile = z.infer<typeof RegistryFile>;
 
 /**
- * One file of `artifacts.manifest.json`: its name, size in bytes and SHA-256, which the client
- * compares after downloading a proving artefact and whenever size or modification time changed.
+ * One file of the artefact manifest ({@link ARTIFACTS_MANIFEST_FILE}): its name, size in bytes and
+ * SHA-256, which the client compares after downloading a proving artefact and whenever size or
+ * modification time changed.
  */
 export const ArtifactRef = z.strictObject({
   name: z.string().min(1),
@@ -271,9 +272,16 @@ export const ArtifactRef = z.strictObject({
 export type ArtifactRef = z.infer<typeof ArtifactRef>;
 
 /**
- * `artifacts.manifest.json`, written by `packages/circuits/scripts/setup.sh` and served by the
- * `artifacts` service; the `api` container mounts only this manifest and `verification_key.json`,
- * never a proving key (AAP 0.5.5).
+ * The file name `packages/circuits/scripts/setup.sh` writes the artefact manifest under in the
+ * circuit build directory, and the name the `artifacts` service serves it by: the one spelling the
+ * API that reads the manifest and the client that fetches it share (AAP 0.5.5, AAP 0.11.1).
+ */
+export const ARTIFACTS_MANIFEST_FILE = 'artifacts.manifest.json';
+
+/**
+ * The artefact manifest, the file {@link ARTIFACTS_MANIFEST_FILE} names: written by
+ * `packages/circuits/scripts/setup.sh` and served by the `artifacts` service; the `api` container
+ * mounts only this manifest and `verification_key.json`, never a proving key (AAP 0.5.5).
  */
 export const ArtifactsManifest = z.strictObject({
   circuit: z.string().min(1),
@@ -304,7 +312,8 @@ export type ArtifactLink = z.infer<typeof ArtifactLink>;
  * records and template; `unsupportedIssuers` the display names still awaiting samples; `registry`
  * the tree whose `root` the proof must name, with the leaves the client reads its `pubkeyHash` and
  * `aliasHash` from; `nullifierSalt` the published salt the booking reference is hashed with; and
- * `artifacts` and `manifestUrl` where the circuit WASM and proving key are served from.
+ * `artifacts` the circuit WASM and proving key are served from, each with the size and SHA-256 the
+ * client verifies its download against.
  */
 export const ZkConfig = z.object({
   issuers: z.array(
@@ -319,6 +328,5 @@ export const ZkConfig = z.object({
   registry: RegistryFile,
   nullifierSalt: FieldElement,
   artifacts: z.object({ wasm: ArtifactLink, zkey: ArtifactLink }),
-  manifestUrl: z.url(),
 });
 export type ZkConfig = z.infer<typeof ZkConfig>;
