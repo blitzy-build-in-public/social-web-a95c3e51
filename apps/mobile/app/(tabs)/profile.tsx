@@ -7,6 +7,7 @@ import { Platform, StyleSheet, Text, View, type TextProps } from 'react-native';
 import {
   MIN_TOUCH_TARGET,
   colors,
+  componentSizes,
   fontWeights,
   formatUsdWhole,
   spacing,
@@ -21,7 +22,7 @@ import { queryKeys, useMe } from '../../src/state/meetup-store';
 import { Avatar, Banner, ListItem, Screen, announce, type ListItemProps } from '../../src/ui';
 
 const SCREEN_EDGES = ['left', 'right'] as const;
-const AVATAR_SIZE = 72;
+const AVATAR_SIZE = componentSizes.avatarMedium;
 const NO_SHOWS_LABEL = 'No-shows (last 90 days)';
 const COUNTER_LABELS = ['Witnessed meetups', 'Travelers met', 'Partner venues', 'Cities'] as const;
 type HeadingProps = TextProps & Readonly<{ 'aria-level': number }>;
@@ -90,15 +91,16 @@ function homeLine(homeCity: string | null, homeCountryCode: string | null): stri
 function creditText(cents: number): string {
   return cents % 100 === 0 ? formatUsdWhole(cents) : `${(cents / 100).toFixed(2)} USD`;
 }
+/** All five counters always render, whatever their values: a zero record reads the same here as it
+ * does on the traveler profile (`app/users/[userId].tsx`), and the empty-state line below them
+ * carries the "nothing yet" meaning. */
 function counterRows(reputation: MeDto['reputation']): Counter[] {
-  const noShows: Counter = { label: NO_SHOWS_LABEL, value: reputation.noShows90d };
-  if (reputation.witnessedMeetups === 0) return reputation.noShows90d > 0 ? [noShows] : [];
   return [
     { label: COUNTER_LABELS[0], value: reputation.witnessedMeetups },
     { label: COUNTER_LABELS[1], value: reputation.distinctCounterparts },
     { label: COUNTER_LABELS[2], value: reputation.distinctVenues },
     { label: COUNTER_LABELS[3], value: reputation.distinctCities },
-    noShows,
+    { label: NO_SHOWS_LABEL, value: reputation.noShows90d },
   ];
 }
 const OPERATOR_ROW: Row = ['profile-ops', 'Operator dashboard', '/ops'];

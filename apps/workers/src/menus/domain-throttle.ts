@@ -57,9 +57,6 @@ const MIN_WAIT_MS = 50;
  * `registrableDomain(domainKey(host))` from `./crawl-policy.ts` — so a site and every subdomain of it
  * contend for one lock, and every spelling of one host (a `www.` prefix, a port, letter case) reaches
  * that same lock, because `domainKey` normalises each of those away.
- *
- * @param domain - the registrable domain the lock is scoped to.
- * @returns the key, `throttle:<domain>`.
  */
 export function throttleKey(domain: string): string {
   return `throttle:${domain}`;
@@ -75,7 +72,6 @@ export function throttleKey(domain: string): string {
 export class ThrottleTimeoutError extends Error {
   /** The registrable domain whose slot was never taken. */
   readonly domain: string;
-
   /** @param domain - the registrable domain whose slot was never taken. */
   constructor(domain: string) {
     super(`throttle wait exceeded for ${domain}`);
@@ -102,14 +98,7 @@ function defaultSleep(ms: number): Promise<void> {
  * after the first. Until then the caller sleeps for the key's remaining lifetime — at least
  * {@link MIN_WAIT_MS}, never past the remaining budget — and retries.
  *
- * @param redis - the shared connection the lock lives on.
- * @param domain - the registrable domain of the request's host, `registrableDomain(domainKey(host))`.
- *   Domains are throttled independently, so one busy site delays neither another site nor the rest of
- *   the crawl.
- * @param opts - `maxWaitMs` bounds the total wait ({@link DEFAULT_MAX_WAIT_MS}); `sleep` replaces the
  * timer-backed wait, which is how a suite runs contention without real time.
- * @returns once the slot is held. The key expires by itself; nothing releases it.
- * @throws ThrottleTimeoutError when the slot is still held after `maxWaitMs` of waiting. A Redis
  * failure rejects with that failure instead, so the fetch fails closed rather than running
  * unthrottled.
  */
@@ -122,7 +111,6 @@ export async function acquireDomainSlot(
   const sleep = opts?.sleep ?? defaultSleep;
   const key = throttleKey(domain);
   let waitedMs = 0;
-
   for (;;) {
     const acquired = await redis.set(key, '1', 'PX', THROTTLE_INTERVAL_MS, 'NX');
     if (acquired === 'OK') {
@@ -152,9 +140,6 @@ export async function acquireDomainSlot(
  * menu links and browser subrequests contend for the slot of the site they actually reach instead of
  * taking one slot per host spelling (AAP 0.5.6).
  *
- * @param redis - the shared connection the lock lives on.
- * @param opts - `maxWaitMs` bounds each acquisition ({@link DEFAULT_MAX_WAIT_MS}).
- * @returns the per-request throttle, which rejects with `ThrottleTimeoutError` when a domain stays
  * busy past the budget and with the Redis error when the lock cannot be reached at all.
  */
 export function createDomainThrottle(

@@ -2,10 +2,6 @@
  * The robots.txt rule's unit suite (AAP 0.5.6, 0.12.2): the crawler's identity, the paths a served
  * file allows and disallows, the RFC 9309 answers for a file that is unavailable, unreachable or
  * unusable, and the 24-hour cache that keeps a fetched body from being fetched again.
- *
- * `robots.ts` reads no clock of its own — it hands `ROBOTS_CACHE_TTL_MS` to the cache — so the fake
- * cache below takes the injected test clock, and the cache rows move a day of wall-clock time with
- * `clock.advance` instead of waiting for it.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -22,23 +18,19 @@ import {
   type RobotsFetch,
 } from '../../src/menus/robots.ts';
 
-/** `CRAWLER_CONTACT_URL` (AAP 0.6.2), the agent built from it, and the site every case queries. */
 const CONTACT_URL = 'https://example.test/contact';
 const USER_AGENT = crawlerUserAgent(CONTACT_URL);
 const ORIGIN = 'http://menu.fixture.test';
 
-/** One served robots.txt: the status the site answered with and the body that came with it. */
 type RobotsAnswer = { status: number; body: string };
 
 const DISALLOW_PRIVATE = 'User-agent: *\nDisallow: /private\n';
 const DISALLOW_EVERYTHING = 'User-agent: *\nDisallow: /\n';
 const ALLOW_EVERYTHING = 'User-agent: *\nAllow: /\n';
 
-/** What the fake fetch hands back per origin, and how often each origin was asked for it. */
 const answers = new Map<string, RobotsAnswer | null>();
 const fetches = new Map<string, number>();
 
-/** Counts the request, then answers it: an origin with no entry is an unreachable site. */
 const fetchRobotsTxt: RobotsFetch = (origin) => {
   fetches.set(origin, (fetches.get(origin) ?? 0) + 1);
   return Promise.resolve(answers.get(origin) ?? null);
@@ -70,7 +62,6 @@ function createTimedCache(clock: TestClock): RobotsCache {
 let clock: TestClock;
 let checker: RobotsChecker;
 
-/** Ask the checker about one path — the crawler's only question (AAP 0.5.6). */
 function allows(origin: string, path: string): Promise<boolean> {
   return checker.isAllowed(new URL(path, origin));
 }
@@ -157,12 +148,10 @@ describe('the robots.txt cache', () => {
     answers.set(ORIGIN, { status: 200, body: DISALLOW_PRIVATE });
     await expect(allows(ORIGIN, '/private/menu')).resolves.toBe(false);
     expect(fetches.get(ORIGIN)).toBe(1);
-
     // 23 h 59 m on, the cached body still governs and the site is not asked again.
     clock.advance(ROBOTS_CACHE_TTL_MS - 60_000);
     await expect(allows(ORIGIN, '/menu')).resolves.toBe(true);
     expect(fetches.get(ORIGIN)).toBe(1);
-
     // Two minutes later the TTL has passed, so the site is asked again and the new body takes over.
     answers.set(ORIGIN, { status: 200, body: DISALLOW_EVERYTHING });
     clock.advance(2 * 60_000);
@@ -175,12 +164,10 @@ describe('the robots.txt cache', () => {
     const second = 'http://b.fixture.test';
     answers.set(first, { status: 200, body: DISALLOW_PRIVATE });
     answers.set(second, { status: 200, body: DISALLOW_EVERYTHING });
-
     await expect(allows(first, '/menu')).resolves.toBe(true);
     await expect(allows(second, '/menu')).resolves.toBe(false);
     clock.advance(ROBOTS_CACHE_TTL_MS - 1);
     await expect(allows(second, '/menu/onwards')).resolves.toBe(false);
-
     expect(fetches.get(first)).toBe(1);
     expect(fetches.get(second)).toBe(1);
   });

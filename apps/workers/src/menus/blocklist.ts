@@ -18,8 +18,6 @@
  *
  * The configuration is read from disk once, at startup: no clock, no network, no database, and
  * nothing per request beyond a set lookup over the host's suffixes.
- *
- * @see AAP 0.5.6 for the crawl rules and the site-terms policy, and 0.8.1 for this file.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
@@ -56,21 +54,15 @@ export type Blocklist = { readonly domains: ReadonlySet<string> };
  * - A host without brackets keeps every label unless exactly one colon remains, so a bare IPv6
  *   address (`2001:db8::1`, no port at all) is untouched.
  * - A tail that is not a number is left alone (`example.com:`).
- *
- * @param key The host, already lower cased.
- * @returns The same host without its port.
  */
 function withoutPort(key: string): string {
   const colon = key.lastIndexOf(':');
-
   if (colon === -1 || !/^[0-9]+$/.test(key.slice(colon + 1))) {
     return key;
   }
-
   if (key.startsWith('[')) {
     return colon > key.lastIndexOf(']') ? key.slice(0, colon) : key;
   }
-
   return key.indexOf(':') === colon ? key.slice(0, colon) : key;
 }
 
@@ -84,14 +76,9 @@ function withoutPort(key: string): string {
  * IP literals and `localhost` are returned unchanged apart from lower casing and that port, and the
  * function is idempotent, so a host read back from the review queue keys the same way as a freshly
  * parsed one.
- *
- * @param host A host name, a registrable domain or an IP literal, with or without brackets, or a
- *   `host:port` spelling of any of them.
- * @returns The key other helpers of this module compare and match on.
  */
 export function domainKey(host: string): string {
   let key = withoutPort(host.toLowerCase());
-
   if (key.startsWith('[') && key.endsWith(']')) {
     key = key.slice(1, -1);
   }
@@ -104,7 +91,6 @@ export function domainKey(host: string): string {
   if (key.startsWith('www.') && key.slice('www.'.length).includes('.')) {
     return key.slice('www.'.length);
   }
-
   return key;
 }
 
@@ -116,24 +102,17 @@ export function domainKey(host: string): string {
  * Suffixes are cut on label boundaries only, never as substrings, which is what keeps
  * `notyelp.com` from matching an entry for `yelp.com`. An IP literal and a single-label host yield
  * themselves alone, and a suffix never drops to a single label, so `com` is not matchable.
- *
- * @param host A host name, a registrable domain or an IP literal, with or without brackets.
- * @returns The suffixes in most-specific-first order; never empty.
  */
 export function domainSuffixes(host: string): string[] {
   const key = domainKey(host);
-
   if (isIP(key) !== 0) {
     return [key];
   }
-
   const labels = key.split('.');
   const suffixes: string[] = [];
-
   for (let start = 0; start + 2 <= labels.length; start += 1) {
     suffixes.push(labels.slice(start).join('.'));
   }
-
   return suffixes.length > 0 ? suffixes : [key];
 }
 
@@ -144,14 +123,9 @@ export function domainSuffixes(host: string): string[] {
  * the TypeScript source the `tablemate-source` condition resolves, `apps/workers/dist/src/menus`
  * for the compiled JavaScript the workers image runs, whose `/app` holds the marker beside
  * `config/crawl-blocklist.json` (AAP 0.8.1).
- *
- * @param from Directory to start the walk at; defaults to this module's own directory.
- * @returns The absolute path of the repository root.
- * @throws Error when no ancestor holds the marker.
  */
 export function findRepoRoot(from: string = MODULE_DIR): string {
   const start = path.resolve(from);
-
   for (let dir = start; ; dir = path.dirname(dir)) {
     if (existsSync(path.join(dir, WORKSPACE_MARKER))) {
       return dir;
@@ -187,47 +161,34 @@ function formatIssues(
  * The read is synchronous on purpose: it happens once, before the menu pipeline accepts work, and
  * the returned blocklist is the immutable value every later fetch consults. A failure names the
  * offending path and what is wrong with it, and never echoes the file's content.
- *
- * @param repoRoot Absolute path of the repository root, from {@link findRepoRoot}.
- * @returns The frozen blocklist, keyed by {@link domainKey}.
- * @throws Error when the file cannot be read, does not parse, or fails its schema.
  */
 export function loadBlocklist(repoRoot: string): Blocklist {
   const file = path.join(repoRoot, BLOCKLIST_FILE);
   let text: string;
-
   try {
     text = readFileSync(file, 'utf8');
   } catch (error) {
     throw new Error(`crawl blocklist ${BLOCKLIST_FILE} could not be read: ${messageOf(error)}`);
   }
-
   let raw: unknown;
   try {
     raw = JSON.parse(text) as unknown;
   } catch (error) {
     throw new Error(`crawl blocklist ${BLOCKLIST_FILE} is not valid JSON: ${messageOf(error)}`);
   }
-
   const parsed = CrawlBlocklist.safeParse(raw);
   if (!parsed.success) {
     throw new Error(
       `crawl blocklist ${BLOCKLIST_FILE} is invalid:\n${formatIssues(parsed.error.issues)}`,
     );
   }
-
   const domains = new Set(parsed.data.domains.map((domain) => domainKey(domain)));
-
   return Object.freeze({ domains });
 }
 
 /**
  * Whether a host is blocklisted (AAP 0.5.6): true when the host is a blocklisted domain or a
  * subdomain of one, which is what stops `m.tripadvisor.com` while `nottripadvisor.com` passes.
- *
- * @param host A host name, a registrable domain or an IP literal, with or without brackets.
- * @param list The loaded blocklist.
- * @returns True when no request to this host may be made.
  */
 export function isBlocklisted(host: string, list: Blocklist): boolean {
   return domainSuffixes(host).some((suffix) => list.domains.has(suffix));

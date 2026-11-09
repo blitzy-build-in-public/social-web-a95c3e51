@@ -1,54 +1,30 @@
 /**
  * Test control: the clock route and the settlement route the suites drive (AAP 0.5.1, 0.5.4).
  *
- * Two additive routes live in this module and nothing else:
+ *  - `POST /v1/test/clock` moves the clock the app was built with, so a criterion test can cross the 45-minute
+ *    check-in window, the 24-hour booking-detail erasure limit and the 30-day anti-farming rule instead of waiting
+ *    for them. It moves the very `Clock` instance `plugins/clock.ts` decorates the instance with, which is the
+ *    reason every module asks that clock for the time rather than reading `Date.now()` (AAP 0.11.1).
+ *  - `POST /v1/test/run-settlement` settles the meetup a caller names, or sweeps when it names none, and then
+ *    carries out what that settlement planned: a settlement only *plans* the provider calls it decides, so without
+ *    this step a suite that had just moved the clock would read a meetup settled while its money stayed pending.
  *
- *  - `POST /v1/test/clock` moves the clock the app was built with, so a criterion test can cross the
- *    45-minute check-in window, the 24-hour booking-detail erasure limit and the 30-day anti-farming
- *    rule instead of waiting for them (AAP 0.1.1). It moves the very `Clock` instance
- *    `plugins/clock.ts` decorates the instance with, which is the reason every module asks that clock
- *    for the time rather than reading `Date.now()` (AAP 0.11.1).
- *  - `POST /v1/test/run-settlement` settles the meetup a caller names, or sweeps when it names none,
- *    and then carries out what that settlement planned. A settlement only *plans* the provider calls
- *    it decides — `settlement/settle.ts` executes none of them — and the sweeper's executor step is
- *    what actually releases a hold or captures one. Without it a suite that had just moved the clock
- *    would read a meetup settled while its money stayed pending.
+ * What a jump moves is the server's clock alone. A delayed BullMQ job fires on Redis' own wall-clock time, and
+ * `settle-<meetupId>`, `lapse-<meetupId>` and `remind-<meetupId>` are scheduled against it, so a jump never makes
+ * them fire early: settlement after a jump is driven through `POST /v1/test/run-settlement`, whose sweeper judges
+ * "overdue" by `services.clock` (AAP 0.3.2, 0.5.6). The 15-minute access token and the 30-second session cache are
+ * judged by that same clock, so a jump past 15 minutes expires the caller's own access token.
  *
- * What a jump moves is the server's clock alone. A delayed BullMQ job fires on Redis' own wall-clock
- * time, and `settle-<meetupId>`, `lapse-<meetupId>` and `remind-<meetupId>` are scheduled against it,
- * so a jump never makes them fire early: settlement after a jump is driven through
- * `POST /v1/test/run-settlement`, whose sweeper judges "overdue" by `services.clock` (AAP 0.3.2,
- * 0.5.6). The 15-minute access token and the 30-second session cache are judged by that same clock,
- * so a jump past 15 minutes expires the caller's own access token and a suite has to refresh it, or
- * sign a new one, before its next authenticated call.
+ * Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set (AAP 0.5.1, 0.6.2). The composition root
+ * registers this plugin only when both hold, and {@link testControlRoutes} refuses to register at all otherwise:
+ * defence in depth, because the environment schema already refuses to start a process outside `test` that sets
+ * that variable.
  *
- * Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set (AAP 0.5.1, 0.6.2). The
- * composition root registers this plugin only when both hold, and {@link testControlRoutes} refuses
- * to register at all otherwise: defence in depth, because the environment schema already refuses to
- * start a process outside `test` that sets that variable. Anywhere else the two paths answer
- * `404 not_found` (AAP 0.5.4).
- *
- * The credential is a header rather than a session, because these routes are driven by test harnesses
- * that hold no account, and the token is compared with `timingSafeEqualString`, so a wrong token
- * costs the same to guess as a right one. A request without a usable header — absent, repeated or
- * wrong — is answered exactly as a request with a wrong one is: `AppError('not_found')` at `404`,
- * never `401`, so a probe cannot tell the two apart and learns nothing from trying header values.
- * That answer carries the same status and the same code an unknown path does; only the envelope's own
- * message differs, which is a fact about a `test` process rather than about a deployed API. Neither
- * the header nor the expected token is ever logged (AAP 0.11.1).
- *
- * The routes carry no bearer guard, no age gate and no rate limit: AAP 0.5.4 puts the age gate on the
- * traveler route group and the limits on the mutating traveler and console routes, and this group is
- * neither. Both answer `204` with no body at all, and both are hidden from `docs/api/openapi.json`,
- * because they exist in one environment and that document describes the API a client calls
- * (AAP 0.5.4, 0.11.2).
- *
- * @see AAP 0.5.1 for the test-control component and this file, 0.5.4 for the two additive route rows
- *   and the `404` outside `test`, 0.6.2 for the `APP_ENV=test` scope and `TEST_CONTROL_TOKEN`, 0.11.1
- *   for the injected clock and the logging rules, 0.11.2 for the lint and typecheck gate, and 0.8.1
- *   for this file's inventory row.
+ * The credential is a header rather than a session, because these routes are driven by test harnesses that hold no
+ * account, and the token is compared with `timingSafeEqualString`. A request without a usable header — absent,
+ * repeated or wrong — is answered exactly as a request with a wrong one is: `404 not_found`, never `401`, so a
+ * probe cannot tell the two apart. Neither the header nor the expected token is ever logged (AAP 0.11.1).
  */
-
 import { z } from 'zod';
 
 import {
@@ -69,8 +45,7 @@ import type { SettleResult } from '../settlement/settle.ts';
 /** How many outbox passes a settlement trigger drains before it answers (AAP 0.5.6, bounded on purpose). */
 const MAX_OUTBOX_PASSES = 5;
 
-// Type-only: `app.ts` is the plan's one declaration of the instance and of what it hands its modules,
-// it is erased at compile time, and nothing of that module is read here at runtime.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App, AppServices } from '../../app.ts';
 
 /**
@@ -81,12 +56,6 @@ import type { App, AppServices } from '../../app.ts';
  * moved once it is known to be controllable — `buildApp` may have been handed the process clock, and
  * there is nothing to move in that case — so an environment that claims `test` without a test clock
  * fails loudly instead of answering a `204` that changed nothing.
- *
- * @param clock - the instance's injected clock, `services.clock`.
- * @param body - the validated `TestClockRequest`.
- * @throws {Error} when the injected clock implements no `set` and no `advance`: a composition fault
- *   with no contract code, thrown the way `settleMeetup` and `writeOutbox` throw their invariants, so
- *   the errors plugin answers `500 internal_error` with the request id and logs the reason.
  */
 function moveClock(clock: Clock, body: TestClockRequest): void {
   if (!isTestClock(clock)) {
@@ -94,7 +63,6 @@ function moveClock(clock: Clock, body: TestClockRequest): void {
       'test_control_clock_not_controllable: the injected clock implements no set and no advance',
     );
   }
-
   if (body.now !== undefined) {
     clock.set(new Date(body.now));
   } else if (body.advanceMs !== undefined) {
@@ -115,15 +83,6 @@ function moveClock(clock: Clock, body: TestClockRequest): void {
  * The outbox pass at the end delivers the rows the settlement committed in its own transaction — its
  * notifications, and the jobs an operator's or a notification's row carries — so a suite that has
  * just moved the clock reads a settled state rather than one still pending delivery.
- *
- * @param services - The app's services: the database, the injected clock, the logger, the payment
- *   gateway and the outbox dispatcher the settlement and the pass read.
- * @param meetupId - The meetup to settle, or `undefined` to sweep whatever is due.
- * @throws {SettlementReconcileError} when a PaymentIntent is in a state the settlement rule does not
- *   cover; the errors plugin answers it as `500 internal_error` with the request id, exactly as the
- *   queue's retry path does.
- * @throws {PaymentUnavailableError} when Stripe could not be reached: no outcome is applied from a
- *   state that could not be observed.
  */
 async function runSettlement(
   services: AppServices,
@@ -131,15 +90,12 @@ async function runSettlement(
 ): Promise<{ settle: SettleResult | null; sweep: SweepSummary }> {
   const settle =
     meetupId === undefined ? null : await settleMeetup(services, meetupId, { trigger: 'sweeper' });
-
   const sweep = await runSweeper(services, { waitForLock: true });
-
   // Until the dispatcher reports no row left, at most five passes: one pass delivers one batch, and a
   // settlement's notifications and job rows must all have reached BullMQ before the suite asserts.
   for (let pass = 0; pass < MAX_OUTBOX_PASSES; pass += 1) {
     if ((await services.outbox.runOnce()) === 0) break;
   }
-
   return { settle, sweep };
 }
 
@@ -157,42 +113,31 @@ async function runSettlement(
  * composition root installs — it awaits nothing, the hook and the routes are queued on the context,
  * and every value a handler needs is resolved per request. The declared `Promise<void>` is what keeps
  * this plugin usable wherever Fastify's own plugin types expect one.
- *
- * @param app - The route instance; its `services` carry the loaded environment, the injected clock,
- *   the logger and the outbox dispatcher the handlers read.
- * @throws {Error} when the environment is not `test` or carries no `TEST_CONTROL_TOKEN`, in which
- *   case these routes must not exist at all.
- * @see AAP 0.5.4 for the two additive route rows, their bodies and the `404` outside `test`.
  */
 export default function testControlRoutes(app: App): Promise<void> {
   const env = app.services.env;
   const token = env.testOnly.testControlToken;
-
   if (env.APP_ENV !== 'test' || token === null) {
     throw new Error(
       'the test-control routes are registered only under APP_ENV=test with TEST_CONTROL_TOKEN set',
     );
   }
-
   app.addHook('onRequest', (request, _reply, done) => {
     // Fastify lowercases header names, so the shared constant is read in the one form the request
     // carries. A header repeated by a client arrives as an array, and a request that presents one is
     // treated as a request that presented none.
     const header = request.headers[TEST_CONTROL_HEADER.toLowerCase()];
     const presented = typeof header === 'string' ? header : null;
-
     // One answer for an absent header, a repeated one and a wrong token, and it is the status and
     // the code an unknown path answers with: `not_found` at `404`, never `401`. The comparison is
     // constant-time in the token, and the presented value is never logged.
     if (presented === null || !timingSafeEqualString(presented, token)) {
       throw new AppError('not_found');
     }
-
     // `done` is the hook's contract: a synchronous hook that neither throws nor returns a promise
     // ends nothing, and Fastify would hold the request open (`plugins/clock.ts` passes it too).
     done();
   });
-
   app.post(
     '/test/clock',
     {
@@ -211,16 +156,13 @@ export default function testControlRoutes(app: App): Promise<void> {
     // without awaiting anything is what `require-await` refuses (AAP 0.11.2).
     (request, reply) => {
       moveClock(app.services.clock, request.body);
-
       request.log.info(
         { event: 'test_clock_set', now: app.services.clock.now().toISOString() },
         'test_clock_set',
       );
-
       reply.code(204).send(null);
     },
   );
-
   app.post(
     '/test/run-settlement',
     {
@@ -238,14 +180,11 @@ export default function testControlRoutes(app: App): Promise<void> {
     },
     async (request, reply) => {
       const body = RunSettlementRequest.safeParse(request.body ?? {});
-
       if (!body.success) {
         throw new AppError('invalid_field');
       }
-
       const meetupId = body.data.meetupId;
       const { settle, sweep } = await runSettlement(app.services, meetupId);
-
       request.log.info(
         {
           event: 'test_run_settlement',
@@ -255,10 +194,8 @@ export default function testControlRoutes(app: App): Promise<void> {
         },
         'test_run_settlement',
       );
-
       reply.code(204).send(null);
     },
   );
-
   return Promise.resolve();
 }

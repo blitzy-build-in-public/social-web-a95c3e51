@@ -1,30 +1,26 @@
 /**
  * The circuit configuration the API reads from disk: the launch cities, the issuer key records, the
- * committed Poseidon registries and the proving-artefact manifest (AAP 0.5.5). It is the only API
- * module that touches them, and the only place `checkZkConfiguration` proves — at startup, before the
- * app listens — that the committed registries are what `config/issuers/*.json` and `config/cities.json`
+ * committed Poseidon registries and the proving-artefact manifest (AAP 0.5.5). It is the only API module
+ * that touches them, and the only place `checkZkConfiguration` proves — at startup, before the app
+ * listens — that the committed registries are what `config/issuers/*.json` and `config/cities.json`
  * rebuild to (AAP 0.5.1, 0.5.5).
  *
- * `zkConfig` answers the public `GET /v1/zk/config` (AAP 0.5.4): the key records and extraction
- * templates of the supported issuers, the display names of the issuers still awaiting samples, the
- * registry whose leaves the device builds its two Merkle paths from, the published nullifier salt and
- * the artefact URLs. Every field is copied off the parsed configuration by name, so a hand-edited file
- * cannot widen the response, and the built object is memoized per process because the configuration is
- * static between deploys.
+ * `zkConfig` answers the public `GET /v1/zk/config` (AAP 0.5.4): the key records and extraction templates
+ * of the supported issuers, the display names of the issuers still awaiting samples, the registry whose
+ * leaves the device builds its two Merkle paths from, the published nullifier salt and the artefact URLs.
+ * Every field is copied off the parsed configuration by name, so a hand-edited file cannot widen the
+ * response, and the built object is memoized per process because the configuration is static between
+ * deploys.
  *
- * Read through `node:fs` rather than `import … with { type: 'json' }`: the files live outside
- * `apps/api` (the package's `rootDir: "."` rejects them), the issuer set is a directory listing, and the
- * runtime image reads the deployed copies its Dockerfile copies to `/app` beside `pnpm-workspace.yaml`.
+ * Read through `node:fs` rather than `import … with { type: 'json' }`: the files live outside `apps/api`
+ * (the package's `rootDir: "."` rejects them), the issuer set is a directory listing, and the runtime
+ * image reads the deployed copies its Dockerfile copies to `/app` beside `pnpm-workspace.yaml`.
  *
  * Nothing here reaches a proving key, the circuit WASM or a witness generator: the API image holds
  * `verification_key.json` and the manifest alone, and this module never calls proving code — it checks
  * that the configuration a submitted proof is verified against is the one that was published
- * (AAP 0.5.5 "No server proving"). No function here reads the clock, and every failure names a file or
- * a field and never a value.
- *
- * @see AAP 0.5.5 for the registries, the issuer records and the artefact manifest, 0.5.4 for
- *   `GET /v1/zk/config` and its `503`, 0.5.8 for the import screen that lists the unsupported issuers,
- *   and 0.11.1 for the TSDoc and logging conventions.
+ * (AAP 0.5.5 "No server proving"). No function here reads the clock, and every failure names a file or a
+ * field and never a value.
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -48,15 +44,10 @@ import type { ApiEnv } from '@tablemate/server-core';
 
 import { AppError } from '../../plugins/errors.ts';
 
-/* The files this module reads, each named once (AAP 0.5.5, 0.6.2). */
-
-/** The workspace marker {@link findRepoRoot} walks up to: only the repository root holds it. */
 const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
 
-/** The suffix a configuration file carries, and what the issuer listing filters on. */
 const JSON_SUFFIX = '.json';
 
-/** The repository-relative directory the circuit build writes into (AAP 0.4.2, 0.5.5). */
 const BUILD_DIR = 'packages/circuits/build';
 
 /**
@@ -65,16 +56,12 @@ const BUILD_DIR = 'packages/circuits/build';
  */
 const MANIFEST_FILE = 'artifacts.manifest.json';
 
-/** The key file the API mounts and a staging or production start requires beside the manifest. */
 const VERIFICATION_KEY_FILE = 'verification_key.json';
 
-/** The directory the committed registries live in, one file per environment (AAP 0.5.5). */
 const REGISTRY_DIR = 'config/registry';
 
-/** The issuer records' directory, one `<stem>.json` per issuer. */
 const ISSUERS_DIR = 'config/issuers';
 
-/** The launch-city configuration the circuit's city alias leaves are rebuilt from. */
 const CITIES_FILE = 'config/cities.json';
 
 /**
@@ -103,10 +90,8 @@ export class ZkConfigurationError extends Error {
   }
 }
 
-/** The directory this module loads from, in the tree whether it runs from source or from `dist`. */
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** The repository root, once {@link findRepoRoot} has found it. */
 let cachedRepoRoot: string | undefined;
 
 /**
@@ -118,7 +103,6 @@ let cachedRepoRoot: string | undefined;
  * runtime image, whose Dockerfile copies `pnpm-workspace.yaml` and `config/{cities.json,issuers,registry}`
  * to `/app`. The result is cached, so the walk happens once per process.
  *
- * @returns The absolute path of the repository root.
  * @throws {ZkConfigurationError} When no ancestor holds the workspace marker.
  */
 export function findRepoRoot(): string {
@@ -141,8 +125,6 @@ export function findRepoRoot(): string {
 /**
  * An absolute path of a file under the repository root (AAP 0.5.5).
  *
- * @param segments - The path's segments below the root, for example `'config'`, `'cities.json'`.
- * @returns The joined absolute path.
  * @throws {ZkConfigurationError} When {@link findRepoRoot} cannot locate the root.
  */
 export function repoPath(...segments: readonly string[]): string {
@@ -154,15 +136,11 @@ export function repoPath(...segments: readonly string[]): string {
  * (AAP 0.4.2, 0.5.5). `verifier.ts` reads `verification_key.json` through this, and a staging or
  * production start requires it.
  *
- * @param file - The file's name inside the build directory.
- * @returns The absolute path.
  * @throws {ZkConfigurationError} When {@link findRepoRoot} cannot locate the root.
  */
 export function circuitsBuildPath(file: string): string {
   return path.join(findRepoRoot(), BUILD_DIR, file);
 }
-
-/* Reading the configuration (AAP 0.5.5). */
 
 /** One issue of a schema rejection: its path and code, the two parts an error message may name. */
 interface SchemaIssue {
@@ -208,7 +186,6 @@ function issuePaths(error: unknown): string {
     .join(', ');
 }
 
-/** Reads one configuration file as text, naming its repository-relative path when it cannot be read. */
 function readTextAt(relativePath: string): string {
   try {
     return readFileSync(path.join(findRepoRoot(), relativePath), 'utf8');
@@ -246,7 +223,6 @@ function parseAt<T>(relativePath: string, schema: { parse(value: unknown): T }):
   }
 }
 
-/** The launch-city configuration, once read. */
 let cachedCities: CitiesFile | undefined;
 
 /**
@@ -256,7 +232,6 @@ let cachedCities: CitiesFile | undefined;
  * is constructed, and every later reader — the circuit registry rebuild, the caller resolving a city
  * id, the import screen — must see one immutable configuration.
  *
- * @returns The parsed configuration, with its cities in file order.
  * @throws {ZkConfigurationError} When the file cannot be read, is not valid JSON, or fails
  *   {@link CitiesFile}.
  */
@@ -266,18 +241,13 @@ export function readCitiesConfig(): CitiesFile {
   return cached;
 }
 
-/** The city lookups, built once from {@link readCitiesConfig}. */
 interface CityIndex {
-  /** Cities by slug, the identifier every route's `:cityId` parameter takes. */
   readonly bySlug: ReadonlyMap<string, CityConfig>;
-  /** Cities by `circuitCityId`, the integer a proof's `cityId` signal carries. */
   readonly byCircuitId: ReadonlyMap<number, CityConfig>;
 }
 
-/** The city lookups, once built. */
 let cachedCityIndex: CityIndex | undefined;
 
-/** The city lookups, built on first use from the parsed configuration. */
 function cityIndex(): CityIndex {
   let index = cachedCityIndex;
   if (index === undefined) {
@@ -297,8 +267,6 @@ function cityIndex(): CityIndex {
  * The configured city a slug names (AAP 0.5.5). {@link CitiesFile} rejects a repeated slug, so the
  * lookup is a function of the configuration.
  *
- * @param slug - A city slug, for example `'lisbon'`.
- * @returns The city, or `undefined` when no configured city carries that slug.
  * @throws {ZkConfigurationError} When the configuration cannot be read.
  */
 export function cityBySlug(slug: string): CityConfig | undefined {
@@ -309,15 +277,11 @@ export function cityBySlug(slug: string): CityConfig | undefined {
  * The configured city a circuit `cityId` names (AAP 0.5.5): how a verified proof's `cityId` signal
  * becomes the slug its row is stored under.
  *
- * @param id - The circuit's integer city id, from the proof's public outputs.
- * @returns The city, or `undefined` when no configured city carries that id.
  * @throws {ZkConfigurationError} When the configuration cannot be read.
  */
 export function cityByCircuitId(id: number): CityConfig | undefined {
   return cityIndex().byCircuitId.get(id);
 }
-
-/* The issuer records, the committed registries and the artefact manifest (AAP 0.5.5). */
 
 /**
  * One issuer record read from `config/issuers/<stem>.json`.
@@ -327,16 +291,13 @@ export function cityByCircuitId(id: number): CityConfig | undefined {
  * `packages/circuits/scripts/fetch-dkim-key.ts` select an issuer, rather than by its `issuerId`.
  */
 export interface IssuerConfigEntry {
-  /** The record's file stem. */
   readonly stem: string;
   /** The parsed record exactly as its file carries it, with no verification-status rule applied. */
   readonly config: IssuerConfig;
 }
 
-/** The issuer records, once read. */
 let cachedIssuers: readonly IssuerConfigEntry[] | undefined;
 
-/** The names of the issuer records in `config/issuers`, sorted by file name. */
 function issuerFileNames(): readonly string[] {
   try {
     return readdirSync(path.join(findRepoRoot(), ISSUERS_DIR))
@@ -356,7 +317,6 @@ function issuerFileNames(): readonly string[] {
  * from the same records. Booking.com and Airbnb ship as `awaiting_samples` with no key and no template,
  * and the synthetic `tablemate-test` record is a record of this shape like any other.
  *
- * @returns The loaded records, ordered by file name.
  * @throws {ZkConfigurationError} When the directory cannot be listed, or a record cannot be read or
  *   fails {@link IssuerConfig}; the message names the record's repository-relative path.
  */
@@ -375,7 +335,6 @@ export function readIssuerConfigs(): readonly IssuerConfigEntry[] {
 /** A registry file's name: `production`, or `test` when the test issuer is allowed (AAP 0.5.5). */
 export type RegistryName = RegistryFile['name'];
 
-/** The registries that have been read, one entry per name. */
 const registryCache = new Map<RegistryName, RegistryFile>();
 
 /**
@@ -385,8 +344,6 @@ const registryCache = new Map<RegistryName, RegistryFile>();
  * from, so it is read rather than rebuilt at request time: `checkZkConfiguration` is what keeps it equal
  * to a rebuild of the configuration, once, at startup.
  *
- * @param name - Which registry to read.
- * @returns The parsed registry.
  * @throws {ZkConfigurationError} When the file cannot be read, is not valid JSON, or fails
  *   {@link RegistryFile}.
  */
@@ -400,7 +357,6 @@ export function readRegistryFile(name: RegistryName): RegistryFile {
   return parsed;
 }
 
-/** The artefact manifest, once a read has succeeded. */
 let cachedManifest: ArtifactsManifest | undefined;
 
 /**
@@ -412,7 +368,6 @@ let cachedManifest: ArtifactsManifest | undefined;
  * the process started picks them up on the next call; the file itself is probed on every call, never
  * memoized away, which is what answers a build directory that is absent — or mounted later.
  *
- * @returns A promise for the parsed manifest, or for `null` when no manifest file exists.
  * @throws {ZkConfigurationError} When the file exists but is not valid JSON or fails
  *   {@link ArtifactsManifest}.
  */
@@ -454,7 +409,6 @@ function readArtifactsManifestSync(): ArtifactsManifest | null {
   return cachedArtifactsManifest();
 }
 
-/** The manifest's parse, taken from the process cache once a read has succeeded (AAP 0.5.5). */
 function cachedArtifactsManifest(): ArtifactsManifest {
   const cached = cachedManifest;
   if (cached !== undefined) {
@@ -464,8 +418,6 @@ function cachedArtifactsManifest(): ArtifactsManifest {
   cachedManifest = parsed;
   return parsed;
 }
-
-/* The active registries (AAP 0.5.5). */
 
 /**
  * What the configuration readers here need of the app's environment, so `verifier.ts`, a test and
@@ -485,9 +437,6 @@ export type ZkEnv = Pick<ApiEnv, 'APP_ENV' | 'testOnly' | 'NULLIFIER_SALT' | 'AR
  * Both halves are required: the mode makes the switch meaningful, and the switch makes the mode
  * deliberate. The loaded configuration resolves every test-only variable to its off value outside
  * `test`, so this can never be true in a demo, staging or production process.
- *
- * @param env - The process's configuration.
- * @returns Whether the test registry is active.
  */
 export function testIssuerAllowed(env: ZkEnv): boolean {
   return env.APP_ENV === 'test' && env.testOnly.zkAllowTestIssuer;
@@ -501,8 +450,6 @@ export function testIssuerAllowed(env: ZkEnv): boolean {
  * `registryRoot` signal from this list and reads that proof's city and issuer ids out of it, so the
  * root and the entries are always from one registry and can never be mixed.
  *
- * @param env - The process's configuration.
- * @returns One registry, or both in test mode.
  * @throws {ZkConfigurationError} When a registry cannot be read.
  */
 export function activeRegistries(env: ZkEnv): readonly RegistryFile[] {
@@ -518,15 +465,11 @@ export function activeRegistries(env: ZkEnv): readonly RegistryFile[] {
  * as field elements, so a signal carrying leading zeros still matches, which is why these are the
  * strings as stored and not a parsed number.
  *
- * @param env - The process's configuration.
- * @returns The active roots, production first.
  * @throws {ZkConfigurationError} When a registry cannot be read.
  */
 export function activeRegistryRoots(env: ZkEnv): readonly string[] {
   return activeRegistries(env).map((registry) => registry.root);
 }
-
-/* The published ZK configuration, `GET /v1/zk/config` (AAP 0.5.4, 0.5.5). */
 
 /**
  * What {@link zkConfig} needs of the app's services: the environment it publishes from.
@@ -560,8 +503,6 @@ const zkConfigCache = new Map<boolean, ZkConfig>();
  * chain (AAP 0.11.1). `main.ts` requires the manifest outright in staging and production, so this
  * answer is reachable only where a build has not run.
  *
- * @param services - The process's configuration.
- * @returns A promise for the published configuration, the same object for every call in one mode.
  * @throws {AppError} `service_unavailable` when the artefact manifest is absent.
  * @throws {ZkConfigurationError} When a configuration file it publishes cannot be read.
  */
@@ -577,12 +518,10 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
       cause: new Error(`zk_artifacts_missing: ${MANIFEST_FILE}`),
     });
   }
-
   const cached = zkConfigCache.get(allowTestIssuer);
   if (cached !== undefined) {
     return cached;
   }
-
   const entries = readIssuerConfigs();
   const issuers: ZkConfig['issuers'] = [];
   for (const entry of entries) {
@@ -592,12 +531,10 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
     }
   }
   issuers.sort((left, right) => left.issuerId - right.issuerId);
-
   const unsupportedIssuers = entries
     .filter((entry) => entry.config.verificationStatus !== 'verified')
     .sort((left, right) => left.config.issuerId - right.config.issuerId)
     .map((entry) => entry.config.displayName);
-
   const base = artifactsBase(services.env.ARTIFACTS_BASE_URL);
   const config: ZkConfig = {
     issuers,
@@ -610,7 +547,6 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
     },
     manifestUrl: new URL(MANIFEST_FILE, base).toString(),
   };
-
   zkConfigCache.set(allowTestIssuer, config);
   return config;
 }
@@ -692,8 +628,6 @@ function usableKeys(config: IssuerConfig): DkimKey[] {
   return config.keys.filter((key) => key.modulusBase64.trim() !== '');
 }
 
-/* The startup check (AAP 0.5.5). */
-
 /** The registry keys the startup check compares, in the order the committed files carry them. */
 const REGISTRY_KEYS = ['root', 'leaves', 'issuers', 'cities'] as const;
 
@@ -719,21 +653,17 @@ const REGISTRY_KEYS = ['root', 'leaves', 'issuers', 'cities'] as const;
  * production proof submission has no way to verify without them; in `test` and `demo` their absence is
  * allowed, and proof submission plus `GET /v1/zk/config` answer `503` instead.
  *
- * @param env - The process's configuration.
  * @throws {ZkConfigurationError} Naming the registry and the key that differs, the missing record, or
  *   the missing build file.
  */
 export function checkZkConfiguration(env: ZkEnv): void {
   const cities = readCitiesConfig().cities;
   const entries = readIssuerConfigs();
-
   const productionIssuers = entries
     .filter((entry) => entry.stem !== TEST_ISSUER_STEM)
     .filter((entry) => entry.config.verificationStatus === 'verified')
     .map((entry) => withUsableKeys(entry.config));
-
   compareWithCommitted('production', productionIssuers, cities);
-
   if (testIssuerAllowed(env)) {
     const testRecord = entries.find((entry) => entry.stem === TEST_ISSUER_STEM);
     if (testRecord === undefined) {
@@ -743,7 +673,6 @@ export function checkZkConfiguration(env: ZkEnv): void {
     }
     compareWithCommitted('test', [...productionIssuers, withUsableKeys(testRecord.config)], cities);
   }
-
   if (env.APP_ENV === 'staging' || env.APP_ENV === 'production') {
     requireBuildFile(VERIFICATION_KEY_FILE);
     if (readArtifactsManifestSync() === null) {
@@ -774,7 +703,6 @@ function compareWithCommitted(
     // into the message rather than replaced: an operator needs to know which record is ambiguous.
     throw new ZkConfigurationError(`registry ${name}: cannot be rebuilt (${reason})`);
   }
-
   const committed = readRegistryFile(name);
   for (const key of REGISTRY_KEYS) {
     if (!isDeepStrictEqual(built[key], committed[key])) {

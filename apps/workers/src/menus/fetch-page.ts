@@ -29,9 +29,6 @@
  *
  * Logs carry the host, the outcome and character and link counts, and never page text or a URL with
  * its query (AAP 0.11.1).
- *
- * @see AAP 0.5.6 for the request-safety chain, the site-terms policy and the resource bounds, 0.3.1
- *   for the fetch tooling, and 0.8.1 for this file.
  */
 
 import { chromium } from 'playwright';
@@ -96,7 +93,6 @@ const ANCHOR_LIST = z.array(z.tuple([z.string(), z.string()]));
 const ANCHOR_EXPRESSION =
   `Array.from(document.querySelectorAll('a[href]')).slice(0, ${MAX_ANCHORS})` +
   `.map(a => [a.href, (a.textContent || '').trim().slice(0, ${MAX_ANCHOR_TEXT})])`;
-
 /** The options `route.fulfill` takes, built field by field so an absent one is absent (TS exactOptionalPropertyTypes). */
 type FulfillOptions = { status: number; body?: Buffer; contentType?: string };
 
@@ -116,16 +112,11 @@ export const MENU_WORDS = /menu|card[aá]pio|carta|เมนู|daftar\s*menu/iu
  * `./menu-ingest.ts` reads this before choosing a path: a place whose `menuUrl` is a PDF or an image
  * goes to `safeFetch` and `./pdf-text.ts` or `./ocr.ts` directly, and only an `html` URL is
  * rendered by {@link renderPage}.
- *
- * @param url A URL, an absolute path or a bare path; a query or fragment is ignored.
- * @returns The kind of document the path names.
  */
 export function menuUrlKind(url: string): 'html' | 'pdf' | 'image' {
   const path = pathPortionOf(url);
-
   if (PDF_PATH.test(path)) return 'pdf';
   if (IMAGE_PATH.test(path)) return 'image';
-
   return 'html';
 }
 
@@ -141,11 +132,6 @@ export function menuUrlKind(url: string): 'html' | 'pdf' | 'image' {
  *
  * The link is not fetched here. `./menu-ingest.ts` fetches it through `safeFetch`, so it passes the
  * address check, the blocklist, the site-terms decision, `robots.txt` and the throttle again.
- *
- * @param href The anchor's absolute URL, as the DOM resolved it.
- * @param text The anchor's visible text.
- * @param pageUrl The URL of the page the link was found on.
- * @returns `'pdf'`, `'image'`, or `null` when the link is not a menu document of this site.
  */
 export function classifyMenuLink(
   href: string,
@@ -154,13 +140,10 @@ export function classifyMenuLink(
 ): 'pdf' | 'image' | null {
   const target = parseHttpUrl(href);
   const page = parseHttpUrl(pageUrl);
-
   if (target === null || page === null) return null;
   if (registrableDomain(target.hostname) !== registrableDomain(page.hostname)) return null;
-
   const kind = menuUrlKind(href);
   if (kind === 'html') return null;
-
   return MENU_WORDS.test(text) || MENU_WORDS.test(decodeSafely(href)) ? kind : null;
 }
 
@@ -189,29 +172,22 @@ type BrowserLaunch = () => Promise<Browser>;
  * for a browser. A browser that disconnected — a crash, an out-of-memory kill or someone else's
  * `close()` — is forgotten, so the next `get()` launches a fresh one instead of handing out a dead
  * handle.
- *
- * @param opts.launch The launch to use; {@link launchChromium} when omitted.
- * @returns The provider.
  */
 export function createBrowserProvider(opts: { launch?: BrowserLaunch } = {}): BrowserProvider {
   const launch = opts.launch ?? launchChromium;
   let browser: Browser | null = null;
   let launching: Promise<Browser> | null = null;
-
   const remember = (instance: Browser): Browser => {
     browser = instance;
     launching = null;
     instance.once('disconnected', () => {
       if (browser === instance) browser = null;
     });
-
     return instance;
   };
-
   return {
     async get(): Promise<Browser> {
       if (browser !== null) return browser;
-
       launching ??= launch();
       try {
         return remember(await launching);
@@ -221,13 +197,11 @@ export function createBrowserProvider(opts: { launch?: BrowserLaunch } = {}): Br
         throw error;
       }
     },
-
     async close(): Promise<void> {
       const inFlight = launching;
       const instance = browser ?? (inFlight === null ? null : await inFlight.catch(() => null));
       browser = null;
       launching = null;
-
       if (instance !== null) await instance.close().catch(() => undefined);
     },
   };
@@ -255,7 +229,6 @@ export type RenderResult =
        */
       reason: string;
     };
-
 /** What the route handler records about the main document, read once the navigation has settled. */
 interface MainDocument {
   /** The final URL of the main document's answer, or `null` while none was fulfilled. */
@@ -295,10 +268,6 @@ interface RenderDeps {
  * returning: that is an operational failure of the process, which the job's own retry is for, not a
  * property of this place — answering `failed` for it would send every place to the paid phone
  * fallback.
- *
- * @param url The page to render, as `safeFetch` will fetch it.
- * @param deps The browser, the fetch, the place's budget, the user agent and the logger.
- * @returns The page's text and menu links, a login wall, or the reason the page was unusable.
  */
 export async function renderPage(
   url: string,
@@ -313,17 +282,11 @@ export async function renderPage(
 ): Promise<RenderResult> {
   const result = await render(url, deps, deps.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   logRender(deps.logger, hostOf(url), result);
-
   return result;
 }
 
 /**
  * Render `url` and decide what the render was.
- *
- * @param url The page to render.
- * @param deps The injected behaviour.
- * @param timeoutMs The navigation timeout.
- * @returns The outcome, with no logging of its own so a caller can log it once.
  */
 async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise<RenderResult> {
   const browser = await deps.browser.get();
@@ -336,12 +299,8 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
   });
   const main: MainDocument = { url: null, contentType: null, reason: null };
   let page: Page | null = null;
-
   /**
    * Fulfil one request of the page from `safeFetch`, so the browser opens no connection of its own.
-   *
-   * @param route The route to settle.
-   * @param request The request being made, of whichever frame asked for it.
    */
   const routeThrough = async (route: Route, request: Request): Promise<void> => {
     // Read before the fetch, so a refusal below can tell the main navigation from a subrequest.
@@ -356,7 +315,6 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
         await abort(route);
         return;
       }
-
       // The kind is the document's own, read by `menuUrlKind` from its URL — the pipeline's single
       // reading of a URL's kind, which `./menu-ingest.ts` picks its fetch path with. A PDF a frame
       // asks for is bounded by the PDF limit `safeFetch` applies to that kind, not by the page's own.
@@ -367,7 +325,6 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
         method,
         headers: forwardedHeaders(request.headers()),
       });
-
       if (navigatesMainFrame) {
         main.url = answer.url;
         main.contentType = answer.contentType;
@@ -381,13 +338,11 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
       await abort(route);
     }
   };
-
   try {
     // Both routes are registered before the page exists: Playwright routes only the WebSockets opened
     // after `routeWebSocket`, and `**\/*` matches the main navigation as well as every subrequest.
     await context.routeWebSocket('**/*', (socket) => socket.close().catch(() => undefined));
     await context.route('**/*', routeThrough);
-
     page = await context.newPage();
     try {
       await page.goto(url, { waitUntil: 'load', timeout: timeoutMs });
@@ -400,7 +355,6 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
       // decision the same either way: fetch it directly, as `menuUrlKind` decides.
       const refusedAsNotHtml = main.url !== null && !isHtml(main.contentType);
       if (refusedAsNotHtml) return { kind: 'failed', reason: 'not_html' };
-
       return { kind: 'failed', reason: main.reason ?? 'navigation_failed' };
     }
     // A page that keeps a poll or an analytics beacon open still renders its menu, so the wait is
@@ -408,21 +362,17 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
     await page
       .waitForLoadState('networkidle', { timeout: NETWORK_IDLE_TIMEOUT_MS })
       .catch(() => undefined);
-
     if (main.url !== null && !isHtml(main.contentType)) {
       // The navigation loaded something that is not a page: a PDF or an image served at the page's own
       // URL is not rendered, so the caller fetches it directly as `menuUrlKind` decides.
       return { kind: 'failed', reason: 'not_html' };
     }
-
     const finalUrl = main.url ?? url;
     if (main.reason === 'auth_required' || (await isLoginWall(page, finalUrl))) {
       return { kind: 'login_wall' };
     }
-
     const text = await visibleText(page);
     if (text === null || text.trim() === '') return { kind: 'failed', reason: 'empty_page' };
-
     return { kind: 'ok', text, finalUrl, menuLinks: await collectMenuLinks(page, finalUrl) };
   } finally {
     await context.close().catch(() => undefined);
@@ -436,8 +386,6 @@ async function render(url: string, deps: RenderDeps, timeoutMs: number): Promise
  * the route handler, so a request that reaches the network at all is a bug in the interception;
  * pointed at the `discard` port it fails locally instead of handing the page an unfiltered
  * connection.
- *
- * @returns The launched browser.
  */
 async function launchChromium(): Promise<Browser> {
   return chromium.launch({
@@ -449,10 +397,6 @@ async function launchChromium(): Promise<Browser> {
 /**
  * Whether a request is the main frame's own navigation, which is the document whose URL and content
  * type decide what was rendered. A frame's or a subresource's request leaves them alone.
- *
- * @param request The request being made.
- * @param page The page it belongs to.
- * @returns True for the document navigation of the page's main frame.
  */
 function isMainNavigation(request: Request, page: Page): boolean {
   try {
@@ -469,14 +413,9 @@ function isMainNavigation(request: Request, page: Page): boolean {
  *
  * The password check runs in every frame, because a login wall is as often an embedded form as the
  * page itself; a frame that cannot be read counts as no password rather than as a wall.
- *
- * @param page The rendered page.
- * @param finalUrl The main document's final URL.
- * @returns True when the page is a login wall.
  */
 async function isLoginWall(page: Page, finalUrl: string): Promise<boolean> {
   if (LOGIN_PATH.test(pathPortionOf(finalUrl))) return true;
-
   const counts = await Promise.all(
     page.frames().map((frame) =>
       frame
@@ -485,15 +424,11 @@ async function isLoginWall(page: Page, finalUrl: string): Promise<boolean> {
         .catch(() => 0),
     ),
   );
-
   return counts.some((count) => count > 0);
 }
 
 /**
  * The page's visible text, as the price extraction reads it (AAP 0.5.6, "takes its visible text").
- *
- * @param page The rendered page.
- * @returns The text, or `null` when it could not be read at all.
  */
 async function visibleText(page: Page): Promise<string | null> {
   try {
@@ -514,10 +449,6 @@ async function visibleText(page: Page): Promise<string | null> {
  * that splits its menu across several cards is reported in full rather than up to a fixed number of
  * documents. How many of them are read is bounded by the place's own shared `FetchBudget`, which
  * `safeFetch` enforces on the page, on its subrequests and on every document the caller follows.
- *
- * @param page The rendered page.
- * @param pageUrl The main document's final URL, which decides what counts as the same domain.
- * @returns The menu PDFs and images the page links to, in the order they appear.
  */
 async function collectMenuLinks(
   page: Page,
@@ -526,19 +457,15 @@ async function collectMenuLinks(
   // A page whose anchors cannot be read is still a page, so its text stands and no link is followed.
   const anchors = ANCHOR_LIST.safeParse(await page.evaluate(ANCHOR_EXPRESSION).catch(() => []));
   if (!anchors.success) return { pdfs: [], images: [] };
-
   const pdfs = new Set<string>();
   const images = new Set<string>();
   for (const [href, text] of anchors.data) {
     const kind = classifyMenuLink(href, text, pageUrl);
     if (kind === null) continue;
-
     const target = withoutFragment(href);
     if (target === null) continue;
-
     (kind === 'pdf' ? pdfs : images).add(target);
   }
-
   return {
     // No count bounds the PDFs: the place's own shared `FetchBudget` (50 requests, 30 MiB) is what
     // bounds how many documents the caller follows. Images are the one kind AAP 0.5.6 caps.
@@ -550,25 +477,17 @@ async function collectMenuLinks(
 /**
  * Fulfil a route with a permitted answer. The body is left out for a HEAD request, whose answer has
  * none, and the content type only when the site sent one, so no absent field is written as absent.
- *
- * @param answer The answer `safeFetch` returned.
- * @param method The request's method.
- * @returns The options to fulfil with.
  */
 function fulfillOptions(answer: SafeFetchResponse, method: string): FulfillOptions {
   const options: FulfillOptions = { status: answer.status };
-
   if (method !== 'HEAD') options.body = answer.body;
   if (answer.contentType !== null) options.contentType = answer.contentType;
-
   return options;
 }
 
 /**
  * Abort a route, tolerating a page or context that closed first: a rejected abort is an unhandled
  * rejection inside the browser's own request pipeline, which nothing would catch.
- *
- * @param route The route to abort.
  */
 async function abort(route: Route): Promise<void> {
   await route.abort('blockedbyclient').catch(() => undefined);
@@ -577,10 +496,6 @@ async function abort(route: Route): Promise<void> {
 /**
  * Record one render once, in the two lines an operator needs: the outcome with its counts, and the
  * reason a page was unusable.
- *
- * @param logger The render's logger.
- * @param host The requested host, which is all that identifies the page here.
- * @param result The outcome to record.
  */
 function logRender(
   logger: Pick<Logger, 'info' | 'warn'>,
@@ -596,7 +511,6 @@ function logRender(
     pdfs: links?.pdfs.length ?? 0,
     images: links?.images.length ?? 0,
   });
-
   if (result.kind === 'failed') {
     // The code travels under `dropReason`, not `reason`: the logger's redaction list censors `reason`
     // (a dispute's free text), and a code that has to be read back is logged under a name it does not
@@ -609,18 +523,13 @@ function logRender(
  * The headers a request of the page contributes, and no others: `./safe-fetch.ts` drops everything
  * outside its own forwarded set, so a page cannot hand the site a cookie or an authorization header
  * the crawl never earned.
- *
- * @param headers The request's headers, lower-cased by the browser.
- * @returns The subset worth forwarding.
  */
 function forwardedHeaders(headers: Record<string, string>): Record<string, string> {
   const forwarded: Record<string, string> = {};
-
   for (const name of FORWARDED_HEADERS) {
     const value = headers[name];
     if (value !== undefined) forwarded[name] = value;
   }
-
   return forwarded;
 }
 
@@ -631,15 +540,10 @@ function forwardedHeaders(headers: Record<string, string>): Record<string, strin
  * An answer with no `Content-Type` at all is read as a page rather than refused: what the page holds
  * is decided by the text that follows, and refusing it would lose a menu that a terse server does
  * serve.
- *
- * @param contentType The main document's `Content-Type`, or `null`.
- * @returns True when the document is to be read as a page.
  */
 function isHtml(contentType: string | null): boolean {
   if (contentType === null) return true;
-
   const media = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
-
   return media === 'text/html' || media === 'application/xhtml+xml';
 }
 
@@ -648,25 +552,18 @@ function isHtml(contentType: string | null): boolean {
  * the login path {@link isLoginWall} matches. A query and a fragment are dropped either way, so no
  * token in a query string can decide anything, and a value that is not a URL at all is read as the
  * path it looks like.
- *
- * @param url A URL, an absolute path or a bare path.
- * @returns The path, or `''` when there is none.
  */
 function pathPortionOf(url: string): string {
   try {
     return new URL(url).pathname;
   } catch {
     const cut = url.search(/[?#]/);
-
     return cut === -1 ? url : url.slice(0, cut);
   }
 }
 
 /**
  * The host of a URL, which is all a log line about it may carry: never a path, and never a query.
- *
- * @param url The URL to read.
- * @returns The host, or `null` when the URL does not parse.
  */
 function hostOf(url: string): string | null {
   try {
@@ -678,14 +575,10 @@ function hostOf(url: string): string | null {
 
 /**
  * Parse a URL that a crawl could follow.
- *
- * @param raw The URL as it was written.
- * @returns The parsed URL, or `null` when it is not an http or https URL.
  */
 function parseHttpUrl(raw: string): URL | null {
   try {
     const url = new URL(raw);
-
     return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
   } catch {
     return null;
@@ -694,15 +587,11 @@ function parseHttpUrl(raw: string): URL | null {
 
 /**
  * The same URL without its fragment, so two links to one document are followed once.
- *
- * @param href The anchor's URL.
- * @returns The normalized URL, or `null` when it does not parse.
  */
 function withoutFragment(href: string): string | null {
   try {
     const url = new URL(href);
     url.hash = '';
-
     return url.href;
   } catch {
     return null;
@@ -712,9 +601,6 @@ function withoutFragment(href: string): string | null {
 /**
  * Decode a URL for a word test, leaving a malformed escape sequence as it was written rather than
  * throwing over a link that is only being classified.
- *
- * @param value The URL to decode.
- * @returns The decoded URL, or the original when it cannot be decoded.
  */
 function decodeSafely(value: string): string {
   try {

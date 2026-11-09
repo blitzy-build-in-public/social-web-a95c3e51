@@ -1,18 +1,14 @@
 /**
- * TwiML, status callbacks and the relay dialogue: the three surfaces of one automated call
- * (AAP 0.3.2, AAP 0.3.3, AAP 0.5.4, AAP 0.5.6, AAP 0.11.2).
+ * TwiML, status callbacks and the relay dialogue: the three surfaces of one automated call.
  *
  * Every case here breaks one of the rules that hold the call together: the signature is checked over
  * the URL Twilio called and every field it posted, only attempt-tied evidence adopts a `CallSid`, a
  * callback has one effect however often it is delivered, and the dialogue says only what its fixed
- * templates say — disclosure first and in the city's language, an English switch that moves speech
- * and recognition together, a polite ending for a stopped or cancelled call, no lodging transcript,
- * and a cap on the sessions one instance serves.
+ * templates say.
  *
- * The relay cases are driven through the scripted simulator, whose signed callbacks and socket a case
- * reads back. Whether a call is dialled at all when no dialogue budget can be reserved is a `workers`
- * decision; what is asserted here is the API's side of that path — an attempt that reaches the relay
- * with no reservation sends no model request and ends politely.
+ * The relay cases are driven through the scripted simulator. Whether a call is dialled at all when no
+ * dialogue budget can be reserved is a `workers` decision; what is asserted here is the API's side of
+ * that path.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -73,9 +69,6 @@ import budgetExhaustion from '../support/voice-simulator/scenarios/budget-exhaus
 import wantsHumanScenario from '../support/voice-simulator/scenarios/wants-human.json' with { type: 'json' };
 import yesScenario from '../support/voice-simulator/scenarios/yes.json' with { type: 'json' };
 
-/* Constants, harness and helpers (AAP 0.3.3, AAP 0.11.2) */
-
-/** The three voice surfaces, under the `/v1` prefix `app.ts` mounts the module with (AAP 0.5.4). */
 const TWIML_PATH = '/v1/webhooks/voice/twiml';
 const CALLBACK_PATH = '/v1/webhooks/voice';
 const RELAY_PATH = '/v1/webhooks/voice/relay';
@@ -87,10 +80,8 @@ const MEXICO_CITY = 'mexico-city';
 /** The city a Thai callee dials from, which is what makes the switch to English meaningful. */
 const CHIANG_MAI = 'chiang-mai';
 
-/** The attempt id the signature cases sign over: never looked up, because the check runs first. */
 const UNKNOWN_ATTEMPT = '01930000-0000-7000-8000-000000000001';
 
-/** A `CallSid` in the shape Twilio's SID has, so the routes read it as one. */
 const SID = 'CA000000000000000000000000000000a1';
 const SID_TWO = 'CA000000000000000000000000000000a2';
 
@@ -99,28 +90,25 @@ const BOOKING_NAME = 'Fixture Guest';
 
 /**
  * The most a case waits for a played call. The simulator holds every step to its own bound, and a
- * dialogue that closed through a closing line adds that line's playback time (AAP 0.5.6).
+ * dialogue that closed through a closing line adds that line's playback time.
  */
 const CALL_TIMEOUT_MS = 20_000;
 
-/** A dialogue case's own bound, above the per-test default the harness sets. */
 const DIALOGUE_TIMEOUT_MS = 30_000;
-
-/* The harness (AAP 0.11.2) */
 
 let t: TestApp;
 
 /**
  * The adapter the app was built with. It is the same `fake` provider the factory would have built —
  * same scenario classifier, same prices — taken here as its own type so a case can read what was
- * counted and what was sent (AAP 0.5.6).
+ * counted and what was sent.
  */
 let llm: FakeLlmAdapter;
 
 /**
  * What `apps/workers`' `call-dispatch` reserves before it dials: one turn's bound at
- * `LLM_MAX_TURNS_PER_CALL`, which it stores in `CallAttempt.llmReservedMicros` (AAP 0.5.6). A live
- * call a case builds gets the same figure, because the relay refuses every turn without one.
+ * `LLM_MAX_TURNS_PER_CALL`, which it stores in `CallAttempt.llmReservedMicros`. A live call a case
+ * builds gets the same figure, because the relay refuses every turn without one.
  */
 let dispatchedMicros = 0n;
 
@@ -146,8 +134,6 @@ afterAll(async () => {
   await t.close();
 });
 
-/* Addresses and signatures (AAP 0.3.3) */
-
 /**
  * The address Twilio called: the public base plus the raw request target. The route rebuilds this
  * exact string, which is why signing anything else can never match (AAP 0.3.3).
@@ -157,15 +143,12 @@ function publicUrl(path: string, attemptId: string | null): string {
   return `${t.env.API_PUBLIC_URL}${path}${query}`;
 }
 
-/** The public `wss://` address of the relay socket, which is what Twilio signs for an upgrade. */
 function relayPublicUrl(): string {
   return `${t.env.API_PUBLIC_URL.replace(/^http/, 'ws')}${RELAY_PATH}`;
 }
 
-/** How a case tampers with a signature (AAP 0.3.3). */
 type SignatureKind = 'valid' | 'wrong-token' | 'missing' | 'internal-host' | 'uncovered-field';
 
-/** The fields Twilio posts when it fetches the TwiML of an answered call. */
 function twimlParams(sid: string, answeredBy?: string): Record<string, string> {
   return {
     CallSid: sid,
@@ -177,7 +160,6 @@ function twimlParams(sid: string, answeredBy?: string): Record<string, string> {
   };
 }
 
-/** The fields Twilio posts for one status callback (AAP 0.3.2). */
 function callbackParams(
   sid: string,
   status: TwilioCallStatus,
@@ -195,10 +177,6 @@ function callbackParams(
   };
 }
 
-/**
- * Post one Twilio form request, signed over the public URL and every posted field unless the case
- * asks for a tampered signature.
- */
 async function postTwilio(
   path: string,
   params: Record<string, string>,
@@ -207,26 +185,22 @@ async function postTwilio(
   const attemptId = options.attemptId ?? null;
   const kind = options.signature ?? 'valid';
   const url = publicUrl(path, attemptId);
-
   // The tampering a case asks for: the internal address Twilio never dialled, another signing token,
   // a field left out of the signed set, or no header at all (AAP 0.3.3).
   const signedOver =
     kind === 'internal-host' ? `${await t.listen()}${url.slice(t.env.API_PUBLIC_URL.length)}` : url;
-  // The uncovered-field case signs over every field but one of the ones it posts.
   const signedParams =
     kind === 'uncovered-field'
       ? Object.fromEntries(Object.entries(params).filter(([name]) => name !== 'To'))
       : params;
   const token =
     kind === 'wrong-token' ? `${TWILIO_SIMULATOR.authToken}-tampered` : TWILIO_SIMULATOR.authToken;
-
   const headers: Record<string, string> = {
     'content-type': 'application/x-www-form-urlencoded',
   };
   if (kind !== 'missing') {
     headers[TWILIO_SIGNATURE_HEADER] = twilioSignature(signedOver, signedParams, token);
   }
-
   return callRoute(t.app, {
     method: 'POST',
     url,
@@ -249,7 +223,6 @@ function openRelay(
     address,
     signature === null ? {} : { headers: { [TWILIO_SIGNATURE_HEADER]: signature } },
   );
-
   return new Promise((resolve) => {
     socket.once('unexpected-response', (_request, response) => {
       const status = response.statusCode ?? null;
@@ -295,7 +268,6 @@ interface Conversation {
  */
 async function openConversation(call: LiveCall): Promise<Conversation> {
   await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
-
   const signature = twilioSignature(relayPublicUrl(), {}, TWILIO_SIMULATOR.authToken);
   const opened = await openRelay(await t.listen(), signature);
   const socket = opened.socket;
@@ -304,7 +276,6 @@ async function openConversation(call: LiveCall): Promise<Conversation> {
       `the relay refused an upgrade signed for the public address (${opened.status})`,
     );
   }
-
   const lines: string[] = [];
   socket.on('message', (data: unknown) => {
     const frame = RelayOutboundFrame.safeParse(JSON.parse(String(data)) as unknown);
@@ -330,7 +301,6 @@ async function openConversation(call: LiveCall): Promise<Conversation> {
       socket.once('close', () => resolve());
       socket.close();
     });
-
   send({
     type: 'setup',
     sessionId: `VX${SID}`,
@@ -341,38 +311,26 @@ async function openConversation(call: LiveCall): Promise<Conversation> {
     customParameters: { [VOICE_ATTEMPT_PARAMETER]: call.attemptId },
   });
   await waitUntil(() => lines.length > 0, 'the first question');
-
   return { socket, send, spoken, waitForSpoken, close };
 }
 
-/* Fixtures (AAP 0.5.2, AAP 0.5.3) */
-
-/** One live call a case drives: the attempt all three surfaces resolve, and what it dials. */
 interface LiveCall {
-  /** The `CallAttempt` id every URL and the relay `<Parameter>` carry. */
   readonly attemptId: string;
-  /** The task the attempt belongs to, which the dialogue re-reads before every turn. */
   readonly taskId: string;
-  /** The business number the simulated call dials, from the reserved fictional range. */
   readonly to: string;
 }
 
-/** What a live call may be built with; the states default to the ones a dialogue needs. */
 interface LiveCallOptions {
   readonly cityId?: string;
-  /** The attempt's dispatch state. Default `dialing`, which adoption keeps. */
   readonly state?: CallAttemptState;
-  /** The task's state. Default `in_progress`. */
   readonly taskStatus?: CallTaskStatus;
-  /** Mark the attempt superseded, as `apps/workers` does when a task is closed under it. */
   readonly superseded?: boolean;
-  /** The dialogue budget the attempt holds, as `call-dispatch` stores it (AAP 0.5.6). */
   readonly llmReservedMicros?: bigint;
 }
 
 /**
  * Build one live `menu_prices` call: a place, its task, and an attempt no callback has adopted yet —
- * the state both adoption rules of AAP 0.3.2 start from.
+ * the state both adoption rules start from.
  */
 async function menuCall(
   options: LiveCallOptions = {},
@@ -387,9 +345,6 @@ async function menuCall(
   return { attemptId, taskId: task.id, to: place.phone, placeId: place.id };
 }
 
-/**
- * Build one live `lodging_stay_verification` call whose claim names {@link BOOKING_NAME} (AAP 0.5.6).
- */
 async function stayCall(): Promise<LiveCall & { readonly claimId: string }> {
   const user = await makeUser(t);
   const lodging = await makeLodging(t, { cityId: LISBON });
@@ -407,7 +362,7 @@ async function stayCall(): Promise<LiveCall & { readonly claimId: string }> {
 /**
  * Create one attempt in the state a case needs, with no `CallSid` yet: the fixture builder always
  * writes one so the unique column stays unique, and a call this suite drives is one no callback has
- * adopted — the signed fetch or callback carrying the attempt id is what adopts it (AAP 0.3.2).
+ * adopted — the signed fetch or callback carrying the attempt id is what adopts it.
  */
 async function startAttempt(task: CallTaskFixture, options: LiveCallOptions): Promise<string> {
   const attempt = await makeCallAttempt(t, task, {
@@ -424,23 +379,19 @@ async function startAttempt(task: CallTaskFixture, options: LiveCallOptions): Pr
   return attempt.id;
 }
 
-/* Reads and waits (AAP 0.11.2) */
-
-/** The attempt row as a case reads it. */
 async function attemptRow(id: string) {
   return t.services.db.callAttempt.findUniqueOrThrow({ where: { id } });
 }
 
 /**
  * The attempt row once its outcome is recorded: the relay writes it in its own transaction, which can
- * settle just after the socket the simulator watched has closed (AAP 0.3.2).
+ * settle just after the socket the simulator watched has closed.
  */
 async function settledAttempt(id: string, expected: CallAttemptOutcome) {
   await waitUntil(async () => (await attemptRow(id)).outcome === expected, `${id} → ${expected}`);
   return attemptRow(id);
 }
 
-/** Wait for `done`, polling every 25 ms, and fail with `what` when it has not held in time. */
 async function waitUntil(
   done: () => boolean | Promise<boolean>,
   what: string,
@@ -454,29 +405,24 @@ async function waitUntil(
   }
 }
 
-/** The city-local day's budget row, or `null` when nothing was ever metered for it (AAP 0.5.6). */
 async function budgetRow(cityId: string) {
   return t.services.db.callBudgetDay.findFirst({ where: { cityId } });
 }
 
-/** The `apply_call_result` rows, which are what `apps/workers` applies to a task (AAP 0.3.2). */
 async function resultRows() {
   return t.services.db.outboxMessage.findMany({ where: { kind: 'apply_call_result' } });
 }
 
-/** Play one scripted call the simulator starts itself, and return the finished call (AAP 0.5.6). */
 async function playCall(call: LiveCall, scenario: ScenarioName): Promise<SimCall> {
   const { sid } = await t.simulator.startCall({ attemptId: call.attemptId, to: call.to, scenario });
   return t.simulator.waitForCall(sid, { timeoutMs: CALL_TIMEOUT_MS });
 }
 
-/** The menu items one attempt extracted, as `apps/workers`' `call-results` reads them. */
 interface MenuFields {
   readonly kind: string;
   readonly items: readonly { readonly slot: string; readonly confirmed: boolean }[];
 }
 
-/** A menu attempt's extracted fields, asserted to be the shape `call-results` reads. */
 function menuFields(row: { readonly extractedFields: unknown }): MenuFields {
   const fields = row.extractedFields as MenuFields | null;
   expect(fields).not.toBeNull();
@@ -487,17 +433,14 @@ function menuFields(row: { readonly extractedFields: unknown }): MenuFields {
  * One attribute of the `ConversationRelay` tag exactly as the document spells it, or `null`.
  *
  * The document is one this API writes and the tag is unique, so a case reads the bytes rather than
- * running a parser over them. The values compared against it — the pt-PT and es-US disclosures and
- * the relay address — carry no XML-significant character, so the escaped form is the literal one.
+ * running a parser over them. The values compared against it carry no XML-significant character, so
+ * the escaped form is the literal one.
  */
 function relayAttribute(xml: string, name: string): string | null {
   const tag = /<\s*ConversationRelay\b([^>]*)>/i.exec(xml);
   return tag === null ? null : (new RegExp(`\\b${name}="([^"]*)"`).exec(tag[1] ?? '')?.[1] ?? null);
 }
 
-/* The signature (AAP 0.3.3, AAP 0.5.4) */
-
-/** One tampering a signature case applies, and the surface it applies it to. */
 interface SignatureRow {
   readonly surface: string;
   readonly path: string;
@@ -523,7 +466,6 @@ describe('the Twilio request signature', () => {
       attemptId: UNKNOWN_ATTEMPT,
       signature: row.kind,
     });
-
     expectError(response, 400, 'bad_signature');
   });
 
@@ -536,7 +478,6 @@ describe('the Twilio request signature', () => {
     const signature = row.tampered
       ? twilioSignature(relayPublicUrl(), {}, `${TWILIO_SIMULATOR.authToken}-tampered`)
       : null;
-
     expect((await openRelay(await t.listen(), signature)).status).toBe(400);
   });
 
@@ -545,18 +486,14 @@ describe('the Twilio request signature', () => {
     const response = await postTwilio(CALLBACK_PATH, callbackParams(SID, 'initiated', 1), {
       attemptId: call.attemptId,
     });
-
     expect(response.status).toBe(204);
   });
 });
-
-/* The TwiML (AAP 0.3.2, AAP 0.5.4, AAP 0.5.6) */
 
 describe('the ConversationRelay TwiML', () => {
   it('opens a Lisbon menu call in Portuguese, with the disclosure first', async () => {
     const call = await menuCall();
     const response = await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
-
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toContain('text/xml');
     expect(relayAttribute(response.body, 'url')).toBe(relayPublicUrl());
@@ -574,7 +511,6 @@ describe('the ConversationRelay TwiML', () => {
     const answer = await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: menu.attemptId });
     expect(relayAttribute(answer.body, 'language')).toBe('es-US');
     expect(relayAttribute(answer.body, 'welcomeGreeting')).toBe(esUS['greeting.menu_prices']);
-
     const stay = await stayCall();
     const stayAnswer = await postTwilio(TWIML_PATH, twimlParams(SID_TWO), {
       attemptId: stay.attemptId,
@@ -589,7 +525,6 @@ describe('the ConversationRelay TwiML', () => {
     const response = await postTwilio(TWIML_PATH, twimlParams(SID, 'machine_start'), {
       attemptId: call.attemptId,
     });
-
     expect(response.body).toContain('<Hangup/>');
     expect((await settledAttempt(call.attemptId, 'no_answer')).outcome).toBe('no_answer');
   });
@@ -597,7 +532,6 @@ describe('the ConversationRelay TwiML', () => {
   it('hangs up on a task that is no longer in progress', async () => {
     const call = await menuCall({ taskStatus: 'cancelled' });
     const response = await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
-
     expect(response.body).toContain('<Hangup/>');
     expect((await settledAttempt(call.attemptId, 'no_answer')).outcome).toBe('no_answer');
   });
@@ -605,7 +539,6 @@ describe('the ConversationRelay TwiML', () => {
   it('hangs up on an attempt superseded mid-call', async () => {
     const call = await menuCall({ superseded: true });
     const response = await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
-
     expect(response.body).toContain('<Hangup/>');
     expect((await settledAttempt(call.attemptId, 'no_answer')).outcome).toBe('no_answer');
   });
@@ -613,7 +546,6 @@ describe('the ConversationRelay TwiML', () => {
   it('adopts the CallSid of a signed fetch that carries the attempt id', async () => {
     const call = await menuCall({ state: 'dispatch_unknown' });
     const response = await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
-
     expect(response.status).toBe(200);
     const row = await attemptRow(call.attemptId);
     expect(row.twilioCallSid).toBe(SID);
@@ -621,16 +553,12 @@ describe('the ConversationRelay TwiML', () => {
   });
 });
 
-/* The status callback (AAP 0.3.2, AAP 0.5.3, AAP 0.5.4) */
-
-/** One final status, and the outcome this route records for it. */
 interface FinalStatusRow {
   readonly status: TwilioCallStatus;
   readonly errorCode?: string;
   readonly outcome: CallAttemptOutcome;
 }
 
-/** Every final status the route maps, and the invalid-number case beside them. */
 const FINAL_STATUS_ROWS: readonly FinalStatusRow[] = [
   { status: 'busy', outcome: 'no_answer' },
   { status: 'no-answer', outcome: 'no_answer' },
@@ -643,7 +571,6 @@ describe('the call-status callback', () => {
   it('records one callback when the same event is delivered twice', async () => {
     const call = await menuCall();
     const params = callbackParams(SID, 'initiated', 1);
-
     expect((await postTwilio(CALLBACK_PATH, params, { attemptId: call.attemptId })).status).toBe(
       204,
     );
@@ -658,7 +585,6 @@ describe('the call-status callback', () => {
     const response = await postTwilio(CALLBACK_PATH, callbackParams(SID, 'ringing', 1), {
       attemptId: call.attemptId,
     });
-
     expect(response.status).toBe(204);
     expect((await attemptRow(call.attemptId)).twilioCallSid).toBe(SID);
   });
@@ -668,7 +594,6 @@ describe('the call-status callback', () => {
     const response = await postTwilio(CALLBACK_PATH, callbackParams(SID, 'ringing', 1), {
       attemptId: null,
     });
-
     expectError(response, 400, 'invalid_field');
     expect((await attemptRow(call.attemptId)).twilioCallSid).toBeNull();
     expect(await t.services.db.voiceCallbackEvent.count()).toBe(0);
@@ -681,7 +606,6 @@ describe('the call-status callback', () => {
       callbackParams(SID, row.status, 4, row.errorCode),
       { attemptId: call.attemptId },
     );
-
     expect(response.status).toBe(204);
     const attempt = await settledAttempt(call.attemptId, row.outcome);
     expect(attempt.state).toBe('ended');
@@ -691,7 +615,6 @@ describe('the call-status callback', () => {
 
   it('records one outcome when two final callbacks arrive', async () => {
     const call = await menuCall();
-
     expect(
       (
         await postTwilio(CALLBACK_PATH, callbackParams(SID, 'busy', 4), {
@@ -706,7 +629,6 @@ describe('the call-status callback', () => {
         })
       ).status,
     ).toBe(204);
-
     expect((await settledAttempt(call.attemptId, 'no_answer')).outcome).toBe('no_answer');
     expect(await resultRows()).toHaveLength(1);
   });
@@ -716,7 +638,6 @@ describe('the call-status callback', () => {
     const response = await postTwilio(CALLBACK_PATH, callbackParams(SID, 'completed', 6), {
       attemptId: call.attemptId,
     });
-
     expect(response.status).toBe(204);
     expect(await t.services.db.voiceCallbackEvent.count()).toBe(0);
     const row = await attemptRow(call.attemptId);
@@ -725,15 +646,12 @@ describe('the call-status callback', () => {
   });
 });
 
-/* The relay dialogue (AAP 0.3.2, AAP 0.5.3, AAP 0.5.6) */
-
 describe('the relay dialogue', () => {
   it(
     'runs a Lisbon menu call to a completed extraction',
     async () => {
       const call = await menuCall();
       const played = await playCall(call, 'prices-high');
-
       expect(played.spoken[0]?.text).toBe(ptPT['greeting.menu_prices']);
       const row = await settledAttempt(call.attemptId, 'completed');
       expect(row.confidence).toBe('high');
@@ -750,20 +668,17 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'leaves a call that could not confirm its prices for review',
     async () => {
       const call = await menuCall();
       await playCall(call, 'prices-low');
-
       const row = await settledAttempt(call.attemptId, 'needs_review');
       expect(row.confidence).toBe('low');
       expect(menuFields(row).items.some((item) => !item.confirmed)).toBe(true);
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   /**
    * The relay-side half of AAP 0.5.3's drop rule: a peer that disappears mid-dialogue leaves the task
    * with what the call had collected and confirmed, and with nothing the call never heard — what
@@ -781,12 +696,10 @@ describe('the relay dialogue', () => {
     async () => {
       const call = await menuCall();
       const played = await playCall(call, 'drop-mid-script');
-
       // The peer vanished before the dialogue could close the session itself, so no `end` was sent and
       // nothing on the way was reported as a failure of its own (AAP 0.3.2).
       expect(played.endReceived).toBe(false);
       expect(played.failures).toEqual([]);
-
       const row = await settledAttempt(call.attemptId, 'needs_review');
       expect(row.state).toBe('ended');
       expect(row.confidence).toBe('low');
@@ -801,13 +714,11 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'switches a Thai call to English when the callee asks',
     async () => {
       const call = await menuCall({ cityId: CHIANG_MAI });
       const played = await playCall(call, 'english-switch');
-
       expect(played.languageSwitches[0]).toEqual({
         ttsLanguage: 'en-US',
         transcriptionLanguage: 'en-US',
@@ -819,20 +730,17 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'ends a call when the callee asks it to stop',
     async () => {
       const call = await menuCall();
       const played = await playCall(call, 'stop');
-
       expect(played.spoken.map((line) => line.text)).toContain(ptPT['closing.refused']);
       expect(played.endReceived).toBe(true);
       expect((await settledAttempt(call.attemptId, 'refused')).outcome).toBe('refused');
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'honours a do-not-call request for the whole target',
     async () => {
@@ -843,7 +751,6 @@ describe('the relay dialogue', () => {
         status: 'queued',
       });
       const played = await playCall(call, 'do-not-call');
-
       expect(played.spoken.map((line) => line.text)).toContain(ptPT['closing.do_not_call']);
       expect((await settledAttempt(call.attemptId, 'do_not_call')).outcome).toBe('do_not_call');
       const place = await t.services.db.place.findUniqueOrThrow({ where: { id: call.placeId } });
@@ -853,7 +760,6 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'closes a call whose task was cancelled under it',
     async () => {
@@ -864,13 +770,11 @@ describe('the relay dialogue', () => {
         scenario: 'prices-high',
       });
       const playing = t.simulator.calls.find((entry) => entry.sid === sid);
-
       await waitUntil(() => (playing?.spoken.length ?? 0) >= 2, 'the first question to be spoken');
       await t.services.db.callTask.update({
         where: { id: call.taskId },
         data: { status: 'cancelled' },
       });
-
       const played = await t.simulator.waitForCall(sid, { timeoutMs: CALL_TIMEOUT_MS });
       expect(played.endReceived).toBe(true);
       expect([ptPT['closing.thanks'], ptPT['closing.refused']]).toContain(
@@ -879,13 +783,11 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'keeps no booking name in what a stay call stores',
     async () => {
       const call = await stayCall();
       const played = await playCall(call, 'yes');
-
       expect(played.spoken.some((line) => line.text.includes(BOOKING_NAME))).toBe(true);
       const row = await settledAttempt(call.attemptId, 'completed');
       expect(row.confidence).toBe('high');
@@ -901,7 +803,6 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it('refuses a third concurrent relay session on an instance capped at two', async () => {
     const capped = await createTestApp({ env: { VOICE_RELAY_MAX_SESSIONS: '2' } });
     try {
@@ -910,11 +811,9 @@ describe('the relay dialogue', () => {
       // connecting, so the app is waited for rather than the first upgrade racing it (AAP 0.3.2).
       await waitForRedisReady(capped.services.redis.client);
       const signature = twilioSignature(relayPublicUrl(), {}, TWILIO_SIMULATOR.authToken);
-
       const first = await openRelay(baseUrl, signature);
       const second = await openRelay(baseUrl, signature);
       const third = await openRelay(baseUrl, signature);
-
       expect([first.status, second.status]).toEqual([null, null]);
       expect(third.status).toBe(503);
       first.socket?.close();
@@ -936,7 +835,6 @@ describe('the relay dialogue', () => {
     { name: 'prompt frames that together outgrow the window', pieces: [900, 900, 900, 40] },
     { name: 'one last frame that outgrows the window on its own', pieces: [2_100] },
   ];
-
   it.each(rows(OVERLONG_ROWS))(
     'answers $name with the retry line and no model request',
     async (row) => {
@@ -945,7 +843,6 @@ describe('the relay dialogue', () => {
       try {
         expect(relay.spoken()).toEqual([ptPT['ask.cheapest_main']]);
         const before = { counted: llm.calls.counted.length, sent: llm.calls.sent.length };
-
         row.pieces.forEach((length, index) => {
           relay.send({
             type: 'prompt',
@@ -954,7 +851,6 @@ describe('the relay dialogue', () => {
             last: index === row.pieces.length - 1,
           });
         });
-
         // The call is not left listening: the turn is answered, in the call's own language, and the
         // socket stays open for the next question (AAP 0.5.6).
         expect(
@@ -962,7 +858,6 @@ describe('the relay dialogue', () => {
         ).toBe(ptPT['retry.unclear']);
         expect(relay.spoken()).toEqual([ptPT['ask.cheapest_main'], ptPT['retry.unclear']]);
         expect(relay.socket.readyState).toBe(WebSocket.OPEN);
-
         // Nothing of the overlong utterance reached the provider: no request was counted or sent for
         // that turn, so nothing was charged to the call's dialogue budget (AAP 0.5.6).
         expect(llm.calls.counted).toHaveLength(before.counted);
@@ -976,7 +871,6 @@ describe('the relay dialogue', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'keeps the words a provider error frame carries out of the call',
     async () => {
@@ -987,14 +881,12 @@ describe('the relay dialogue', () => {
           (line) => line.includes(BOOKING_NAME),
           'the question naming the guest',
         );
-
         // Twilio's documented 64111 payload, verbatim in shape: the application's own unspoken tokens,
         // which on a stay call are the question naming the guest and the two dates (AAP 0.5.2, 0.11.1).
         relay.send({
           type: 'error',
           description: `Error converting tokens to speech, code: 64111, error: , tokens: ${BOOKING_NAME} staying 10 November 2026 to 14 November 2026`,
         });
-
         // The frame ends nothing and changes nothing about the call: the guest's answers are still
         // classified and the dialogue still reaches its own ending (AAP 0.5.6).
         for (const turn of yesScenario.turns) {
@@ -1014,36 +906,22 @@ describe('the relay dialogue', () => {
   );
 });
 
-/* The scenario fixtures (AAP 0.5.3, AAP 0.5.6) */
-
 /**
- * One scenario fixture the suite plays end to end, and the ending AAP gives it.
- *
- * `machine` and `drop-before-prompt` are the two remaining `no_answer` triggers of AAP 0.5.3's
- * call-task table — an answering machine and a call dropped before any data — and `wants-human` the
- * request for a person AAP 0.5.6 answers with `closing.refused` and outcome `refused`. Playing the
+ * One scenario fixture the suite plays end to end, and the ending it must produce. Playing the
  * fixture is what each row proves: the document the TwiML route answers with, what the relay socket
  * carried and the outcome the attempt settles at all come from the scenario file rather than from a
  * callback the case posted itself.
  */
 interface FixtureRow {
-  /** The scenario file the simulator plays for a live call. */
   readonly scenario: ScenarioName;
-  /** The outcome the attempt settles at, as AAP 0.5.3 and AAP 0.5.6 give this ending. */
   readonly outcome: CallAttemptOutcome;
-  /** Twilio's machine-detection verdict: `machine_start` for the answering machine. */
   readonly answeredBy: string;
-  /** True when the TwiML fetch was answered `<Hangup/>` instead of a relay document. */
   readonly hangup: boolean;
-  /** The closing line the callee hears, or null when the call ends without one. */
   readonly closing: TemplateKey | null;
-  /** True when the dialogue ended the session itself with a ConversationRelay `end`. */
   readonly endReceived: boolean;
-  /** What the callee says, from the scenario's own turns (AAP 0.5.6). */
   readonly prompts: readonly string[];
 }
 
-/** Every fixture no other suite plays, and the ending its script must produce. */
 const FIXTURE_ROWS: readonly FixtureRow[] = [
   {
     scenario: 'machine',
@@ -1080,7 +958,6 @@ describe('the scenario fixtures', () => {
     async (row) => {
       const call = await menuCall();
       const played = await playCall(call, row.scenario);
-
       expect(played.scenario).toBe(row.scenario);
       expect(played.answeredBy).toBe(row.answeredBy);
       expect(played.twiml.hangup).toBe(row.hangup);
@@ -1101,7 +978,6 @@ describe('the scenario fixtures', () => {
         expect(played.endReceived).toBe(true);
         expect(played.spoken.map((line) => line.text)).toContain(ptPT[row.closing]);
       }
-
       const attempt = await settledAttempt(call.attemptId, row.outcome);
       expect(attempt.state).toBe('ended');
       // Neither of the three endings has data behind it: the outcome is recorded and nothing is
@@ -1114,12 +990,9 @@ describe('the scenario fixtures', () => {
   );
 });
 
-/* The dialogue budget (AAP 0.3.2, AAP 0.5.6) */
-
 /**
- * The counted bound of the dialogue's first turn, in micro-dollars: the figure a call's budget is
- * built from, taken from the app's own adapter and the price table the meter charges with rather than
- * picked by hand (AAP 0.5.6).
+ * The counted bound of the dialogue's first turn, in micro-dollars, taken from the app's own adapter
+ * and the price table the meter charges with rather than picked by hand.
  */
 async function firstTurnBound(): Promise<number> {
   const utterance = budgetExhaustion.turns[0]?.say ?? '';
@@ -1132,7 +1005,6 @@ async function firstTurnBound(): Promise<number> {
   const counted = await llm.countInputTokens(request, {
     timeoutMs: CLASSIFICATION_TURN_TIMEOUT_MS,
   });
-
   return boundMicros(counted, CLASSIFICATION_MAX_OUTPUT_TOKENS, FAKE_LLM_PRICES);
 }
 
@@ -1142,7 +1014,6 @@ describe('the dialogue budget', () => {
     async () => {
       const call = await menuCall({ llmReservedMicros: 0n });
       const played = await playCall(call, 'prices-high');
-
       expect(played.spoken.map((line) => line.text)).toContain(ptPT['closing.budget']);
       expect((await settledAttempt(call.attemptId, 'needs_review')).confidence).toBe('low');
       // The count is free and still runs; what must not happen is a sent classification.
@@ -1150,20 +1021,16 @@ describe('the dialogue budget', () => {
     },
     DIALOGUE_TIMEOUT_MS,
   );
-
   it(
     'refuses the turn that does not fit the reservation the call holds',
     async () => {
       // Two turns of budget: the third turn's bound cannot fit what the first two left (AAP 0.5.6).
       const budget = 2 * (await firstTurnBound());
       expect(await t.services.spend.reserveLlm(LISBON, budget)).not.toBeNull();
-
       const call = await menuCall({ llmReservedMicros: BigInt(budget) });
       const played = await playCall(call, 'budget-exhaustion');
-
       expect(played.spoken.map((line) => line.text)).toContain(ptPT['closing.budget']);
       expect((await settledAttempt(call.attemptId, 'needs_review')).confidence).toBe('low');
-
       // The unused part of the reservation is released in the after-commit step of the transaction
       // that records the outcome, so the counter is waited for rather than read once (AAP 0.3.2).
       await waitUntil(

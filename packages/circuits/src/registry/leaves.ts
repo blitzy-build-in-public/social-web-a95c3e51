@@ -2,17 +2,15 @@
  * The off-circuit mirror of the circuit's encodings: byte packing, RSA-limb hashing, city-alias
  * hashing, the registry's two leaves and the nullifier (AAP 0.5.5).
  *
- * Every function here must equal its in-circuit counterpart bit for bit, because the registry builder
- * derives each leaf with them and the client derives the value the API keys `SpentNullifier` on:
- * `packBytes` mirrors `CheckedPackBytes(32)` in `circuits/lib/anchor_extract.circom`, `pubkeyHash`
- * mirrors `PoseidonLarge(121, 17)` in `@zk-email/circuits`'s `utils/hash.circom`, and
- * `cityAliasHash`, `cityLeaf`, `issuerLeaf` and `nullifierOf` mirror the `CityAliasHash`,
- * `RegistryMembership` and `Nullifier` templates of `circuits/lib`.
+ * Every function must equal its in-circuit counterpart bit for bit, because the registry builder derives each
+ * leaf with them and the client derives the value the API keys `SpentNullifier` on: `packBytes` mirrors
+ * `CheckedPackBytes(32)` in `circuits/lib/anchor_extract.circom`, `pubkeyHash` mirrors
+ * `PoseidonLarge(121, 17)` in `@zk-email/circuits`'s `utils/hash.circom`, and `cityAliasHash`, `cityLeaf`,
+ * `issuerLeaf` and `nullifierOf` mirror the `CityAliasHash`, `RegistryMembership` and `Nullifier` templates.
  *
- * Client-safe: this module runs under Hermes (React Native 0.76.9) through `../inputs/build-inputs.ts`
- * and in the browser Web Worker, so `poseidon-lite` is its only import. It uses no Node built-in, no
- * global `Buffer`, no platform text or base64 codec, no DOM API and no I/O, and it does no work at
- * module load beyond declaring constants.
+ * Client-safe: it runs under Hermes (React Native 0.76.9) through `../inputs/build-inputs.ts` and in the
+ * browser Web Worker, so `poseidon-lite` is its only import: no Node built-in, no global `Buffer`, no
+ * platform text or base64 codec, no DOM API, no I/O, and no work at module load beyond declaring constants.
  */
 import { poseidon3, poseidon4, poseidon9 } from 'poseidon-lite';
 
@@ -61,7 +59,6 @@ function toFieldInt(value: number | bigint, fn: string): bigint {
   } else if (value >= 0n && value < BN254_SCALAR_FIELD) {
     return value;
   }
-
   throw new RangeError(`${fn}: not a field integer`);
 }
 
@@ -91,19 +88,17 @@ function base64SextetOrThrow(code: number): number {
  * Encodes a string as UTF-8 bytes, by code point rather than through a platform codec (AAP 0.5.5).
  *
  * Written out because `TextEncoder` is unavailable under Hermes. The byte count must agree with
- * `utf8ByteLength` in `@tablemate/shared`, which validates a template anchor and a city alias at
- * 1-32 bytes: an unpaired surrogate becomes U+FFFD and therefore counts 3 bytes in both.
+ * `utf8ByteLength` in `@tablemate/shared`, which validates a template anchor and a city alias at 1-32 bytes:
+ * an unpaired surrogate becomes U+FFFD and therefore counts 3 bytes in both.
  *
  * @param s - The string to encode.
  * @returns Its UTF-8 bytes.
  */
 export function utf8Encode(s: string): Uint8Array {
   const bytes: number[] = [];
-
   for (let i = 0; i < s.length; i += 1) {
     const unit = s.charCodeAt(i);
     let codePoint = unit;
-
     if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length) {
       const next = s.charCodeAt(i + 1);
       if (next >= 0xdc00 && next <= 0xdfff) {
@@ -115,7 +110,6 @@ export function utf8Encode(s: string): Uint8Array {
     } else if (unit >= 0xd800 && unit <= 0xdfff) {
       codePoint = 0xfffd;
     }
-
     if (codePoint < 0x80) {
       bytes.push(codePoint);
     } else if (codePoint < 0x800) {
@@ -135,7 +129,6 @@ export function utf8Encode(s: string): Uint8Array {
       );
     }
   }
-
   return new Uint8Array(bytes);
 }
 
@@ -144,8 +137,8 @@ export function utf8Encode(s: string): Uint8Array {
  * the DKIM modulus in this form and the DKIM `b=` and `bh=` tags carry a signature and a body hash in
  * it; callers strip a tag's folding whitespace first, so none of it reaches here.
  *
- * Written out rather than delegated to `atob` or `Buffer`, both unavailable under Hermes. Up to two
- * trailing `=` are accepted and, when padding is present, the length must be a multiple of four.
+ * Written out rather than delegated to `atob` or `Buffer`, both unavailable under Hermes; up to two trailing
+ * `=` are accepted and, when padding is present, the length must be a multiple of four.
  *
  * @param s - The base64 text.
  * @returns The decoded bytes.
@@ -154,19 +147,15 @@ export function utf8Encode(s: string): Uint8Array {
 export function base64ToBytes(s: string): Uint8Array {
   let dataLength = s.length;
   let padding = 0;
-
   while (dataLength > 0 && s.charCodeAt(dataLength - 1) === 0x3d) {
     padding += 1;
     dataLength -= 1;
   }
-
   if (padding > 2 || (padding > 0 && s.length % 4 !== 0) || dataLength % 4 === 1) {
     throw new TypeError('base64ToBytes: invalid base64');
   }
-
   const bytes = new Uint8Array(Math.floor((dataLength * 3) / 4));
   let outIndex = 0;
-
   for (let i = 0; i < dataLength; i += 4) {
     const remaining = dataLength - i;
     const triple =
@@ -174,7 +163,6 @@ export function base64ToBytes(s: string): Uint8Array {
       (remaining > 1 ? base64SextetOrThrow(s.charCodeAt(i + 1)) << 12 : 0) |
       (remaining > 2 ? base64SextetOrThrow(s.charCodeAt(i + 2)) << 6 : 0) |
       (remaining > 3 ? base64SextetOrThrow(s.charCodeAt(i + 3)) : 0);
-
     bytes[outIndex] = (triple >> 16) & 0xff;
     outIndex += 1;
     if (remaining > 2) {
@@ -186,7 +174,6 @@ export function base64ToBytes(s: string): Uint8Array {
       outIndex += 1;
     }
   }
-
   return bytes;
 }
 
@@ -198,11 +185,9 @@ export function base64ToBytes(s: string): Uint8Array {
  */
 export function bytesToBigIntBE(bytes: Uint8Array): bigint {
   let value = 0n;
-
   for (const byte of bytes) {
     value = (value << 8n) | BigInt(byte);
   }
-
   return value;
 }
 
@@ -221,12 +206,10 @@ export function parseFieldElement(decimal: string): bigint {
   if (!DECIMAL_FIELD_PATTERN.test(decimal)) {
     throw new RangeError('parseFieldElement: not a field element');
   }
-
   const value = BigInt(decimal);
   if (value >= BN254_SCALAR_FIELD) {
     throw new RangeError('parseFieldElement: not a field element');
   }
-
   return value;
 }
 
@@ -246,14 +229,12 @@ export function parseFieldElement(decimal: string): bigint {
  */
 export function modulusFromBase64(modulusBase64: string): bigint {
   const value = bytesToBigIntBE(base64ToBytes(modulusBase64));
-
   if (value === 0n) {
     throw new RangeError('modulusFromBase64: empty modulus');
   }
   if (value >= 1n << BigInt(RSA_LIMB_BITS * RSA_LIMB_COUNT)) {
     throw new RangeError('modulusFromBase64: modulus exceeds 2057 bits');
   }
-
   return value;
 }
 
@@ -282,16 +263,13 @@ export function modulusToLimbs(value: bigint, n = RSA_LIMB_BITS, k = RSA_LIMB_CO
   if (value < 0n || value >= 1n << BigInt(n * k)) {
     throw new RangeError('modulusToLimbs: value out of range');
   }
-
   const mask = (1n << BigInt(n)) - 1n;
   const limbs: bigint[] = [];
   let remaining = value;
-
   for (let i = 0; i < k; i += 1) {
     limbs.push(remaining & mask);
     remaining >>= BigInt(n);
   }
-
   return limbs;
 }
 
@@ -299,11 +277,10 @@ export function modulusToLimbs(value: bigint, n = RSA_LIMB_BITS, k = RSA_LIMB_CO
  * The `pubkeyHash` of the issuer leaf and of `EmailVerifier`: `PoseidonLarge(121, 17)` in
  * `@zk-email/circuits` 6.3.4's `utils/hash.circom`, over the RSA modulus's limbs.
  *
- * The installed template merges consecutive limb pairs — `in[2i] + 2^121 * in[2i + 1]` — into 9 hashed
- * inputs, `ceil(17 / 2)`, letting the odd last chunk stand alone as `in[16]`, because a circomlib
- * `Poseidon` instance takes at most 16 inputs. Each merged input stays below 2^242, inside the field.
- * The circuit hashes the very modulus its RSA check consumed, so the leaf commits to the key that
- * verified the signature.
+ * A circomlib `Poseidon` instance takes at most 16 inputs, so the installed template merges consecutive limb
+ * pairs — `in[2i] + 2^121 * in[2i + 1]` — into the 9 hashed inputs `ceil(17 / 2)`, letting the odd last chunk
+ * stand alone; each merged input stays below 2^242, inside the field. The circuit hashes the very modulus its
+ * RSA check consumed, so the leaf commits to the key that verified the signature.
  *
  * @param modulus - The DKIM RSA modulus, as {@link modulusFromBase64} decodes it.
  * @returns The limb hash.
@@ -313,12 +290,10 @@ export function pubkeyHash(modulus: bigint): bigint {
   const limbs = modulusToLimbs(modulus, RSA_LIMB_BITS, RSA_LIMB_COUNT);
   const merged: bigint[] = [];
   const pairs = RSA_LIMB_COUNT >> 1;
-
   for (let i = 0; i < pairs; i += 1) {
     merged.push((limbs[2 * i] ?? 0n) + ((limbs[2 * i + 1] ?? 0n) << BigInt(RSA_LIMB_BITS)));
   }
   merged.push(limbs[RSA_LIMB_COUNT - 1] ?? 0n);
-
   return poseidon9(merged);
 }
 
@@ -327,11 +302,11 @@ export function pubkeyHash(modulus: bigint): bigint {
  * hashed as: `[out[0], out[1]]` of `CheckedPackBytes(32)` in `circuits/lib/anchor_extract.circom`,
  * which is zk-email's `PackBytes(32)` plus the per-byte 0-255 range check (AAP 0.5.5, "Packing").
  *
- * `out[0]` holds bytes 0-30 little-endian, so byte 0 is the least significant, and `out[1]` holds byte
- * 31 alone; bytes past the input's length count as 0, the zero padding the circuit applies. With every
- * byte in 0-255, `out[0]` stays below 2^248, inside the field, and no byte can carry weight out of
- * `out[1]`, so the encoding is injective for a given length — which is why a packed value is always
- * hashed together with its length (see {@link cityAliasHash} and {@link nullifierOf}).
+ * `out[0]` holds bytes 0-30 little-endian, so byte 0 is the least significant, and `out[1]` holds byte 31
+ * alone; bytes past the input's length count as 0, the zero padding the circuit applies. With every byte in
+ * 0-255, `out[0]` stays below 2^248, inside the field, and no byte can carry weight out of `out[1]`, so the
+ * encoding is injective for a given length — which is why a packed value is always hashed together with its
+ * length (see {@link cityAliasHash} and {@link nullifierOf}).
  *
  * @param bytes - The bytes to pack, at most 32.
  * @returns The two packed field elements, `out[0]` first.
@@ -341,12 +316,10 @@ export function packBytes(bytes: Uint8Array): readonly [bigint, bigint] {
   if (bytes.length > PACKED_VALUE_BYTES) {
     throw new RangeError('packBytes: more than 32 bytes');
   }
-
   let low = 0n;
   for (let i = PACKED_VALUE_BYTES - 2; i >= 0; i -= 1) {
     low = (low << 8n) | BigInt(bytes[i] ?? 0);
   }
-
   return [low, BigInt(bytes[PACKED_VALUE_BYTES - 1] ?? 0)];
 }
 
@@ -354,10 +327,10 @@ export function packBytes(bytes: Uint8Array): readonly [bigint, bigint] {
  * The `cityAliasHash` of the city leaf: `Poseidon(cityLength, pack[0], pack[1])`, the `CityAliasHash`
  * template of `circuits/lib/registry_membership.circom` off the circuit (AAP 0.5.5).
  *
- * The bytes are the alias exactly as the decoded body carried it, quoted-printable escapes included,
- * so callers pass `utf8Encode(alias)` from `config/cities.json` or the bytes `FieldExtract` returned.
- * The length is hashed with the bytes because they are zero-padded: two aliases differing only in
- * length and the fill after them would otherwise hash alike, and that fill is not signed text.
+ * The bytes are the alias exactly as the decoded body carried it, quoted-printable escapes included, so
+ * callers pass `utf8Encode(alias)` from `config/cities.json` or the bytes `FieldExtract` returned. The length
+ * is hashed with the bytes because they are zero-padded: two aliases differing only in length and the fill
+ * after them would otherwise hash alike, and that fill is not signed text.
  *
  * @param aliasBytes - The alias's bytes, 1-32 of them.
  * @returns The alias hash.
@@ -367,9 +340,7 @@ export function cityAliasHash(aliasBytes: Uint8Array): bigint {
   if (aliasBytes.length < 1 || aliasBytes.length > PACKED_VALUE_BYTES) {
     throw new RangeError('cityAliasHash: alias must be 1–32 bytes');
   }
-
   const [low, high] = packBytes(aliasBytes);
-
   return poseidon3([BigInt(aliasBytes.length), low, high]);
 }
 
@@ -420,9 +391,9 @@ export function issuerLeaf(
  * of `circuits/lib/nullifier.circom` off the circuit (AAP 0.5.5).
  *
  * The value must equal the circuit's output for the same canonical booking reference and the published
- * `NULLIFIER_SALT`, because the API keys `SpentNullifier` on it: hashing the length with the zero-padded
- * bytes is what makes one booking yield exactly one nullifier, however the reference is laid out in the
- * email (AAP 0.12.2).
+ * `NULLIFIER_SALT`, because the API keys `SpentNullifier` on it: hashing the length with the zero-padded bytes
+ * is what makes one booking yield exactly one nullifier, however the reference is laid out in the email
+ * (AAP 0.12.2).
  *
  * @param referenceBytes - The canonical booking reference, 1-32 bytes.
  * @param salt - The published nullifier salt, as a decimal string or a field element.
@@ -434,10 +405,8 @@ export function nullifierOf(referenceBytes: Uint8Array, salt: bigint | string): 
   if (referenceBytes.length < 1 || referenceBytes.length > PACKED_VALUE_BYTES) {
     throw new RangeError('nullifierOf: reference must be 1–32 bytes');
   }
-
   const [low, high] = packBytes(referenceBytes);
   const salted =
     typeof salt === 'string' ? parseFieldElement(salt) : toFieldInt(salt, 'nullifierOf');
-
   return poseidon4([BigInt(referenceBytes.length), low, high, salted]);
 }

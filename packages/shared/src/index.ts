@@ -1,11 +1,9 @@
 /**
- * Single source of every route, WebSocket frame and configuration schema, error codes, enums,
- * constants, framing copy, tier allowlists, UI tokens and the interest vocabulary
- * (AAP 0.3.2, 0.5.1, 0.5.4).
- *
- * Every workspace resolves `@tablemate/shared` here, so the re-exports below are the whole
- * public surface: a contract shape lives in its own module and is never redeclared, and this
- * barrel holds re-exports only, which keeps it free of logic, side effects and Node globals.
+ * The single source of every route, WebSocket frame and configuration schema, error code, enum,
+ * constant, framing copy, tier allowlist, UI token and interest tag (AAP 0.3.2, 0.5.1, 0.5.4).
+ * Every workspace resolves `@tablemate/shared` here, so the re-exports below are the whole public
+ * surface: a contract shape lives in its own module and is never redeclared, and this barrel holds
+ * re-exports only.
  */
 
 export * from './errors.ts';

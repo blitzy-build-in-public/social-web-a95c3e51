@@ -1,29 +1,21 @@
 /**
- * Tablemate Expo app configuration.
+ * Tablemate Expo app configuration. The Expo CLI evaluates this file for `expo start`, `expo config`,
+ * `expo prebuild`, `expo export` and `eas build`, and it validates the build-time environment there, so a
+ * build fails with the name of the variable it needs instead of producing a bundle that cannot reach the API.
  *
- * The Expo CLI evaluates this file for `expo start`, `expo config`, `expo prebuild`,
- * `expo export` and `eas build`. It validates the build-time environment there, so a
- * build fails with the name of the variable it needs instead of producing a bundle
- * that cannot reach the API. Required: `EXPO_PUBLIC_API_URL` (the API origin, which
- * the client appends `/v1` to) and `EXPO_PUBLIC_WS_URL` (the WebSocket base the
- * client appends `/v1/chat` to). Optional: `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`,
- * `EXPO_PUBLIC_ZK_BENCH` and `EAS_PROJECT_ID`, which is the one value that reaches
- * the config object.
+ * Required: `EXPO_PUBLIC_API_URL` and `EXPO_PUBLIC_WS_URL`. Optional: `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`,
+ * `EXPO_PUBLIC_ZK_BENCH` and `EAS_PROJECT_ID`, which is the one value that reaches the config object.
  *
- * The file stays self-contained on purpose: the config loader transpiles this one
- * file, so no workspace package and no schema library is in reach of it. Only
- * `process.env` and the standard library are used.
- *
- * Validated values are deliberately not copied into `extra`: `babel-preset-expo`
- * inlines `process.env.EXPO_PUBLIC_*` into the bundle, and the client reads them there.
+ * The file stays self-contained on purpose: the config loader transpiles this one file, so no workspace
+ * package and no schema library is in reach of it. Validated values are deliberately not copied into `extra`:
+ * `babel-preset-expo` inlines `process.env.EXPO_PUBLIC_*` into the bundle, and the client reads them there.
  */
 
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
- * Reads a build-time variable, treating unset, empty and whitespace-only values
- * alike: compose and EAS both pass `""` for a variable they leave unset, and an
- * empty string must not reach a check as a value.
+ * Treating unset, empty and whitespace-only values alike: compose and EAS both pass `""` for a variable they
+ * leave unset, and an empty string must not reach a check as a value.
  */
 function readEnv(name: string): string | undefined {
   // Narrowed by hand: under the Expo program's types an environment read arrives as `any`, and
@@ -44,9 +36,8 @@ function requireEnv(name: string, hint: string): string {
 }
 
 /**
- * Accepts an origin and nothing else. The clients append to both service bases
- * (`<api>/v1/...` and `<ws>/v1/chat`), so a configured path, query or fragment
- * would silently move every route.
+ * The clients append to both service bases (`<api>/v1/...` and `<ws>/v1/chat`), so a configured path, query or
+ * fragment would silently move every route.
  */
 function assertOrigin(
   name: string,
@@ -70,12 +61,10 @@ function assertOrigin(
 const STRIPE_PUBLISHABLE_KEY = /^pk_(test|live)_[A-Za-z0-9_]+$/;
 
 /**
- * Optional. The default local stack runs `STRIPE_MODE=mock`, where no card can be
- * confirmed and the card screens say that payments are not configured; with Stripe
- * in test mode the key is required for a hold to authorize in the UI.
- *
- * A secret key is rejected outright rather than merely failing the pattern: it must
- * never reach a device bundle or a web page.
+ * Optional. The default local stack runs `STRIPE_MODE=mock`, where no card can be confirmed and the card
+ * screens say that payments are not configured; with Stripe in test mode the key is required for a hold to
+ * authorize in the UI. A secret key is rejected outright rather than merely failing the pattern: it must never
+ * reach a device bundle or a web page.
  */
 function assertStripePublishableKey(value: string | undefined): void {
   if (value === undefined) return;
@@ -92,9 +81,8 @@ function assertStripePublishableKey(value: string | undefined): void {
 }
 
 /**
- * Optional, `'0'` or `'1'`, absent means `'0'`. `'1'` belongs to the `bench` build
- * profile alone: it exposes the device proving-benchmark screen and is what permits
- * cleartext artefact downloads from a release build.
+ * Optional, `'0'` or `'1'`, absent means `'0'`. `'1'` belongs to the `bench` build profile alone: it exposes
+ * the device proving-benchmark screen and is what permits cleartext artefact downloads from a release build.
  */
 function readZkBenchFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
@@ -105,8 +93,7 @@ function readZkBenchFlag(value: string | undefined): boolean {
 }
 
 /**
- * Validates everything the client needs to be built against and returns only what
- * the config itself consumes. Throws on the first invalid variable.
+ * Throws on the first invalid variable, and returns only what the config itself consumes.
  */
 function readBuildEnv(): { zkBench: boolean } {
   assertOrigin(
@@ -129,14 +116,12 @@ function readBuildEnv(): { zkBench: boolean } {
 }
 
 /**
- * The app config. `config` is whatever static config the loader merged in (this app
- * is configured here alone, so it is empty) and every field below is applied on top
- * of it.
+ * `config` is whatever static config the loader merged in (this app is configured here alone, so it is empty)
+ * and every field below is applied on top of it.
  */
 export default ({ config }: ConfigContext): ExpoConfig => {
   const { zkBench } = readBuildEnv();
   const easProjectId = readEnv('EAS_PROJECT_ID');
-
   return {
     ...config,
     name: 'Tablemate',

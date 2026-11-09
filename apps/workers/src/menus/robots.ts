@@ -37,9 +37,6 @@ export const ROBOTS_PRODUCT_TOKEN = 'TablemateBot';
  * The `User-agent` string every Tablemate fetch sends (AAP 0.5.6): `TablemateBot/1.0` followed by
  * the operator's contact URL, so a site owner can reach the operator instead of blocking the bot.
  * `apps/workers/src/places/overpass.ts` sends the same string to Overpass.
- *
- * @param contactUrl - `CRAWLER_CONTACT_URL` from the workers environment.
- * @returns the user agent to send.
  */
 export function crawlerUserAgent(contactUrl: string): string {
   return `${ROBOTS_PRODUCT_TOKEN}/1.0 (+${contactUrl})`;
@@ -78,9 +75,7 @@ export interface RobotsCache {
  * {@link ROBOTS_CACHE_TTL_MS} (AAP 0.5.6). Sharing it means a redirect target, a followed menu link
  * and a browser subrequest for a host that was already checked cost no second fetch.
  *
- * @param redis - a `client`-role connection from `@tablemate/server-core`'s queue module, which is
  * the only place a connection is built.
- * @returns the cache.
  */
 export function createRedisRobotsCache(redis: Pick<Redis, 'get' | 'set'>): RobotsCache {
   const keyFor = (origin: string): string => `robots:${origin}`;
@@ -97,8 +92,6 @@ export function createRedisRobotsCache(redis: Pick<Redis, 'get' | 'set'>): Robot
  * A process-local cache that ignores the TTL it is handed. It is deliberately not the production
  * store: it exists for `apps/workers/eval/menus-eval.ts` and tests, which need repeated checks
  * within one process to hit a store that needs no Redis.
- *
- * @returns the cache.
  */
 export function createMemoryRobotsCache(): RobotsCache {
   const bodies = new Map<string, string>();
@@ -114,9 +107,7 @@ export function createMemoryRobotsCache(): RobotsCache {
 /**
  * Fetch one origin's robots.txt.
  *
- * @param origin - the origin to fetch, as `URL.origin` spells it, so the request always reads
  * `<origin>/robots.txt`.
- * @returns the status and body, or `null` when the request could not be made at all — refused by
  * request safety, unreachable or timed out. A caller must treat `null` as "nothing may be crawled",
  * never as "no robots.txt".
  */
@@ -138,11 +129,6 @@ export interface RobotsChecker {
  * one is evaluated for this crawler's group, falling back to `*`. Crawl-delay is not read, because
  * the per-domain throttle in `./domain-throttle.ts` already holds every domain to one request per
  * second.
- *
- * @param deps.fetchRobotsTxt - performs the request; `./safe-fetch.ts` supplies the safe one.
- * @param deps.cache - where a fetched body is kept for its 24-hour lifetime.
- * @param deps.userAgent - the agent to match groups against, from {@link crawlerUserAgent}.
- * @returns the checker.
  */
 export function createRobotsChecker(deps: {
   fetchRobotsTxt: RobotsFetch;
@@ -154,7 +140,6 @@ export function createRobotsChecker(deps: {
       const origin = url.origin;
       const cached = await deps.cache.get(origin);
       const body = cached ?? (await fetchAndStore(origin, deps));
-
       if (body === ROBOTS_ALLOW_ALL) {
         return true;
       }
@@ -173,10 +158,6 @@ export function createRobotsChecker(deps: {
 
 /**
  * Fetch one origin's robots.txt and cache what it means for this crawler.
- *
- * @param origin - the origin to fetch.
- * @param deps - the fetch and the cache to read and write.
- * @returns the cached value: a body, or one of the two sentinels.
  */
 async function fetchAndStore(
   origin: string,
@@ -196,9 +177,6 @@ async function fetchAndStore(
 
 /**
  * Decide what a fetch result means (RFC 9309 §2.3.1).
- *
- * @param response - the fetch's answer, or `null` when there was none.
- * @returns a body to parse, or the sentinel that answers every URL without parsing.
  */
 function storedBodyFor(response: RobotsFetchResult): string {
   if (response === null) {

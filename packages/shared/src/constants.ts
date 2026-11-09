@@ -1,17 +1,12 @@
 /**
- * Fixed business constants for Tablemate (AAP 0.8.1): API, workers and clients read them, and the
- * HTTP-date/offset arithmetic both clients read the server clock with lives here too (AAP 0.5.1).
- *
- * These are the bounds the API enforces with an error code of their own. Values an operator tunes
- * per environment -- the call and language-model caps, the general per-IP rate limit, the
- * experiment split, the retention period and the pilot thresholds -- are environment variables
- * owned by `packages/server-core/src/env/*` (AAP 0.6.2) and are deliberately absent here.
- *
- * No imports: the module loads under Hermes and in browsers, not only on the server. Money is
- * always integer USD cents.
+ * Fixed business constants for Tablemate (AAP 0.8.1): the bounds the API enforces with an error code
+ * of their own, plus the HTTP-date/offset arithmetic both clients read the server clock with
+ * (AAP 0.5.1). Values an operator tunes per environment -- the call and language-model caps, the
+ * general per-IP rate limit, the experiment split, the retention period and the pilot thresholds --
+ * are environment variables owned by `packages/server-core/src/env/*` (AAP 0.6.2) and are
+ * deliberately absent here. No imports: the module loads under Hermes and in browsers, not only on
+ * the server. Money is always integer USD cents.
  */
-
-// Time units
 
 /** Milliseconds in one minute (AAP 0.5.7). */
 export const MINUTE_MS = 60_000 as const;
@@ -22,11 +17,9 @@ export const HOUR_MS = 3_600_000 as const;
 /** Milliseconds in one day (AAP 0.5.7). */
 export const DAY_MS = 86_400_000 as const;
 
-// Deposits and budgets (AAP 0.5.7, 0.7.3)
-
 /**
- * The accepted deposit amounts in integer USD cents (AAP 0.5.2, 0.7.3).
- * `POST /meetups` answers `422 deposit_invalid` for any other value.
+ * The accepted deposit amounts in integer USD cents (AAP 0.5.2, 0.7.3); `POST /meetups` answers
+ * `422 deposit_invalid` for any other value.
  */
 export const DEPOSIT_LEVELS_CENTS = [500, 1000, 2000] as const;
 
@@ -37,18 +30,17 @@ export type DepositCents = (typeof DEPOSIT_LEVELS_CENTS)[number];
 export const DEFAULT_DEPOSIT_CENTS: DepositCents = 1000;
 
 /**
- * Reports whether `value` is one of {@link DEPOSIT_LEVELS_CENTS} (AAP 0.5.4).
- *
- * The proposal schema accepts any integer, so the handler uses this to separate
- * `422 deposit_invalid` from `400 invalid_field`. Deposits are charged in USD (AAP 0.7.3).
+ * Reports whether `value` is one of {@link DEPOSIT_LEVELS_CENTS} (AAP 0.5.4). The proposal schema
+ * accepts any integer, so the handler uses this to separate `422 deposit_invalid` from `400
+ * invalid_field`.
  */
 export function isDepositLevel(value: number): value is DepositCents {
   return DEPOSIT_LEVELS_CENTS.some((level) => level === value);
 }
 
 /**
- * The default per-person budget in cents for a meetup at each deposit level (AAP 0.5.7).
- * The deposit is never spent; it only sets the budget (AAP 0.7.3).
+ * The default per-person budget in cents for a meetup at each deposit level (AAP 0.5.7); the deposit
+ * is never spent, it only sets the budget (AAP 0.7.3).
  */
 export const DEFAULT_BUDGET_BY_DEPOSIT: Readonly<Record<DepositCents, number>> = {
   500: 1500,
@@ -62,14 +54,12 @@ export const BUDGET_MIN_CENTS = 500 as const;
 /** Highest per-person budget in cents, inclusive (AAP 0.5.4, `422 budget_out_of_range`). */
 export const BUDGET_MAX_CENTS = 10000 as const;
 
-// Meetup windows (AAP 0.5.3, 0.5.4, 0.5.7)
-
 /** Minutes before the start that check-in opens; earlier is `410 outside_window` (AAP 0.5.7). */
 export const CHECK_IN_OPENS_BEFORE_MINUTES = 15 as const;
 
 /**
- * Minutes after the start that check-in closes and settlement runs; later is `410 outside_window`.
- * The two are the same instant by design (AAP 0.5.3, 0.5.7).
+ * Minutes after the start that check-in closes and settlement runs; later is `410 outside_window`
+ * (AAP 0.5.3, 0.5.7). The two are the same instant by design.
  */
 export const CHECK_IN_CLOSES_AFTER_MINUTES = 45 as const;
 
@@ -83,8 +73,8 @@ export const GEOFENCE_METERS = 150 as const;
 export const DISTANCE_BUCKET_SPLIT_METERS = 50 as const;
 
 /**
- * Hours before the start at which a cancellation stops being free (AAP 0.5.3).
- * Exactly `startsAt - 2 h` is still free; one second later is a late cancel, which forfeits.
+ * Hours before the start at which a cancellation stops being free: exactly `startsAt - 2 h` is
+ * still free and one second later forfeits (AAP 0.5.3).
  */
 export const LATE_CANCEL_WINDOW_HOURS = 2 as const;
 
@@ -92,14 +82,14 @@ export const LATE_CANCEL_WINDOW_HOURS = 2 as const;
 export const START_HORIZON_DAYS = 5 as const;
 
 /**
- * Hours a recipient has to accept, counted from when the proposal becomes visible (AAP 0.7.3).
- * The deadline is `min(proposalVisibleAt + 48 h, startsAt)`.
+ * Hours a recipient has to accept, counted from when the proposal becomes visible: the deadline is
+ * `min(proposalVisibleAt + 48 h, startsAt)` (AAP 0.7.3).
  */
 export const RECIPIENT_DEADLINE_HOURS = 48 as const;
 
 /**
- * Hours after the start within which a dispute may be filed (AAP 0.5.3,
- * `409 dispute_window_closed`).
+ * Hours after the start within which a dispute may be filed; later is `409 dispute_window_closed`
+ * (AAP 0.5.3).
  */
 export const DISPUTE_FILING_WINDOW_HOURS = 24 as const;
 
@@ -108,8 +98,6 @@ export const DISPUTE_RESOLUTION_DAYS = 5 as const;
 
 /** Hours before that deadline the escalation job flags the dispute in `/ops` (AAP 0.5.3). */
 export const DISPUTE_ESCALATE_BEFORE_HOURS = 24 as const;
-
-// Paging, field lengths, photos, stays and codes
 
 /** Items per page for discovery, meetup lists and message history (AAP 0.5.4). */
 export const PAGE_SIZE = 20 as const;
@@ -180,28 +168,23 @@ export const CODE_DIGITS = 6 as const;
 /** How long the client keeps an entered code while offline before discarding it (AAP 0.5.7). */
 export const OFFLINE_CODE_RETENTION_MS = 60_000 as const;
 
-// The server clock the API, the mobile app and the venue console share (AAP 0.3.2, 0.5.1, 0.5.7)
-
 /** Resolution of an HTTP `Date` header in milliseconds. */
 export const HTTP_DATE_RESOLUTION_MS = 1000;
 
 /**
  * The only header shape this module trusts: the IMF-fixdate form of an HTTP date, which is what the
- * API emits. `Date.parse` accepts far more than that -- ISO 8601, the obsolete RFC 850 and asctime
- * forms, and a date-time with no zone at all -- and it reads an unzoned date-time in the device's
- * own zone, so an offset taken from one would be hours out.
+ * API emits. `Date.parse` accepts far more -- ISO 8601, the obsolete RFC 850 and asctime forms, and
+ * an unzoned date-time, which it reads in the device's own zone -- so an offset taken from one of
+ * those would be hours out.
  */
 const HTTP_DATE_PATTERN =
   /^[A-Za-z]{3}, [0-9]{2} [A-Za-z]{3} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/;
 
 /**
- * Parses an HTTP `Date` header into epoch milliseconds (AAP 0.3.2, 0.5.1). The API exposes this
- * header to the web origin, which is what lets the offset be re-estimated on every response instead
- * of trusting the device clock; the shape above is the only one trusted.
- *
- * @param header - The header value, or nothing when the response carried none.
- * @returns Epoch milliseconds, or `null` when the header is missing, blank or not in that form, so
- * the caller keeps the offset it already has.
+ * Parses an HTTP `Date` header into epoch milliseconds (AAP 0.3.2, 0.5.1): the header the API
+ * exposes to the web origin, which is what lets the offset be re-estimated on every response instead
+ * of trusting the device clock. `null` when the header is missing, blank or not in that form, so the
+ * caller keeps the offset it already has.
  */
 export function parseHttpDate(header: string | null | undefined): number | null {
   if (header === null || header === undefined) {
@@ -219,13 +202,10 @@ export function parseHttpDate(header: string | null | undefined): number | null 
 }
 
 /**
- * Estimates the offset to add to the device clock to obtain the server clock (AAP 0.5.1). An HTTP
- * date carries whole seconds, so the server instant is taken as the middle of that second and the
- * device instant that pairs with it as the midpoint of the round trip.
- *
- * @param sample - The `Date` header as an instant, and the device instants that bracketed the
- * round trip it answered.
- * @returns The device-clock error in milliseconds: how far ahead of the server this device reads.
+ * Estimates the offset to add to the device clock to obtain the server clock (AAP 0.5.1): how far
+ * ahead of the server this device reads. An HTTP date carries whole seconds, so the server instant is
+ * taken as the middle of that second and the device instant that pairs with it as the midpoint of the
+ * round trip.
  */
 export function estimateOffsetMs(sample: {
   serverDateMs: number;
@@ -236,8 +216,6 @@ export function estimateOffsetMs(sample: {
     sample.serverDateMs + HTTP_DATE_RESOLUTION_MS / 2 - (sample.sentAtMs + sample.receivedAtMs) / 2,
   );
 }
-
-// Suggestions, fresh prices, lodgings and reputation (AAP 0.5.6, 0.5.7)
 
 /** Radius in metres around the meetup venue that suggestions are searched in (AAP 0.5.7). */
 export const SUGGESTION_RADIUS_METERS = 2000 as const;
@@ -255,8 +233,7 @@ export const SUGGESTION_OPEN_FROM_HOURS_AFTER_START = 1 as const;
 export const SUGGESTION_LOCAL_CUTOFF = '23:00' as const;
 
 /**
- * Lower bound of the ranking band, as a share of budget, that sorts before cheaper places
- * (AAP 0.5.7).
+ * Lower bound of the ranking band, as a share of budget, that sorts before cheaper places (AAP 0.5.7).
  */
 export const SUGGESTION_BUDGET_FIT_LOW = 0.7 as const;
 
@@ -297,8 +274,7 @@ export const LODGING_TREND_WEEKS = 13 as const;
 export const CLAIM_EXPIRY_HOURS = 72 as const;
 
 /**
- * Days in which one pair's completion counts once toward reputation and the leaderboard
- * (AAP 0.5.7).
+ * Days in which one pair's completion counts once toward reputation and the leaderboard (AAP 0.5.7).
  */
 export const ANTI_FARMING_WINDOW_DAYS = 30 as const;
 
@@ -307,8 +283,6 @@ export const ANTI_FARMING_MIN_DEPOSIT_CENTS = 500 as const;
 
 /** Days a forfeited meetup counts as a no-show in a user's reputation counters (AAP 0.5.7). */
 export const NO_SHOW_WINDOW_DAYS = 90 as const;
-
-// Automated calls and voice (AAP 0.5.3, 0.5.6)
 
 /** Attempts one call task may spend: a third is never dispatched (AAP 0.5.3). */
 export const CALL_MAX_ATTEMPTS = 2 as const;
@@ -320,15 +294,12 @@ export const CALL_RETRY_SPACING_HOURS = 24 as const;
 export const CALLING_HOURS_START = '09:00' as const;
 
 /**
- * Latest local time, `HH:mm`, a call must finish by: it starts only while
- * `now + CAP_CALL_SECONDS <= 20:00` in the business's city (AAP 0.5.6).
+ * Latest local time, `HH:mm`, a call must finish by: it starts only while `now + CAP_CALL_SECONDS <=
+ * 20:00` in the business's city (AAP 0.5.6).
  */
 export const CALLING_HOURS_END = '20:00' as const;
 
-/**
- * First delay in seconds before retrying a task after a definite vendor dispatch error
- * (AAP 0.5.3).
- */
+/** First delay in seconds before retrying a task after a definite vendor dispatch error (AAP 0.5.3). */
 export const CALL_VENDOR_BACKOFF_BASE_SECONDS = 60 as const;
 
 /** Multiplier applied to that delay for each further vendor failure (AAP 0.5.3). */
@@ -338,15 +309,12 @@ export const CALL_VENDOR_BACKOFF_FACTOR = 2 as const;
 export const CALL_VENDOR_MAX_FAILURES = 8 as const;
 
 /**
- * Minutes after `CAP_CALL_SECONDS` that an unreconciled dispatch becomes `dispatch_unknown`
- * (AAP 0.5.3).
+ * Minutes after `CAP_CALL_SECONDS` that an unreconciled dispatch becomes `dispatch_unknown` (AAP 0.5.3).
  */
 export const CALL_DISPATCH_GRACE_MINUTES = 15 as const;
 
 /** Millisecond timeout on the language-model call that classifies one voice turn (AAP 0.5.6). */
 export const LLM_TURN_TIMEOUT_MS = 3000 as const;
-
-// Sessions (AAP 0.3.2, 0.5.2, 0.5.3)
 
 /** Minutes a magic-link token stays valid; a token is single use (AAP 0.5.2). */
 export const MAGIC_LINK_TTL_MINUTES = 15 as const;
@@ -360,19 +328,15 @@ export const ACCESS_TOKEN_TTL_MINUTES = 15 as const;
 /** Days a refresh token stays valid (AAP 0.5.2). */
 export const REFRESH_TOKEN_TTL_DAYS = 30 as const;
 
-/**
- * Seconds a read-only session is cached in Redis (AAP 0.5.3).
- * The deletion write fence reads PostgreSQL, never this cache.
- */
+/** Seconds a read-only session is cached in Redis (AAP 0.5.3); the deletion write fence reads
+ * PostgreSQL, never this cache. */
 export const SESSION_CACHE_SECONDS = 30 as const;
-
-// Rate limits (AAP 0.5.4)
 
 /** Mutating requests allowed per user per minute (AAP 0.5.4, `429 rate_limited`). */
 export const RATE_LIMIT_USER_PER_MIN = 60 as const;
 
 /**
- * Webhook requests allowed per IP per minute. The general per-IP limit is the environment
- * variable `RATE_LIMIT_IP_PER_MIN` (AAP 0.5.4).
+ * Webhook requests allowed per IP per minute; the general per-IP limit is the environment variable
+ * `RATE_LIMIT_IP_PER_MIN` (AAP 0.5.4).
  */
 export const RATE_LIMIT_WEBHOOK_IP_PER_MIN = 6000 as const;

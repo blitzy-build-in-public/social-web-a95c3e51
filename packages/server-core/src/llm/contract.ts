@@ -2,24 +2,6 @@
  * The language-model contract shared by this directory: the request, result and usage shapes, the
  * error vocabulary the spend meter throws and catches, and the guard every provider runs before it
  * touches the wire (AAP 0.3.1, AAP 0.5.1).
- *
- * `adapter.ts` — the facade that selects a provider from validated configuration — and each provider
- * here import this file. It declares nothing that touches the wire and imports nothing, so it is the
- * leaf of the directory's module graph: no cycle can form through it, no load order can find an
- * uninitialised binding, and the error classes keep one identity, which is what the `instanceof`
- * checks in `spend.ts` and its callers rest on.
- *
- * Nothing here reads the environment — the parsed `llm` group of `src/env/modes.ts` reaches the
- * facade as its configuration — and prices are not an adapter's business: they go to
- * `createLlmSpend`.
- *
- * Every call follows the order AAP 0.5.6 fixes: count the identical payload with
- * {@link LlmAdapter.countInputTokens}, reserve that worst case against the city's cap, then send it
- * with {@link LlmAdapter.complete}. That is why the provider's own count is part of the interface.
- *
- * Error messages carry the code and numbers only — a prompt, a menu, a transcript, a callee's speech
- * or a model's output must reach neither a log nor a response (AAP 0.11.1, AAP 0.12.2) — so a
- * provider's own error travels in `cause`, never in `message`.
  */
 
 /** One message of the conversation sent to the provider (AAP 0.5.6). */
@@ -31,8 +13,6 @@ export interface LlmMessage {
 
 /**
  * A strict structured-output schema: the schema object under the name the provider registers it as.
- * Callers build it from a shared Zod schema (`z.toJSONSchema`), so the shape the model must return
- * and the shape the caller validates stay one declaration. The adapter passes it through unchanged.
  */
 export interface LlmJsonSchema {
   name: string;
@@ -40,8 +20,8 @@ export interface LlmJsonSchema {
 }
 
 /**
- * One request: the payload {@link LlmAdapter.countInputTokens} counts, then
- * {@link LlmAdapter.complete} sends (AAP 0.5.6).
+ * One request: the payload {@link LlmAdapter.countInputTokens} counts, then {@link
+ * LlmAdapter.complete} sends (AAP 0.5.6).
  */
 export interface LlmRequest {
   /** The system prompt. */
@@ -55,8 +35,8 @@ export interface LlmRequest {
 }
 
 /**
- * The provider's own token figures for one request (AAP 0.5.6); `spend.ts` compares the input
- * count it reports with the bound that was reserved.
+ * The provider's own token figures for one request (AAP 0.5.6); `spend.ts` compares the input count
+ * it reports with the bound that was reserved.
  */
 export interface LlmUsage {
   /** Input tokens as the provider reported them. */
@@ -75,8 +55,8 @@ export interface LlmResult {
 }
 
 /**
- * The per-call bounds the caller owns: the voice relay gives a turn 3 s, shared by its count and its
- * classification, and menu extraction gives a request 60 s (AAP 0.11.1).
+ * The per-call bounds the caller owns: the voice relay gives a turn 3 s, shared by its count and
+ * its classification, and menu extraction gives a request 60 s (AAP 0.11.1).
  */
 export interface LlmCallOptions {
   /** The deadline for this call, counted by the provider itself rather than by a shared timer. */
@@ -88,27 +68,22 @@ export interface LlmCallOptions {
 /** The providers {@link createLlmAdapter} can build (AAP 0.3.1). */
 export type LlmProviderName = 'openai' | 'fake';
 
-/**
- * One provider behind the interface its callers know (AAP 0.3.1, AAP 0.5.1). No file outside this
- * directory imports a provider SDK.
- */
+/** One provider behind the interface its callers know (AAP 0.3.1, AAP 0.5.1). */
 export interface LlmAdapter {
   readonly provider: LlmProviderName;
   /** The provider's model identifier, the value `LLM_MODEL` selected. */
   readonly model: string;
   /**
-   * The provider's authoritative input-token count for exactly the payload {@link LlmAdapter.complete}
-   * would send, schema and message framing included (AAP 0.5.6). Nothing is sent by this call, and
-   * the count a response later reports is compared with it.
-   *
-   * @throws LlmCountError on any failure or timeout. The request must then not be sent.
+   * The provider's authoritative input-token count for exactly the payload {@link
+   * LlmAdapter.complete} would send, schema and message framing included; nothing is sent by this
+   * call, and the count a response later reports is compared with it (AAP 0.5.6). @throws
+   * LlmCountError on any failure or timeout, after which the request must not be sent.
    */
   countInputTokens(request: LlmRequest, options: LlmCallOptions): Promise<number>;
   /**
-   * Send one request and return its reply. Exactly one request is sent, with no automatic retry: a
-   * retry reserves again against the city's cap, so the caller decides whether to make one.
-   *
-   * @throws LlmTimeoutError on timeout or abort, and LlmProviderError on any other failure.
+   * Send one request and return its reply. Exactly one request is sent, with no automatic retry,
+   * because a retry reserves again against the city's cap and the caller decides whether to make
+   * one. @throws LlmTimeoutError on timeout or abort, and LlmProviderError on any other failure.
    */
   complete(request: LlmRequest, options: LlmCallOptions): Promise<LlmResult>;
 }
@@ -121,14 +96,9 @@ export type LlmErrorCode =
   | 'llm_budget_refused'
   | 'llm_suspended';
 
-/**
- * The base of the language-model vocabulary, and the only place these codes are defined. Log `code`
- * — and `status` on {@link LlmProviderError} — and nothing from `message`, which carries the code
- * and numbers only (AAP 0.11.1).
- */
+/** The base of the language-model vocabulary, and the only place these codes are defined. */
 export class LlmError extends Error {
   readonly code: LlmErrorCode;
-
   constructor(code: LlmErrorCode, message: string, options?: ErrorOptions) {
     super(message, options);
     this.code = code;
@@ -145,7 +115,6 @@ export type LlmCountFailureReason = 'provider' | 'timeout' | 'invalid_count';
  */
 export class LlmCountError extends LlmError {
   readonly reason: LlmCountFailureReason;
-
   constructor(reason: LlmCountFailureReason, options?: ErrorOptions) {
     super('llm_count_failed', `llm_count_failed reason=${reason}`, options);
     this.reason = reason;
@@ -155,31 +124,22 @@ export class LlmCountError extends LlmError {
 /** Whether a call elapsed its deadline or was aborted through the caller's signal. */
 export type LlmTimeoutReason = 'timeout' | 'aborted';
 
-/**
- * The request's deadline elapsed, or its caller aborted it. `chargedMicros` stays 0 until `spend.ts`
- * settles the attempt, which is how the voice relay learns what an errored turn consumed (AAP 0.5.6).
- */
+/** The request's deadline elapsed, or its caller aborted it. */
 export class LlmTimeoutError extends LlmError {
   readonly reason: LlmTimeoutReason;
   /** Set by `spend.ts` before it rethrows; an aborted turn's tokens may already be billed. */
   chargedMicros = 0;
-
   constructor(reason: LlmTimeoutReason, options?: ErrorOptions) {
     super('llm_timeout', `llm_timeout reason=${reason}`, options);
     this.reason = reason;
   }
 }
 
-/**
- * The provider failed for a reason other than a timeout. `status` is its HTTP status where the
- * failure arrived as a response, or `null` where it did not, and it is the field to log beside
- * `code` (AAP 0.11.1).
- */
+/** The provider failed for a reason other than a timeout. */
 export class LlmProviderError extends LlmError {
   readonly status: number | null;
   /** Set by `spend.ts` before it rethrows; a failed request's tokens may already be billed. */
   chargedMicros = 0;
-
   constructor(options?: { status?: number; cause?: unknown }) {
     const status = options?.status;
     super(
@@ -191,18 +151,13 @@ export class LlmProviderError extends LlmError {
   }
 }
 
-/**
- * The request's worst case does not fit the budget it was reserved against, so it was not sent.
- * `city_cap` is `CAP_LLM_USD_PER_CITY_DAY`; `reservation` is what is left of one call's dialogue
- * reservation, which ends the call politely instead of crossing the cap (AAP 0.5.6).
- */
+/** The request's worst case does not fit the budget it was reserved against, so it was not sent. */
 export class LlmBudgetRefusedError extends LlmError {
   readonly scope: 'city_cap' | 'reservation';
   /** The counted cost the request would have incurred, in micro-dollars. */
   readonly boundMicros: number;
   /** What remained under the budget, or `null` where the caller did not supply it. */
   readonly availableMicros: number | null;
-
   constructor(input: {
     boundMicros: number;
     availableMicros?: number;
@@ -222,9 +177,9 @@ export class LlmBudgetRefusedError extends LlmError {
 }
 
 /**
- * A reported count differed from the count that was reserved for, so language-model use is suspended
- * in every city until an operator re-enables it (AAP 0.5.6): the evidence that a reservation bounds
- * the spend no longer holds.
+ * A reported count differed from the count that was reserved for, so language-model use is
+ * suspended in every city until an operator re-enables it (AAP 0.5.6): the evidence that a
+ * reservation bounds the spend no longer holds.
  */
 export class LlmSuspendedError extends LlmError {
   constructor() {
@@ -232,15 +187,7 @@ export class LlmSuspendedError extends LlmError {
   }
 }
 
-/**
- * Validate the request both providers require before they touch the wire (AAP 0.5.6). Each provider
- * calls this at the start of `countInputTokens` and `complete`, so a malformed request fails here as
- * a `RangeError` rather than as a provider error. The message names the offending field and nothing
- * of its value, because a request carries prompts, menus and transcripts.
- *
- * @throws RangeError when `maxTokens` is not a positive safe integer, when `system` is not a string,
- * or when a message's role is neither `'user'` nor `'assistant'` or its content is not a string.
- */
+/** Validate the request both providers require before they touch the wire (AAP 0.5.6). */
 export function assertLlmRequest(request: LlmRequest): void {
   if (typeof request.system !== 'string') {
     throw new RangeError('request.system must be a string');

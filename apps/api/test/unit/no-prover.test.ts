@@ -1,25 +1,6 @@
 /**
  * The no-server-proving suite (AAP 0.8.1, AAP 0.12.2): the API verifies an itinerary proof and never
  * produces one. Four facts, each read from the file that decides it:
- *
- *   - the last stage of `apps/api/Dockerfile` copies no proving key, no circuit WASM, no witness
- *     generator, no powers-of-tau file and no native prover, and neither the test harness nor the whole
- *     compiled api output — `apps/api/tsconfig.json` sets `rootDir: "."`, so `dist/` holds `dist/test`;
- *   - no file under `apps/api/src` calls a proving entry point (`groth16.prove`, `groth16.fullProve`,
- *     `plonk.*`, `fflonk.*`, `wtns.*`) or imports `rapidsnark` or `mopro`, in code rather than in a
- *     comment;
- *   - no exported schema of `@tablemate/shared` carries a witness-input name as a key, so no route can
- *     accept a private input, and `ProofSubmission` is exactly `{ proof, publicSignals }`, strict at
- *     both levels;
- *   - the one snarkjs call the API makes is the Groth16 verification.
- *
- * What the API legitimately holds stays permitted: snarkjs' verification code and the WebAssembly curve
- * code ffjavascript builds for it arrive with the production dependencies, never through an explicit
- * `COPY` of a `.wasm`; the mounted verification key, the published issuer templates and the two public
- * inputs are contract rather than private input.
- *
- * Read-only: nothing here writes, builds or starts a container, so the suite runs in Vitest's `unit`
- * project with Docker stopped.
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -42,8 +23,6 @@ const API_DOCKERFILE = 'apps/api/Dockerfile';
 /**
  * The repository root: the nearest ancestor of this file's directory that holds the workspace marker.
  * Walking up keeps the suite independent of where Vitest was started.
- *
- * @throws {Error} When no ancestor holds the marker.
  */
 function findRepoRoot(): string {
   for (let dir = path.dirname(fileURLToPath(import.meta.url)); ; dir = path.dirname(dir)) {
@@ -86,13 +65,10 @@ describe('the API source tree', () => {
     expect(API_SOURCE_FILES.every((file) => SOURCE_EXTENSIONS.has(path.extname(file)))).toBe(true);
     expect(API_JSON_FILES).toContain('apps/api/src/modules/voice-agent/i18n/en-US.json');
   });
-
   it('holds the Dockerfile whose runtime stage is checked', () => {
     expect(readRepoFile(API_DOCKERFILE)).toContain('AS runtime');
   });
 });
-
-/* ------------------------------------------------------------- what the serving image may hold */
 
 /** One Dockerfile stage: its name and the instructions that can bring a file into it. */
 interface DockerStage {
@@ -121,7 +97,6 @@ function parseDockerfile(text: string): DockerStage[] {
       pending = '';
     }
   }
-
   const stages: DockerStage[] = [];
   for (const instruction of instructions) {
     const from = /^FROM\s+\S+(?:\s+AS\s+(\S+))?/i.exec(instruction);
@@ -143,8 +118,6 @@ const DOCKER_STAGES = parseDockerfile(readRepoFile(API_DOCKERFILE));
 /**
  * The stage a plain build yields: the last one. A build with `--target` may stop at `test-support`,
  * which carries the dev dependencies the migrate, stripe-proxy and voice-sim services run on.
- *
- * @throws {Error} When the Dockerfile holds no `FROM` stage.
  */
 function runtimeStage(): DockerStage {
   const stage = DOCKER_STAGES.at(-1);
@@ -205,11 +178,9 @@ describe('the runtime image', () => {
     // A stage whose instructions parsed to nothing would pass every row below in silence.
     expect(runtimeStage().commands.length).toBeGreaterThan(10);
   });
-
   it.each(FORBIDDEN_IN_RUNTIME)('copies no $what', ({ pattern }) => {
     expect(runtimeStage().commands.filter((command) => pattern.test(command))).toEqual([]);
   });
-
   it('copies the compiled server and its scripts, and never the whole api build output', () => {
     const sources = copySources(runtimeStage().commands);
     // `rootDir: "."` puts `dist/test` beside `dist/src`, so the whole output would carry the suite and
@@ -218,7 +189,6 @@ describe('the runtime image', () => {
     expect(sources).toContain('apps/api/dist/src');
     expect(sources).toContain('apps/api/dist/scripts');
   });
-
   it('takes nothing from the circuit build directory, which the run-time mount supplies', () => {
     // One runtime instruction names `packages/circuits/build`: a `RUN mkdir` creating the empty
     // directory the compose bind mounts of the verification key and the manifest land in. No COPY or
@@ -227,8 +197,6 @@ describe('the runtime image', () => {
     expect(sources.filter((source) => source.startsWith('packages/circuits/build'))).toEqual([]);
   });
 });
-
-/* --------------------------------------------------------------- what the API sources may call */
 
 /** The two snarkjs entry points that produce a proof, the receiver they hang off, and that name. */
 const PROVING_ENTRYPOINTS = new Set(['prove', 'fullProve']);
@@ -341,7 +309,6 @@ function findProvingUses(sourceText: string, fileName: string): string[] {
       report(`proving-module:${specifier}`, node);
     }
   };
-
   for (const { node, name } of accessesOf(file, GROTH16)) {
     if (PROVING_ENTRYPOINTS.has(name)) {
       report(`${GROTH16}.${name}`, node);
@@ -382,7 +349,6 @@ function findProvingUses(sourceText: string, fileName: string): string[] {
       report(FULL_PROVE, node);
     }
   });
-
   return [...findings].sort();
 }
 
@@ -417,7 +383,6 @@ describe('findProvingUses', () => {
       expect(findings, findings.join(' ')).toEqual([]);
     }
   });
-
   it('names the entry point it found, with its line', () => {
     expect(findProvingUses('snarkjs.groth16.fullProve(i, w, z);', 'inline.ts')).toEqual([
       'inline.ts:1:fullProve',
@@ -431,7 +396,6 @@ describe('the API sources', () => {
     const findings = API_SOURCE_FILES.flatMap((file) => findProvingUses(readRepoFile(file), file));
     expect(findings).toEqual([]);
   });
-
   it('verify a proof through the Groth16 verifier and nothing else', () => {
     const file = 'apps/api/src/modules/proofs/verifier.ts';
     const accesses = accessesOf(parseSource(file, readRepoFile(file)), GROTH16);
@@ -441,8 +405,6 @@ describe('the API sources', () => {
     expect(accesses.filter((access) => PROVING_ENTRYPOINTS.has(access.name))).toEqual([]);
   });
 });
-
-/* ------------------------------------------------------- what the shared contract may accept */
 
 /** The generator that builds circuit inputs: the witness inputs are read from it on every run. */
 const CIRCUIT_INPUTS_FILE = 'packages/circuits/src/inputs/build-inputs.ts';
@@ -551,7 +513,6 @@ function walkSchema(root: unknown): SchemaTree {
       pending.push(schema);
     }
   };
-
   push(root);
   while (pending.length > 0) {
     const schema = pending.pop();
@@ -695,7 +656,6 @@ describe('the witness-input names', () => {
       expect(PRIVATE_INPUT_NAMES.has(named), named).toBe(true);
     }
   });
-
   it('classify every declared input, and exclude the published template parameters', () => {
     for (const published of PUBLISHED_INPUT_NAMES) {
       expect(PRIVATE_INPUT_NAMES.has(published), published).toBe(false);
@@ -718,7 +678,6 @@ describe('the shared contract schemas', () => {
     );
     expect(published.schemas).toBeGreaterThan(20);
   });
-
   it('hold no private witness input as an object key', () => {
     const found: string[] = [];
     for (const [name, schema] of SHARED_SCHEMA_EXPORTS) {
@@ -730,7 +689,6 @@ describe('the shared contract schemas', () => {
     }
     expect(found).toEqual([]);
   });
-
   it('leave no private witness input among the API sources JSON keys', () => {
     expect(API_JSON_FILES.length).toBeGreaterThan(0);
     const found: string[] = [];
@@ -753,7 +711,6 @@ describe('ProofSubmission', () => {
     const parsed = shared.ProofSubmission.safeParse(SUBMISSION);
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
   });
-
   it.each(REJECTED_SUBMISSIONS)('refuses %s', (_what, submission) => {
     expect(shared.ProofSubmission.safeParse(submission).success).toBe(false);
   });

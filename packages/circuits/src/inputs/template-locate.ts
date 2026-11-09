@@ -6,27 +6,25 @@
  * circuit cannot accept is refused on the device with a code instead of failing later, inside witness
  * generation.
  *
- * - `RemoveSoftLineBreaks(maxLength)` of `@zk-email/circuits` 6.3.4, which `EmailVerifier` binds
- *   `decodedEmailBodyIn` to the body window with: {@link removeSoftLineBreaks} drops every `=` CR LF
- *   triple that fits inside the window and compacts the rest. Quoted-printable escapes such as `=3D`
- *   are left alone, which is why a city alias is configured as the bytes it has in the decoded body.
+ * - `RemoveSoftLineBreaks(maxLength)` of `@zk-email/circuits` 6.3.4: {@link removeSoftLineBreaks} drops
+ *   every `=` CR LF triple that fits inside the window and compacts the rest. Quoted-printable escapes such
+ *   as `=3D` are left alone, which is why a city alias is configured as the bytes it has in the decoded
+ *   body.
  * - `FieldExtract(1024, 32, 32)` and `TmCharsetMember` in `circuits/lib/anchor_extract.circom`:
- *   {@link locateField} reports the one anchor position and the one value length the circuit accepts,
- *   and {@link inCharset} implements the four sets `CHARSET_CODE` names.
- * - `DateParse` in `circuits/lib/date_parse.circom`: {@link parseDateValue} applies its four date
- *   layouts and its year, month and day bounds, answering `null` for a value it would reject.
+ *   {@link locateField} reports the one anchor position and the one value length the circuit accepts, and
+ *   {@link inCharset} implements the four sets `CHARSET_CODE` names.
+ * - `DateParse` in `circuits/lib/date_parse.circom`: {@link parseDateValue} applies its four date layouts
+ *   and its year, month and day bounds, answering `null` for a value it would reject.
  *
  * Mirrored exactly and never tightened: a message the circuit accepts must be accepted here, because a
  * false refusal on the device blocks an email that would have proved.
  *
- * Error privacy: a refusal reports a `CircuitInputError` code and the field's slot name, never a value,
- * an anchor or an offset. Malformed template parameters, which are configuration rather than message
- * content, raise a `RangeError`.
+ * Error privacy: a refusal reports a `CircuitInputError` code and the field's slot name, never a value, an
+ * anchor or an offset; malformed template parameters, which are configuration rather than message content,
+ * raise a `RangeError`.
  *
- * Client-safe: this module runs under Hermes (React Native 0.76.9) through `./build-inputs.ts` and in
- * the browser Web Worker, so it imports `./eml-parse.ts`, `../registry/template-hash.ts` and the shared
- * contract only — no Node built-in, no `Buffer`, no `TextDecoder`, no `@zk-email/helpers`, no DOM API,
- * no I/O, and no module-load work beyond declaring constants.
+ * Client-safe: it runs under Hermes (React Native 0.76.9) through `./build-inputs.ts` and in the browser Web
+ * Worker, so it imports `./eml-parse.ts`, `../registry/template-hash.ts` and the shared contract only.
  */
 import type { TemplateFieldName, TemplateParams } from '../registry/template-hash.ts';
 
@@ -66,16 +64,15 @@ type FieldIndex = (typeof FIELD_INDEXES)[number];
  * Removes every soft line break — the three bytes `=`, CR, LF — that fits inside an encoded body window,
  * compacting the rest into its place and leaving the tail zero.
  *
- * This is `RemoveSoftLineBreaks(maxLength)` of `@zk-email/circuits` 6.3.4, whose `isSoftBreak[i]` is
- * defined for `i < maxLength - 2` only: it zeroes each break's three bytes and compacts what remains
- * under a Poseidon random linear combination, so the array returned here is the `decoded` array the
- * circuit's `EmailVerifier(..., removeSoftLineBreaks = 1)` accepts. A break cannot overlap itself, so
- * skipping three bytes at a time agrees with the circuit's per-position detection, as does the compacted
- * result the helpers' own port reports as `cleanContent`.
+ * This is `RemoveSoftLineBreaks(maxLength)` of `@zk-email/circuits` 6.3.4, whose `isSoftBreak[i]` is defined
+ * for `i < maxLength - 2` only: it zeroes each break's three bytes and compacts what remains under a
+ * Poseidon random linear combination, so the array returned here is the `decoded` array the circuit's
+ * `EmailVerifier(..., removeSoftLineBreaks = 1)` accepts. A break cannot overlap itself, so skipping three
+ * bytes at a time agrees with the circuit's per-position detection.
  *
- * The input is the whole window — the body tail, the SHA-256 `0x80` pad byte, the zero fill and the
- * body's length field — and a position past the array's own end reads as zero, which is the fill the
- * circuit sees there.
+ * The input is the whole window — the body tail, the SHA-256 `0x80` pad byte, the zero fill and the body's
+ * length field — and a position past the array's own end reads as zero, which is the fill the circuit sees
+ * there.
  *
  * @param encoded - The encoded body window.
  * @param maxLength - The window length in bytes, 1024 for the circuit's body bound.
@@ -87,7 +84,6 @@ export function removeSoftLineBreaks(
 ): Uint8Array {
   const decoded = new Uint8Array(maxLength);
   let write = 0;
-
   for (let i = 0; i < maxLength; i += 1) {
     if (
       i + 2 < maxLength &&
@@ -98,11 +94,9 @@ export function removeSoftLineBreaks(
       i += 2;
       continue;
     }
-
     decoded[write] = encoded[i] ?? 0;
     write += 1;
   }
-
   return decoded;
 }
 
@@ -111,11 +105,10 @@ export function removeSoftLineBreaks(
  * `TmCharsetMember` implements, over the codes of `CHARSET_CODE`.
  *
  * `digits` is `0`-`9`; `alnum` adds `A`-`Z`, `a`-`z` and `-`; `date` adds the space and the comma the
- * English date layouts need; `text` is the printable range 0x20-0x7E together with every byte at or
- * above 0x80, so an accented place name or booking reference still extracts. Any other code selects
- * nothing, exactly as the circuit's four one-hot terms do, leaving such a field unsatisfiable. No
- * charset admits 0x00, so a value can never run through the `0x80` pad byte that follows the body's
- * SHA-256 padding into the zero fill and the length field beyond it.
+ * English date layouts need; `text` is the printable range 0x20-0x7E together with every byte at or above
+ * 0x80, so an accented place name or booking reference still extracts. Any other code selects nothing,
+ * exactly as the circuit's four one-hot terms do, leaving such a field unsatisfiable; and no charset admits
+ * 0x00, so a value can never run through the `0x80` pad byte into the zero fill beyond it.
  *
  * @param byte - A byte of a value; the circuit's own operand is range-checked to eight bits.
  * @param code - A `CHARSET_CODE` value.
@@ -125,7 +118,6 @@ export function inCharset(byte: number, code: number): boolean {
   const digit = byte >= 0x30 && byte <= 0x39;
   const upper = byte >= 0x41 && byte <= 0x5a;
   const lower = byte >= 0x61 && byte <= 0x7a;
-
   switch (code) {
     case CHARSET_CODE.digits:
       return digit;
@@ -159,11 +151,9 @@ export interface FieldLocation {
  */
 function fieldEntry<T>(values: readonly T[], fieldIndex: FieldIndex, what: string): T {
   const value = values[fieldIndex];
-
   if (value === undefined) {
     throw new RangeError(`template-locate: parameters carry no ${what} for field ${fieldIndex}`);
   }
-
   return value;
 }
 
@@ -175,10 +165,10 @@ function fieldName(fieldIndex: FieldIndex): TemplateFieldName {
 /**
  * Whether the anchor's declared bytes occur at `start`.
  *
- * `CountSubstringOccurrences(1024, 32)` slides over all 1024 window positions and reads zero past the
- * end of the window, and its match test treats a zero pattern byte as a wildcard. An anchor carries no
- * zero byte inside its length and the fill beyond a real window is zero, so a match can never extend
- * past the window and this bounds check answers exactly as the circuit does.
+ * `CountSubstringOccurrences(1024, 32)` slides over all 1024 window positions and reads zero past the end
+ * of the window, and its match test treats a zero pattern byte as a wildcard. An anchor carries no zero byte
+ * inside its length and the fill beyond a real window is zero, so a match can never extend past the window
+ * and this bounds check answers exactly as the circuit does.
  */
 function anchorOccursAt(
   decoded: Uint8Array,
@@ -188,11 +178,9 @@ function anchorOccursAt(
 ): boolean {
   for (let j = 0; j < anchorLength; j += 1) {
     const position = start + j;
-
     if (position >= DECODED_WINDOW_BYTES) return false;
     if ((decoded[position] ?? 0) !== (anchor[j] ?? 0)) return false;
   }
-
   return true;
 }
 
@@ -200,11 +188,10 @@ function anchorOccursAt(
  * Locates one stay field in the decoded body window, exactly as `FieldExtract(1024, 32, 32)` does.
  *
  * The anchor must occur exactly once in the window, so no second occurrence can be selected and a field
- * whose text appears only in the headers is not found at all, headers never being scanned. The value is
- * the 1-32 bytes from the end of the anchor up to the first byte equal to the field's terminator, every
- * one of them in the field's charset and none of them the terminator, and the terminator's own index
- * (`anchorIndex + anchorLength + valueLength`, the circuit's `withinWindow`) stays below the window
- * length. The value is returned zero-padded to 32 bytes, as the circuit zeroes it from `valueLength` on.
+ * whose text appears only in the headers is not found at all, headers never being scanned. The value is the
+ * 1-32 bytes from the end of the anchor up to the first byte equal to the field's terminator, every one of
+ * them in the field's charset and none of them the terminator, and the terminator's own index
+ * (`anchorIndex + anchorLength + valueLength`, the circuit's `withinWindow`) stays below the window length.
  *
  * @param decoded - The decoded body window, exactly {@link DECODED_WINDOW_BYTES} bytes long.
  * @param params - The issuer template's circuit parameters.
@@ -222,13 +209,11 @@ export function locateField(
   if (decoded.length !== DECODED_WINDOW_BYTES) {
     throw new RangeError('template-locate: the decoded window must be 1024 bytes');
   }
-
   const name = fieldName(fieldIndex);
   const anchor = fieldEntry(params.anchors, fieldIndex, 'anchor');
   const anchorLength = fieldEntry(params.anchorLength, fieldIndex, 'anchorLength');
   const terminator = fieldEntry(params.terminator, fieldIndex, 'terminator');
   const charset = fieldEntry(params.charset, fieldIndex, 'charset');
-
   if (anchor.length !== MAX_ANCHOR_BYTES) {
     throw new RangeError('template-locate: an anchor must be 32 bytes wide');
   }
@@ -238,25 +223,20 @@ export function locateField(
   if (!Number.isInteger(terminator) || terminator < 1 || terminator > 255) {
     throw new RangeError('template-locate: a terminator must be 1-255');
   }
-
   // Occurrences, at every start position and overlaps included, because the circuit sums a match at each
   // of the window's 1024 positions. Exactly one count is accepted.
   let anchorIndex = -1;
   let occurrences = 0;
-
   for (let start = 0; start < DECODED_WINDOW_BYTES; start += 1) {
     if (anchorOccursAt(decoded, anchor, anchorLength, start)) {
       if (occurrences === 0) anchorIndex = start;
       occurrences += 1;
     }
   }
-
   if (occurrences === 0) fail('field_not_found', name);
   if (occurrences > 1) fail('field_ambiguous', name);
-
   const valueStart = anchorIndex + anchorLength;
   let valueLength = -1;
-
   for (let k = 0; k <= MAX_VALUE_BYTES; k += 1) {
     if (valueStart + k >= DECODED_WINDOW_BYTES) fail('field_invalid', name);
     if ((decoded[valueStart + k] ?? 0) === terminator) {
@@ -264,25 +244,19 @@ export function locateField(
       break;
     }
   }
-
   // A length of zero is a value whose first byte is the terminator, and minus one is a value with no
   // terminator inside the 32-byte bound; the circuit rejects both.
   if (valueLength < 1) fail('field_invalid', name);
-
   const value = new Uint8Array(MAX_VALUE_BYTES);
-
   for (let k = 0; k < valueLength; k += 1) {
     const byte = decoded[valueStart + k] ?? 0;
-
     if (!inCharset(byte, charset)) fail('field_invalid', name);
     value[k] = byte;
   }
-
   // The circuit's own bound, `anchorIndex + anchorLength + valueLength < maxLen`. The terminator search
   // above already implies it; asserting it here keeps both loops' obligations independent, so a change
   // to either cannot drop the bound silently.
   if (valueStart + valueLength >= DECODED_WINDOW_BYTES) fail('field_invalid', name);
-
   return { anchorIndex, valueLength, value };
 }
 
@@ -336,23 +310,23 @@ const MONTH_ABBREVIATIONS = [
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /**
- * The alternation a name table contributes to a layout's pattern: the patterns are built from the same
- * rows the month numbers are read from, so the grammar and the numbering cannot disagree.
+ * The alternation a name table contributes to a layout's pattern: built from the same rows the month numbers
+ * are read from, so the grammar and the numbering cannot disagree.
  */
 function alternation(names: readonly string[]): string {
   return names.join('|');
 }
 
 /**
- * Layout 1, `ISO_YMD`: four year digits, a dash, two month digits, a dash and two day digits, ten bytes
- * in all, which is the length `DateParse` requires of this layout.
+ * Layout 1, `ISO_YMD`: four year digits, a dash, two month digits, a dash and two day digits — ten bytes, the
+ * length `DateParse` requires of this layout.
  */
 const ISO_YMD = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
- * Layout 2, `D_MONTH_YYYY`: a day of one or two digits, a space, a full month name, a space and four
- * year digits — `7 + t + L` bytes, `t` being the day's extra digit and `L` the name's length, which is
- * what `DateParse` constrains the value's length to.
+ * Layout 2, `D_MONTH_YYYY`: a day of one or two digits, a space, a full month name, a space and four year
+ * digits — `7 + t + L` bytes, `t` the day's extra digit and `L` the name's length, which is what `DateParse`
+ * constrains the value's length to.
  */
 const D_MONTH_YYYY = new RegExp(`^(\\d{1,2}) (${alternation(FULL_MONTH_NAMES)}) (\\d{4})$`);
 
@@ -363,12 +337,12 @@ const D_MONTH_YYYY = new RegExp(`^(\\d{1,2}) (${alternation(FULL_MONTH_NAMES)}) 
 const MONTH_D_YYYY = new RegExp(`^(${alternation(FULL_MONTH_NAMES)}) (\\d{1,2}), (\\d{4})$`);
 
 /**
- * Layout 4, `DOW_D_MON_YYYY`: a weekday abbreviation, a comma, a space, a day, a space, a three-letter
- * month abbreviation, a space and four year digits, `15 + t` bytes long. The weekday is read as a
- * literal and is never checked against the date it precedes.
+ * Layout 4, `DOW_D_MON_YYYY`: a weekday abbreviation, a comma, a space, a day, a space, a three-letter month
+ * abbreviation, a space and four year digits, `15 + t` bytes long; the weekday is read as a literal and never
+ * checked against the date it precedes.
  *
- * Each pattern is anchored and carries neither the `m` nor the `u` flag, so it has to match the value's
- * whole length and `\d` is ASCII `0`-`9` alone: the two ways a regex could be looser than the circuit.
+ * Each pattern is anchored and carries neither the `m` nor the `u` flag, so it has to match the value's whole
+ * length and `\d` is ASCII `0`-`9` alone: the two ways a regex could be looser than the circuit.
  */
 const DOW_D_MON_YYYY = new RegExp(
   `^(${alternation(WEEKDAYS)}), (\\d{1,2}) (${alternation(MONTH_ABBREVIATIONS)}) (\\d{4})$`,
@@ -377,7 +351,6 @@ const DOW_D_MON_YYYY = new RegExp(
 /** The 1-based month a name stands for, from the table its layout's pattern was built from. */
 function monthNumber(table: readonly string[], name: string | null): number | null {
   if (name === null) return null;
-
   const index = table.indexOf(name);
   return index === -1 ? null : index + 1;
 }
@@ -393,18 +366,16 @@ function captureText(match: RegExpExecArray, index: number): string | null {
 /** A capture group as a number, or `null` when the group is absent. */
 function captureNumber(match: RegExpExecArray, index: number): number | null {
   const digits = captureText(match, index);
-
   return digits === null ? null : Number(digits);
 }
 
 /**
- * The number of days a month has in a year: the table `TmMonthLength` carries, in which only February
- * ever moves. The leap-year rule is `year % 4 === 0`; `DateParse` constrains the year to 2020-2099
- * before this applies, and no century exception falls inside that range.
+ * The number of days a month has in a year: the table `TmMonthLength` carries, in which only February ever
+ * moves. The leap-year rule is `year % 4 === 0`; `DateParse` constrains the year to 2020-2099 before this
+ * applies, and no century exception falls inside that range.
  */
 function daysInMonth(month: number, year: number): number {
   if (month === 2) return year % 4 === 0 ? 29 : 28;
-
   switch (month) {
     case 4:
     case 6:
@@ -429,7 +400,6 @@ function calendarDate(
   if (year < 2020 || year > 2099) return null;
   if (month < 1 || month > 12) return null;
   if (day < 1 || day > daysInMonth(month, year)) return null;
-
   return year * 10000 + month * 100 + day;
 }
 
@@ -437,12 +407,12 @@ function calendarDate(
  * Parses an extracted date value as `DateParse` does, answering `YYYYMMDD` or `null` when the circuit
  * would reject the value.
  *
- * The layout is the issuer template's `dateFormat` code, which is part of the template hash and so of
- * the issuer's registry leaf, so a prover cannot read a layout its issuer never registered. The value
- * must match the selected layout's grammar exactly and be exactly as long as that layout accounts for —
- * the circuit constrains `length === pickedLength`, ten bytes for `ISO_YMD` and the layout's own count
- * otherwise — so a value written in another layout's shape, or of a length no layout accounts for, is
- * refused. The range rules of {@link calendarDate} then apply to the parsed date.
+ * The layout is the issuer template's `dateFormat` code, which is part of the template hash and so of the
+ * issuer's registry leaf, so a prover cannot read a layout its issuer never registered. The value must match
+ * the selected layout's grammar exactly and be exactly as long as that layout accounts for — the circuit
+ * constrains `length === pickedLength`, ten bytes for `ISO_YMD` and the layout's own count otherwise — so a
+ * value written in another layout's shape, or of a length no layout accounts for, is refused. The range rules
+ * of {@link calendarDate} then apply to the parsed date.
  *
  * @param value - The extracted value, zero-padded to 32 bytes, as {@link locateField} returns it.
  * @param length - The value's length in bytes, 1-32 as `FieldExtract` constrains it.
@@ -457,14 +427,11 @@ export function parseDateValue(
   // `FieldExtract` bounds a value to 1-32 bytes, so any other length is one the circuit cannot accept,
   // and a length past the padded array could not be read from it at all.
   if (!Number.isInteger(length) || length < 1 || length > MAX_VALUE_BYTES) return null;
-
   const text = bytesToLatin1(value, 0, length);
-
   switch (formatCode) {
     case DATE_FORMAT_CODE.ISO_YMD: {
       const match = ISO_YMD.exec(text);
       if (match === null) return null;
-
       return calendarDate(
         captureNumber(match, 1),
         captureNumber(match, 2),
@@ -474,7 +441,6 @@ export function parseDateValue(
     case DATE_FORMAT_CODE.D_MONTH_YYYY: {
       const match = D_MONTH_YYYY.exec(text);
       if (match === null) return null;
-
       return calendarDate(
         captureNumber(match, 3),
         monthNumber(FULL_MONTH_NAMES, captureText(match, 2)),
@@ -484,7 +450,6 @@ export function parseDateValue(
     case DATE_FORMAT_CODE.MONTH_D_YYYY: {
       const match = MONTH_D_YYYY.exec(text);
       if (match === null) return null;
-
       return calendarDate(
         captureNumber(match, 3),
         monthNumber(FULL_MONTH_NAMES, captureText(match, 1)),
@@ -494,7 +459,6 @@ export function parseDateValue(
     case DATE_FORMAT_CODE.DOW_D_MON_YYYY: {
       const match = DOW_D_MON_YYYY.exec(text);
       if (match === null) return null;
-
       return calendarDate(
         captureNumber(match, 4),
         monthNumber(MONTH_ABBREVIATIONS, captureText(match, 3)),

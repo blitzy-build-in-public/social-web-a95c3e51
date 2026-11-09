@@ -1,36 +1,3 @@
-/**
- * The pino logger every Node process in the workspace writes through (AAP 0.3.2, 0.11.1).
- *
- * AAP 0.3.2 makes redaction part of the security architecture: "pino redaction removes
- * authorization headers, secrets, booking fields, coordinates and email addresses". AAP 0.11.1
- * lists the logging points and requires "pino with a request id on every API log line". Both
- * come from the options built here, so no process has to remember a path list, and a name added
- * to {@link LOGGER_REDACT_PATHS} disappears from `api`, `workers` and the seed at once.
- *
- * Redaction removes object fields only — pino never rewrites the message string. A caller must
- * therefore keep personal data out of `msg` and pass it as a field the path list covers: an auth
- * event logs its outcome without the email address, and a proof result logs the public outputs
- * and no signals beyond that (AAP 0.11.1).
- *
- * Two vocabularies feed the list, because a protected value reaches a line under either of them: the
- * camelCase field names the workspace's own models and DTOs use, and the `UPPER_SNAKE_CASE` keys of
- * the environment schemas, which the built configuration keeps under the variables' own names. The
- * list reaches {@link REDACTION_WRAPPER_DEPTH} wrappers deep and no further, pino's wildcard matching
- * one level with no recursive form, so a caller holding a deeper structure logs the protected values
- * themselves rather than the whole wrapper.
- *
- * Correlation travels in the ids a line carries, never through a tracing integration, which the plan
- * excludes (AAP 0.7.2). A request's own lines carry the `reqId` Fastify binds, because `app.ts` hands
- * this logger to the server as its `loggerInstance`; a worker processor's lines carry the job id
- * {@link withJobId} binds before the processor runs (AAP 0.5.6); and work that outlives its request —
- * the outbox dispatch after a commit, the sweeper, a settlement run — is followed by the ids those
- * lines carry themselves (`outboxId`, `meetupId`, `depositId`, `operationId`).
- *
- * Nothing here reads `process.env`: the level and the mode arrive as parameters from the scoped
- * environment schemas under `src/env/`, and only `process.stdout.isTTY` is inspected, to decide
- * whether a human is watching the output.
- */
-
 import { fileURLToPath } from 'node:url';
 
 import { pino } from 'pino';
@@ -38,29 +5,15 @@ import type { DestinationStream, Logger, LoggerOptions } from 'pino';
 
 import type { AppEnv } from '@tablemate/shared';
 
-/**
- * The levels `LOG_LEVEL` may hold, in pino's severity order (AAP 0.6.2).
- *
- * `src/env/common.ts` validates `LOG_LEVEL` with `z.enum(LOG_LEVELS)` (default `info`), so a
- * misspelled level fails startup instead of silently falling back to pino's own default.
- */
+/** The levels `LOG_LEVEL` may hold, in pino's severity order (AAP 0.6.2). */
 export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 
 /** One of {@link LOG_LEVELS}: what {@link createLogger} accepts and what `LOG_LEVEL` parses to. */
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
-/**
- * The censor written in place of a redacted value (AAP 0.3.2). A marked value rather than an
- * empty one, so a log reader can tell a withheld field from one that was never logged.
- */
+/** The censor written in place of a redacted value (AAP 0.3.2). */
 export const LOGGER_REDACT_CENSOR = '[redacted]';
 
-/**
- * Credential-carrying header names, under both parents a header object is logged at.
- * `sec-websocket-protocol` is the only channel a browser socket's bearer access token travels on: the
- * browser WebSocket API cannot set an `authorization` header on the handshake, so the client sends
- * the token in the subprotocol list and every later frame depends on it.
- */
 const REDACTED_HEADER_NAMES = [
   'authorization',
   'cookie',
@@ -72,45 +25,8 @@ const REDACTED_HEADER_NAMES = [
   'sec-websocket-protocol',
 ] as const;
 
-/** The parents a header object appears under: Fastify's request log, and a bare `headers` field. */
 const HEADER_PARENTS = ['req.headers', 'headers'] as const;
 
-/**
- * Field names whose values are personal data, a credential or a position (AAP 0.3.2, 0.11.1): email
- * addresses, names and booking details, message bodies, coordinates, and the secrets the payment,
- * telephony, language-model and test-control integrations sign with. The rest of the list covers the
- * protected classes of the AAP 0.5.2 inventory: the tier-1 profile free text (`nickname`, `bio`), the
- * ciphertext families (`emailCiphertext`, `deliveryTokenCiphertext`, `secretCiphertext`,
- * `bookingNameCiphertext`, `bookingReferenceCiphertext`, `fullNameCiphertext`,
- * `externalContactCiphertext`), the lookup and token hashes (`emailLookupHash`, `secretLookupHash`,
- * `tokenHash`, `refreshTokenHash`), the Stripe identifiers (`stripeCustomerId`, `paymentIntentId`,
- * `currentPaymentIntentId`), the call transcript and its summary, the dispute and report free text
- * (`reason`), the pseudonymous re-identifiers (`actorHash`, `pairKey`) and the raw webhook bytes kept
- * on the request for signature verification (`rawBody`).
- *
- * The families beside those cover what the names above leave out: the stored profile photo and the
- * base64 the client sends and receives (`webp`, `photoBase64`), the hash a rotated refresh token is
- * compared against (`previousRefreshTokenHash`), the payment-setup credentials a setup response
- * carries (`setupIntentClientSecret`, `ephemeralKeySecret`), the built configuration's test-control
- * credential (`testControlToken`, the camelCase name beside its `TEST_CONTROL_TOKEN` environment
- * key) and the provider error text stored on a payment operation (`lastError`), whose provenance no
- * caller can vouch for.
- *
- * Two families are deliberately NOT covered. The circuit's public values — `nullifierSalt`,
- * `pubkeyHash`, `aliasHash` and `modulusBase64` — are public by construction, and AAP 0.11.1 lets
- * a proof verification result log its public outputs, so censoring them would hide the line that
- * logging point exists to write. A bare `code` stays free for the same reason: the venue's
- * six-digit check-in code is derived per request and never stored, while error codes and Prisma
- * codes are logged under that name, so no path can tell the two apart.
- *
- * An invariant for the call sites that log these shapes: several of the names above are ordinary
- * words a machine-readable value may legitimately want, and censoring such a value costs the line its
- * whole point. A code that has to be read back — a menu-pipeline drop reason, a call-dispatch
- * decision, a retry outcome — is therefore logged under a name this list does not cover
- * (`dropReason`, `blockedReason`, `decision`, `outcome`), never by widening the list to let one name
- * through. The message string is no substitute either: redaction rewrites object fields and never the
- * message.
- */
 const REDACTED_FIELD_NAMES = [
   'email',
   'fullName',
@@ -164,16 +80,6 @@ const REDACTED_FIELD_NAMES = [
   'rawBody',
 ] as const;
 
-/**
- * Credential-bearing environment keys, redacted beside the field names because the built
- * configuration carries them under the variables' own names. AAP 0.11.1 makes environment variables
- * `UPPER_SNAKE_CASE`, and AAP 0.6.2 has each process validate only its own scope, so the object
- * `loadEnvironment` returns holds `DATABASE_URL` and `REDIS_URL` (connection strings carrying a
- * password), `FIELD_ENCRYPTION_KEY` and its id, the salts and pepper every lookup hash is keyed
- * with, the signing secrets, and the payment, telephony, language-model, mail, push and test-control
- * credentials. One startup line logging that configuration would otherwise print all of them, which
- * is what AAP 0.3.2 ("Logs") and 0.12.2 (secrets only from environment variables) forbid.
- */
 const REDACTED_ENV_KEY_NAMES = [
   'DATABASE_URL',
   'REDIS_URL',
@@ -194,27 +100,13 @@ const REDACTED_ENV_KEY_NAMES = [
   'EXPO_ACCESS_TOKEN',
 ] as const;
 
-/**
- * How many wrappers above a protected name the list still reaches. A pino wildcard matches exactly
- * one level and pino has no recursive wildcard, which is why a bound exists at all. Four wrappers
- * cover the shapes the workspace logs: a model row or a DTO, Fastify's `req.body`, a job payload's
- * `data`, a nested `payload.user`, and the built configuration's `testOnly` group. A protected value
- * nested deeper than this is NOT covered, so a caller logging a deeper structure passes the protected
- * values themselves rather than the whole wrapper.
- */
 const REDACTION_WRAPPER_DEPTH = 4;
 
-/**
- * The prefixes a protected name gets a path under, one per depth the list reaches: the bare name at
- * depth 0, then one `*.` segment per wrapper up to {@link REDACTION_WRAPPER_DEPTH}. Derived from the
- * bound, so the paths and the number cannot drift apart.
- */
 const REDACTION_DEPTH_PREFIXES: readonly string[] = Array.from(
   { length: REDACTION_WRAPPER_DEPTH + 1 },
   (_unused, depth) => '*.'.repeat(depth),
 );
 
-/** The paths {@link LOGGER_REDACT_PATHS} is built from, in the order pino receives them. */
 function redactPaths(): string[] {
   const headers = HEADER_PARENTS.flatMap((parent) =>
     REDACTED_HEADER_NAMES.map((name) => headerPath(parent, name)),
@@ -229,64 +121,28 @@ function redactPaths(): string[] {
   return [...headers, 'res.headers["set-cookie"]', ...fields];
 }
 
-/**
- * A header path under `parent`: a dotted segment for a name that is a JavaScript identifier, and
- * bracket notation for a hyphenated one (`x-venue-secret`), which is the spelling AAP 0.11.1
- * names and the one that stays valid for a key holding a dot or any other character.
- */
 function headerPath(parent: string, name: string): string {
   return IDENTIFIER.test(name) ? `${parent}.${name}` : `${parent}["${name}"]`;
 }
 
-/** A JavaScript identifier: what pino accepts as the dotted form of a path segment. */
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /**
- * Every path pino censors at any level, frozen so a caller cannot widen or narrow redaction for
- * the processes that share it (AAP 0.3.2, 0.11.1). Exported so `apps/api/src/app.ts` can hand
- * the same list to Fastify if it ever configures Fastify's own logger instead of the instance
- * {@link createLogger} returns.
+ * Every path pino censors at any level, frozen so a caller cannot widen or narrow redaction for the
+ * processes that share it (AAP 0.3.2, 0.11.1).
  */
 export const LOGGER_REDACT_PATHS: readonly string[] = Object.freeze(redactPaths());
 
-/** The marker appended to a message longer than {@link MAX_LOG_MESSAGE_LENGTH}. */
 const LOG_TRUNCATION_MARKER = '…[truncated]';
 
-/** The longest message a log line carries before it is truncated: an error's text is unbounded. */
 const MAX_LOG_MESSAGE_LENGTH = 500;
 
-/**
- * The email-address shape {@link sanitizeLogMessage} removes last, after the credentials above: one
- * or more `local@domain` labels with a final label that carries no dot, as an address has.
- */
 const EMAIL_ADDRESS_RE =
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/g;
 
 /**
  * The backstop for text of unknown provenance: the credentials, keys and email addresses an error
  * message can quote, removed before the message is logged (AAP 0.3.2, 0.11.1).
- *
- * It is a backstop and not the primary control — the primary control is that
- * {@link LOGGER_REDACT_PATHS} censors these values by name and that a caller narrows an error before
- * pino sees it, since pino writes an error's message and stack as strings that key-based redaction
- * never rewrites — so a pattern recognizes a shape and nothing more: text carrying a credential in no
- * recognizable shape still passes.
- *
- * It lives here rather than beside one caller because every process logs a message it did not author:
- * `apps/api/src/plugins/errors.ts` narrows a thrown value with it, `apps/api/src/main.ts` and
- * `apps/workers/src/main.ts` write the text of a start failure, an unhandled rejection and an
- * uncaught exception — all of which are arbitrary — and `packages/db/seed/seed.ts` writes a driver's
- * failure text, which can quote the connection string it refused.
- *
- * The rules overlap, so they run in the one order below, each tried before the rule that would
- * otherwise swallow it: a password inside a `scheme://user:secret@host` URL is removed as a
- * credential before the email rule could read the userinfo as an address, and a JWS is removed whole
- * before the 32-hex rule could cut a segment out of it. The message is then truncated, because an
- * error's text is unbounded and a log line is not.
- *
- * @param text - the message to log, as the error that carried it wrote it.
- * @returns the same text with every recognizable credential, key and email address replaced by
- * {@link LOGGER_REDACT_CENSOR}, truncated at {@link MAX_LOG_MESSAGE_LENGTH}.
  */
 export function sanitizeLogMessage(text: string): string {
   const sanitized = text
@@ -310,15 +166,14 @@ export function sanitizeLogMessage(text: string): string {
     .replace(/(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])/g, LOGGER_REDACT_CENSOR)
     // 6. Email addresses last: an error message can quote one whole.
     .replace(EMAIL_ADDRESS_RE, LOGGER_REDACT_CENSOR);
-
   return sanitized.length > MAX_LOG_MESSAGE_LENGTH
     ? `${sanitized.slice(0, MAX_LOG_MESSAGE_LENGTH)}${LOG_TRUNCATION_MARKER}`
     : sanitized;
 }
 
 /**
- * A pino logger, re-exported so a consumer can type one without depending on pino directly
- * (AAP 0.8.1). Exported from this module alone, so the workspace has a single `Logger` name.
+ * A pino logger, re-exported so a consumer can type one without depending on pino directly (AAP
+ * 0.8.1).
  */
 export type { Logger } from 'pino';
 
@@ -338,13 +193,8 @@ export interface CreateLoggerOptions {
 }
 
 /**
- * Build the process logger: JSON on stdout, redacted, stamped with the service name and an ISO
- * time (AAP 0.3.2, 0.11.1).
- *
- * @param options - the service name, the validated level, the deployment mode, and an optional
- * capturing destination.
- * @returns a `Logger` whose every line carries `service`, an ISO `time`, and the censored form
- * of any field {@link LOGGER_REDACT_PATHS} covers.
+ * Build the process logger: JSON on stdout, redacted, stamped with the service name and an ISO time
+ * (AAP 0.3.2, 0.11.1).
  */
 export function createLogger(options: CreateLoggerOptions): Logger {
   const loggerOptions: LoggerOptions = {
@@ -357,7 +207,6 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     // Serializers stay at pino's defaults, which is what keeps the standard `err` serializer
     // that turns an Error into name, message and stack.
   };
-
   const transport = prettyTransportTarget(options.appEnv, options.destination !== undefined);
   if (transport !== undefined) {
     loggerOptions.transport = {
@@ -365,20 +214,11 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       options: { colorize: true, translateTime: 'SYS:standard', ignore: 'pid,hostname' },
     };
   }
-
   return options.destination === undefined
     ? pino(loggerOptions)
     : pino(loggerOptions, options.destination);
 }
 
-/**
- * The `pino-pretty` entry point to load, or `undefined` to write plain JSON to stdout.
- *
- * Pretty output is for a human at a local terminal, so all four must hold: the mode is not
- * `production`, no destination was supplied, stdout is a TTY, and `pino-pretty` resolves.
- * `pino-pretty` is a devDependency and the runtime images install production dependencies only,
- * so the resolve sits in `try/catch`: a module that is not there means JSON, never a crash.
- */
 function prettyTransportTarget(appEnv: AppEnv, hasDestination: boolean): string | undefined {
   if (appEnv === 'production' || hasDestination || process.stdout.isTTY !== true) {
     return undefined;
@@ -398,15 +238,6 @@ function prettyTransportTarget(appEnv: AppEnv, hasDestination: boolean): string 
 /**
  * Bind a BullMQ job id to `logger`, so every line a worker processor writes names the job it
  * belongs to (AAP 0.5.6).
- *
- * Both hand-offs in the workspace call it: `runJob` in `apps/workers/src/queues.ts` binds one child
- * per job before the processor runs, and `startSettlementWorker` in
- * `apps/api/src/modules/settlement/queue.ts` binds one per settlement job. A job whose id is absent
- * — a hand-built test job — is handed the process logger unchanged.
- *
- * @param logger - the process logger, or a child of it.
- * @param jobId - the BullMQ job id, as `job.id` carries it (`outbox-<id>`, `settle-<meetupId>`, …).
- * @returns a child logger whose every line carries `jobId`.
  */
 export function withJobId(logger: Logger, jobId: string): Logger {
   return logger.child({ jobId });

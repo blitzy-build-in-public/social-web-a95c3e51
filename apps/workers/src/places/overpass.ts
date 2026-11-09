@@ -87,21 +87,17 @@ const PARTIAL_RESULT_REMARK = /runtime error|timed out|out of memory|rate_limite
 export class OverpassError extends Error {
   /** The HTTP status of the answer, when the failure was a response. */
   readonly status?: number;
-
   /** Overpass's own `remark`, when a successful answer carried one. */
   readonly remark?: string;
-
   constructor(
     message: string,
     options: { status?: number; remark?: string; cause?: unknown } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'OverpassError';
-
     if (options.status !== undefined) {
       this.status = options.status;
     }
-
     if (options.remark !== undefined) {
       this.remark = options.remark;
     }
@@ -111,14 +107,11 @@ export class OverpassError extends Error {
 /**
  * Formats one coordinate for a query (AAP 0.3.3). `toFixed(6)` is what makes it safe to interpolate:
  * a string of digits, a sign and a point, never exponent notation and never query syntax.
- *
- * @throws RangeError when `value` is not finite or lies outside the `bounds`.
  */
 function coord(value: number, bounds: { min: number; max: number }): string {
   if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
     throw new RangeError(`overpass_coordinate_out_of_range: expected ${bounds.min}..${bounds.max}`);
   }
-
   return value.toFixed(6);
 }
 
@@ -138,27 +131,21 @@ function regex(values: readonly string[]): string {
  * unnamed element could never be stored. Overpass deduplicates across union members within one
  * answer, but the client verifies uniqueness anyway, since a union member is no contract.
  *
- * @param centers The partner venue and partner lodging coordinates, in degrees.
- * @throws RangeError when `centers` is empty, which is the caller's signal to skip the query for a
  * city with no partner venue and no partner lodging, or when a coordinate is unusable.
  */
 export function buildPlacesQuery(centers: readonly { lat: number; lng: number }[]): string {
   if (centers.length === 0) {
     throw new RangeError('overpass_no_centers: a places query needs at least one centre');
   }
-
   const statements: string[] = [];
   const emitted = new Set<string>();
-
   for (const center of centers) {
     const lat = coord(center.lat, LATITUDE_BOUNDS);
     const lon = coord(center.lng, LONGITUDE_BOUNDS);
     const key = `${lat},${lon}`;
-
     if (emitted.has(key)) {
       continue;
     }
-
     emitted.add(key);
     const around = `(around:${PLACES_RADIUS_M},${lat},${lon})`;
     statements.push(
@@ -167,7 +154,6 @@ export function buildPlacesQuery(centers: readonly { lat: number; lng: number }[
       `  nwr["leisure"~"${regex(PLACE_LEISURE_TAGS)}"]["name"]${around};`,
     );
   }
-
   return `[out:json][timeout:60];\n(\n${statements.join('\n')}\n);\nout center tags;`;
 }
 
@@ -176,9 +162,6 @@ export function buildPlacesQuery(centers: readonly { lat: number; lng: number }[
  *
  * The Overpass bounding box is south, west, north, east, which is the shape `City.bbox` carries in
  * `config/cities.json`.
- *
- * @param bbox The city's ingestion area, in degrees.
- * @throws RangeError unless `south < north` and `west < east`, or when a bound is unusable.
  */
 export function buildLodgingsQuery(bbox: {
   south: number;
@@ -190,13 +173,11 @@ export function buildLodgingsQuery(bbox: {
   const west = coord(bbox.west, LONGITUDE_BOUNDS);
   const north = coord(bbox.north, LATITUDE_BOUNDS);
   const east = coord(bbox.east, LONGITUDE_BOUNDS);
-
   if (bbox.south >= bbox.north || bbox.west >= bbox.east) {
     throw new RangeError(
       'overpass_bbox_not_increasing: south < north and west < east are required',
     );
   }
-
   return (
     `[out:json][timeout:60];\n` +
     `nwr["tourism"~"${regex(LODGING_TOURISM_TAGS)}"]["name"](${south},${west},${north},${east});\n` +
@@ -236,14 +217,12 @@ type ParsedElement = z.output<typeof ElementSchema>;
  */
 function toElement(parsed: ParsedElement): OverpassElement {
   const element: OverpassElement = { type: parsed.type, id: parsed.id };
-
   if (parsed.lat !== undefined) element.lat = parsed.lat;
   if (parsed.lon !== undefined) element.lon = parsed.lon;
   if (parsed.tags !== undefined) element.tags = parsed.tags;
   if (parsed.center !== undefined) {
     element.center = { lat: parsed.center.lat, lon: parsed.center.lon };
   }
-
   return element;
 }
 
@@ -251,10 +230,7 @@ function toElement(parsed: ParsedElement): OverpassElement {
  * Runs one Overpass query and returns its elements (AAP 0.3.3, 0.5.6). The query travels as a
  * form-encoded `data` field, which is the interface the public instance documents.
  *
- * @param query A query from {@link buildPlacesQuery} or {@link buildLodgingsQuery}.
- * @param opts The endpoint, the caller's identifying user agent and an optional deadline,
  * `60_000` by default.
- * @throws OverpassError, whose message never includes a response body: on a non-2xx answer, carrying
  * its status; on a network failure or an elapsed deadline, with the failure as `cause`; on a body
  * that is not JSON or does not match the envelope; and on a 200 whose `remark` reports a runtime
  * error, a timeout, an out-of-memory abort or a rate limit, because its `elements` array is
@@ -269,7 +245,6 @@ export async function runOverpass(
 ): Promise<OverpassElement[]> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let response: Response;
-
   try {
     response = await fetch(opts.url, {
       method: 'POST',
@@ -284,52 +259,38 @@ export async function runOverpass(
   } catch (error) {
     throw new OverpassError('overpass_unreachable', { cause: error });
   }
-
   if (!response.ok) {
     throw new OverpassError(`overpass_status: ${response.status}`, { status: response.status });
   }
-
   let body: unknown;
-
   try {
     body = await response.json();
   } catch (error) {
     throw new OverpassError('overpass_malformed', { cause: error });
   }
-
   const envelope = EnvelopeSchema.safeParse(body);
-
   if (!envelope.success) {
     throw new OverpassError('overpass_malformed', { cause: envelope.error });
   }
-
   const { remark } = envelope.data;
-
   if (remark !== undefined && PARTIAL_RESULT_REMARK.test(remark)) {
     throw new OverpassError(`overpass_partial_result: ${remark}`, { remark });
   }
-
   const elements: OverpassElement[] = [];
   const seen = new Set<string>();
-
   for (const candidate of envelope.data.elements) {
     const parsed = ElementSchema.safeParse(candidate);
-
     if (!parsed.success) {
       continue;
     }
-
     const element = toElement(parsed.data);
     const key = osmKeyString(element.type, element.id);
-
     if (seen.has(key)) {
       continue;
     }
-
     seen.add(key);
     elements.push(element);
   }
-
   return elements;
 }
 

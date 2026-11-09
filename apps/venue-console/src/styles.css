@@ -8,11 +8,12 @@
  * on-primary,border,danger,on-danger,focus-ring}, --tm-space-{xs,sm,md,lg,xl,xxl},
  * --tm-radius-{sm,md,lg,pill}, --tm-font-size-{caption,body,label,title,heading,display},
  * --tm-line-height-{caption,body,label,title,heading,display}, --tm-font-weight-{regular,medium,
- * bold}, --tm-border-{separator,edge,control}, --tm-opacity-{hover,pressed} and --tm-touch-target:
- * each key the kebab-case form of the token it comes from, published in rem so text follows the
- * reader's system font size and in px for the boundary widths the tokens state as CSS pixels. Text
- * is painted only in pairs recorded in the tokens' CONTRAST_PAIRS; boundaries and the focus ring
- * only in NON_TEXT_CONTRAST_PAIRS.
+ * bold}, --tm-border-{separator,edge,control}, --tm-opacity-{hover,pressed,disabled}, --tm-touch-target,
+ * --tm-font-family and the console's own two lengths, --tm-layout-reading-column-width and
+ * --tm-size-qr-code: each key the kebab-case form of the token it comes from, published in rem so
+ * text follows the reader's system font size and in px for the boundary widths the tokens state as
+ * CSS pixels. Text is painted only in pairs recorded in the tokens' CONTRAST_PAIRS; boundaries and
+ * the focus ring only in NON_TEXT_CONTRAST_PAIRS.
  */
 
 *,
@@ -30,14 +31,9 @@ body {
   margin: 0;
   background: var(--tm-color-background);
   color: var(--tm-color-text);
-  /* The family names are left unquoted on purpose: Prettier keeps an unquoted name as written but
-     rewrites a quoted one to the quote style its configuration happens to set. */
-  font-family:
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    sans-serif;
+  /* The product's one font stack, published by `main.tsx` from the shared tokens. Its family names
+     are unquoted in the token so the value parses as written when it lands in a custom property. */
+  font-family: var(--tm-font-family);
   font-size: var(--tm-font-size-body);
   line-height: var(--tm-line-height-body);
 }
@@ -68,12 +64,13 @@ h2 {
   line-height: var(--tm-line-height-title);
 }
 
-/* One centred column: header, secret form, code, countdown and status lines stack below. */
+/* One centred column: header, secret form, code, countdown and status lines stack below. Its width
+   is the tokens' reading column, which the console publishes as a custom property. */
 main {
   display: flex;
   flex-direction: column;
   gap: var(--tm-space-xl);
-  max-width: 40rem;
+  max-width: var(--tm-layout-reading-column-width);
   margin-inline: auto;
   padding-inline: var(--tm-space-lg);
   padding-block: var(--tm-space-xl);
@@ -199,12 +196,14 @@ input:focus-visible {
   outline-offset: var(--tm-border-control);
 }
 
-/* Read off this element as text, so it stays exactly six digits and the visual grouping is
-   letter-spacing alone. The check-in code is the console's one display element, sized from the
-   tokens' largest type role (--tm-font-size-display) rather than by a type size of this file's
-   own: it fills a phone's width at 18vw and never exceeds 4.5x that role. The line height stays
-   the unitless ratio a single line of digits needs, because the tokens state line heights as
-   lengths that track their own font size and cannot follow this viewport-derived size. */
+/* Read off this element as text, so it stays exactly six digits, and painted as the digit cells
+   below rather than as one run: a centred run carries its `letter-spacing` after the final digit,
+   which leaves the numerals left of the centre line the countdown and the QR share. The check-in
+   code is the console's one display element, sized from the tokens' largest type role
+   (--tm-font-size-display) rather than by a type size of this file's own: it fills a phone's width at
+   18vw and never exceeds 4.5x that role. The line height stays the unitless ratio a single line of
+   digits needs, because the tokens state line heights as lengths that track their own font size and
+   cannot follow this viewport-derived size. */
 .code {
   font-size: clamp(
     calc(var(--tm-font-size-display) * 1.5),
@@ -214,9 +213,24 @@ input:focus-visible {
   line-height: 1.1;
   font-weight: var(--tm-font-weight-bold);
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.1em;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+/* One cell per digit, each the width of one tabular digit, so the six cells are equal and the row is
+   centred on their advances. The 0.1em the code used to take from letter-spacing is the gap between
+   the cells, with none after the last, which keeps the per-digit pitch exactly what it was. The
+   cells stay inline-level, because a flex row would make them block-level and change how the
+   element's own text reads. */
+.code-digit {
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+  margin-inline-end: 0.1em;
+}
+
+.code-digit:last-child {
+  margin-inline-end: 0;
 }
 
 /* Time left is stated as text, never by colour alone (AAP 0.5.8). */
@@ -227,11 +241,12 @@ input:focus-visible {
 }
 
 /* The QR form of the code: light background behind dark modules, both from the tokens, so the
-   quiet zone a scanner needs survives. Fill comes from these classes, never from inline style,
-   which the console's Content-Security-Policy would refuse. */
+   quiet zone a scanner needs survives. Its box is the tokens' QR size and still yields to a narrow
+   viewport. Fill comes from these classes, never from inline style, which the console's
+   Content-Security-Policy would refuse. */
 .qr {
   display: block;
-  width: min(70vw, 18rem);
+  width: min(70vw, var(--tm-size-qr-code));
   height: auto;
   margin: auto;
   background: var(--tm-color-background);
@@ -310,6 +325,38 @@ dd {
 
 .trend-bar {
   fill: var(--tm-color-primary);
+}
+
+/* Every week's pointer target, drawn over its bar: the full height of the plot and the whole of the
+   week's slot, transparent so it hides nothing. Without it a week scoring 0 has nothing to point at
+   -- its bar has no area and carries no tooltip a reader can reach -- so each week answers the
+   pointer wherever it is over that week's slot (AAP 0.5.8). */
+.trend-target {
+  fill: transparent;
+  pointer-events: all;
+}
+
+/* The trend's x-axis, under the chart and outside the SVG, which would stretch any text drawn in it.
+   One equal track per week -- the number follows the markup, so it cannot disagree with the bars --
+   and a track is a thirteenth of the column, exactly the slot the bar above it occupies, so a label
+   starts where its bar starts. A label never wraps: a track is far narrower than a date, so the text
+   runs over the empty tracks beside it rather than onto a second line, and the last label is aligned
+   to the row's end so that overflow can never reach past the column and widen the page (AAP 0.5.8). */
+.trend-axis {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  color: var(--tm-color-text-muted);
+  font-size: var(--tm-font-size-caption);
+  line-height: var(--tm-line-height-caption);
+}
+
+.trend-axis > span {
+  white-space: nowrap;
+}
+
+.trend-axis > span:last-child {
+  justify-self: end;
 }
 
 .trend-baseline {

@@ -1,39 +1,17 @@
 /**
- * The API's composition root (AAP 0.5.1, 0.6.2, 0.8.1): `buildApp` assembles the container every
- * module receives, registers the cross-cutting plugins and the module routes, and owns the shutdown
- * order; `startBackground` starts the settlement worker, the sweeper, the outbox poller and the
- * pub/sub fan-out once the process is listening.
+ * The API's composition root (AAP 0.5.1, 0.6.2): `buildApp` assembles the container every module receives,
+ * registers the cross-cutting plugins and the module routes, and owns the shutdown order; `startBackground`
+ * starts the settlement worker, the sweeper, the outbox poller and the pub/sub fan-out once the process listens.
  *
- * **One container, declared once.** `AppServices` is the object every module of
- * `apps/api/src/modules` and every plugin takes — most of them type the members they read with
- * `Pick<AppServices, …>` — so the type below is what makes the whole package compile and what the
- * `services` decorator hands out at runtime. It is declared here rather than in a module of its own
- * because the composition root is the only place that knows how every member is built.
- *
- * **No network at build time (AAP 0.6.2).** `buildApp` is synchronous and opens nothing: Prisma
- * connects on its first query, every Redis connection and every BullMQ `Queue` is created on first
- * use, and the Stripe, language-model and Twilio clients open no socket when they are constructed. A
- * caller may therefore build an app, `await app.ready()`, read `app.swagger()` and close it again
- * with no database and no Redis running — which is what the contract test, the OpenAPI export script
- * and `get /v1/health` itself depend on.
- *
- * **Registration order is load-bearing (AAP 0.5.1).** The plugins are plain functions called on the
- * root instance, not Fastify plugins registered in child contexts: `decorate` and `decorateRequest`
- * throw once an instance has started, and a hook or decorator added to the root runs for every route
- * its children declare. `registerClock` is first — its `receivedAt` decoration must exist before any
- * route can read it — then errors, security, auth, rate-limit, compression, WebSocket and OpenAPI, the
- * last before any route so the emitted document contains every operation. The routes follow, the
- * test-control routes only in `APP_ENV=test`, and the health probe last.
- *
- * **One write path for the background work (AAP 0.3.2).** Only `startBackground` starts the
- * settlement worker, the sweeper, the outbox poller and the subscribers, and it records the stop
- * function on the app so the one `onClose` hook can await it before it closes the queues, the
- * connections and Prisma.
- *
- * @see AAP 0.5.1 for the bootstrap and the plugin list, 0.5.3 and 0.5.6 for the timers and the
- *   background startup, 0.5.4 for the health route and the route-schema rule, 0.6.2 for the process
- *   boundaries, 0.11.1 for the injected clock and TSDoc, 0.11.2 for the fault points and the lint
- *   gate, 0.12.2 for the `Server-Timing` header the load test subtracts, and 0.8.1 for this file.
+ * `AppServices` is the object every module takes, and it is declared here because the composition root is the
+ * only place that knows how every member is built. `buildApp` is synchronous and opens nothing (AAP 0.6.2):
+ * Prisma connects on its first query, every Redis connection and BullMQ `Queue` is created on first use, and the
+ * Stripe, language-model and Twilio clients open no socket when constructed. The plugin order is load-bearing
+ * (AAP 0.5.1) — they are functions called on the root instance, since `decorate`, `decorateRequest` and
+ * `addHook` all throw once an instance has started; `registerClock` first, because its `receivedAt` decoration
+ * must exist before any route reads it, then errors, security, auth, rate-limit, compression, WebSocket and
+ * OpenAPI, the last before any route so the emitted document contains every operation. Only `startBackground`
+ * starts the background work, recording the stop function on the app for the one `onClose` hook (AAP 0.3.2).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -119,10 +97,6 @@ import type { OutboxDispatcher } from './modules/outbox/dispatcher.ts';
 import type { PaymentsGateway } from './modules/payments/gateway.ts';
 import type { PubSub } from './modules/messaging/pubsub.ts';
 
-/*
- * Constants (AAP 0.3.2, 0.5.4, 0.5.6)
- */
-
 /**
  * The largest JSON body the API accepts, in bytes: 1 MiB, far above any request the contract
  * defines. `PUT /me/profile` overrides it with `PROFILE_BODY_LIMIT_BYTES` for the one route that
@@ -183,14 +157,9 @@ const SHUTDOWN_STEP_FAILED = 'shutdown_step_failed';
  */
 
 /**
- * The app's instance type: one Fastify 5 instance whose schemas are Zod schemas
- * (`fastify-type-provider-zod` 7.0.0) and whose logger is the process logger.
- *
- * It is the one declaration of the app's type in the plan, imported type-only by every plugin and
- * every module of `apps/api/src` — the imports are erased under `verbatimModuleSyntax`, so nothing
- * below is read at runtime by them. The generic order is Fastify 5's own:
- * `<RawServer, RawRequest, RawReply, Logger, TypeProvider>`, with `RawServerDefault` the Node
- * `http.Server` and the two `node:http` message types the defaults for it.
+ * The app's instance type: one Fastify 5 instance whose schemas are Zod schemas (`fastify-type-provider-zod`)
+ * and whose logger is the process logger. The generic order is Fastify 5's own —
+ * `<RawServer, RawRequest, RawReply, Logger, TypeProvider>` — with `RawServerDefault` the Node `http.Server`.
  */
 export type App = FastifyInstance<
   RawServerDefault,
@@ -208,28 +177,19 @@ declare module 'fastify' {
      */
     services: AppServices;
   }
-
   interface FastifyContextConfig {
     /**
-     * Marks a route that answers bytes rather than JSON — the two exceptions to the response-schema
-     * rule of AAP 0.5.4: `GET /v1/users/:userId/photo` (WebP) and the Twilio TwiML route (XML).
-     * `plugins/errors.ts` already augments this interface with the two validation codes, and the two
-     * routes above set the flag through it.
+     * Marks a route that answers bytes rather than JSON: `GET /v1/users/:userId/photo` (WebP) and the Twilio
+     * TwiML route (XML), the two exceptions to the response-schema rule of AAP 0.5.4.
      */
     rawResponse?: boolean;
   }
 }
 
-/*
- * Fault injection (AAP 0.11.2)
- */
-
 /**
- * The five places a test may make a request or a pass fail (AAP 0.11.2): one inside the webhook
- * transaction and one after its commit, one before and one after each Stripe call the payment
- * executor makes, and one inside the settlement transaction. The names are the literals
- * `payments/webhook.ts`, `payments/operations.ts` and `settlement/settle.ts` already pass to
- * {@link FaultInjector.hit}, so the injected double and the call sites cannot drift apart.
+ * The five places a test may make a request or a pass fail (AAP 0.11.2). The names are the literals
+ * `payments/webhook.ts`, `payments/operations.ts` and `settlement/settle.ts` pass to {@link FaultInjector.hit},
+ * so the injected double and the call sites cannot drift apart.
  */
 export type FaultPoint =
   | 'stripe_webhook.after_event_insert'
@@ -239,17 +199,12 @@ export type FaultPoint =
   | 'settlement.inside_transaction';
 
 /**
- * Where a test throws from (AAP 0.11.2). Supplied through `AppDeps.faults` and accepted only in
- * `APP_ENV=test`; the production container holds {@link noFaults}, so the call sites cost one
- * resolved promise.
+ * Where a test throws from (AAP 0.11.2). Supplied through `AppDeps.faults`, accepted only in `APP_ENV=test`;
+ * the production container holds {@link noFaults}, so the call sites cost one resolved promise.
  */
 export interface FaultInjector {
   /**
    * Report that `point` was reached.
-   *
-   * @param point - which of the five points the caller is at.
-   * @param context - ids the test wants to see: the Stripe event id, the payment operation id, the
-   *   meetup id. Ids only — never a payload, an address or a token.
    */
   hit(point: FaultPoint, context?: Record<string, string>): Promise<void>;
 }
@@ -262,33 +217,19 @@ export const noFaults: FaultInjector = Object.freeze({
   hit: (): Promise<void> => Promise.resolve(),
 });
 
-/*
- * Redis (AAP 0.3.2)
- */
-
 /**
- * How long {@link ApiRedis.close} gives a connection that is still opening to reach `ready` before
- * it stops waiting and drops it (two seconds).
- *
- * The wait covers a socket that is milliseconds from ready — the dial and the handshake of a Redis
- * that is up — and it is bounded because the same call closes connections during a shutdown, when a
- * Redis that is down must not hold the process. It sits inside the bound of every caller that closes
- * the app: the `apps/api/scripts/*.ts` that do race `app.close()` against five seconds, and `main.ts`
- * against ten. {@link ApiRedis.close} closes the connections in parallel, so a holder spends the wait
- * once rather than once per connection.
+ * How long {@link ApiRedis.close} gives a connection that is still opening to reach `ready` before dropping
+ * it (two seconds). The wait covers a socket milliseconds from ready, and it is bounded because the same call
+ * closes connections during a shutdown, when a Redis that is down must not hold the process.
  */
 const CLOSE_REDIS_READY_TIMEOUT_MS = 2_000;
 
 /**
- * The API's Redis connections, one per role, created on first use (AAP 0.3.2).
- *
- * Three roles, matching `createRedisConnection`'s own: a `client` connection for the rate-limit
- * store, the session cache, the leaderboard cache and the language-model suspension flag; a second
- * `client` connection for the pub/sub subscriber, because a subscribed ioredis connection can issue
- * no other command and `psubscribe` would otherwise break the cache; and a `producer` connection for
- * the BullMQ `Queue` instances, which must fail a command during an outage rather than queue it. A
- * `worker` connection carries no command timeout, because BullMQ's blocking fetch is meant to block,
- * so each consumer gets its own from {@link ApiRedis.createWorkerConnection} and owns it.
+ * The API's Redis connections, one per role, created on first use (AAP 0.3.2): a `client` for the rate-limit
+ * store, the session cache, the leaderboard cache and the language-model suspension flag; a second `client`
+ * for the pub/sub subscriber, since a subscribed ioredis connection can issue no other command; a `producer`
+ * for the BullMQ `Queue` instances, which must fail a command during an outage rather than queue it; and a
+ * `worker`, which carries no command timeout because BullMQ's blocking fetch is meant to block.
  */
 export interface ApiRedis {
   /** The `client`-role connection: fail-fast, never lent to a subscriber. */
@@ -298,91 +239,63 @@ export interface ApiRedis {
   /** The `producer`-role connection every BullMQ `Queue` is built on. */
   readonly producer: Redis;
   /**
-   * A fresh `worker`-role connection for one BullMQ `Worker`, which closes it itself.
-   *
-   * Never memoized: a `Worker` duplicates the instance for its own use and a second consumer must
-   * not share the blocking connection the first one commands on.
+   * A fresh `worker`-role connection for one BullMQ `Worker`, which closes it itself. Never memoized: a
+   * `Worker` duplicates the instance for its own use, so a second consumer must not share it.
    */
   createWorkerConnection(): Redis;
   /**
-   * Quit every connection this holder created, each one falling back to `disconnect()` when `quit`
-   * fails — a socket that is already gone, or a Redis that went away during the shutdown. Idempotent
-   * in effect: a second call finds the same connections already closed.
-   *
-   * A connection whose socket is still opening is given a bounded moment to become `ready` first:
-   * this holder creates connections lazily, so the last one a process needs can be milliseconds old
-   * when the process closes it, and ending that socket under ioredis' own handshake is reported as a
-   * connection failure by a Redis that is up and serving. The connections close in parallel, so the
-   * wait is bounded once for the holder rather than once per connection.
+   * Quit every connection this holder created, each one falling back to `disconnect()` when `quit` fails, and
+   * idempotent in effect. A connection whose socket is still opening is first given a bounded moment to become
+   * `ready`, since the connections are created lazily and ending one under ioredis' own handshake would be
+   * reported as a connection failure by a Redis that is up and serving.
    */
   close(): Promise<void>;
 }
 
 /**
- * Build the API's Redis connections lazily (AAP 0.3.2): nothing connects until the first command is
- * issued, which is what lets `buildApp` open no socket at all.
+ * Build the API's Redis connections lazily (AAP 0.3.2): nothing connects until the first command is issued,
+ * which is what lets `buildApp` open no socket at all.
  *
- * Every connection is built with the process logger, which is what its failures are reported through
- * (AAP 0.3.2, 0.11.1): `createRedisConnection` attaches the `'error'` listener itself and writes one
- * throttled `redis_unavailable` warning per role, carrying the role and a bounded failure token and
- * never the error. So an offline `ready()` cannot crash the process and a flapping connection cannot
- * flood the log — the role's connections and the producer that re-reports their failures share one
- * window — while every line reaches the process logger, with its `service` binding, its ISO time and
- * the workspace's redaction paths applied. The URL is never logged: the line carries the role, which
- * is what an operator needs to tell a rate-limit store failure from a queue failure.
- *
- * @param url - `REDIS_URL` from the validated environment.
- * @param logger - the process logger the connection warnings are written through.
- * @returns the holder {@link AppServices} exposes as `services.redis`.
+ * Every connection is built with the process logger, which its failures are reported through (AAP 0.3.2,
+ * 0.11.1): `createRedisConnection` attaches the `'error'` listener itself and writes one throttled
+ * `redis_unavailable` warning per role, carrying the role and a bounded failure token and never the error, so
+ * an offline `ready()` cannot crash the process, a flapping connection cannot flood the log, and the URL is
+ * never logged.
  */
 export function createApiRedis(url: string, logger: Logger): ApiRedis {
   /** Create one connection of `role`, with the process logger as its failure sink. */
   function connect(role: RedisRole): Redis {
     return createRedisConnection(url, role, { logger });
   }
-
   let client: Redis | undefined;
   let subscriber: Redis | undefined;
   let producer: Redis | undefined;
   const workers = new Set<Redis>();
-
   /**
-   * Close one connection, without ending a socket that is still opening under ioredis' handshake.
+   * Close one connection, without ending a socket that is still opening under ioredis' handshake. A fail-fast
+   * connection rejects a command issued before its first `ready` (`enableOfflineQueue: false`), so a `QUIT`
+   * sent while the socket is opening is rejected and the `disconnect()` fallback would end that socket
+   * mid-handshake, which ioredis reports through the connection's own `'error'` listener and answers by
+   * reconnecting a connection it was just told to close. Waiting for the connection's own first `ready`
+   * removes that, bounded by {@link CLOSE_REDIS_READY_TIMEOUT_MS}.
    *
-   * A fail-fast connection rejects a command issued before its first `ready` (`enableOfflineQueue:
-   * false`), so a `QUIT` sent to a connection whose socket is still opening is rejected, and the
-   * `disconnect()` fallback then ends that socket while ioredis is dialing or running its ready
-   * check. ioredis treats the resulting write error as fatal: it reports it through the connection's
-   * own `'error'` listener — the throttled `redis_unavailable` warning {@link createApiRedis}
-   * documents — and reconnects the connection it was just told to close. Nothing about Redis failed
-   * in that case, so the failure line is false and the process is left with a socket it will not
-   * close. Waiting for the connection's own first `ready` is what removes it: the socket answers the
-   * `QUIT` and ends, and a connection that does not become ready in {@link
-   * CLOSE_REDIS_READY_TIMEOUT_MS} is dropped exactly as before.
-   *
-   * The wait is taken only while ioredis has a socket that is open and not yet writable: its
-   * `connecting`, the dial, and its `connect`, the handshake and the ready check. Every other status
-   * has nothing left to finish. `ready` takes the `QUIT` at once; `end` is closed already, so a
-   * second close must not be delayed by it; and `reconnecting`, `close` and `wait` hold a socket that
-   * is already gone, whose failure the connection's own listener has reported — this close is a
-   * shutdown by then, so those are dropped rather than waited for.
+   * The wait is taken only for `connecting` and `connect`, where ioredis holds a socket that is open and not
+   * yet writable; `ready` takes the `QUIT` at once, `end` is closed already and must not delay a second close,
+   * and `reconnecting`, `close` and `wait` hold a socket that is already gone.
    */
   async function closeConnection(connection: Redis): Promise<void> {
     if (connection.status === 'end') {
       return;
     }
-
     if (connection.status === 'connecting' || connection.status === 'connect') {
       await waitForRedisReady(connection, CLOSE_REDIS_READY_TIMEOUT_MS).catch(() => undefined);
     }
-
     try {
       await connection.quit();
     } catch {
       connection.disconnect();
     }
   }
-
   return {
     get client(): Redis {
       client ??= connect('client');
@@ -421,25 +334,15 @@ export function createApiRedis(url: string, logger: Logger): ApiRedis {
   };
 }
 
-/*
- * Queues (AAP 0.3.2, 0.5.1)
- */
-
 /**
- * The BullMQ producers the API holds (AAP 0.5.1): one `Queue` per queue name, created on first use
- * so that building the app opens no BullMQ connection at all.
- *
- * A producer is only ever created for a queue this process enqueues to — `settlement` for the timers
- * the API schedules, and the `workers` queues for the rows the outbox dispatcher delivers — and it
- * is created on `redis.producer`, the fail-fast connection a `Queue` belongs on.
+ * The BullMQ producers the API holds (AAP 0.5.1): one `Queue` per queue name, created on first use so that
+ * building the app opens no BullMQ connection at all, and only for a queue this process enqueues to —
+ * `settlement` for the timers, and the `workers` queues for the rows the outbox dispatcher delivers.
  */
 export interface ApiQueues {
   /**
-   * The producer for `name`, created on the first call.
-   *
-   * Every producer carries that queue's own default job options from
-   * `QUEUE_JOB_OPTIONS` (AAP 0.5.6), so retry and backoff travel with each job and a caller that
-   * overrides nothing still gets the queue's policy.
+   * The producer for `name`, created on the first call, carrying that queue's own default job options from
+   * `QUEUE_JOB_OPTIONS` (AAP 0.5.6), so retry and backoff travel with each job.
    */
   get(name: QueueName): Queue;
   /** Close every producer created so far. */
@@ -449,23 +352,14 @@ export interface ApiQueues {
 /**
  * Build the queue registry over an already-built Redis holder (AAP 0.3.2, 0.5.1).
  *
- * Every producer created here carries an `'error'` listener, and that listener is not optional: a
- * BullMQ `Queue` re-emits the failures of the connection behind it, and `QueueBase.emit` answers an
- * `'error'` event with no listener by calling `console.error` — the raw error object and its stack,
- * written straight to stderr outside this process's logger, outside its redaction paths and, during a
- * Redis outage, once per reconnect attempt from every process holding a producer. The listener
- * records the failure as the throttled `redis_unavailable` warning instead, under the same `producer`
- * role the connection's own listener reports, so a producer failure is the one line per window rather
- * than a dump beside it.
- *
- * @param redis - the app's connections; only the `producer` is read, and only when a queue is first
- *   asked for.
- * @param logger - the process logger producer failures are reported through.
- * @returns the registry {@link AppServices} exposes as `services.queues`.
+ * Every producer created here carries an `'error'` listener, and that listener is not optional: a BullMQ
+ * `Queue` re-emits the failures of the connection behind it, and `QueueBase.emit` answers an `'error'` event
+ * with no listener by calling `console.error` with the raw error and its stack, outside this process's logger
+ * and its redaction paths. The listener records the failure as the throttled `redis_unavailable` warning
+ * instead, under the same `producer` role the connection's own listener reports.
  */
 function createApiQueues(redis: ApiRedis, logger: Logger): ApiQueues {
   const created = new Map<QueueName, Queue>();
-
   return {
     get(name: QueueName): Queue {
       let queue = created.get(name);
@@ -490,22 +384,14 @@ function createApiQueues(redis: ApiRedis, logger: Logger): ApiQueues {
   };
 }
 
-/*
- * The container (AAP 0.5.1)
- */
-
 /**
- * What every module and every plugin of the API is handed (AAP 0.5.1).
+ * What every module and every plugin of the API is handed (AAP 0.5.1). The members are the one statement of
+ * what the app provides: a `Pick<AppServices, …>` in a module names a subset of this object and is satisfied by
+ * it structurally, so a test can stand a smaller double in for one capability.
  *
- * The members are the plan's one statement of what the app provides: a `Pick<AppServices, …>` in a
- * module names a subset of this object and is satisfied by it structurally, so a test can stand a
- * smaller double in for one capability. Nothing here is a global: the container is built once per
- * process, decorated on the instance, and passed explicitly to the functions that need it.
- *
- * Four members are built on first read rather than eagerly, and each for the same reason — the app
- * must build with no database and no Redis (AAP 0.6.2): `spend` and `suspension` because they take a
- * Redis connection, `pubsub` because it takes two, and `outbox` because the dispatcher it builds is
- * handed the container itself.
+ * Four members are built on first read rather than eagerly, each for the same reason — the app must build with
+ * no database and no Redis (AAP 0.6.2): `spend` and `suspension` because they take a Redis connection, `pubsub`
+ * because it takes two, and `outbox` because the dispatcher it builds is handed the container itself.
  */
 export interface AppServices {
   /** The validated `api` configuration (AAP 0.6.2). */
@@ -543,10 +429,6 @@ export interface AppServices {
   readonly faults: FaultInjector;
   /**
    * The IANA zone of a configured city (AAP 0.5.6), read from `config/cities.json` once per process.
-   *
-   * @param cityId - a city slug, as every route's `:cityId` parameter carries it.
-   * @throws {Error} `unknown city` for a slug this deployment does not have: a city with no
-   *   configuration has no local day to book spend against and no timezone to judge a window in.
    */
   timezoneFor(cityId: string): string;
 }
@@ -585,10 +467,6 @@ export interface AppDeps {
  */
 const backgroundStops = new WeakMap<App, () => Promise<void>>();
 
-/*
- * buildApp (AAP 0.5.1, 0.6.2)
- */
-
 /**
  * Build the API (AAP 0.5.1, 0.6.2): one synchronous call that assembles the container, decorates it
  * on the instance, registers every plugin and route, and returns the app ready to be awaited.
@@ -597,29 +475,19 @@ const backgroundStops = new WeakMap<App, () => Promise<void>>();
  * without a database or a Redis server: nothing here connects, and `app.register` queues a plugin
  * rather than loading it. `await app.ready()` is what loads the plugins, resolves every route and
  * runs the route-schema guard below.
- *
- * @param deps - the validated environment and whatever a suite replaces.
- * @returns the app, decorated with {@link AppServices} and carrying the one `onClose` hook.
- * @throws {Error} `fault injection is only available when APP_ENV=test` when a fault injector is
- *   supplied anywhere else (AAP 0.11.2): the points it throws from interrupt committed work, so no
- *   environment but a test may hold one.
  */
 export function buildApp(deps: AppDeps): App {
   const { env } = deps;
-
   if (deps.faults !== undefined && env.APP_ENV !== 'test') {
     throw new Error('fault injection is only available when APP_ENV=test');
   }
-
   const logger =
     deps.logger ?? createLogger({ name: 'api', level: env.LOG_LEVEL, appEnv: env.APP_ENV });
   const clock = deps.clock ?? systemClock;
-
   // Ownership, not configuration: a dependency the caller injected is closed by the caller, so the
   // close hook below only disconnects what this call created.
   const ownsDb = deps.db === undefined;
   const ownsRedis = deps.redis === undefined;
-
   const db = deps.db ?? createPrismaClient({ databaseUrl: env.DATABASE_URL, appEnv: env.APP_ENV });
   const redis = deps.redis ?? createApiRedis(env.REDIS_URL, logger);
   const payments = deps.payments ?? createStripeGateway(env.stripe, { logger });
@@ -628,14 +496,12 @@ export function buildApp(deps: AppDeps): App {
   const keyring = keyringFromEnv(env);
   const queues = createApiQueues(redis, logger);
   const faults = deps.faults ?? noFaults;
-
   // The four members built on first read: each is memoized here so every reader sees one instance,
   // and none of them is created while the app is being composed.
   let spend: LlmSpend | undefined;
   let suspension: SuspensionStore | undefined;
   let pubsub: PubSub | undefined;
   let outbox: OutboxDispatcher | undefined;
-
   const services: AppServices = {
     env,
     clock,
@@ -683,7 +549,6 @@ export function buildApp(deps: AppDeps): App {
       return outbox;
     },
   };
-
   // The logger generic is pinned to `FastifyBaseLogger` so the instance this call returns is the
   // `App` type above, which every plugin and module of the API is written against; inferring it from
   // the pino instance handed in would make the instance's own logger type a *narrower* one, and a
@@ -705,9 +570,7 @@ export function buildApp(deps: AppDeps): App {
     .setValidatorCompiler(validatorCompiler)
     .setSerializerCompiler(serializerCompiler)
     .withTypeProvider<ZodTypeProvider>();
-
   app.decorate('services', services);
-
   // 1-8. The cross-cutting plugins, on the root instance in this order (AAP 0.5.1).
   registerClock(app, clock);
   registerErrorHandling(app);
@@ -718,12 +581,10 @@ export function buildApp(deps: AppDeps): App {
   registerWebsocket(app);
   // Before any route: the document is generated from the routes registered after it.
   registerOpenApi(app, env);
-
   // 9. The Stripe timing (AAP 0.12.2). The store is opened around `done`, so the rest of the
   // lifecycle — the handler, the executor it awaits, the serializer — runs inside it and every
   // Stripe call the request makes is added to one figure.
   app.addHook('onRequest', (_request, _reply, done) => withStripeTimingStore(done));
-
   app.addHook('onSend', (request, reply, payload, done) => {
     if (writesState(request)) {
       reply.header(SERVER_TIMING_HEADER, stripeTimingValue());
@@ -736,12 +597,10 @@ export function buildApp(deps: AppDeps): App {
     reply.header('Date', request.receivedAt.toUTCString());
     done(null, payload);
   });
-
   // 10. Every route answers with a declared schema or says why it does not (AAP 0.5.4). The guard
   // runs while the routes are being resolved, so a missing schema fails the start rather than
   // answering an empty body in production.
   app.addHook('onRoute', (route) => assertResponseSchema(route));
-
   // 11. The module routes, each mounted under `/v1` in the order the AAP's component list names
   // them. Two of them register more than their own routes: `messaging/routes.ts` registers the chat
   // socket beside its history route, and `voice-agent/twiml.ts` registers `@fastify/formbody`, the
@@ -762,13 +621,11 @@ export function buildApp(deps: AppDeps): App {
   // unparsed body; the voice plugin registers its own form parser for the same reason.
   app.register(stripeWebhookRoutes, { prefix: API_PREFIX });
   app.register(voiceAgentRoutes, { prefix: API_PREFIX });
-
   // 12. Test control: mounted only in a test process that set its token (AAP 0.5.1, 0.5.4). The
   // plugin refuses to register anywhere else, so this condition and its own guard are two locks.
   if (env.APP_ENV === 'test' && env.testOnly.testControlToken !== null) {
     app.register(testControlRoutes, { prefix: API_PREFIX });
   }
-
   // 13. The health probe: public, unlimited, and answered from the two dependencies compose gates the
   // API's readiness on (AAP 0.5.4). It is mounted as a child context, like every other route, so it is
   // registered while the plugins load — a route added to the root instance synchronously would be
@@ -780,7 +637,6 @@ export function buildApp(deps: AppDeps): App {
   app.register(
     (instance) => {
       const scope = instance.withTypeProvider<ZodTypeProvider>();
-
       scope.get(
         HEALTH_ROUTE,
         {
@@ -805,14 +661,12 @@ export function buildApp(deps: AppDeps): App {
               ),
             HEALTH_REDIS_TIMEOUT_MS,
           );
-
           if (database === 'ok' && redisCheck === 'ok') {
             reply
               .code(HEALTHY_STATUS)
               .send({ status: 'ok', checks: { database, redis: redisCheck } });
             return;
           }
-
           // A degraded answer names which dependency failed and nothing else: never the driver's
           // message, a host name or a connection string (AAP 0.11.1).
           reply
@@ -823,7 +677,6 @@ export function buildApp(deps: AppDeps): App {
     },
     { prefix: API_PREFIX },
   );
-
   /**
    * The one close hook (AAP 0.3.2): stop the background work, then give back what this app built, in
    * that order — a pass still in flight would otherwise use a connection that is already closed.
@@ -840,29 +693,20 @@ export function buildApp(deps: AppDeps): App {
         await stop();
       }
     });
-
     const runningPubSub = pubsub;
     if (runningPubSub !== undefined) {
       await shutdownStep(logger, 'pubsub', () => runningPubSub.close());
     }
-
     await shutdownStep(logger, 'queues', () => queues.close());
-
     if (ownsRedis) {
       await shutdownStep(logger, 'redis', () => redis.close());
     }
-
     if (ownsDb) {
       await shutdownStep(logger, 'database', () => db.$disconnect());
     }
   });
-
   return app;
 }
-
-/*
- * Background work (AAP 0.3.2, 0.5.3, 0.5.6)
- */
 
 /**
  * Start the API's background work and hand back the function that stops it (AAP 0.3.2, 0.5.6).
@@ -877,22 +721,16 @@ export function buildApp(deps: AppDeps): App {
  * Idempotent: the stop function is recorded in the same synchronous stretch that starts the work, so
  * a second call — even one made in the same tick — returns the first one's function rather than
  * starting a second worker.
- *
- * @param app - the app {@link buildApp} returned; nothing is started for an app that was never built.
- * @returns the stop function, which also closes whatever is still in flight. It is the function the
- *   `onClose` hook awaits.
  */
 export function startBackground(app: App): Promise<() => Promise<void>> {
   const alreadyStarted = backgroundStops.get(app);
   if (alreadyStarted !== undefined) {
     return Promise.resolve(alreadyStarted);
   }
-
   const services = app.services;
   const stopWorker = startSettlementWorker(services);
   const stopSweeper = startSweeper(services, SWEEPER_INTERVAL_MS);
   const stopOutbox = services.outbox.start(OUTBOX_POLL_INTERVAL_MS);
-
   /**
    * Stop the three loops and wait for their work: the sweeper's pass and the outbox's pass in flight,
    * then the settlement worker's active job. The worker is last because it is the one that spends
@@ -903,17 +741,11 @@ export function startBackground(app: App): Promise<() => Promise<void>> {
     await stopOutbox();
     await stopWorker();
   };
-
   backgroundStops.set(app, stop);
-
   // `start` subscribes and never rejects: an unreachable Redis delays this instance's fan-out and is
   // retried by the module itself, so it must not fail the caller's startup.
   return services.pubsub.start().then(() => stop);
 }
-
-/*
- * Helpers (AAP 0.5.4, 0.5.6, 0.11.1, 0.12.2)
- */
 
 /**
  * The provider configuration the language-model adapter is built from (AAP 0.6.2): the parsed `llm`
@@ -933,10 +765,6 @@ function llmAdapterConfig(env: ApiEnv): LlmAdapterConfig {
  * the credential-free default of the compose stack. Absent optionals are omitted rather than
  * assigned as `undefined`, which `exactOptionalPropertyTypes` requires and the client's own contract
  * states.
- *
- * @param env - the loaded environment.
- * @param httpClient - a transport to build the client on, from `AppDeps`.
- * @returns the client, or `null` in `off` mode.
  */
 function telephonyFor(
   env: ApiEnv,
@@ -946,7 +774,6 @@ function telephonyFor(
   if (telephony.mode === 'off') {
     return null;
   }
-
   return createTelephonyClient({
     mode: telephony.mode,
     accountSid: telephony.accountSid,
@@ -971,10 +798,6 @@ function databaseSql(db: DbClient) {
 /**
  * The IANA zone of a configured city (AAP 0.5.6), read through the registry's cached parse of
  * `config/cities.json` so the file is read once per process.
- *
- * @param cityId - a city slug.
- * @returns the city's zone, for the local-day arithmetic the spend meter and the timers use.
- * @throws {Error} `unknown city` when no configured city carries that slug.
  */
 function timezoneOfCity(cityId: string): string {
   const city = cityBySlug(cityId);
@@ -1015,28 +838,21 @@ function stripeTimingValue(): string {
  * and answers with headers only; and a route that answers other bytes — the WebP photo and the TwiML
  * document — says so with `config.rawResponse`, because a schema there would put a JSON serializer in
  * front of them.
- *
- * @param route - the route Fastify is about to resolve.
- * @throws {Error} naming the method and path of a route that declares no schema.
  */
 function assertResponseSchema(route: RouteOptions): void {
   if (route.websocket === true || route.wsHandler !== undefined) {
     return;
   }
-
   const methods = Array.isArray(route.method) ? route.method : [route.method];
   if (methods.some((method) => BODY_LESS_METHODS.has(method.toUpperCase()))) {
     return;
   }
-
   if (route.config?.rawResponse === true) {
     return;
   }
-
   if (route.schema !== undefined && route.schema.response !== undefined) {
     return;
   }
-
   throw new Error(
     `route_without_response_schema: ${methods.join(', ')} ${route.url} declares no schema.response and no config.rawResponse`,
   );
@@ -1049,14 +865,9 @@ function assertResponseSchema(route: RouteOptions): void {
  * process whose database may be gone, so it waits a fixed interval of real time and reads the result
  * as `ok` or `fail`. Nothing about the failure is returned or logged — the answer says which
  * dependency did not respond, and the log line an operator needs is the one the driver writes.
- *
- * @param operation - the check to run: `SELECT 1`, or a `PING` on the client connection.
- * @param timeoutMs - how long to wait for it.
- * @returns `ok` when it completed in time, `fail` when it rejected or ran out of time.
  */
 async function probe(operation: () => Promise<unknown>, timeoutMs: number): Promise<'ok' | 'fail'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-
   try {
     await Promise.race([
       operation(),
@@ -1080,10 +891,6 @@ async function probe(operation: () => Promise<unknown>, timeoutMs: number): Prom
  * A line carries the step and the error's own short code, never the error object: pino writes an
  * error's message and stack as strings that key-based redaction cannot rewrite, and a connection
  * failure's message carries the host it reached (AAP 0.11.1).
- *
- * @param logger - the process logger.
- * @param step - the step's name, so an operator can tell which one failed.
- * @param run - the step itself.
  */
 async function shutdownStep(
   logger: Logger,
@@ -1109,7 +916,6 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) {
     return undefined;
   }
-
   const code: unknown = (error as { code?: unknown }).code;
   return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(code) ? code : undefined;
 }

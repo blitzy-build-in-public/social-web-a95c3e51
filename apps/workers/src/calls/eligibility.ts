@@ -2,16 +2,13 @@
  * The call-eligibility rule (AAP 0.5.6): whether a queued call task may be dialed now, and what the
  * dispatcher does with it instead when it may not.
  *
- * Six questions are asked, in this order, and the order is part of the rule rather than a detail of
- * the implementation (AAP 0.5.3, 0.5.6):
+ * Six questions are asked, in this order, and the order is part of the rule (AAP 0.5.3, 0.5.6):
  *
- * 1. Is the target marked `doNotCall`? No task of any kind calls a `doNotCall` number, and a number
- *    that another place or lodging holding it has marked `doNotCall` is the same refusal. The task
- *    goes straight to the operator queue as `unreachable` with `blockedReason = do_not_call`.
- * 2. Does a phone number exist? Without one the task is `unreachable` with `blockedReason =
- *    no_phone`, which is the operator queue as well.
+ * 1. Is the target marked `doNotCall`, on its own row or on any other row of either kind holding the
+ *    same number? Then the task goes straight to the operator queue as `unreachable` / `do_not_call`.
+ * 2. Does a phone number exist? Without one the task is `unreachable` / `no_phone`, the same queue.
  * 3. May Tablemate dial that number at all? {@link CallGuard} answers: outside production only
- *    `CALL_ALLOWLIST` numbers are dialed, and in production `CALLS_PRODUCTION_APPROVED` gates every
+ *    `CALL_ALLOWLIST` numbers are dialed and in production `CALLS_PRODUCTION_APPROVED` gates every
  *    call. A refusal keeps the task `queued` with `blockedReason = not_allowlisted` — the only value
  *    of `BlockedReason` that matches — and the guard's own reason travels beside it.
  * 4. Has the task spent its attempts? `CALL_MAX_ATTEMPTS` is two (AAP 0.5.3).
@@ -19,27 +16,20 @@
  * 6. Is it inside calling hours — 09:00 local, finishing by 20:00 local (AAP 0.5.6)?
  *
  * Safety refusals are decided before scheduling, so a `doNotCall` target with no phone is refused
- * rather than deferred, and a number the guard refuses at 21:00 local is blocked rather than
- * deferred. Every other verdict names the instant the caller records as `nextAttemptAt`: the next
- * 09:00 local for a caller outside the window, and for a spacing deferral the spacing instant itself
- * unless that instant is also outside the window, in which case it is moved to the following 09:00
- * local so no wake-up is wasted.
+ * rather than deferred, and a number the guard refuses at 21:00 local is blocked rather than deferred.
+ * Every other verdict names the instant the caller records as `nextAttemptAt`: the next 09:00 local
+ * for a caller outside the window, and for a spacing deferral the spacing instant itself unless that
+ * instant is also outside the window, in which case it moves to the following 09:00 local so no
+ * wake-up is wasted.
  *
- * This module decides and writes nothing. `./dispatch-twilio.ts` calls it in the transaction that
- * claims the task, and `../jobs/call-dispatch.ts` applies the verdict: it moves `nextAttemptAt`, or
- * sets the task `unreachable` with its `blockedReason` and `outcomeAt`, or records
- * `blockedReason = not_allowlisted` while the task stays `queued`. Call caps are deliberately not
- * asked here — `./caps.ts` reserves the slot at dispatch — and neither is the task's status, which
- * the claim itself re-checks.
+ * This module decides and writes nothing; `./dispatch-twilio.ts` calls it in the transaction that
+ * claims the task, and `../jobs/call-dispatch.ts` applies the verdict. Call caps are deliberately not
+ * asked here — `./caps.ts` reserves the slot at dispatch — and neither is the task's status, which the
+ * claim itself re-checks.
  *
- * `now` arrives as a `Date` from the injected clock and no clock is read here (AAP 0.11.1), and a
- * phone number reaches neither a log nor an error message (AAP 0.11.1, 0.12.2). Reads go through the
- * Prisma delegates, so the fixtures-guard extension filters `place` and `lodging` for the process's
- * own `APP_ENV` without this module knowing it (AAP 0.5.2).
- *
- * @see AAP 0.5.6 for the eligibility clause, 0.5.3 for the call-task lifecycle and the
- *   `queued` -> `unreachable` transition, 0.12.2 for the allowlist and calling-hours constraints,
- *   0.6.2 for the environment variables named above, and 0.8.1 for this file.
+ * `now` arrives from the injected clock and a phone number reaches neither a log nor an error message
+ * (AAP 0.11.1, 0.12.2); reads go through the Prisma delegates, so the fixtures-guard extension filters
+ * `place` and `lodging` for the process's own `APP_ENV` without this module knowing it (AAP 0.5.2).
  */
 
 import type { DbClient, DbTx } from '@tablemate/db';
@@ -54,52 +44,38 @@ import {
 import { nextCallingWindow, withinCallingHours } from './calling-hours.ts';
 
 /**
- * The 24 hours that must pass between two attempts at the same task (AAP 0.5.3, 0.5.6), derived
- * from `CALL_RETRY_SPACING_HOURS` so the rule and its constant cannot drift apart.
+ * The 24 hours between two attempts at the same task (AAP 0.5.3, 0.5.6), derived from
+ * `CALL_RETRY_SPACING_HOURS` so the rule and its constant cannot drift apart.
  */
 const CALL_SPACING_MS = CALL_RETRY_SPACING_HOURS * HOUR_MS;
 
-/**
- * The blocked reason a safety refusal carries (AAP 0.5.3): the target is marked `doNotCall`, or it
- * has no phone number at all. Taken from `BlockedReason` so the stored value is the shared one.
- */
 type SafetyBlockedReason = Extract<BlockedReason, 'do_not_call' | 'no_phone'>;
 
-/**
- * The blocked reason an allowlist refusal carries (AAP 0.5.2, 0.5.6). `not_allowlisted` is the only
- * value of `BlockedReason` that matches either of the guard's two reasons, which is why it is the
- * one the task keeps while it stays `queued`.
- */
 type AllowlistBlockedReason = Extract<BlockedReason, 'not_allowlisted'>;
 
 /** Why a dispatch waits (AAP 0.5.6). */
 export type DeferralReason = 'calling_hours' | 'spacing' | 'attempts';
 
 /**
- * The dispatcher's verdict on one queued call task (AAP 0.5.3, 0.5.6):
+ * The dispatcher's verdict on one queued call task (AAP 0.5.3, 0.5.6), discriminated on `kind` so a
+ * caller has to handle every verdict to compile:
  *
  * - `eligible` — dial it now.
- * - `unreachable` — the task goes to the operator queue with this `blockedReason`, and it is never
- *   dialed. A safety refusal, decided before any scheduling question.
- * - `blocked` — the task stays `queued` with `blockedReason = not_allowlisted`, and `guardReason`
- *   says whether the number is outside `CALL_ALLOWLIST` or production calls are not approved yet.
+ * - `unreachable` — the task goes to the operator queue with this `blockedReason` and is never dialed;
+ *   a safety refusal, decided before any scheduling question.
+ * - `blocked` — the task stays `queued` with `blockedReason = not_allowlisted`, and `guardReason` says
+ *   whether the number is outside `CALL_ALLOWLIST` or production calls are not approved yet.
  * - `defer` — dial it no earlier than `until`, which the caller records as `nextAttemptAt`.
- *
- * The union is discriminated on `kind`, so a caller has to handle every verdict to compile.
  */
 export type Eligibility =
   | { kind: 'eligible' }
   | { kind: 'unreachable'; blockedReason: SafetyBlockedReason }
   | { kind: 'blocked'; blockedReason: AllowlistBlockedReason; guardReason: NotCallableReason }
   | { kind: 'defer'; until: Date; reason: DeferralReason };
-
 /**
  * The business a queued call task targets (AAP 0.5.6): its stored phone number, the `doNotCall`
- * refusal any task of another task kind may have set on it, and the IANA zone of the city it sits
- * in — the venue's or the lodging's own city, from `config/cities.json`, never the host's.
- *
- * The caller reads the row and the city's zone and passes both in, so this module holds no query of
- * its own for the target and the calling-hours rule reads the same zone the caller used.
+ * refusal any task may have set on it, and the IANA zone of the business's own city — from
+ * `config/cities.json`, never the host's, and the same zone the calling-hours rule is then read in.
  */
 export type EligibilityTarget = {
   phone: string | null;
@@ -109,13 +85,9 @@ export type EligibilityTarget = {
 
 /**
  * Everything {@link checkEligibility} reads, passed in rather than reached for: the database for the
- * shared-number lookup, the call guard, the instant from the injected clock (AAP 0.11.1),
- * `CAP_CALL_SECONDS`, and when the task's last counted attempt ended.
- *
- * `db` is the guarded client or an interactive transaction, so the same call serves the dispatch
- * transaction and a standalone read. `lastAttemptEndedAt` is what
- * {@link lastCountedAttemptEndedAt} answered, and is `null` when the task has no counted attempt
- * yet.
+ * shared-number lookup, the call guard, the instant from the injected clock, `CAP_CALL_SECONDS`, and
+ * when the task's last counted attempt ended (`null` when it has none). `db` is the guarded client or
+ * an interactive transaction, so the same call serves the dispatch transaction and a standalone read.
  */
 export type EligibilityDeps = {
   db: DbClient | DbTx;
@@ -127,37 +99,20 @@ export type EligibilityDeps = {
 };
 
 /**
- * The verdict on a queued call task, in the order AAP 0.5.6 lists its conditions:
+ * The verdict on a queued call task, in the order AAP 0.5.6 lists its conditions: `doNotCall` (the
+ * target's own row, or any other row of either kind holding the same number) and a missing phone
+ * number decide `unreachable`; the guard's refusal decides `blocked`; `attempts >=
+ * CALL_MAX_ATTEMPTS`, less than 24 h since the last counted attempt ended and an instant outside
+ * 09:00-20:00 local for a call of `capCallSeconds` each decide `defer`; otherwise `eligible`.
  *
- * | # | condition | verdict |
- * |---|---|---|
- * | 1 | the target is `doNotCall`, or another place or lodging holding the same number is | `unreachable` / `do_not_call` |
- * | 2 | there is no phone number | `unreachable` / `no_phone` |
- * | 3 | {@link CallGuard.isCallable} refuses the number | `blocked` / `not_allowlisted` |
- * | 4 | `attempts >= CALL_MAX_ATTEMPTS` (2) | `defer` / `attempts` |
- * | 5 | less than 24 h since the last counted attempt ended | `defer` / `spacing` |
- * | 6 | outside 09:00-20:00 local for a call of `capCallSeconds` | `defer` / `calling_hours` |
- * | 7 | otherwise | `eligible` |
+ * A phone value that is present but blank counts as no number at all: it cannot belong to any
+ * allowlist, and a task without a usable number belongs in the operator queue rather than in a
+ * refusal loop.
  *
- * A target with a phone but no `doNotCall` flag is refused when that same number is marked
- * `doNotCall` on any other row of either kind, because no task of any kind calls a `doNotCall`
- * number and a caller reading one row would otherwise miss it. A phone value that is present but
- * blank counts as no number at all: it cannot belong to any allowlist, and a task without a usable
- * number belongs in the operator queue rather than in a refusal loop.
- *
- * The attempts deferral is a state that should not occur: `call-results` turns a second `no_answer`
- * into `unreachable` rather than requeueing (AAP 0.5.3), so a caller reaching it logs an
- * inconsistency instead of dialing. It still answers with an instant rather than throwing, which
- * keeps a task that somehow got there out of the way for 24 hours.
- *
- * @param task - The queued task's `attempts` counter.
- * @param target - The place or lodging's phone number, `doNotCall` flag and city zone.
- * @param deps - The database, the call guard, the clock instant and the task's last counted attempt.
- * @returns The verdict, one of {@link Eligibility}'s four shapes.
- * @throws RangeError when `target.timezone` is not a known IANA zone, when `deps.now` denotes no
- *   instant, or when `deps.capCallSeconds` is negative or not finite — a misconfiguration the
- *   calling-hours rule refuses rather than guesses at.
- * @see AAP 0.5.6, 0.5.3.
+ * The attempts deferral is a state that should not occur — `call-results` turns a second `no_answer`
+ * into `unreachable` rather than requeueing (AAP 0.5.3) — so a caller reaching it logs an inconsistency
+ * instead of dialing. It still answers with an instant rather than throwing, which keeps a task that
+ * somehow got there out of the way for 24 hours.
  */
 export async function checkEligibility(
   task: { attempts: number },
@@ -167,27 +122,20 @@ export async function checkEligibility(
   if (target.doNotCall) {
     return { kind: 'unreachable', blockedReason: 'do_not_call' };
   }
-
   const phone = target.phone !== null && target.phone.trim().length > 0 ? target.phone : null;
-
   // Asked before the guard, because a number another row has opted out of must not be dialed even
   // where the allowlist would admit it (AAP 0.5.6).
   if (phone !== null && (await phoneIsMarkedDoNotCall(deps.db, phone))) {
     return { kind: 'unreachable', blockedReason: 'do_not_call' };
   }
-
   if (phone === null) {
     return { kind: 'unreachable', blockedReason: 'no_phone' };
   }
-
   const callable = deps.callGuard.isCallable(phone);
-
   if (!callable.callable) {
     return { kind: 'blocked', blockedReason: 'not_allowlisted', guardReason: callable.reason };
   }
-
   const { lastAttemptEndedAt } = deps;
-
   if (task.attempts >= CALL_MAX_ATTEMPTS) {
     const since = lastAttemptEndedAt ?? deps.now;
     return {
@@ -196,10 +144,8 @@ export async function checkEligibility(
       until: new Date(since.getTime() + CALL_SPACING_MS),
     };
   }
-
   if (lastAttemptEndedAt !== null) {
     const spacingUntil = new Date(lastAttemptEndedAt.getTime() + CALL_SPACING_MS);
-
     if (deps.now.getTime() < spacingUntil.getTime()) {
       return {
         kind: 'defer',
@@ -210,7 +156,6 @@ export async function checkEligibility(
       };
     }
   }
-
   if (!withinCallingHours(target.timezone, deps.now, deps.capCallSeconds)) {
     return {
       kind: 'defer',
@@ -218,7 +163,6 @@ export async function checkEligibility(
       until: nextCallingWindow(target.timezone, deps.now),
     };
   }
-
   return { kind: 'eligible' };
 }
 
@@ -226,20 +170,14 @@ export async function checkEligibility(
  * The instant the task's last counted attempt ended, or `null` when it has none (AAP 0.5.3):
  * {@link checkEligibility}'s `deps.lastAttemptEndedAt`.
  *
- * An attempt with `state = 'dispatch_failed'` is left out. A definite vendor rejection — a
- * connection refused before anything was sent, or a Twilio 4xx — does not count as an attempt at
- * the business (AAP 0.5.3), so it must not spend one of the task's two, and it must not start the
- * 24-hour spacing either: the task waits on the vendor backoff instead.
+ * An attempt with `state = 'dispatch_failed'` is left out: a definite vendor rejection — a connection
+ * refused before anything was sent, or a Twilio 4xx — does not count as an attempt at the business
+ * (AAP 0.5.3), so it must not spend one of the task's two and must not start the 24-hour spacing
+ * either; the task waits on the vendor backoff instead.
  *
- * The attempts of a task are sequential, so the latest one by `startedAt` is the one that matters,
- * and its own end is what the spacing is measured from. While that latest attempt has not ended —
- * a dispatch still being reconciled, or a call in flight — its start instant stands in, which keeps
- * a task whose attempt is unresolved inside the spacing rather than free to redial.
- *
- * @param db - The guarded client or an interactive transaction to read through.
- * @param taskId - The `CallTask` whose attempts are read.
- * @returns The latest counted attempt's `endedAt`, falling back to its `startedAt`, or `null`.
- * @see AAP 0.5.3 for the vendor-failure rule and the two-attempt allowance.
+ * The attempts of a task are sequential, so the latest one by `startedAt` is the one that matters.
+ * While that attempt has not ended — a dispatch still being reconciled, or a call in flight — its start
+ * instant stands in, which keeps an unresolved task inside the spacing rather than free to redial.
  */
 export async function lastCountedAttemptEndedAt(
   db: DbClient | DbTx,
@@ -250,31 +188,24 @@ export async function lastCountedAttemptEndedAt(
     orderBy: { startedAt: 'desc' },
     select: { endedAt: true, startedAt: true },
   });
-
   return attempt === null ? null : (attempt.endedAt ?? attempt.startedAt);
 }
 
 /**
  * Whether any place or lodging holding `phone` is marked `doNotCall` (AAP 0.5.3, 0.5.6).
  *
- * The rule is about the number, not the row: one business's number can be recorded on a place and
- * on a lodging, and an operator asking not to be called again sets `doNotCall` on the target of the
- * call that heard the request and on every other task of that target — so a caller that reads only
- * its own row can still find the same number live elsewhere. Both reads are `findFirst` with
- * `select: { id: true }`, so a match costs no row data, and they run together.
+ * The rule is about the number, not the row: one business's number can be recorded on a place and on a
+ * lodging, and an operator asking not to be called again sets `doNotCall` on the target of the call
+ * that heard the request and on every other task of that target, so a caller reading only its own row
+ * could miss the same number live elsewhere. Both `findFirst` reads select only `id` and run together.
  *
- * The Prisma delegates carry the fixtures-guard extension, so an `is_fixture` row is invisible
- * outside `test` and `demo` exactly as it is everywhere else (AAP 0.5.2).
- *
- * @param db - The guarded client or an interactive transaction to read through.
- * @param phone - The E.164 number to look for, compared as stored and never logged.
- * @returns True when a place or a lodging holding that number refuses calls.
+ * The Prisma delegates carry the fixtures-guard extension, so an `is_fixture` row is invisible outside
+ * `test` and `demo` exactly as it is everywhere else (AAP 0.5.2).
  */
 async function phoneIsMarkedDoNotCall(db: DbClient | DbTx, phone: string): Promise<boolean> {
   const [place, lodging] = await Promise.all([
     db.place.findFirst({ where: { phone, doNotCall: true }, select: { id: true } }),
     db.lodging.findFirst({ where: { phone, doNotCall: true }, select: { id: true } }),
   ]);
-
   return place !== null || lodging !== null;
 }

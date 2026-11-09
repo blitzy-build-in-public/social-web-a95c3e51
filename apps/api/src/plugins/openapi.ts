@@ -1,28 +1,20 @@
 /**
  * OpenAPI document generation for the API (AAP 0.4.1, 0.5.1, 0.8.1, 0.11.2).
  *
- * Every route is described by the Zod schema it validates its request with and serializes its
- * response through, so the emitted document cannot drift from the contract the code enforces. It is
- * produced once, by `apps/api/scripts/emit-openapi.ts`, which calls `app.swagger()` after `ready()`
- * and writes `docs/api/openapi.json`; no route serves it, and Swagger UI is not mounted (AAP 0.8.1).
+ * Every route is described by the Zod schema it validates its request with and serializes its response through,
+ * so the emitted document cannot drift from the contract the code enforces. It is produced once, by
+ * `apps/api/scripts/emit-openapi.ts`, which calls `app.swagger()` after `ready()` and writes
+ * `docs/api/openapi.json`; no route serves it, and Swagger UI is not mounted (AAP 0.8.1).
  *
- * Three invariants hold for the registration below:
- *
- * - `@fastify/swagger` collects routes through an `onRoute` hook, so `app.ts` must call
- *   {@link registerOpenApi} before it registers any route plugin, and every route must be declared
- *   inside a plugin registered after this call. Fastify loads the queued swagger plugin only at
- *   `ready()`, so a route declared on the root instance — before this call or after it — is emitted
- *   nowhere.
- * - The declared OpenAPI version is what the Zod transform reads to pick its JSON Schema dialect
- *   (`getJSONSchemaTarget`): `3.0.3` selects the `openapi-3.0` output, which writes a nullable value
- *   as `nullable: true` and a single-value enum as `enum`, instead of the JSON Schema 2020-12 forms
- *   an OpenAPI 3.0 document may not carry.
- * - A route that must stay out of the document sets `schema.hide` — the ConversationRelay socket
- *   `WS /v1/webhooks/voice/relay`, and the test-control routes that exist only when
- *   `APP_ENV=test` (AAP 0.5.4) — and nothing registered here carries a timestamp, a random id or the
- *   environment it ran in, so two emits of the same tree are byte-identical.
+ * Three invariants hold for the registration below. `@fastify/swagger` collects routes through an `onRoute`
+ * hook, so `app.ts` must call {@link registerOpenApi} before it registers any route plugin, and every route must
+ * be declared inside a plugin registered after this call. The declared OpenAPI version is what the Zod transform
+ * reads to pick its JSON Schema dialect: `3.0.3` selects the `openapi-3.0` output, which writes a nullable value
+ * as `nullable: true` and a single-value enum as `enum`, rather than the JSON Schema 2020-12 forms an OpenAPI 3.0
+ * document may not carry. And a route that must stay out of the document sets `schema.hide`, while nothing
+ * registered here carries a timestamp, a random id or the environment it ran in, so two emits of the same tree
+ * are byte-identical.
  */
-
 import swagger from '@fastify/swagger';
 import { jsonSchemaTransform } from 'fastify-type-provider-zod';
 
@@ -30,10 +22,7 @@ import { LODGING_SECRET_HEADER, VENUE_SECRET_HEADER } from '@tablemate/shared';
 
 import type { ApiEnv } from '@tablemate/server-core';
 
-// Type-only, and taken from the module that builds the instance rather than from this file's
-// dependency whitelist: `App` is the plan's one declaration of the app's type, it is erased at
-// compile time, and nothing of `app.ts` is read at runtime (the same import the sibling plugins
-// `errors.ts`, `raw-body.ts` and `websocket.ts` take).
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**
@@ -92,9 +81,6 @@ export const OPENAPI_SECURITY = {
  * listens on — and the three security schemes are the ones {@link OPENAPI_SECURITY} names. The
  * description points a reader at `docs/api/README.md`, where the routes and error codes the pilot
  * adds to the contract are listed as additions (AAP 0.5.4).
- *
- * @param app - the instance being built; the document is read back from it with `app.swagger()`.
- * @param env - the loaded environment, for the public URL the document advertises.
  */
 export function registerOpenApi(app: App, env: Pick<ApiEnv, 'API_PUBLIC_URL'>): void {
   app.register(swagger, {

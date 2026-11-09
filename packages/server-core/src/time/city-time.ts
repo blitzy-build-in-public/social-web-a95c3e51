@@ -1,40 +1,11 @@
-/**
- * City-local time (AAP 0.5.6, 0.5.7, 0.11.1).
- *
- * What the pilot schedules per city is wall-clock time in the city's IANA zone — the 09:00–20:00
- * calling window, the 23:00 suggestion cut-off, a task's next 09:00 or 00:05 local attempt, the
- * local date that keys a city's call and language-model budgets, the end of a proof's departure day
- * and of a stay — while the database keeps the UTC instant these functions return, so this file is
- * the only conversion between the two.
- *
- * No clock is read (AAP 0.11.1): the instant reasoned about arrives as a `Date` the caller took from
- * the injected `Clock`, so tests can advance it, and every returned `Date` is built by `toJSDate()`.
- * No luxon global state is touched: every construction passes `{ zone }` explicitly, so no result
- * depends on the zone the process happens to run in.
- *
- * Daylight saving is resolved from the zone's own offset table rather than through luxon's factory,
- * which guesses the offset to read a wall time at from `Settings.now()`: a wall time in the
- * spring-forward gap moves forward by the size of the gap (Lisbon 2026-03-29 01:30 is 02:30 WEST,
- * 2026-03-29T01:30Z), and a wall time in the fall-back overlap takes the earlier of its two readings
- * (Lisbon 2026-10-25 01:30 is 01:30 WEST, 2026-10-25T00:30Z), so neither depends on when the process
- * started. Lisbon is the only launch city with DST, and neither wall time meets the calling hours or
- * the 23:00 cut-off.
- */
 import { DateTime, IANAZone } from 'luxon';
 
-/** The one accepted spelling of a city-local calendar date. */
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** `HH:MM` on a 24-hour clock, so `24:00`, `9:00` and `09:60` are all rejected. */
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/**
- * Luxon's `DateTimeMaybeValid`, the union whose `isValid` flag narrows its validity. The union and
- * not plain `DateTime` is load-bearing: `toISODate()` stays `string | null` on `DateTime<boolean>`.
- */
 type MaybeValid = DateTime<true> | DateTime<false>;
 
-/** The parts of a `YYYY-MM-DD` date; a malformed or unreal date (`2026-02-30`, month 13) throws. */
 function parseLocalDate(localDate: string): { year: number; month: number; day: number } {
   if (!LOCAL_DATE_RE.test(localDate)) {
     throw new RangeError(`Expected a calendar date as YYYY-MM-DD, received "${localDate}"`);
@@ -47,7 +18,6 @@ function parseLocalDate(localDate: string): { year: number; month: number; day: 
   return parts;
 }
 
-/** The hour and minute of an `HH:MM` wall time, or a `RangeError` naming the value. */
 function parseHHmm(hhmm: string): { hour: number; minute: number } {
   if (!HHMM_RE.test(hhmm)) {
     throw new RangeError(`Expected a 24-hour wall time as HH:MM, received "${hhmm}"`);
@@ -56,14 +26,12 @@ function parseHHmm(hhmm: string): { hour: number; minute: number } {
   return { hour: Number(hhmm.slice(0, 2)), minute: Number(hhmm.slice(3, 5)) };
 }
 
-/** Reject a `Date` that denotes no instant, such as one built from an invalid ISO string. */
 function assertValidDate(at: Date): void {
   if (Number.isNaN(at.getTime())) {
     throw new RangeError('Expected a valid Date, received an invalid Date');
   }
 }
 
-/** Narrow luxon's valid/invalid union, which the caller's own input checks already satisfy. */
 function assertValidDateTime(dt: MaybeValid): asserts dt is DateTime<true> {
   if (!dt.isValid) {
     throw new RangeError(
@@ -72,26 +40,18 @@ function assertValidDateTime(dt: MaybeValid): asserts dt is DateTime<true> {
   }
 }
 
-/** The instant a luxon value denotes, as a new `Date`. */
 function toDate(dt: MaybeValid): Date {
   assertValidDateTime(dt);
   return dt.toJSDate();
 }
 
-/** A luxon value's `YYYY-MM-DD` local date, narrowed because `toISODate()` is `string | null`. */
 function isoDateOf(dt: MaybeValid): string {
   assertValidDateTime(dt);
   return dt.toISODate();
 }
 
-/** One day in milliseconds: the step that brackets a DST transition when probing a zone's offsets. */
 const DAY_MS = 86_400_000;
 
-/**
- * The offsets, in minutes east of UTC, that could apply around the wall-clock time `wallMs` — the
- * zone's offset a day before it, at it and a day after it. A transition moves the offset once, so
- * one day either side brackets every candidate.
- */
 function candidateOffsets(zone: IANAZone, wallMs: number): number[] {
   const offsets = new Set<number>();
   for (const step of [-DAY_MS, 0, DAY_MS]) {
@@ -100,20 +60,6 @@ function candidateOffsets(zone: IANAZone, wallMs: number): number[] {
   return [...offsets];
 }
 
-/**
- * The instant the wall-clock time `wallMs` denotes in `zone`, where `wallMs` is the millisecond
- * count `Date.UTC` produces for those fields. Reading that wall time at offset `o` gives the instant
- * `wallMs - o * 60_000`, so an offset is a real reading only when the zone reports it again at that
- * instant.
- *
- * A fall-back overlap has two real readings and the earlier is taken, so the result never depends on
- * when the process started; a spring-forward gap has none, and the wall time moves forward by the
- * size of the gap, its first instant after it.
- *
- * `DateTime.fromObject` cannot be used for this: it guesses the offset to read the wall time at from
- * `Settings.now()`, so an ambiguous wall time resolves differently in a process started in summer
- * and one started in winter.
- */
 function resolveWallTime(zone: IANAZone, wallMs: number): Date {
   const offsets = candidateOffsets(zone, wallMs);
   const readings = offsets
@@ -127,8 +73,7 @@ function resolveWallTime(zone: IANAZone, wallMs: number): Date {
 
 /**
  * Assert that `tz` is an IANA zone the runtime knows (AAP 0.6.2: zones come from
- * `config/cities.json`). Every other export takes a zone and calls this first.
- * Throws `RangeError` when `tz` is not a real IANA zone name.
+ * `config/cities.json`).
  */
 export function assertValidZone(tz: string): void {
   if (!IANAZone.isValidZone(tz)) {
@@ -139,7 +84,6 @@ export function assertValidZone(tz: string): void {
 /**
  * The city's local calendar date at `at`, which keys the per-city call and language-model budgets
  * (AAP 0.5.6) and dates a meetup for suggestions and lodging-activity facts (AAP 0.5.7).
- * Throws `RangeError` for a non-IANA zone or an invalid `Date`.
  */
 export function localDateKey(tz: string, at: Date): string {
   assertValidZone(tz);
@@ -148,10 +92,9 @@ export function localDateKey(tz: string, at: Date): string {
 }
 
 /**
- * The UTC instant of wall-clock `hhmm` on `localDate` in `tz` (AAP 0.5.6), resolved by
- * {@link resolveWallTime} under the DST rule in the file header: a gap wall time moves forward by
- * the gap, an overlap takes the earlier reading. Throws `RangeError` for a non-IANA zone or a
- * malformed string.
+ * The UTC instant of wall-clock `hhmm` on `localDate` in `tz` (AAP 0.5.6), resolved by {@link
+ * resolveWallTime} under the DST rule in the file header: a gap wall time moves forward by the gap,
+ * an overlap takes the earlier reading.
  */
 export function localTimeOn(tz: string, localDate: string, hhmm: string): Date {
   assertValidZone(tz);
@@ -162,8 +105,7 @@ export function localTimeOn(tz: string, localDate: string, hhmm: string): Date {
 
 /**
  * 00:00:00.000 local on `localDate`, the start of a city-local day (AAP 0.5.2: a proof's
- * `validFrom` is two local days before its arrival). Throws `RangeError` for a non-IANA zone or a
- * malformed date.
+ * `validFrom` is two local days before its arrival).
  */
 export function startOfLocalDay(tz: string, localDate: string): Date {
   assertValidZone(tz);
@@ -173,9 +115,8 @@ export function startOfLocalDay(tz: string, localDate: string): Date {
 
 /**
  * 23:59:59.999 local on `localDate`, the last instant of a city-local day: a proof's `validTo` is
- * the end of its departure day in city time (AAP 0.5.2, 0.5.5, 0.5.7), and `stay-expiry` turns
- * `showStaying` off at the end of `stayTo` (AAP 0.5.3). Throws `RangeError` for a non-IANA zone or
- * a malformed date.
+ * the end of its departure day in city time, and `stay-expiry` turns `showStaying` off at the end
+ * of `stayTo` (AAP 0.5.2, 0.5.3, 0.5.5).
  */
 export function endOfLocalDay(tz: string, localDate: string): Date {
   assertValidZone(tz);
@@ -184,10 +125,8 @@ export function endOfLocalDay(tz: string, localDate: string): Date {
 }
 
 /**
- * `localDate` moved by `days` calendar days, which derives a proof's `validFrom` as arrival − 2 days
- * (AAP 0.5.2) and steps {@link nextLocalDayAt} to the following day. Pure calendar arithmetic in
- * UTC, so no zone and no DST transition can shift the result. Throws `RangeError` for a malformed
- * date or a non-integer `days`.
+ * `localDate` moved by `days` calendar days, which derives a proof's `validFrom` as arrival − 2
+ * days (AAP 0.5.2) and steps {@link nextLocalDayAt} to the following day.
  */
 export function addLocalDays(localDate: string, days: number): string {
   const { year, month, day } = parseLocalDate(localDate);
@@ -199,9 +138,8 @@ export function addLocalDays(localDate: string, days: number): string {
 
 /**
  * Wall-clock `hhmm` on the city-local day after `at`: where a task over the call or spend cap moves
- * `nextAttemptAt` (09:00 local) and where `menu-ingest` defers to when a language-model reservation
- * is refused (00:05 local) (AAP 0.5.6). Throws `RangeError` for a non-IANA zone, an invalid `Date`
- * or a malformed time.
+ * `nextAttemptAt`, and where `menu-ingest` defers to when a language-model reservation is refused
+ * (AAP 0.5.6).
  */
 export function nextLocalDayAt(tz: string, at: Date, hhmm: string): Date {
   assertValidZone(tz);
@@ -211,9 +149,7 @@ export function nextLocalDayAt(tz: string, at: Date, hhmm: string): Date {
 
 /**
  * The next occurrence of wall-clock `hhmm` in `tz`: today's when it is strictly later than `at`,
- * otherwise the following local day's. It is the "next 09:00 local" a call deferred outside calling
- * hours waits for (AAP 0.5.6). Throws `RangeError` for a non-IANA zone, an invalid `Date` or a
- * malformed time.
+ * otherwise the following local day's.
  */
 export function nextOccurrenceOf(tz: string, at: Date, hhmm: string): Date {
   assertValidZone(tz);
@@ -224,11 +160,7 @@ export function nextOccurrenceOf(tz: string, at: Date, hhmm: string): Date {
 
 /**
  * Whether the span `from`–`to` sits inside the window `startHHmm`–`endHHmm` on `from`'s local date,
- * both bounds inclusive. It is the calling-hours test of AAP 0.5.6 — `now ≥ 09:00` and
- * `now + CAP_CALL_SECONDS ≤ 20:00` — and a `to` on a later local date is outside by construction,
- * since both bounds belong to `from`'s day. Throws `RangeError` for a non-IANA zone, an invalid
- * `Date`, a `to` before the `from`, a malformed time, or an end not after the start; overnight
- * windows are unsupported because no caller needs one.
+ * both bounds inclusive.
  */
 export function isWithinLocalWindow(
   tz: string,

@@ -1,30 +1,17 @@
 /**
- * Integration tests for the operator routes of AAP 0.5.4 and the additive `POST /v1/events`
- * (AAP 0.8.1 lists this file; AAP 0.5.3 requires each operator outcome, the `do_not_call` side
- * effects and the refusal for lodging tasks; AAP 0.5.7 requires a late cancellation asserted through
- * `GET /admin/metrics`).
+ * Integration tests for the operator routes and the additive `POST /v1/events`.
  *
- * Six groups, in the order `admin/routes.ts` registers its routes: the guard every `/admin/*` route
+ * Seven groups, in the order `admin/routes.ts` registers its routes: the guard every `/admin/*` route
  * shares, the dashboard, the dispute queue, the call-task queue, the lodging-claim queue with its
- * audited booking-details read, and the crawl-domain, onboarding, report and client-event routes,
- * followed by the language-model re-enable AAP 0.5.6 requires.
- * The real app `createTestApp` builds runs against real PostgreSQL with PostGIS and real Redis, so
- * every assertion reads what a handler wrote: the status a resolution applied, the release
- * operations a `no_fault` planned, the prices an outcome stored, the audit row the booking-details
- * read wrote, and the job onboarding enqueued.
+ * audited booking-details read, the crawl-domain, onboarding, report and client-event routes, and the
+ * operator's language-model re-enable.
+ * Every assertion reads what a handler wrote, and every answer is parsed with the shared schema its
+ * route declares, so a field the contract does not carry fails the case.
  *
- * **No case moves the clock.** AAP 0.11.1's 15-minute access token would expire under an hour-sized
- * jump, and the two boundaries these routes judge — the free-cancellation window of AAP 0.5.3 and
- * the check-in window's close — are reachable by placing a meetup's `startsAt` relative to the frozen
- * instant. Every answer is parsed with the shared schema its route declares, so a field the contract
- * does not carry fails the case rather than passing an assertion nobody wrote.
- *
- * @see AAP 0.5.4 for the routes, their guards and their errors, 0.5.3 for the lifecycles the
- *   resolutions apply, 0.5.6 for the language-model suspension the re-enable clears, 0.5.7 for the
- *   metric definitions, 0.5.2 for the encrypted fields and the audit log, 0.3.2 for the after-commit
- *   enqueue, 0.11.2 for the harness, and 0.8.1 for this file.
+ * No case moves the clock: an hour-sized jump would expire the 15-minute access token, and the two
+ * boundaries these routes judge are reachable by placing a meetup's `startsAt` relative to the
+ * frozen instant.
  */
-
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 
@@ -96,21 +83,15 @@ import type {
 } from '../support/factories.ts';
 import type { TestApp } from '../support/app.ts';
 
-/* Fixtures and helpers (AAP 0.11.1 density: one builder per shape, reused by every case) */
-
-/** The city every fixture meetup, venue and place stands in. */
 const LISBON = 'lisbon';
 /** A second launch city, whose lodging exists only to prove a hand-entered row carries no OSM ids. */
 const MEXICO_CITY = 'mexico-city';
-/** The frozen clock's own day, as `MetricsQuery.from` and `.to` carry it (AAP 0.11.1). */
 const TODAY = DEFAULT_TEST_NOW.slice(0, 10);
 
 let t: TestApp;
 /** The operator every `/admin/*` case acts as; no card, so no case places a hold for them. */
 let operator: UserFixture;
-/** The initiator of every fixture meetup. */
 let traveler: UserFixture;
-/** The invited counterpart of every fixture meetup. */
 let other: UserFixture;
 let venue: VenueFixture;
 let lodging: LodgingFixture;
@@ -127,7 +108,6 @@ afterAll(async () => {
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
-
   operator = await makeUser(t, { role: 'operator', card: 'none' });
   traveler = await makeUser(t);
   other = await makeUser(t);
@@ -136,12 +116,10 @@ beforeEach(async () => {
   place = await makePlace(t, { cityId: LISBON, category: 'restaurant' });
 });
 
-/** An instant `offsetMs` from the frozen clock, which every `startsAt` override is built from. */
 function instant(offsetMs: number): Date {
   return new Date(t.clock.now().getTime() + offsetMs);
 }
 
-/** The `YYYY-MM-DD` day an instant falls in. */
 function dayOf(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
@@ -151,7 +129,6 @@ function guestName(): string {
   return `Guest ${randomUUID().slice(0, 8)}`;
 }
 
-/** Inject one request as the operator. */
 function asOperator(
   method: RouteRequest['method'],
   url: string,
@@ -160,30 +137,23 @@ function asOperator(
   return callRoute(t.app, { method, url, as: operator, ...extra });
 }
 
-/** `GET /admin/metrics` as the operator, parsed into the contract's dashboard (AAP 0.5.7). */
 async function metrics(query: Record<string, string> = {}): Promise<MetricsDto> {
   const response = await asOperator('GET', '/v1/admin/metrics', {
     query: { from: TODAY, to: TODAY, ...query },
   });
-
   expect(response.status, response.body).toBe(200);
   return MetricsDto.parse(response.json());
 }
 
-/** The `place-refresh` payloads the queue holds, in every state a job waits in (AAP 0.3.2). */
 async function placeRefreshPayloads(): Promise<unknown[]> {
   const jobs = await t.services.queues
     .get(QUEUE.placeRefresh)
     .getJobs(['waiting', 'prioritized', 'delayed']);
-
   // BullMQ types a payload as `any`; the cast keeps the read out of the lint rules that ban touching
   // an `any` member, and the comparison is on the value itself.
   return jobs.map((job) => job.data as unknown);
 }
 
-/* Group 1 — the guard every operator route shares (AAP 0.5.4) */
-
-/** One route of the contract, named for the case title and built with ids at call time. */
 interface AdminRouteCase {
   readonly name: string;
   readonly method: RouteRequest['method'];
@@ -192,9 +162,9 @@ interface AdminRouteCase {
 }
 
 /**
- * Every route AAP 0.5.4 puts behind `role = operator`, the additive booking-details read included.
- * The group guard runs as an `onRequest` hook, before any parameter or body is validated, so the
- * answer is the guard's whatever a caller sends.
+ * Every route behind `role = operator`, the additive booking-details read included. The group guard
+ * runs as an `onRequest` hook, before any parameter or body is validated, so the answer is the
+ * guard's whatever a caller sends.
  */
 const ADMIN_ROUTES = rows<AdminRouteCase>([
   {
@@ -292,12 +262,10 @@ describe('the operator guard (AAP 0.5.4)', () => {
   it.each(ADMIN_ROUTES)('refuses $name to a traveler and to an anonymous caller', async (route) => {
     const url = route.url();
     const body = route.body === undefined ? {} : { body: route.body };
-
     // A traveler's own valid token: the guard reads the account's role from its row, so a token can
     // never claim a role the account does not hold (AAP 0.3.3).
     const asTraveler = await callRoute(t.app, { method: route.method, url, as: traveler, ...body });
     expectError(asTraveler, 403, 'operator_only');
-
     // No bearer at all: refused as a token failure, before any role is considered.
     const anonymous = await callRoute(t.app, { method: route.method, url, ...body });
     expectError(anonymous, 401, 'token_invalid');
@@ -308,8 +276,6 @@ describe('the operator guard (AAP 0.5.4)', () => {
     expect((await asOperator('GET', '/v1/admin/crawl-domains')).status).toBe(200);
   });
 });
-
-/* Group 2 — the dashboard (AAP 0.5.4, 0.5.7) */
 
 describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
   it('counts a late cancellation as a no-show and as a late cancellation', async () => {
@@ -322,7 +288,6 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
       venue,
       startsAt: instant(30 * MINUTE_MS),
     });
-
     const cancelled = await callRoute(t.app, {
       method: 'POST',
       url: `/v1/meetups/${meetup.id}/cancel`,
@@ -330,7 +295,6 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
     });
     expect(cancelled.status, cancelled.body).toBe(200);
     expect(cancelled.json<{ lateCancel: boolean }>().lateCancel).toBe(true);
-
     const dashboard = await metrics();
     expect(dashboard.counts.noShows).toBe(1);
     expect(dashboard.counts.cancelledLate).toBe(1);
@@ -351,7 +315,6 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
       venue,
       startsAt: instant(-5 * DAY_MS),
     });
-
     // The meetup meant for today counts in today's range and the one from five days ago does not: a
     // range applied to `settledAt` or to a creation instant would count both (AAP 0.5.7).
     expect((await metrics()).counts.cancelledEarly).toBe(1);
@@ -362,10 +325,8 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
     const socialA = await makeUser(t, { variant: 'social', card: 'none' });
     const socialB = await makeUser(t, { variant: 'social', card: 'none' });
     const punitive = await makeUser(t, { variant: 'punitive', card: 'none' });
-
     await makeMeetup(t, { status: 'cancelled', initiator: socialA, recipient: socialB, venue });
     await makeMeetup(t, { status: 'cancelled', initiator: socialA, recipient: punitive, venue });
-
     expect((await metrics()).counts.cancelledEarly).toBe(2);
     expect((await metrics({ variant: 'social' })).counts.cancelledEarly).toBe(1);
     expect((await metrics({ variant: 'mixed' })).counts.cancelledEarly).toBe(1);
@@ -380,7 +341,6 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
         { name: 'account_created', occurredAt: instant(-30 * DAY_MS) },
       ],
     });
-
     // A signup belongs to no city and no pairing, so neither filter reaches the figure, and its range
     // falls on `occurred_at` rather than on a meetup's `starts_at` — which is why the thirty-day-old
     // event is left out of a one-day range (AAP 0.5.7).
@@ -417,7 +377,6 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
         { name: 'account_created', occurredAt: t.clock.now() },
       ],
     });
-
     // One aggregate answers both measures without either filter crossing to the other: the city
     // narrows the place openings alone, because an account is created in no city, and the variant
     // reaches neither, because a client-reported opening carries no pairing (AAP 0.5.7).
@@ -438,13 +397,9 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
   });
 });
 
-/* Group 3 — the dispute queue (AAP 0.5.3, 0.5.4) */
-
 describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
-  /** The dispute routes, named once and used by every case below. */
   const disputesUrl = '/v1/admin/disputes';
   const resolveDisputeUrl = (id: string): string => `${disputesUrl}/${id}/resolve`;
-
   it('lists the open disputes first, flags an overdue one and shows both check-ins', async () => {
     const locked = await makeMeetup(t, {
       status: 'locked',
@@ -462,13 +417,10 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       status: 'resolved',
       outcome: 'settle_by_checkins',
     });
-
     const response = await asOperator('GET', disputesUrl);
     expect(response.status, response.body).toBe(200);
-
     const queue = AdminDisputesResponse.parse(response.json());
     expect(queue.items.map((item) => item.status)).toEqual(['open', 'resolved']);
-
     // The open group comes first, nearest deadline first: it is the operator's work, and the resolved
     // one behind it is context for judging a fresh filing.
     const [open] = queue.items;
@@ -485,13 +437,11 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       { handle: traveler.handle, result: 'pass' },
       { handle: other.handle, result: 'fail' },
     ]);
-
     const [, closed] = queue.items;
     expect(closed?.id).toBe(resolved.id);
     expect(closed?.overdue).toBe(false);
   });
 
-  /** One row of the resolution table: the meetup's fixture state and the outcome applied to it. */
   const resolutionRows = rows<{
     readonly name: string;
     readonly outcome: DisputeOutcome;
@@ -513,7 +463,6 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       expectedMeetup: 'no_fault',
     },
   ]);
-
   it.each(resolutionRows)('resolves with $name', async (row) => {
     const meetup = await makeMeetup(t, {
       status: 'locked',
@@ -524,13 +473,11 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       ...(row.checkIns === undefined ? {} : { checkIns: row.checkIns }),
     });
     const dispute = await makeDispute(t, meetup, traveler);
-
     const response = await asOperator('POST', resolveDisputeUrl(dispute.id), {
       body: { outcome: row.outcome },
     });
     expect(response.status, response.body).toBe(200);
     expect(AdminDisputeDto.parse(response.json()).status).toBe('resolved');
-
     // Both holds are decided by one `release` operation each, planned in the resolution's own
     // transaction and carried out after the commit, never inside it (AAP 0.3.2).
     const stored = await t.services.db.meetup.findUniqueOrThrow({
@@ -538,7 +485,6 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       select: { status: true },
     });
     expect(stored.status).toBe(row.expectedMeetup);
-
     const releases = await t.services.db.paymentOperation.count({
       where: { deposit: { meetupId: meetup.id }, kind: 'release' },
     });
@@ -578,12 +524,10 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
       meetup === null
         ? null
         : await makeDispute(t, meetup, traveler, { status: row.disputeStatus ?? 'open' });
-
     const response = await asOperator('POST', resolveDisputeUrl(dispute?.id ?? randomUUID()), {
       body: { outcome: row.outcome },
     });
     expectError(response, row.httpStatus ?? 422, row.code ?? 'invalid_outcome');
-
     // A refused resolution changes nothing: a dispute stands exactly as the case seeded it.
     if (dispute !== null) {
       const stored = await t.services.db.dispute.findUniqueOrThrow({
@@ -595,10 +539,8 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
   });
 });
 
-/* Group 4 — the call-task queue (AAP 0.5.3, 0.5.4) */
-
 /**
- * A menu extraction in the shape the relay records it (AAP 0.5.6): a list of slot-tagged items, which
+ * A menu extraction in the shape the relay records it: a list of slot-tagged items, which
  * `admin/call-tasks.ts` flattens into the `<slot>.<field>` record the operator's form reads.
  */
 const MENU_EXTRACTION = {
@@ -625,8 +567,8 @@ const MENU_EXTRACTION = {
 
 /**
  * The prices an operator is told over the phone: a main course, a non-alcoholic drink, and one
- * standard per-person ticket — the one category whose two extra fields the contract requires, because
- * only a standard per-person ticket prices an activity (AAP 0.5.6, 0.5.7).
+ * standard per-person ticket — the one category whose two extra fields the contract requires,
+ * because only a standard per-person ticket prices an activity.
  */
 const OPERATOR_PRICES = [
   {
@@ -662,8 +604,8 @@ const OPERATOR_PRICES = [
 ];
 
 /**
- * Write one attempt's extraction, which the builder's own option does not admit: it types the payload
- * as a flat record of scalars, while a menu call's extraction is a list of items (AAP 0.5.2). The cast
+ * Write one attempt's extraction, which the builder's own option does not admit: it types the
+ * payload as a flat record of scalars, while a menu call's extraction is a list of items. The cast
  * is the honest one — a JSON column Prisma types structurally rather than by the values it holds.
  */
 function setExtraction(attemptId: string, payload: unknown): Promise<unknown> {
@@ -673,15 +615,13 @@ function setExtraction(attemptId: string, payload: unknown): Promise<unknown> {
   });
 }
 
-/** A menu-price call task on the fixture place, in the state a case needs. */
 function menuTask(status: CallTaskStatus): Promise<{ id: string }> {
   return makeCallTask(t, { kind: 'menu_prices', placeId: place.id, status });
 }
 
 /**
- * A menu-price call task on the fixture place that is carrying the `blockedReason` its own dial hit:
- * the state a task waits in when the dispatch cannot dial it, and the state from which an operator
- * resolves it by hand (AAP 0.5.3).
+ * A menu-price call task on the fixture place that is carrying the `blockedReason` its own dial
+ * hit: the state from which an operator resolves it by hand.
  */
 function blockedMenuTask(
   status: CallTaskStatus,
@@ -690,12 +630,10 @@ function blockedMenuTask(
   return makeCallTask(t, { kind: 'menu_prices', placeId: place.id, status, blockedReason });
 }
 
-/** `POST /admin/call-tasks/:id/resolve` as the operator. */
 function resolveTask(taskId: string, body: Record<string, unknown>): Promise<RouteResponse> {
   return asOperator('POST', `/v1/admin/call-tasks/${taskId}/resolve`, { body });
 }
 
-/** `GET /admin/call-tasks` as the operator, parsed into the contract's own page (AAP 0.5.4). */
 async function callTasks(query: Record<string, string> = {}): Promise<AdminCallTasksResponse> {
   const response = await asOperator('GET', '/v1/admin/call-tasks', { query });
   expect(response.status, response.body).toBe(200);
@@ -704,12 +642,11 @@ async function callTasks(query: Record<string, string> = {}): Promise<AdminCallT
 
 /**
  * Queue one menu task per entry for a paging case, at the outcome instant that entry names: entries
- * sharing one instant exercise the id tie-break, and `null` is a task with no outcome yet, which the
- * queue's order places last (AAP 0.5.4, 0.5.7).
+ * sharing one instant exercise the id tie-break, and `null` is a task with no outcome yet, which
+ * the queue's order places last.
  */
 async function queuedTasks(outcomeAts: readonly (Date | null)[]): Promise<string[]> {
   const ids: string[] = [];
-
   for (const outcomeAt of outcomeAts) {
     const task = await makeCallTask(t, {
       kind: 'menu_prices',
@@ -719,11 +656,9 @@ async function queuedTasks(outcomeAts: readonly (Date | null)[]): Promise<string
     });
     ids.push(task.id);
   }
-
   return ids;
 }
 
-/** The three tasks the filter cases narrow, by the id each of them asserts on (AAP 0.5.3). */
 interface QueueIds {
   readonly review: string;
   readonly unreachable: string;
@@ -752,15 +687,13 @@ async function filteringQueue(): Promise<QueueIds> {
     lodgingId: lodging.id,
     status: 'needs_review',
   });
-
   return { review: review.id, unreachable: unreachable.id, verification: verification.id };
 }
 
 /**
  * One filter over that same three-task queue: the query it sends and the rows that must come back.
- *
- * The name filter is typed in lower case although every fixture name begins "Fixture", which is what
- * makes the row prove the match is case-insensitive rather than merely a prefix match.
+ * The name filter is typed in lower case although every fixture name begins "Fixture", which is
+ * what makes the row prove the match is case-insensitive rather than merely a prefix match.
  */
 const QUEUE_FILTERS = rows<{
   readonly name: string;
@@ -784,16 +717,14 @@ const QUEUE_FILTERS = rows<{
   },
 ]);
 
-/** A cursor-shaped value the queue's codec refuses: base64url of the payload the case hands it. */
 function cursorShaped(payload: Record<string, unknown>): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
 /**
- * Queries the read refuses before it runs (AAP 0.5.4): a cursor the codec cannot read — malformed
- * text, a millisecond instant and an id that is not an id — a page size outside the contract's own
- * bound, and a parameter the queue does not carry, which its strict schema answers rather than
- * ignoring.
+ * Queries the read refuses before it runs: a cursor the codec cannot read — malformed text, a
+ * millisecond instant and an id that is not an id — a page size outside the contract's own bound,
+ * and a parameter the queue does not carry, which its strict schema answers rather than ignoring.
  */
 const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<string, string> }>([
   { name: 'a cursor that is not the position a page ended on', query: { cursor: 'not-a-cursor' } },
@@ -815,9 +746,7 @@ const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<s
  *
  * Three rows pair the reason with the status the lifecycle gives it — a dispatch that could not be
  * reconciled and a vendor that ran out of retries wait in `needs_review`, an invalid number is
- * `unreachable` (AAP 0.5.3) — so the case proves the clearing from both statuses an operator resolves
- * from, and the `do_not_call` row carries the `not_allowlisted` reason a resolved task was reported
- * holding while its status said otherwise.
+ * `unreachable` — so the case proves the clearing from both statuses an operator resolves from.
  */
 const BLOCKED_RESOLUTIONS = rows<{
   readonly name: string;
@@ -871,7 +800,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       summary: 'Two prices read back',
     });
     await setExtraction(attempt.id, MENU_EXTRACTION);
-
     // Neither of the next two belongs in the queue: a task whose call has not run yet, and one an
     // operator already resolved, which is out of the queue however it stands (AAP 0.5.3).
     const waiting = await menuTask('queued');
@@ -880,7 +808,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       where: { id: alreadyResolved.id },
       data: { resolvedBy: 'operator' },
     });
-
     const claim = await makeClaim(t, other, lodging, { bookingName: name });
     const verification = await makeCallTask(t, {
       kind: 'lodging_stay_verification',
@@ -889,17 +816,14 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       status: 'unreachable',
       blockedReason: 'no_phone',
     });
-
     const response = await asOperator('GET', '/v1/admin/call-tasks');
     expect(response.status, response.body).toBe(200);
-
     const queue = AdminCallTasksResponse.parse(response.json());
     const ids = queue.items.map((item) => item.id);
     expect(ids).toContain(review.id);
     expect(ids).toContain(verification.id);
     expect(ids).not.toContain(waiting.id);
     expect(ids).not.toContain(alreadyResolved.id);
-
     // A menu task carries the values its call extracted, flattened slot by slot, so the operator
     // approves or corrects a price rather than transcribing one (AAP 0.5.4).
     expect(queue.items.find((item) => item.id === review.id)?.extractedFields).toEqual({
@@ -914,7 +838,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       'coffee.currency': 'USD',
       'coffee.confirmed': false,
     });
-
     // A verification task is listed, because an operator must see it waiting, but it carries no
     // extraction and no summary: a lodging call's content does not outlive its claim (AAP 0.5.2).
     const lodgingTask = queue.items.find((item) => item.id === verification.id);
@@ -929,9 +852,7 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
 
   it('answers exactly the page its limit names, and says another page follows', async () => {
     const ids = await queuedTasks([instant(-HOUR_MS), null, null]);
-
     const page = await callTasks({ limit: '2' });
-
     expect(page.items).toHaveLength(2);
     expect(page.total).toBe(ids.length);
     expect(page.nextCursor).not.toBeNull();
@@ -941,10 +862,8 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     const at = instant(-HOUR_MS);
     const ids = await queuedTasks([at, at, null, null, null]);
     const whole = await callTasks({ limit: String(ids.length) });
-
     const seen: string[] = [];
     let cursor: string | null = null;
-
     // One iteration per page and one more, so a cursor that never ends fails on the loop's own bound
     // rather than hanging.
     for (let page = 0; page <= ids.length; page += 1) {
@@ -953,7 +872,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       cursor = answer.nextCursor;
       if (cursor === null) break;
     }
-
     // The queue read whole is the yardstick: two rows at a time must reproduce it row for row, so a
     // cursor that skipped, repeated or reordered a row fails here, and the walk ends on a null cursor
     // (AAP 0.5.4).
@@ -965,9 +883,7 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
 
   it('counts the whole filtered queue while the page holds one of its rows', async () => {
     const ids = await filteringQueue();
-
     const page = await callTasks({ status: 'needs_review', limit: '1' });
-
     // The count names both tasks the status matches and the page carries the first of them, so an
     // operator reads how much of the queue is still behind the control (AAP 0.5.4).
     expect(page.items.map((item) => item.id)).toEqual([ids.review]);
@@ -978,26 +894,21 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
   it.each(QUEUE_FILTERS)('narrows the queue by $name', async (row) => {
     const ids = await filteringQueue();
     const expected = row.expected(ids);
-
     const answer = await callTasks(row.query(ids));
-
     expect(answer.total).toBe(expected.length);
     expect(answer.items.map((item) => item.id).sort()).toEqual([...expected].sort());
   });
 
   it.each(QUEUE_BAD_QUERIES)('refuses $name with 400 invalid_field', async (row) => {
     const response = await asOperator('GET', '/v1/admin/call-tasks', { query: row.query });
-
     expectError(response, 400, 'invalid_field');
   });
 
   it('stores the prices an operator was told as one operator_entry batch', async () => {
     const task = await menuTask('needs_review');
-
     const response = await resolveTask(task.id, { outcome: 'completed', prices: OPERATOR_PRICES });
     expect(response.status, response.body).toBe(200);
     expect(AdminCallTaskDto.parse(response.json()).status).toBe('completed');
-
     // The DTO carries neither fact, and both are what makes the task terminal: read them off the row.
     const stored = await t.services.db.callTask.findUniqueOrThrow({
       where: { id: task.id },
@@ -1005,7 +916,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     });
     expect(stored.resolvedBy).toBe('operator');
     expect(stored.outcomeAt?.toISOString()).toBe(t.clock.now().toISOString());
-
     const records = await t.services.db.priceRecord.findMany({
       where: { placeId: place.id },
       select: {
@@ -1021,7 +931,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
         ticketType: true,
       },
     });
-
     expect(records).toHaveLength(OPERATOR_PRICES.length);
     // One call is one capture batch, and the operator is the review, so every row is approved as it
     // is stored, attributed to the number that was called (AAP 0.5.6).
@@ -1031,19 +940,16 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       expect(record.reviewStatus).toBe('approved');
       expect(record.sourceUrl).toBe(`tel:${place.phone}`);
     }
-
     // The amounts are the cents the operator entered, under the names the estimate groups by, and the
     // ticket keeps the two fields that let an activity be priced at all (AAP 0.5.6, 0.5.7).
     const main = records.find((record) => record.itemCategory === 'main');
     expect(main?.priceUsdCents).toBe(1250);
     expect(main?.normalizedName).toBe('bacalhau à brás');
-
     const ticket = records.find((record) => record.itemCategory === 'ticket');
     expect(ticket?.itemName).toBe('Museum entry');
     expect(ticket?.perPerson).toBe(true);
     expect(ticket?.ticketType).toBe('standard');
     expect(ticket?.priceUsdCents).toBe(900);
-
     for (const record of records.filter((candidate) => candidate.itemCategory !== 'ticket')) {
       expect(record.perPerson).toBeNull();
       expect(record.ticketType).toBeNull();
@@ -1061,11 +967,9 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     ticketType: null,
     localAmountMinor: 8500,
   } as const;
-
   /** The rate the conversion cases store: 0.05 USD a peso, so 8,500 minor units are 425 cents. */
   const MXN_USD_PER_UNIT = '0.05';
   const MXN_USD_CENTS = 425;
-
   /**
    * A non-USD price entry before and after the FX table holds a rate for its currency (AAP 0.5.6):
    * `rateDaysBefore` is how many days before the capture day the case's one `FxRate` row belongs to,
@@ -1092,13 +996,11 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       code: null,
     },
   ]);
-
   it.each(FX_RESOLUTIONS)('answers a non-USD price with $name', async (row) => {
     const rateDay =
       row.rateDaysBefore === null
         ? null
         : `${dayOf(instant(-row.rateDaysBefore * DAY_MS))}T00:00:00.000Z`;
-
     if (rateDay !== null) {
       await t.services.db.fxRate.create({
         data: {
@@ -1108,17 +1010,13 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
         },
       });
     }
-
     const task = await menuTask('needs_review');
     const response = await resolveTask(task.id, { outcome: 'completed', prices: [MXN_PRICE] });
-
     expect(response.status, response.body).toBe(row.httpStatus);
-
     const stored = await t.services.db.callTask.findUniqueOrThrow({
       where: { id: task.id },
       select: { outcomeAt: true, resolvedBy: true, status: true },
     });
-
     const records = await t.services.db.priceRecord.findMany({
       where: { placeId: place.id },
       select: {
@@ -1129,7 +1027,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
         source: true,
       },
     });
-
     if (row.code === null) {
       // The conversion runs on the capture day's own rate, and the stored row keeps that rate's date,
       // which is what `fx_date` records (AAP 0.5.6).
@@ -1137,9 +1034,7 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       expect(stored.status).toBe('completed');
       expect(stored.resolvedBy).toBe('operator');
       expect(records).toHaveLength(1);
-
       const [record] = records;
-
       expect(record?.source).toBe('operator_entry');
       expect(record?.currency).toBe(MXN_PRICE.currency);
       expect(record?.localAmountMinor).toBe(MXN_PRICE.localAmountMinor);
@@ -1153,13 +1048,11 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       // stored and the task stays in the queue, so the identical entry succeeds once a rate exists.
       const envelope = expectError(response, row.httpStatus, row.code);
       expect(envelope.error.message).toContain(MXN_PRICE.currency);
-
       expect(stored.status).toBe('needs_review');
       expect(stored.resolvedBy).toBeNull();
       expect(stored.outcomeAt).toBeNull();
       expect(records).toHaveLength(0);
     }
-
     // The rate this case wrote is deleted with it: the table is another case's input too, and the one
     // that has to answer 503 needs it empty.
     await t.services.db.fxRate.deleteMany({ where: { currency: MXN_PRICE.currency } });
@@ -1172,11 +1065,9 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     ]),
   )('records $name on the task and stores no price', async (row) => {
     const task = await menuTask('needs_review');
-
     const response = await resolveTask(task.id, { outcome: row.outcome });
     expect(response.status, response.body).toBe(200);
     expect(AdminCallTaskDto.parse(response.json()).status).toBe(row.outcome);
-
     const stored = await t.services.db.callTask.findUniqueOrThrow({
       where: { id: task.id },
       select: { resolvedBy: true },
@@ -1200,15 +1091,12 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     ]),
   )('refuses prices supplied with $name rather than dropping them', async (row) => {
     const task = await menuTask(row.status);
-
     const response = await resolveTask(task.id, { outcome: row.outcome, prices: OPERATOR_PRICES });
-
     // The refusal is the request schema's, so the resolution never ran: prices the operator's entry
     // form sent with an outcome that stores nothing are answered rather than accepted and discarded
     // (AAP 0.5.3, 0.5.4). The task is untouched — still in the queue, with no resolver and no outcome
     // instant — nothing was written for its place, and no side effect of the outcome was applied.
     expectError(response, 400, 'invalid_field');
-
     const stored = await t.services.db.callTask.findUniqueOrThrow({
       where: { id: task.id },
       select: { outcomeAt: true, resolvedBy: true, status: true },
@@ -1217,7 +1105,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     expect(stored.resolvedBy).toBeNull();
     expect(stored.outcomeAt).toBeNull();
     expect(await t.services.db.priceRecord.count({ where: { placeId: place.id } })).toBe(0);
-
     const target = await t.services.db.place.findUniqueOrThrow({
       where: { id: place.id },
       select: { doNotCall: true },
@@ -1229,17 +1116,14 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     'clears the block reason of a task it resolves $name',
     async (row) => {
       const task = await blockedMenuTask(row.status, row.blockedReason);
-
       const response = await resolveTask(task.id, row.body);
       expect(response.status, response.body).toBe(200);
-
       // The answer reports the task as the operator left it: the terminal status is what the row now
       // means, and a reason written while the dial was out of reach no longer describes it, because a
       // resolved task has left the dialing path either way (AAP 0.5.3, 0.5.4).
       const resolved = AdminCallTaskDto.parse(response.json());
       expect(resolved.status).toBe(row.outcome);
       expect(resolved.blockedReason).toBeNull();
-
       const stored = await t.services.db.callTask.findUniqueOrThrow({
         where: { id: task.id },
         select: { blockedReason: true, resolvedBy: true, status: true },
@@ -1249,7 +1133,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       expect(stored.blockedReason).toBeNull();
     },
   );
-
   it('stops every other task of a place that asked not to be called', async () => {
     const task = await menuTask('needs_review');
     // Both companions are waiting out a block of their own, in the two statuses a `do_not_call`
@@ -1258,16 +1141,13 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     const companion = await blockedMenuTask('queued', 'not_allowlisted');
     const held = await blockedMenuTask('needs_review', 'dispatch_unknown');
     const live = await makeCallAttempt(t, companion, { state: 'in_progress' });
-
     const response = await resolveTask(task.id, { outcome: 'do_not_call' });
     expect(response.status, response.body).toBe(200);
-
     const flagged = await t.services.db.place.findUniqueOrThrow({
       where: { id: place.id },
       select: { doNotCall: true },
     });
     expect(flagged.doNotCall).toBe(true);
-
     // The whole place is stopped, and the attempt that may be live right now is marked superseded —
     // the flag the relay reads before its next turn (AAP 0.5.3). A cancelled task was cancelled
     // rather than reaching an outcome, so it records neither a resolver nor an instant, and the block
@@ -1283,7 +1163,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
       expect(cancelled.outcomeAt).toBeNull();
       expect(cancelled.blockedReason).toBeNull();
     }
-
     const superseded = await t.services.db.callAttempt.findUniqueOrThrow({
       where: { id: live.id },
       select: { superseded: true },
@@ -1293,7 +1172,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
 
   it('refuses a ticket price with no ticketType with 400 invalid_field', async () => {
     const task = await menuTask('needs_review');
-
     const response = await resolveTask(task.id, {
       outcome: 'completed',
       prices: [
@@ -1309,7 +1187,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
         },
       ],
     });
-
     // The refusal is the request schema's, before the handler runs: nothing was stored and the task
     // stands exactly as it was (AAP 0.5.4, 0.5.6).
     expectError(response, 400, 'invalid_field');
@@ -1355,7 +1232,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
   )('refuses $name', async (row) => {
     let taskId: string = randomUUID();
     let status: CallTaskStatus | undefined;
-
     if (row.status !== undefined) {
       status = row.status;
       const claim = row.lodgingTask === true ? await makeClaim(t, traveler, lodging) : null;
@@ -1369,7 +1245,6 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
               status,
             });
       taskId = task.id;
-
       if (row.resolvedByOperator === true) {
         await t.services.db.callTask.update({
           where: { id: taskId },
@@ -1377,13 +1252,11 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
         });
       }
     }
-
     expectError(
       await resolveTask(taskId, { outcome: row.outcome }),
       row.httpStatus ?? 422,
       row.code ?? 'invalid_outcome',
     );
-
     // A refused task keeps exactly the state the case seeded.
     if (status !== undefined) {
       const stored = await t.services.db.callTask.findUniqueOrThrow({
@@ -1395,21 +1268,16 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
   });
 });
 
-/* Group 5 — lodging claims and the audited booking-details read (AAP 0.5.2, 0.5.3, 0.5.4) */
-
 const CLAIMS_URL = '/v1/admin/lodging-claims';
 
-/** The additive audited read of one claim's decrypted booking details (AAP 0.5.4). */
 function bookingUrl(claimId: string): string {
   return `${CLAIMS_URL}/${claimId}/booking-details`;
 }
 
-/** `POST /admin/lodging-claims/:id/resolve` as the operator. */
 function resolveClaim(claimId: string, outcome: string): Promise<RouteResponse> {
   return asOperator('POST', `${CLAIMS_URL}/${claimId}/resolve`, { body: { outcome } });
 }
 
-/** `GET /admin/lodging-claims` as the operator, parsed into the contract. */
 async function lodgingClaims(): Promise<AdminLodgingClaimsResponse> {
   const response = await asOperator('GET', CLAIMS_URL);
   expect(response.status, response.body).toBe(200);
@@ -1423,7 +1291,6 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       where: { id: claim.id },
       select: { createdAt: true },
     });
-
     const [listed] = (await lodgingClaims()).items;
     expect(listed?.id).toBe(claim.id);
     expect(listed?.lodgingName).toBe(lodging.name);
@@ -1436,7 +1303,6 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
     expect(listed?.expiresAt).toBe(
       new Date(stored.createdAt.getTime() + CLAIM_EXPIRY_HOURS * HOUR_MS).toISOString(),
     );
-
     // Erased details are no longer readable — the first hourly run after a terminal state wipes the
     // two ciphertexts (AAP 0.5.2) — and neither are the details of a claim carrying no name at all.
     await t.services.db.lodgingClaim.update({
@@ -1444,13 +1310,11 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       data: { detailsErasedAt: t.clock.now() },
     });
     expect((await lodgingClaims()).items[0]?.detailsAvailable).toBe(false);
-
     await t.services.db.lodgingClaim.update({
       where: { id: claim.id },
       data: { bookingNameCiphertext: null, detailsErasedAt: null },
     });
     expect((await lodgingClaims()).items[0]?.detailsAvailable).toBe(false);
-
     // A terminal claim has left the queue: it is the operator's work only while it is open.
     await t.services.db.lodgingClaim.update({
       where: { id: claim.id },
@@ -1503,20 +1367,16 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       status: 'queued',
     });
     const attempt = await makeCallAttempt(t, task, { state: 'dialing' });
-
     const response = await resolveClaim(claim.id, row.outcome);
     expect(response.status, response.body).toBe(200);
-
     const resolved = AdminLodgingClaimDto.parse(response.json());
     expect(resolved.id).toBe(claim.id);
     expect(resolved.status).toBe(row.outcome);
-
     const storedClaim = await t.services.db.lodgingClaim.findUniqueOrThrow({
       where: { id: claim.id },
       select: { resolvedAt: true },
     });
     expect(storedClaim.resolvedAt?.toISOString()).toBe(t.clock.now().toISOString());
-
     // The verification work still outstanding is cancelled, and the attempt that may be live right
     // now is marked superseded — the flag the relay reads before its next turn (AAP 0.5.3).
     const storedTask = await t.services.db.callTask.findUniqueOrThrow({
@@ -1525,13 +1385,11 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
     });
     expect(storedTask.status).toBe('cancelled');
     expect(storedTask.resolvedBy).toBe('operator');
-
     const storedAttempt = await t.services.db.callAttempt.findUniqueOrThrow({
       where: { id: attempt.id },
       select: { superseded: true },
     });
     expect(storedAttempt.superseded).toBe(true);
-
     // One measure per resolution, carrying no link that could reconnect it to the guest (AAP 0.5.2).
     const events = await t.services.db.analyticsEvent.findMany({
       where: { name: 'lodging_claim_resolved' },
@@ -1547,7 +1405,6 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
     // row's creation instant is the database's own, so only the shape is asserted here.
     expect(typeof props.resolveSeconds).toBe('number');
     expect(Number(props.resolveSeconds)).toBeGreaterThanOrEqual(0);
-
     const facts = await t.services.db.lodgingActivityFact.findMany({
       where: { lodgingId: lodging.id },
       select: { meetupId: true },
@@ -1569,10 +1426,8 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       status: 'unreachable',
       blockedReason: 'no_phone',
     });
-
     const response = await resolveClaim(claim.id, 'verified');
     expect(response.status, response.body).toBe(200);
-
     const stored = await t.services.db.callTask.findUniqueOrThrow({
       where: { id: task.id },
       select: { blockedReason: true, resolvedBy: true, status: true },
@@ -1600,10 +1455,8 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       row.status === undefined
         ? null
         : await makeClaim(t, traveler, lodging, { status: row.status });
-
     const response = await resolveClaim(claim?.id ?? randomUUID(), row.outcome);
     expectError(response, row.httpStatus ?? 422, row.code ?? 'invalid_outcome');
-
     // A terminal claim stays terminal: the refusal leaves the row exactly as it stood.
     if (claim !== null) {
       const stored = await t.services.db.lodgingClaim.findUniqueOrThrow({
@@ -1625,16 +1478,13 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
       where: { id: claim.id },
       select: { bookingNameCiphertext: true },
     });
-
     const response = await asOperator('GET', bookingUrl(claim.id));
     expect(response.status, response.body).toBe(200);
     expect(String(response.headers['cache-control'])).toContain('no-store');
-
     const details = BookingDetailsDto.parse(response.json());
     expect(details.claimId).toBe(claim.id);
     expect(details.bookingName).toBe(name);
     expect(details.bookingReference).toBe(reference);
-
     // The one read of a booking field outside the voice relay, audited in the same transaction as the
     // read it made possible; the log itself holds no booking data (AAP 0.5.2).
     const logs = await t.services.db.operatorAccessLog.findMany({
@@ -1646,7 +1496,6 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
     expect(access?.lodgingClaimId).toBe(claim.id);
     expect(access?.purpose).toBe('manual_verification_call');
     expect(access?.accessedAt.toISOString()).toBe(t.clock.now().toISOString());
-
     // What is stored stays ciphertext under the process keyring: the name is not in the column.
     expect(stored.bookingNameCiphertext).not.toContain(name);
   });
@@ -1674,13 +1523,11 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
     ]),
   )('refuses the booking details of $name', async (row) => {
     let claimId: string = randomUUID();
-
     if (row.setup !== 'unknown') {
       const claim = await makeClaim(t, traveler, lodging, {
         status: row.setup === 'terminal' ? 'verified' : 'pending_call',
       });
       claimId = claim.id;
-
       if (row.setup === 'erased') {
         await t.services.db.lodgingClaim.update({
           where: { id: claimId },
@@ -1688,15 +1535,11 @@ describe('the lodging-claim queue (AAP 0.5.3, 0.5.4)', () => {
         });
       }
     }
-
     expectError(await asOperator('GET', bookingUrl(claimId)), row.httpStatus, row.code);
-
     // An unauditable read does not happen: a refusal writes no access-log row (AAP 0.5.2).
     expect(await t.services.db.operatorAccessLog.count()).toBe(0);
   });
 });
-
-/* Group 6 — crawl domains, onboarding, reports and the client event (AAP 0.5.2, 0.5.4, 0.5.6) */
 
 describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
   it('lists the unreviewed domains first and records an operator decision over an older one', async () => {
@@ -1725,10 +1568,8 @@ describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
         },
       ],
     });
-
     const response = await asOperator('GET', '/v1/admin/crawl-domains');
     expect(response.status, response.body).toBe(200);
-
     const queue = AdminCrawlDomainsResponse.parse(response.json());
     // The domains nobody has read yet come first, newest check first among the decided ones: ordering
     // by the decision alone would put `uncertain` on top only because it is the enum's last member.
@@ -1741,18 +1582,15 @@ describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
     expect(queue.items[1]?.overridden).toBe(true);
     // `overriddenBy` holds a user id, so the DTO carries the fact and never the id (AAP 0.5.4).
     expect(keysDeep(queue.items)).not.toContain('overriddenBy');
-
     const decided = await asOperator('PATCH', '/v1/admin/crawl-domains/unreviewed.example.org', {
       body: { decision: 'allowed' },
     });
     expect(decided.status, decided.body).toBe(200);
-
     const dto = AdminCrawlDomainDto.parse(decided.json());
     expect(dto.decision).toBe('allowed');
     expect(dto.reason).toBe('operator_review');
     expect(dto.overridden).toBe(true);
     expect(dto.checkedAt).toBe(t.clock.now().toISOString());
-
     const stored = await t.services.db.crawlDomainPolicy.findUniqueOrThrow({
       where: { domain: 'unreviewed.example.org' },
       select: { decision: true, overriddenBy: true },
@@ -1774,7 +1612,6 @@ describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
       body: { decision: row.decision },
     });
     expectError(response, 422, 'invalid_outcome');
-
     // The upsert never ran, so no row was written for a domain nobody may decide.
     const rows = await t.services.db.crawlDomainPolicy.count({
       where: { domain: 'pending.example.com' },
@@ -1782,8 +1619,6 @@ describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
     expect(rows).toBe(0);
   });
 });
-
-/* The lodging registry's own helpers (AAP 0.5.4, 0.11.1 density: one builder per shape) */
 
 /** How many lodgings one page of the registry holds when the read names no `limit`. */
 const REGISTRY_PAGE = 200;
@@ -1883,29 +1718,24 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
       },
     });
     expect(created.status, created.body).toBe(201);
-
     const venueDto = AdminVenueDto.parse(created.json());
     expect(venueDto.cityId).toBe(LISBON);
     expect(venueDto.name).toBe('Fixture Onboarded Venue');
     expect(venueDto.isActivePartner).toBe(true);
     expect(venueDto.secretIssuedAt).toBeNull();
-
     // Onboarding changes what the weekly refresh covers, so the city's refresh is queued in an
     // after-commit callback — which is why it is already waiting when the answer arrives (AAP 0.3.2).
     expect(await placeRefreshPayloads()).toContainEqual({ cityId: LISBON });
-
     const updated = await asOperator('PATCH', `/v1/admin/venues/${venueDto.id}`, {
       body: { isActivePartner: false },
     });
     expect(updated.status, updated.body).toBe(200);
     expect(AdminVenueDto.parse(updated.json()).isActivePartner).toBe(false);
-
     const issued = await asOperator('POST', `/v1/admin/venues/${venueDto.id}/secret`);
     expect(issued.status, issued.body).toBe(200);
     expect(String(issued.headers['cache-control'])).toContain('no-store');
     const { secret } = SecretIssued.parse(issued.json());
     expect(secret.length).toBeGreaterThan(0);
-
     // Stored as a lookup hash beside a ciphertext, because the code generator needs the secret itself,
     // and never as the plaintext (AAP 0.3.2).
     const stored = await t.services.db.venue.findUniqueOrThrow({
@@ -1915,7 +1745,6 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     expect(stored.secretLookupHash).not.toBeNull();
     expect(stored.secretCiphertext).not.toBeNull();
     expect(stored.secretIssuedAt?.toISOString()).toBe(t.clock.now().toISOString());
-
     // No read carries the secret or either stored form of it: the issue route is the one answer with
     // the plaintext, and the registry names none of the three (AAP 0.5.4).
     const registry = await asOperator('GET', '/v1/admin/venues');
@@ -1931,7 +1760,6 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     expect(registry.body).not.toContain(secret);
     expect(registry.body).not.toContain('secretLookupHash');
     expect(registry.body).not.toContain('secretCiphertext');
-
     const unknown = await asOperator('POST', `/v1/admin/venues/${randomUUID()}/secret`);
     expectError(unknown, 404, 'not_found');
   });
@@ -1949,7 +1777,6 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
       },
     });
     expect(created.status, created.body).toBe(201);
-
     const lodgingDto = AdminLodgingDto.parse(created.json());
     expect(lodgingDto.cityId).toBe(MEXICO_CITY);
     expect(lodgingDto.name).toBe('Fixture Onboarded Lodging');
@@ -1961,23 +1788,19 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     expect(lodgingDto.phoneSource).toBe('operator');
     expect(lodgingDto.doNotCall).toBe(false);
     expect(keysDeep(lodgingDto).filter((path) => path.startsWith('osm'))).toEqual([]);
-
     // No refresh yet: a lodging is not a partner until a console secret is issued, which is what
     // changes the neighbourhood the price pipeline covers.
     expect(await placeRefreshPayloads()).toEqual([]);
-
     const issued = await asOperator('POST', `/v1/admin/lodgings/${lodgingDto.id}/secret`);
     expect(issued.status, issued.body).toBe(200);
     expect(SecretIssued.parse(issued.json()).secret.length).toBeGreaterThan(0);
     expect(await placeRefreshPayloads()).toContainEqual({ cityId: MEXICO_CITY });
-
     const stored = await t.services.db.lodging.findUniqueOrThrow({
       where: { id: lodgingDto.id },
       select: { secretCiphertext: true, secretLookupHash: true },
     });
     expect(stored.secretLookupHash).not.toBeNull();
     expect(stored.secretCiphertext).not.toBeNull();
-
     const registry = await asOperator('GET', '/v1/admin/lodgings');
     const listed = AdminLodgingsResponse.parse(registry.json());
     const leaked = keysDeep(listed).filter(
@@ -1987,19 +1810,16 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
         path.startsWith('items[].osm'),
     );
     expect(leaked).toEqual([]);
-
     const unknown = await asOperator('POST', `/v1/admin/lodgings/${randomUUID()}/secret`);
     expectError(unknown, 404, 'not_found');
   });
 
   it('answers every lodging when the registry fits one page, in (city, name, id) order', async () => {
     const fixture = await registryFixture();
-
     // No query at all, which is what a client that knows none of the filters sends: one page in the
     // read's own order — city first, then the name — with the count the filters match and no cursor,
     // because the page holds the whole registry (AAP 0.5.4).
     const page = await lodgings();
-
     expect(page.total).toBe(5);
     expect(page.nextCursor).toBeNull();
     expect(page.items.map((item) => item.name)).toEqual([
@@ -2021,9 +1841,7 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
   it.each(REGISTRY_FILTERS)('narrows the registry by $name', async (row) => {
     const fixture = await registryFixture();
     const expected = row.expected(fixture);
-
     const page = await lodgings(row.query(fixture));
-
     expect(page.items.map((item) => item.id)).toEqual(expected);
     // The count is of the rows the filters match, never of the rows the page happens to hold.
     expect(page.total).toBe(expected.length);
@@ -2032,7 +1850,6 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
 
   it.each(REGISTRY_BAD_QUERIES)('refuses $name with 400 invalid_field', async (row) => {
     const response = await asOperator('GET', '/v1/admin/lodgings', { query: row.query });
-
     expectError(response, 400, 'invalid_field');
   });
 
@@ -2040,11 +1857,9 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     for (let seeded = 0; seeded < REGISTRY_PAGE - 1; seeded += 1) {
       await makeLodging(t, { cityId: LISBON });
     }
-
     // One row of a later city, so the walk below crosses a city boundary and the city filter has two
     // cities to choose between.
     const elsewhere = await namedLodging(MEXICO_CITY, 'Hostal Roma Norte');
-
     // The row the QA report could not reach: entered through the route an operator uses, with a long
     // name that sorts after every fixture name, so it is the 201st Lisbon row and no first page holds
     // it. The registry the report walked held 612 lodgings; one page more than the bound is what the
@@ -2063,9 +1878,7 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     expect(entered.status, entered.body).toBe(201);
     const created = AdminLodgingDto.parse(entered.json());
     const total = REGISTRY_PAGE + 2;
-
     const first = await lodgings();
-
     // One page holds exactly the bound, in (city, name, id) order, and says how many rows it leaves
     // behind: the count is of the whole registry, not of the page (AAP 0.5.4).
     expect(first.items).toHaveLength(REGISTRY_PAGE);
@@ -2076,42 +1889,34 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     expect(cities).toEqual([...cities].sort());
     expect(names).toEqual([...names].sort());
     expect(first.items.map((item) => item.id)).not.toContain(created.id);
-
     // The search is what makes a row reachable whatever the registry holds, which is the read the
     // registry screen sends once a lodging has been entered (AAP 0.5.4).
     const searched = await lodgings({ q: created.name });
-
     expect(searched.total).toBe(1);
     expect(searched.items.map((item) => item.id)).toEqual([created.id]);
-
     // The city filter narrows the registry itself rather than one page of it: Lisbon holds the bound
     // plus the row just entered, so it still pages, and the later city holds its one row.
     const lisbon = await lodgings({ cityId: LISBON });
     expect(lisbon.total).toBe(REGISTRY_PAGE + 1);
     expect(lisbon.items).toHaveLength(REGISTRY_PAGE);
     expect(lisbon.nextCursor).not.toBeNull();
-
     const mexico = await lodgings({ cityId: MEXICO_CITY });
     expect(mexico.total).toBe(1);
     expect(mexico.items.map((item) => item.id)).toEqual([elsewhere.id]);
     expect(mexico.nextCursor).toBeNull();
-
     // A page size the query names is the page the read answers, while the count stays the registry's.
     const limited = await lodgings({ limit: '3' });
     expect(limited.items).toHaveLength(3);
     expect(limited.total).toBe(total);
     expect(limited.nextCursor).not.toBeNull();
-
     // Walking the cursor reproduces the whole registry row for row: the read answered in one page is
     // the yardstick, so a cursor that skipped, repeated or reordered a row fails here, and the walk
     // reaches the row the first page left out and ends on a null cursor (AAP 0.5.4).
     const whole = await lodgings({ limit: '500' });
     expect(whole.items).toHaveLength(total);
     expect(whole.nextCursor).toBeNull();
-
     const seen = first.items.map((item) => item.id);
     let cursor: string | null = first.nextCursor;
-
     // One iteration per remaining page and one more, so a cursor that never ends fails on the loop's
     // own bound rather than hanging.
     for (let page = 0; page <= total; page += 1) {
@@ -2121,7 +1926,6 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
       cursor = answer.nextCursor;
       if (cursor === null) break;
     }
-
     expect(seen).toEqual(whole.items.map((item) => item.id));
     expect(seen).toContain(created.id);
     expect(new Set(seen).size).toBe(total);
@@ -2138,7 +1942,6 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       venue,
     });
     const reason = `Fixture complaint ${randomUUID().slice(0, 8)}`;
-
     const filed = await callRoute(t.app, {
       method: 'POST',
       url: `/v1/users/${other.id}/report`,
@@ -2146,10 +1949,8 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       body: { reason },
     });
     expect(filed.status, filed.body).toBe(204);
-
     const response = await asOperator('GET', '/v1/admin/reports');
     expect(response.status, response.body).toBe(200);
-
     const queue = AdminReportsResponse.parse(response.json());
     expect(queue.items).toHaveLength(1);
     const [report] = queue.items;
@@ -2169,7 +1970,6 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       recipient: other,
       venue,
     });
-
     const recorded = await callRoute(t.app, {
       method: 'POST',
       url: '/v1/events',
@@ -2182,13 +1982,11 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       },
     });
     expect(recorded.status, recorded.body).toBe(204);
-
     const events = await t.services.db.analyticsEvent.findMany({
       where: { name: 'suggestion_place_opened' },
       select: { actorHash: true, cityId: true, meetupId: true, occurredAt: true, props: true },
     });
     expect(events).toHaveLength(1);
-
     // The actor reaches the table as the HMAC of its id under `ANALYTICS_SALT` and never in the clear,
     // and the city comes from the meetup's venue rather than from the body (AAP 0.5.2).
     const [event] = events;
@@ -2198,11 +1996,9 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
     expect(event?.cityId).toBe(LISBON);
     expect(event?.occurredAt.toISOString()).toBe(t.clock.now().toISOString());
     expect(event?.props).toEqual({ placeId: place.id, placeCategory: 'restaurant' });
-
     // A name outside the one-member client vocabulary, and a meetup the caller is not a participant
     // of, answer the same way: the route is no oracle for which meetup ids exist (AAP 0.5.4, 0.5.7).
     const stranger = await makeUser(t, { card: 'none' });
-
     const unlisted = await callRoute(t.app, {
       method: 'POST',
       url: '/v1/events',
@@ -2210,7 +2006,6 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       body: { name: 'meetup_locked', meetupId: meetup.id, placeId: place.id },
     });
     expectError(unlisted, 400, 'invalid_field');
-
     const notAMember = await callRoute(t.app, {
       method: 'POST',
       url: '/v1/events',
@@ -2223,12 +2018,9 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
       },
     });
     expectError(notAMember, 400, 'invalid_field');
-
     expect(await t.services.db.analyticsEvent.count()).toBe(1);
   });
 });
-
-/* Group 7 — the operator's language-model re-enable (AAP 0.5.6) */
 
 /**
  * The re-enable AAP 0.5.6 requires and only an operator can make: a counted-versus-reported
@@ -2242,7 +2034,6 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
  */
 describe('the language-model re-enable (AAP 0.5.6)', () => {
   const reEnableUrl = '/v1/admin/language-model/re-enable';
-
   /** The suspension a mismatch sets: the shared flag, and a cumulative counter worth noticing. */
   async function suspendLanguageModel(mismatches: number): Promise<void> {
     await t.services.redis.client.set(
@@ -2251,23 +2042,18 @@ describe('the language-model re-enable (AAP 0.5.6)', () => {
     );
     await t.services.redis.client.set(LLM_COUNT_MISMATCHES_KEY, String(mismatches));
   }
-
   it('clears the flag the dashboard reports and leaves the mismatch counter standing', async () => {
     await suspendLanguageModel(3);
-
     const before = await metrics();
     expect(before.calls.llmSuspended).toBe(true);
     expect(before.calls.llmCountMismatches).toBe(3);
-
     const response = await asOperator('POST', reEnableUrl);
     expect(response.status, response.body).toBe(200);
-
     // The answer is the flag as the clear left it, beside the counter: the count is the spend panel's
     // evidence, and only the flag is the suspension (AAP 0.5.6).
     expect(AdminLlmSuspension.parse(response.json())).toEqual({ suspended: false, mismatches: 3 });
     expect(await t.services.redis.client.get(LLM_SUSPENDED_KEY)).toBeNull();
     expect(await t.services.redis.client.get(LLM_COUNT_MISMATCHES_KEY)).toBe('3');
-
     const after = await metrics();
     expect(after.calls.llmSuspended).toBe(false);
     expect(after.calls.llmCountMismatches).toBe(3);
@@ -2284,7 +2070,6 @@ describe('the language-model re-enable (AAP 0.5.6)', () => {
   it('refuses a traveler and an anonymous caller', async () => {
     const asTraveler = await callRoute(t.app, { method: 'POST', url: reEnableUrl, as: traveler });
     expectError(asTraveler, 403, 'operator_only');
-
     // No bearer at all: refused as a token failure, before any role is considered.
     const anonymous = await callRoute(t.app, { method: 'POST', url: reEnableUrl });
     expectError(anonymous, 401, 'token_invalid');

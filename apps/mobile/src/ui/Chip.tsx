@@ -1,35 +1,25 @@
 /**
- * The one selectable-chip primitive every Tablemate screen places (AAP 0.5.8): one option of a
- * group in which at most one is chosen — a city, a variant pairing, a queue category, a drink or a
- * lodging kind.
+ * The one selectable-chip primitive every Tablemate screen places (AAP 0.5.8): one option of a group in which at most
+ * one is chosen — a city, a variant pairing, a queue category, a drink or a lodging kind.
  *
- * Six states are painted, each reachable on the platform that can produce it: default, hovered (a
- * pointer, through React Native's `onHoverIn`/`onHoverOut`, which react-native-web forwards and
- * iOS and Android never fire), focused, pressed, selected, and selected with focus. Selection is
- * never colour alone: the chosen chip takes the `surface` fill, the `primary` boundary and a bold
- * `primary` label, and it reports itself as chosen to assistive technology.
+ * Six states are painted, each reachable on the platform that can produce it: default, hovered (a pointer, through
+ * React Native's `onHoverIn`/`onHoverOut`, which react-native-web forwards and iOS and Android never fire), focused,
+ * pressed, selected, and selected with focus. Selection is never colour alone: the chosen chip takes the `surface`
+ * fill, the `primary` boundary and a bold `primary` label, and reports itself as chosen to assistive technology.
  *
- * Every value comes from `@tablemate/shared`, and every pair the chip paints is a pair
- * `ui-tokens.ts` records — `focusRing`/`surface` 6.04:1, `primary`/`surface` 6.59:1,
- * `border`/`surface` 3.34:1, `border`/`background` 3.7:1, `text`/`surface` 15.52:1 and
- * `text`/`background` 17.21:1. The selected fill is deliberately the soft `colors.surface` and not
- * a filled `colors.primary`: a `focusRing` boundary over a `primary` fill measures about 1.09:1 and
- * is recorded nowhere, so a keyboard user could not tell which of two chips in a group holds the
- * choice while it is focused. One radius, `radii.pill`, is the shape of every chip in the client as
- * well, so the same control never changes silhouette from one screen to the next.
+ * Every pair the chip paints is one `ui-tokens.ts` records — `focusRing`/`surface` 6.04:1, `primary`/`surface`
+ * 6.59:1, `border`/`surface` 3.34:1, `border`/`background` 3.7:1, `text`/`surface` 15.52:1 and `text`/`background`
+ * 17.21:1. The selected fill is deliberately the soft `colors.surface` and not a filled `colors.primary`: a
+ * `focusRing` boundary over a `primary` fill measures about 1.09:1 and is recorded nowhere, so a keyboard user could
+ * not tell which of two chips in a group holds the choice while it is focused. The outline is the reserved
+ * `borderWidths.control` band rather than an added one, which keeps the layout still when focus moves (WCAG 2.4.7),
+ * and the target stays at least `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44) with `allowFontScaling` on (WCAG 1.4.4).
  *
- * The outline a keyboard user sees is the reserved `borderWidths.control` band rather than an added
- * one, which is what keeps the layout still when focus moves (WCAG 2.4.7); on web
- * `webFocusRingReset` keeps the browser's own outline off that band. The target stays at least
- * `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44) with no fixed height and `allowFontScaling` on, so the
- * label follows the system font size (WCAG 1.4.4).
- *
- * `aria-checked` is the selected state's programmatic form: react-native-web writes it into the DOM
- * for the `role="radio"` this control carries, and React Native 0.76 maps `aria-checked` to
- * `accessibilityState.checked` on iOS and Android, so VoiceOver and TalkBack announce which option
- * of the group is the chosen one. On web the control also answers Space itself, because
- * react-native-web answers Space only for a native button or a `role="button"`; Enter stays with
- * the press responder, so one press is never fired twice.
+ * `aria-checked` is the selected state's programmatic form: react-native-web writes it into the DOM for the
+ * `role="radio"` this control carries, and React Native 0.76 maps `aria-checked` to `accessibilityState.checked` on
+ * iOS and Android, so VoiceOver and TalkBack announce which option of the group is chosen. On web the control also
+ * answers Space itself, because react-native-web answers Space only for a native button or a `role="button"`; Enter
+ * stays with the press responder, so one press is never fired twice.
  */
 import { useCallback, useState } from 'react';
 import type { ReactElement } from 'react';
@@ -125,7 +115,6 @@ export function Chip({ label, selected, onPress, testID }: ChipProps): ReactElem
   const handleBlur = useCallback(() => setFocused(false), []);
   const handleHoverIn = useCallback(() => setHovered(true), []);
   const handleHoverOut = useCallback(() => setHovered(false), []);
-
   return (
     <Pressable
       {...spaceActivates(onPress)}

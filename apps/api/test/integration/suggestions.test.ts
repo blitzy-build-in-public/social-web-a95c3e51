@@ -1,29 +1,12 @@
 /**
  * Integration tests for `GET /v1/meetups/:id/suggestions` — success criterion 13 and the failure
- * isolation the route owes the meetup flow (AAP 0.8.1, 0.12.1, 0.12.2, 0.5.4, 0.5.7).
+ * isolation the route owes the meetup flow. Nothing of the suggestions read is stubbed.
  *
- * The suite drives the real route over the real harness of `apps/api/test/support`: PostgreSQL 16
- * with PostGIS 3.4 in a container, the guarded Prisma client, the injected clock, and — in the
- * default `STRIPE_MODE=mock` — the stateful proxy that places the live holds of a locked fixture.
- * Nothing of the suggestions read is stubbed.
- *
- * The groups, in order: criterion 13's ranked day plan (fifteen eligible places and eight ineligible
- * ones); the freshness boundary of each price source, one row per case; the contract's errors in
- * their documented order and the statuses a read is served or refused for; the shared budget, the
- * first-view stamp, the three empty reasons, the ticket rule and provenance; and, at the end, a read
- * that fails while the price table is unreadable, which must stay on this route alone (AAP 0.3.2).
- *
- * Time is the harness's frozen clock, moved only through `TestApp.time` (AAP 0.11.1). Every case
- * starts two hours before a meetup that begins at 13:00 Lisbon wall-clock time on a summer Monday, so
- * the suggestions window runs 14:00–23:00 in the city. Two fixtures on either side of that window make
- * the city-zone conversion of AAP 0.5.7 observable: `HOURS.eveningOpen` is open only in its last half
- * hour, which a window computed in UTC would lose, and `HOURS.beforeWindow` shuts a quarter of an hour
- * before it opens, which such a window would wrongly admit.
- *
- * @see AAP 0.5.4 for the route, its query, its errors and their order; 0.5.7 for the filtering,
- *   estimation, ranking and budget rules; 0.5.6 for the ticket fields and the sources; 0.12.1 for
- *   criterion 13; 0.12.2 for the isolation case; 0.11.2 for the integration topology; 0.8.1 for
- *   this file's place in the inventory.
+ * Two rules the cases turn on: the freshness boundary of each price source is one row per case, and
+ * the suggestions window is computed in the city's own zone. Every case starts two hours before a
+ * meetup that begins at 13:00 Lisbon wall-clock time on a summer Monday, so the window runs
+ * 14:00–23:00 city time — and the fixtures on either side of it are the ones a window computed in
+ * UTC would lose or wrongly admit.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -78,39 +61,30 @@ import type {
   VenueFixture,
 } from '../support/factories.ts';
 
-/* The fixed world every case is measured from (AAP 0.5.7, 0.7.3) */
-
 /** The launch city these cases run in: a zone with a summer offset, so UTC and local time differ. */
 const CITY = 'lisbon';
 
-/** The deposit the base meetup holds — the middle level, the one whose default budget is 3,000. */
 const DEPOSIT_CENTS: DepositCents = 1000;
 
-/** The budget that deposit maps a pair to by default, and the budget criterion 13 names. */
 const BUDGET_CENTS = DEFAULT_BUDGET_BY_DEPOSIT[DEPOSIT_CENTS];
 
 /**
- * The meetup's start: Monday 2026-07-13 at 13:00 Lisbon wall-clock time. Lisbon is WEST (UTC+1) in
- * July, so the instant is 12:00Z and the suggestions window — from an hour after the start to
+ * The meetup's start: Monday 2026-07-13 at 13:00 Lisbon wall-clock time. Lisbon is UTC+1 in July,
+ * so the instant is 12:00Z and the suggestions window — an hour after the start to
  * `SUGGESTION_LOCAL_CUTOFF` on the meetup's own local day — is 14:00–23:00 city time. Every
  * opening-hours value below is written in that same city time.
  */
 const STARTS_AT = new Date('2026-07-13T12:00:00.000Z');
 
-/** The instant each case starts at: two hours before the start, where cancellation is still free. */
 const BASE = new Date(STARTS_AT.getTime() - 2 * HOUR_MS);
 
-/** `startsAt + 45 min`: the instant a settled meetup's `settledAt` carries (AAP 0.5.3). */
 const SETTLE_AFTER_MS = CHECK_IN_CLOSES_AFTER_MINUTES * MINUTE_MS;
 
-/** The metres one degree of latitude spans, which the offset helper converts with. */
 const METERS_PER_DEGREE = 111_320;
 
 /** The `opening_hours` values these cases are built from, all in Lisbon wall-clock time. */
 const HOURS = {
-  /** Open across the whole window on every day: a qualifying place. */
   always: 'Mo-Su 08:00-23:30',
-  /** Open across the window from a later start, so two rows can be told apart by their hours. */
   late: 'Mo-Su 12:00-23:30',
   /**
    * Open 13:30–14:30 only: inside the window's first half hour in Lisbon time, and wholly before it
@@ -122,18 +96,13 @@ const HOURS = {
    * window computed in UTC loses: that window ends an hour earlier, at 22:00 Lisbon time.
    */
   eveningOpen: 'Mo-Su 22:30-23:30',
-  /** Shut before the window opens at 14:00: priced, and not open in it. */
   morningOnly: 'Mo-Su 08:00-12:00',
   /** Shut a quarter of an hour before the window opens — the row a UTC window wrongly admits. */
   beforeWindow: 'Mo-Su 12:30-13:45',
 } as const;
 
-/** The menu link an `online_menu` record cites, so a provenance case can assert its `sourceUrl`. */
 const MENU_URL = 'https://fixtures.invalid/tablemate-menu';
 
-/* Helpers (AAP 0.11.1: one shared helper per repeated shape) */
-
-/** A point `north` and `east` metres from `origin`, for placing a place at a known distance. */
 function offsetMeters(origin: LatLng, north: number, east: number): LatLng {
   return {
     lat: origin.lat + north / METERS_PER_DEGREE,
@@ -141,12 +110,10 @@ function offsetMeters(origin: LatLng, north: number, east: number): LatLng {
   };
 }
 
-/** The venue's stored coordinates, the origin every place of a case is placed from. */
 function venuePoint(venue: VenueFixture): LatLng {
   return { lat: venue.lat, lng: venue.lng };
 }
 
-/** The venue's console secret, which the check-in case reads the displayed code with. */
 function venueSecret(venue: VenueFixture): string {
   if (venue.secret === null) {
     throw new Error('the fixture venue has no console secret');
@@ -160,7 +127,7 @@ function freshnessWindowDays(source: PriceSource): number {
 }
 
 /**
- * Inject `GET /v1/meetups/:id/suggestions` as `actor` (AAP 0.5.4), optionally supplying a budget.
+ * Inject `GET /v1/meetups/:id/suggestions` as `actor`, optionally supplying a budget.
  *
  * The bearer token is signed per request through `TestApp.tokenFor`, so a case that moved the clock
  * past the 15-minute access-token lifetime still acts as the same account. A supplied budget is the
@@ -181,12 +148,10 @@ async function readSuggestions(
   });
 }
 
-/** The parsed `200` body of a suggestion read (AAP 0.5.4). */
 function parseSuggestions(response: RouteResponse): SuggestionsResponse {
   return SuggestionsResponse.parse(response.json());
 }
 
-/** One price item of a food or drink place: its `main`, the item every estimate of one needs. */
 function mainItem(usdCents: number, source: PriceSource, capturedAt?: Date): PriceItemFixture {
   return {
     name: 'Main course',
@@ -198,7 +163,6 @@ function mainItem(usdCents: number, source: PriceSource, capturedAt?: Date): Pri
   };
 }
 
-/** One priced place near the venue, built for the case that asserts on it (AAP 0.5.6, 0.5.7). */
 async function pricedPlace(
   t: TestApp,
   venue: VenueFixture,
@@ -206,7 +170,6 @@ async function pricedPlace(
     readonly category: PlaceCategory;
     readonly distanceM: number;
     readonly hours: string;
-    /** The point to measure `distanceM` from; the venue's own location unless given. */
     readonly near?: LatLng;
     readonly menuUrl?: string;
   },
@@ -226,7 +189,6 @@ async function pricedPlace(
   return place;
 }
 
-/** The place a seeded set holds at `distanceM`, so a case names the row it asserts on. */
 function placeAt(places: ReadonlyMap<number, PlaceFixture>, distanceM: number): PlaceFixture {
   const place = places.get(distanceM);
   if (place === undefined) {
@@ -235,21 +197,18 @@ function placeAt(places: ReadonlyMap<number, PlaceFixture>, distanceM: number): 
   return place;
 }
 
-/** The pair and the venue every case of this file starts from. */
 interface Base {
   readonly initiator: UserFixture;
   readonly recipient: UserFixture;
   readonly venue: VenueFixture;
 }
 
-/** The meetup columns the route's two writes set: the shared budget and the first view (AAP 0.5.4). */
 interface StoredView {
   readonly budgetCents: number | null;
   readonly budgetUpdatedBy: string | null;
   readonly suggestionsFirstViewedAt: Date | null;
 }
 
-/** Read those two columns back from the meetup row. */
 async function storedView(t: TestApp, meetupId: string): Promise<StoredView> {
   return t.services.db.meetup.findUniqueOrThrow({
     where: { id: meetupId },
@@ -258,12 +217,9 @@ async function storedView(t: TestApp, meetupId: string): Promise<StoredView> {
 }
 
 /**
- * Create a meetup of the base pair in `status` (AAP 0.5.3).
- *
- * `makeMeetup` derives a settled meetup's `settledAt` from its start — `startsAt + 45 min` — so a
- * case ages one by moving the start, which is the instant the eligibility rule of AAP 0.7.3 reads.
- * The base pair may hold one open meetup at a time (the partial unique index of AAP 0.5.2), which is
- * why each group creates the meetup its own cases act on.
+ * Create a meetup of the base pair in `status`. `makeMeetup` derives a settled meetup's `settledAt`
+ * from its start — `startsAt + 45 min` — so a case ages one by moving the start. The base pair may
+ * hold one open meetup at a time, which is why each group creates the meetup its own cases act on.
  */
 async function meetupIn(
   t: TestApp,
@@ -277,7 +233,6 @@ async function meetupIn(
     hours === undefined
       ? undefined
       : new Date(reference.getTime() - hours * HOUR_MS - SETTLE_AFTER_MS);
-
   return makeMeetup(t, {
     status,
     initiator: base.initiator,
@@ -288,9 +243,6 @@ async function meetupIn(
   });
 }
 
-/* Criterion 13's places (AAP 0.12.1) */
-
-/** One eligible place: where it stands, when it is open, and the cents its one price item costs. */
 interface EligiblePlace {
   readonly category: PlaceCategory;
   readonly distanceM: number;
@@ -299,15 +251,13 @@ interface EligiblePlace {
 }
 
 /**
- * The fifteen eligible places of criterion 13: five restaurants (the first with no offset, which the
- * case links to the meetup's own venue so it becomes a partner place at 0 m), four cafes, three bars
- * and three activities — each within 2 km, open in the window and priced at or under the 3,000-cent
- * budget.
+ * The fifteen eligible places of criterion 13: five restaurants (the first linked to the meetup's
+ * own venue so it becomes a partner place at 0 m), four cafes, three bars and three activities —
+ * each within 2 km, open in the window and priced at or under the budget.
  *
  * The distances and prices are chosen so both limits bind and the order is decided by the rules:
- * five estimates sit in the 2,100–3,000 band (70%–100% of the budget) and rank before the cheaper
- * ones, so the walk in rank order fills exactly ten of the twelve candidates left after the
- * three-per-category limit.
+ * five estimates sit in the 70%–100% band and rank before the cheaper ones, so the walk in rank
+ * order fills exactly ten of the twelve candidates left after the three-per-category limit.
  */
 const ELIGIBLE_PLACES: readonly EligiblePlace[] = [
   { category: 'restaurant', distanceM: 0, hours: HOURS.always, usdCents: 2600 },
@@ -327,7 +277,6 @@ const ELIGIBLE_PLACES: readonly EligiblePlace[] = [
   { category: 'activity', distanceM: 750, hours: HOURS.always, usdCents: 1000 },
 ];
 
-/** One `ticket` price item, with the two fields an activity's estimate reads (AAP 0.5.6). */
 function ticketItem(
   name: string,
   usdCents: number,
@@ -337,7 +286,6 @@ function ticketItem(
   return { name, itemCategory: 'ticket', usdCents, source: 'online_menu', perPerson, ticketType };
 }
 
-/** The one priced item of an eligible place: a main course, or the ticket an activity is priced by. */
 function eligibleItem(row: EligiblePlace): PriceItemFixture {
   if (row.category === 'activity') {
     return ticketItem('Admission', row.usdCents, true, 'standard');
@@ -368,11 +316,10 @@ async function seedEligibleSet(
 }
 
 /**
- * The places criterion 13's response must not carry, keyed by the reason each is out (AAP 0.5.7):
- * beyond the radius, unpriced, shut in the window, stale, awaiting review, or over the budget. Each
- * is otherwise eligible — inside the city and the radius where distance is not the reason, priced
- * and open where the price is not — so a place appearing in the response would be a rule failing
- * rather than a fixture that never qualified.
+ * The places criterion 13's response must not carry, keyed by the reason each is out: beyond the
+ * radius, unpriced, shut in the window, stale, awaiting review, or over the budget. Each is
+ * otherwise eligible, so a place appearing in the response would be a rule failing rather than a
+ * fixture that never qualified.
  */
 async function seedIneligibleSet(
   t: TestApp,
@@ -381,8 +328,6 @@ async function seedIneligibleSet(
   const origin = venuePoint(venue);
   const now = t.time.now();
   const seeded = new Map<string, PlaceFixture>();
-
-  /** Write one ineligible place under its reason's key. */
   const seed = async (
     key: string,
     shape: Parameters<typeof pricedPlace>[2],
@@ -392,7 +337,6 @@ async function seedIneligibleSet(
     seeded.set(key, place);
     return place;
   };
-
   // 2.1 km due north, and 2.19 km north-east: the radius is a distance, not a north-only bound.
   await seed(
     'beyond_radius',
@@ -409,7 +353,6 @@ async function seedIneligibleSet(
     },
     mainItem(1500, 'online_menu'),
   );
-
   // No price record at all, and the two rows on either side of the window's opening instant: one shut
   // at 13:45 Lisbon time, one open across the window from a later start.
   await seed('unpriced', { category: 'bar', distanceM: 1400, hours: HOURS.always });
@@ -423,7 +366,6 @@ async function seedIneligibleSet(
     { category: 'cafe', distanceM: 1300, hours: HOURS.morningOnly },
     mainItem(1400, 'online_menu'),
   );
-
   // No `opening_hours` value at all: priced, and never open (AAP 0.5.7).
   const noHours = await seed(
     'no_opening_hours',
@@ -431,7 +373,6 @@ async function seedIneligibleSet(
     mainItem(1300, 'online_menu'),
   );
   await t.services.db.place.update({ where: { id: noHours.id }, data: { openingHours: null } });
-
   // Stale on both sources it carries: 31 days old online, 61 by phone.
   await seed(
     'stale_prices',
@@ -443,7 +384,6 @@ async function seedIneligibleSet(
       new Date(now.getTime() - (FRESHNESS_PHONE_OPERATOR_DAYS + 1) * DAY_MS),
     ),
   );
-
   // Only a record awaiting operator review, which the price query never reads (AAP 0.5.6).
   await seed(
     'needs_review',
@@ -456,24 +396,18 @@ async function seedIneligibleSet(
       reviewStatus: 'needs_review',
     },
   );
-
   // Fresh, open, and priced above the 3,000-cent budget.
   await seed(
     'over_budget',
     { category: 'restaurant', distanceM: 1700, hours: HOURS.always },
     mainItem(BUDGET_CENTS + 1000, 'online_menu'),
   );
-
   return seeded;
 }
 
-/* The statuses and freshness boundaries a read is judged by (AAP 0.5.4, 0.5.7, 0.7.3) */
-
-/** One status a suggestion read is judged by: which it carries, and how old its settlement is. */
 interface EligibilityRow {
   readonly label: string;
   readonly status: MeetupStatus;
-  /** The hours between `settledAt` and the clock; absent for a meetup that never settled. */
   readonly settledHoursAgo?: number;
 }
 
@@ -496,7 +430,6 @@ const SERVED_ROWS: readonly EligibilityRow[] = [
   },
 ];
 
-/** One freshness boundary: a source, an age in days, and whether a price that old is fresh. */
 interface FreshnessRow {
   readonly label: string;
   readonly source: PriceSource;
@@ -532,20 +465,15 @@ const FRESHNESS_ROWS: readonly FreshnessRow[] = [
   },
 ];
 
-/* The suite (AAP 0.11.2) */
-
 describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, () => {
   let t: TestApp;
   let base: Base;
-
   beforeAll(async () => {
     t = await createTestApp();
   });
-
   afterAll(async () => {
     await t.close();
   });
-
   beforeEach(async () => {
     await t.resetState();
     await t.seedCities();
@@ -558,12 +486,10 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       venue: await makeVenue(t, { cityId: CITY }),
     };
   });
-
   describe('the ranked day plan of criterion 13', () => {
     let meetup: MeetupFixture;
     let eligible: Map<number, PlaceFixture>;
     let ineligible: Map<string, PlaceFixture>;
-
     beforeEach(async () => {
       meetup = await meetupIn(t, base, 'locked');
       eligible = await seedEligibleSet(t, base.venue);
@@ -575,21 +501,17 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         data: { placeId: placeAt(eligible, 0).id },
       });
     });
-
     it('serves at most ten places, within every filter, with the partner place first', async () => {
       const response = await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS);
       expect(response.status).toBe(200);
-
       const parsed = parseSuggestions(response);
       expect(parsed.budgetCents).toBe(BUDGET_CENTS);
       expect(parsed.emptyReason).toBeUndefined();
       expect(parsed.items).toHaveLength(SUGGESTIONS_MAX);
-
       const [first] = parsed.items;
       expect(first?.placeId).toBe(placeAt(eligible, 0).id);
       expect(first?.isPartnerVenue).toBe(true);
       expect(first?.distanceM).toBe(0);
-
       // Everything returned is inside the radius, inside the budget, priced from a record fresh for its
       // own source, and no category reached a fourth place (AAP 0.5.7).
       const perCategory = new Map<PlaceCategory, number>();
@@ -604,16 +526,13 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       for (const count of perCategory.values()) {
         expect(count).toBeLessThanOrEqual(SUGGESTIONS_PER_CATEGORY_MAX);
       }
-
       // The restaurant open 13:30–14:30 only is served, and its hours are rendered in the city's own
       // time: read in UTC the same value would render as 12:30–13:30, before the window opens.
       const windowOnly = parsed.items.find((item) => item.placeId === placeAt(eligible, 500).id);
       expect(windowOnly?.openingHoursToday).toBe('13:30–14:30');
-
       // The bar open 22:30–23:30 is served too, which a window computed in UTC would lose: that window
       // would end an hour earlier, at 22:00 Lisbon time, leaving the bar shut in it.
       expect(parsed.items.map((item) => item.placeId)).toContain(placeAt(eligible, 450).id);
-
       // Not one ineligible place is present, under any of the reasons it was built for.
       const returned = new Set(parsed.items.map((item) => item.placeId));
       for (const [reason, place] of ineligible) {
@@ -621,7 +540,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       }
     });
   });
-
   describe('the freshness boundary of each price source', () => {
     it.each(rows(FRESHNESS_ROWS))('honours the boundary where $label', async (row) => {
       const meetup = await meetupIn(t, base, 'locked');
@@ -632,36 +550,30 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         { category: 'cafe', distanceM: 300, hours: HOURS.always },
         mainItem(2300, row.source, capturedAt),
       );
-
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS),
       );
       const returned = parsed.items.map((item) => item.placeId);
-
       if (row.fresh) {
         expect(returned).toEqual([place.id]);
         expect(parsed.items[0]?.priceVerifiedAt).toBe(capturedAt.toISOString());
         return;
       }
-
       // A place whose only price is stale is not priced at all, which is the first empty reason.
       expect(returned).toEqual([]);
       expect(parsed.emptyReason).toBe('no_priced_places');
     });
   });
-
   describe('eligibility and the contract errors (AAP 0.5.4, 0.7.3)', () => {
     it('answers 404 for a meetup that does not exist', async () => {
       const response = await readSuggestions(t, { id: randomUUID() }, base.initiator);
       expectError(response, 404, 'meetup_not_found');
     });
-
     it('answers 403 for a traveler who is not a participant', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       const stranger = await makeUser(t, {});
       expectError(await readSuggestions(t, meetup, stranger), 403, 'not_participant');
     });
-
     it.each(rows(NOT_LOCKED_ROWS))('answers 409 for a $label meetup', async (row) => {
       const meetup = await meetupIn(
         t,
@@ -674,7 +586,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       // The status is checked before anything is written: the supplied budget was not stored.
       expect((await storedView(t, meetup.id)).budgetCents).toBeNull();
     });
-
     it.each(rows(SERVED_ROWS))('serves a $label meetup', async (row) => {
       const meetup = await meetupIn(
         t,
@@ -684,13 +595,11 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       );
       const response = await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS);
       expect(response.status).toBe(200);
-
       const parsed = parseSuggestions(response);
       expect(parsed.budgetCents).toBe(BUDGET_CENTS);
       expect(parsed.items).toEqual([]);
       expect(parsed.emptyReason).toBe('no_priced_places');
     });
-
     it.each(rows([BUDGET_MIN_CENTS - 1, BUDGET_MAX_CENTS + 1]))(
       'answers 422 for a per-person budget of %i cents, and stores nothing',
       async (budgetCents) => {
@@ -700,7 +609,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         expect((await storedView(t, meetup.id)).budgetCents).toBeNull();
       },
     );
-
     it.each(rows([BUDGET_MIN_CENTS, BUDGET_MAX_CENTS]))(
       'serves a per-person budget of %i cents and stores it for the pair',
       async (budgetCents) => {
@@ -714,12 +622,10 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       },
     );
   });
-
   describe("the pair's shared budget and the first view", () => {
     it("ranks against the deposit level's default while the pair has stored none", async () => {
       const meetup = await meetupIn(t, base, 'locked');
       const parsed = parseSuggestions(await readSuggestions(t, meetup, base.initiator));
-
       expect(parsed.budgetCents).toBe(BUDGET_CENTS);
       // The default is computed, never written: the pair's own budget column stays empty, and the read
       // still stamps its first view, which is the other write this route owes (AAP 0.5.4).
@@ -727,35 +633,28 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       expect(stored.budgetCents).toBeNull();
       expect(stored.suggestionsFirstViewedAt).toEqual(BASE);
     });
-
     it('lets either attendee replace the shared budget, the latest write winning', async () => {
       const meetup = await meetupIn(t, base, 'locked');
-
       const supplied = parseSuggestions(await readSuggestions(t, meetup, base.initiator, 2000));
       expect(supplied.budgetCents).toBe(2000);
       const afterInitiator = await storedView(t, meetup.id);
       expect(afterInitiator.budgetCents).toBe(2000);
       expect(afterInitiator.budgetUpdatedBy).toBe(base.initiator.id);
-
       // The recipient reads the budget the initiator stored, without supplying one of their own.
       const shared = parseSuggestions(await readSuggestions(t, meetup, base.recipient));
       expect(shared.budgetCents).toBe(2000);
-
       const replaced = parseSuggestions(await readSuggestions(t, meetup, base.recipient, 4000));
       expect(replaced.budgetCents).toBe(4000);
       const afterRecipient = await storedView(t, meetup.id);
       expect(afterRecipient.budgetCents).toBe(4000);
       expect(afterRecipient.budgetUpdatedBy).toBe(base.recipient.id);
     });
-
     it('stamps the first view once, on the first read, and never moves it', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       expect((await storedView(t, meetup.id)).suggestionsFirstViewedAt).toBeNull();
-
       const first = await readSuggestions(t, meetup, base.initiator);
       expect(first.status).toBe(200);
       expect((await storedView(t, meetup.id)).suggestionsFirstViewedAt).toEqual(BASE);
-
       // A later read, by the other attendee and half an hour on, leaves the stamp where it is.
       t.time.advance({ minutes: 30 });
       const later = await readSuggestions(t, meetup, base.recipient, 2000);
@@ -763,18 +662,15 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       expect((await storedView(t, meetup.id)).suggestionsFirstViewedAt).toEqual(BASE);
     });
   });
-
   describe('empty reasons, tickets and provenance (AAP 0.5.6, 0.5.7)', () => {
     it('names no_priced_places when nothing near the venue carries a price', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS),
       );
-
       expect(parsed.items).toEqual([]);
       expect(parsed.emptyReason).toBe('no_priced_places');
     });
-
     it('names none_open when every priced place is shut in the window', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       await pricedPlace(
@@ -783,14 +679,12 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         { category: 'cafe', distanceM: 300, hours: HOURS.morningOnly },
         mainItem(1500, 'online_menu'),
       );
-
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS),
       );
       expect(parsed.items).toEqual([]);
       expect(parsed.emptyReason).toBe('none_open');
     });
-
     it('names budget_too_low when every open place is over it, and stores the raised budget', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       await pricedPlace(
@@ -799,7 +693,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         { category: 'cafe', distanceM: 300, hours: HOURS.always },
         mainItem(BUDGET_MIN_CENTS + 400, 'online_menu'),
       );
-
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_MIN_CENTS),
       );
@@ -808,7 +701,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       expect(parsed.budgetCents).toBe(BUDGET_MIN_CENTS);
       expect((await storedView(t, meetup.id)).budgetCents).toBe(BUDGET_MIN_CENTS);
     });
-
     it('prices an activity by its standard per-person ticket, leaving a concession-only one out', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       const standard = await pricedPlace(
@@ -824,11 +716,9 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         ticketItem('Concession admission', 800, true, 'concession'),
         ticketItem('Family admission', 2000, false, 'group'),
       );
-
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS),
       );
-
       // Only the standard ticket is an estimate, and the lowest listed one decides it (AAP 0.5.6).
       expect(parsed.items.map((item) => item.placeId)).toEqual([standard.id]);
       expect(parsed.items[0]?.estimatedCostRange).toEqual({
@@ -837,7 +727,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
         highCents: 1200,
       });
     });
-
     it('reports the provenance of the prices used, the oldest capture as the verification', async () => {
       const meetup = await meetupIn(t, base, 'locked');
       const phoneCapturedAt = new Date(BASE.getTime() - 10 * DAY_MS);
@@ -856,18 +745,15 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
           capturedAt: onlineCapturedAt,
         },
       );
-
       const parsed = parseSuggestions(
         await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS),
       );
       const item = parsed.items.find((entry) => entry.placeId === place.id);
-
       // The estimate is the median main plus the median non-alcoholic drink, and both records are
       // reported with the source, the instant and the URL they were read from (AAP 0.5.7).
       expect(item?.estimatedCostRange.estimateCents).toBe(1800);
       expect(item?.priceSource).toBe('phone_quote');
       expect(item?.priceVerifiedAt).toBe(phoneCapturedAt.toISOString());
-
       const used = item?.itemsUsed ?? [];
       expect(used).toHaveLength(2);
       const quote = used.find((entry) => entry.source === 'phone_quote');
@@ -880,7 +766,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       expect(menu?.capturedAt).toBe(onlineCapturedAt.toISOString());
     });
   });
-
   describe('a failure of the read stays on this route (AAP 0.3.2, 0.12.2)', () => {
     it('answers 503 while the price table cannot be read, and a check-in still succeeds', async () => {
       const meetup = await meetupIn(t, base, 'locked');
@@ -892,19 +777,15 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       );
       // Check-in opens fifteen minutes before the start, so the meetup is inside its window.
       t.time.toMeetupPoint(meetup, 'startsAt');
-
       // The price table is renamed rather than emptied, so every statement naming it fails while the
       // rename lasts. The `finally` undoes it even when an assertion above throws, because the database
       // is shared by the whole run.
       const isolate = Prisma.sql`ALTER TABLE "price_record" RENAME TO "price_record_isolation"`;
       const restore = Prisma.sql`ALTER TABLE "price_record_isolation" RENAME TO "price_record"`;
-
       try {
         await t.services.db.$executeRaw(isolate);
-
         const failed = await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS);
         expectError(failed, 503, 'suggestions_unavailable');
-
         // The meetup flow reads no prices: the attendee can still check in.
         const checked = await checkIn(
           t,
@@ -917,7 +798,6 @@ describe(`GET /v1/meetups/:id/suggestions ${stripeModeLabel()} (criterion 13)`, 
       } finally {
         await t.services.db.$executeRaw(restore);
       }
-
       const recovered = await readSuggestions(t, meetup, base.initiator, BUDGET_CENTS);
       expect(recovered.status).toBe(200);
       expect(parseSuggestions(recovered).items).toHaveLength(1);

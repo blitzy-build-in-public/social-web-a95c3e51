@@ -3,14 +3,12 @@
  * that serves it, its stylesheet, the shared design tokens published as CSS custom properties on the
  * document root, and the mount of `App` (AAP 0.6.2, 0.5.8).
  *
- * `styles.css` paints every colour, length, type size, boundary width and pointer opacity through the
- * `--tm-*` properties written here, so those values live in one place
+ * `styles.css` paints every colour, length, type size, font stack, boundary width and pointer opacity
+ * through the `--tm-*` properties written here, so those values live in one place
  * (`packages/shared/src/ui-tokens.ts`) and neither the stylesheet nor a screen holds a literal of its
- * own.
- *
- * The write goes through CSSOM rather than a `<style>` block or a `style` attribute: a
- * `style-src 'self'` policy does not block a CSSOM write, so the console's nginx configuration needs
- * no `'unsafe-inline'` (AAP 0.3.2), and every write lands before the first render.
+ * own. The write goes through CSSOM rather than a `<style>` block or a `style` attribute: a
+ * `style-src 'self'` policy does not block a CSSOM write, so the console's nginx configuration needs no
+ * `'unsafe-inline'` (AAP 0.3.2), and every write lands before the first render.
  */
 import './styles.css';
 // Ahead of `@tablemate/shared`, whose schemas are built at import and would otherwise probe `eval`
@@ -20,6 +18,8 @@ import './zod-jitless.ts';
 import {
   borderWidths,
   colors,
+  componentSizes,
+  fontFamily,
   fontWeights,
   interactionOpacity,
   MIN_TOUCH_TARGET,
@@ -62,6 +62,10 @@ for (const [key, value] of Object.entries(fontWeights)) {
   rootStyle.setProperty(`--tm-font-weight-${toKebab(key)}`, value);
 }
 
+// The product's one font stack: a single value rather than a group, so it is published on its own
+// beside the weights it paints in.
+rootStyle.setProperty('--tm-font-family', fontFamily);
+
 // Boundary widths in px rather than rem: a hairline or a focus band is a device-independent pixel
 // in the tokens, not a length that grows with the reader's text size.
 for (const [key, value] of Object.entries(borderWidths)) {
@@ -74,6 +78,15 @@ for (const [key, value] of Object.entries(interactionOpacity)) {
 }
 
 rootStyle.setProperty('--tm-touch-target', `${MIN_TOUCH_TARGET / 16}rem`);
+
+// The console's own two lengths, from the shared component sizes: the readable measure of its single
+// column and the square its check-in code resolves to. In rem like the scale lengths above, so both
+// follow the reader's system font size rather than pinning the column to a pixel count.
+rootStyle.setProperty(
+  '--tm-layout-reading-column-width',
+  `${componentSizes.readingColumnWidth / 16}rem`,
+);
+rootStyle.setProperty('--tm-size-qr-code', `${componentSizes.qrCodeWidth / 16}rem`);
 
 const rootElement = document.getElementById('root');
 

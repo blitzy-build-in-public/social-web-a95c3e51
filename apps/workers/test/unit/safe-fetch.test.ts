@@ -1,24 +1,5 @@
 /**
  * Request safety, resource bounds and the sandboxed browser for the menu crawl (AAP 0.5.6, 0.12.2).
- *
- * Four properties are evidenced here, each by behaviour a suite can observe rather than by the code
- * that implements it:
- *
- *   1. **The address is judged before a connection exists.** Every answer of a host is checked, so a
- *      name that answers with a public address and a private one is refused rather than half trusted.
- *   2. **Every hop re-runs every check**, so a redirect cannot hand the crawler a review site or an
- *      internal address that the entry URL would have been refused.
- *   3. **The work is bounded**, by `FETCH_LIMITS` for one response and by a `FetchBudget` for a place.
- *   4. **The browser opens no connection of its own** — not for a frame, an image, a service worker or
- *      a WebSocket named by a page the crawler does not control.
- *
- * Nothing leaves the host: every hostname is a `.test` name the injected `lookup` answers or a
- * literal private address that is refused before a socket exists, and the one address a request does
- * connect to is the local fixture server. The review-site domain is read from
- * `config/crawl-blocklist.json` at runtime and never written in this file.
- *
- * @see AAP 0.5.6 for the request-safety chain, the crawl policy and its bounds, 0.12.2 for the
- *   guarantees this suite evidences, and 0.8.1 for this file.
  */
 
 import { existsSync } from 'node:fs';
@@ -69,10 +50,8 @@ const BLOCKED_DOMAIN = [...blocklist.domains][0] ?? '';
 /** The suffix the fake site-terms policy leaves unreviewed, so it is never fetched (AAP 0.5.6). */
 const UNCERTAIN_SUFFIX = '.uncertain.fixture.test';
 
-/** The hosts the crawler may reach inside the test network, as `CRAWL_ALLOW_PRIVATE_HOSTS` names them. */
 const PRIVATE_HOSTS = ['127.0.0.1', 'site.fixture.test', 'rebind.fixture.test'];
 
-/** The pages, and the one script, the local server serves from the committed fixture sites. */
 const SITE_FILES: Readonly<Record<string, string>> = {
   '/service-worker/': 'service-worker/index.html',
   '/service-worker/sw.js': 'service-worker/sw.js',
@@ -85,7 +64,6 @@ const SITE_FILES: Readonly<Record<string, string>> = {
 /** The body of `/small`: 1 KiB, identifiable as this server's so address pinning is observable. */
 const SMALL_BODY = `server-a-small ${'s'.repeat(1000)}`;
 
-/** An allowed page whose frame and image both sit on an unreviewed domain (AAP 0.5.6). */
 const MIXED_FRAMES_BODY = [
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture mixed</title></head>',
   '<body><h1>Fixture mixed frames</h1>',
@@ -97,7 +75,6 @@ const MIXED_FRAMES_BODY = [
 /** One request the local server received, which is the evidence that a connection was opened. */
 type Hit = { readonly method: string; readonly path: string; readonly host: string };
 
-/** One log line the modules under test wrote (AAP 0.11.1). */
 type LogLine = Record<string, unknown>;
 
 /** Every field a log line of this pipeline may carry — never a body, page text or a URL (AAP 0.11.1). */
@@ -116,12 +93,10 @@ const ALLOWED_LOG_KEYS = new Set([
   'dropReason',
 ]);
 
-/** The requests each server received, and the WebSocket upgrade attempts that reached one. */
 const hitsA: Hit[] = [];
 const hitsB: Hit[] = [];
 const upgrades: string[] = [];
 
-/** The resolver's calls, the throttle's slots, the answer count of the rebinding host, and the logs. */
 const lookups: string[] = [];
 const throttleSlots: string[] = [];
 let rebindAnswers = 0;
@@ -136,10 +111,8 @@ type Attempt = {
 };
 const attempts: Attempt[] = [];
 
-/** The buffer a bounded body is written from: one shared, read-only chunk of zeros. */
 const ZERO_CHUNK = Buffer.alloc(64 * 1024);
 
-/** The dynamic routes the policy, redirect and status rows need, as `path -> [status, location]`. */
 const REDIRECTS: Readonly<Record<string, string>> = {
   '/to-private': 'http://10.0.0.1/',
   '/to-blocked': `https://${BLOCKED_DOMAIN}/reviews`,
@@ -148,7 +121,6 @@ const REDIRECTS: Readonly<Record<string, string>> = {
 /**
  * Answer one request of the fixture server (AAP 0.5.6): the dynamic routes the bounds, redirect and
  * policy rows need, then the committed fixture sites.
- *
  * @param target Where the hit is recorded.
  * @param req The request received.
  * @param res The response to answer.
@@ -218,7 +190,6 @@ async function handle(target: Hit[], req: IncomingMessage, res: ServerResponse):
 
 /**
  * Write `bytes` zeros and end the response.
- *
  * @param res The response to write to.
  * @param bytes How many zero bytes to send.
  */
@@ -242,7 +213,6 @@ function writeZeros(res: ServerResponse, bytes: number): void {
 
 /**
  * Answer one response completely (AAP 0.5.6).
- *
  * @param res The response to answer.
  * @param status The status to send.
  * @param type Its `Content-Type`.
@@ -267,7 +237,6 @@ function send(
 /**
  * Build one fixture server: it records every request and every WebSocket upgrade attempt, and answers
  * from {@link handle}.
- *
  * @param target Where its hits are recorded.
  * @param label The server's name, used when an upgrade is recorded.
  * @returns The server, not yet listening.
@@ -291,7 +260,6 @@ function fixtureServer(target: Hit[], label: string): Server {
 
 /**
  * Start a server, resolving with the port it was given.
- *
  * @param server The server to start.
  * @param host The address to bind, so server B can sit on the second loopback address.
  * @param port The port, `0` for any free one.
@@ -312,7 +280,6 @@ function listen(server: Server, host: string, port: number): Promise<number> {
 
 /**
  * Stop a server, closing the sockets it still holds so the suite ends promptly.
- *
  * @param server The server to stop, when one was started.
  */
 async function stop(server: Server | null): Promise<void> {
@@ -372,29 +339,24 @@ const lookup: LookupFn = (host) => {
 const policy = (host: string): Promise<CrawlDecision> =>
   Promise.resolve(host.endsWith(UNCERTAIN_SUFFIX) ? 'uncertain' : 'allowed');
 
-/** The per-domain slot, recorded: one request a second per domain is not this suite's subject. */
 const throttle = (domain: string): Promise<void> => {
   throttleSlots.push(domain);
   return Promise.resolve();
 };
 
-/** Keep one log line for the assertions on it. */
 const record = (line: LogLine): void => {
   logs.push(line);
   allLogs.push(line);
 };
 
-/** The logger both modules under test take: it keeps every line and writes nothing. */
 const logger = {
   debug: record,
   info: record,
   warn: record,
 } as unknown as SafeFetchDeps['logger'] & Parameters<typeof renderPage>[1]['logger'];
 
-/** The robots.txt bodies the chain fetched, shared by every fetch of the suite. */
 const robotsCache = createMemoryRobotsCache();
 
-/** The one fetch the pipeline uses, with every dependency injected (AAP 0.5.6). */
 const safeFetch: SafeFetch = createSafeFetch({
   lookup,
   allowPrivateHosts: PRIVATE_HOSTS,
@@ -427,12 +389,10 @@ const recordingFetch: SafeFetch = async (url, opts) => {
   }
 };
 
-/** The browser every render row shares, launched on first use and closed after the suite. */
 let browser: BrowserProvider | null = null;
 
 /**
  * Fetch `url` and answer with the reason it was refused, failing when it was permitted instead.
- *
  * @param url The URL to fetch.
  * @param kind The kind of document, `html` when omitted.
  * @param budget The place's budget, a fresh one when omitted.
@@ -456,7 +416,6 @@ async function reasonFor(
 /** One URL of a route on server A, reached by name rather than by its loopback literal. */
 const onSite = (path: string): string => `http://site.fixture.test:${portA}${path}`;
 
-/** Render `url` through the recording fetch, on a fresh place budget (AAP 0.5.6). */
 const render = (url: string): Promise<RenderResult> =>
   renderPage(url, {
     browser: sharedBrowser(),
@@ -475,7 +434,6 @@ function sharedBrowser(): BrowserProvider {
 /**
  * The reasons the recorded fetches were refused for, optionally only those whose URL contains
  * `filter`; a permitted request has no reason and is left out.
- *
  * @param filter A substring every counted URL must carry.
  * @returns The reasons, in the order the fetches were made.
  */
@@ -552,7 +510,6 @@ const BLOCKED_ADDRESSES = [
   '::',
 ] as const;
 
-/** Public addresses, including the neighbours of a blocked range on either side of it. */
 const PUBLIC_ADDRESSES = [
   '93.184.216.34',
   '8.8.8.8',
@@ -564,7 +521,6 @@ const PUBLIC_ADDRESSES = [
 /** Values that are not addresses at all, which fail closed rather than open (AAP 0.5.6). */
 const NON_ADDRESSES = ['', 'not-an-address', '999.1.1.1', 'fe80::1%eth0'] as const;
 
-/** The hosts the hostile fixture page points at (AAP 0.5.6). */
 const HOSTILE_HOSTS = [
   'uncertain.fixture.test',
   '169.254.169.254',
@@ -582,7 +538,6 @@ const PRE_CONNECTION_REFUSALS: ReadonlySet<SafeFetchReason> = new Set([
   'port',
 ]);
 
-/** Whether a URL is one the hostile fixture page asks for. */
 const isHostile = (url: string): boolean => HOSTILE_HOSTS.some((host) => url.includes(host));
 
 /** A URL and the reason the chain refuses it before any connection is made (AAP 0.5.6). */
@@ -620,9 +575,6 @@ describe('isBlockedAddress', () => {
 describe('safeFetch addresses', () => {
   it.each(ADDRESS_REFUSALS)('refuses %s with %s', async (url, reason) => {
     await expect(reasonFor(url)).resolves.toBe(reason);
-
-    // The host was resolved and the refusal came before the connection, so no server saw a request
-    // and no throttle slot was taken for one.
     expect(lookups).toHaveLength(1);
     expect(hitsA).toEqual([]);
     expect(hitsB).toEqual([]);
@@ -634,15 +586,11 @@ describe('safeFetch addresses', () => {
       kind: 'html',
       budget: createFetchBudget(),
     });
-
     expect(answer.status).toBe(200);
     expect(answer.body.toString('utf8')).toBe(SMALL_BODY);
     // One resolution for the hop, so a second answer is never consulted at connect time.
     expect(lookups.filter((host) => host === 'rebind.fixture.test')).toHaveLength(1);
     expect(hitsA.filter((hit) => hit.path === '/small')).toHaveLength(1);
-
-    // The answer really did change: a second resolution points the socket at server B, and the
-    // request that was already made did not follow it there.
     expect((await lookup('rebind.fixture.test'))[0]?.address).toBe('127.0.0.2');
     if (hasSecondLoopback) expect(hitsB).toEqual([]);
   });
@@ -660,7 +608,6 @@ describe('safeFetch hops', () => {
       kind: 'html',
       budget: createFetchBudget(),
     });
-
     expect(answer.status).toBe(200);
     expect(answer.body.toString('utf8')).toContain('arrived');
   });
@@ -671,7 +618,6 @@ describe('safeFetch hops', () => {
 
   it('refuses a redirect to a blocklisted domain before it is resolved', async () => {
     expect(BLOCKED_DOMAIN).not.toBe('');
-
     await expect(reasonFor(onSite('/to-blocked'))).resolves.toBe('blocklisted');
     expect(
       lookups.filter((host) => host === BLOCKED_DOMAIN || host.endsWith(`.${BLOCKED_DOMAIN}`)),
@@ -714,7 +660,6 @@ describe('safeFetch bounds', () => {
       budget: createFetchBudget(),
     });
     expect(answer.body.length).toBe(FETCH_LIMITS.pdf);
-
     await expect(reasonFor(onSite(`/big/pdf/${FETCH_LIMITS.pdf + 1}`), 'pdf')).resolves.toBe(
       'too_large',
     );
@@ -722,28 +667,23 @@ describe('safeFetch bounds', () => {
 
   it('stops a place at its request allowance', async () => {
     const budget = createFetchBudget();
-
     for (let index = 0; index < FETCH_LIMITS.placeRequests; index += 1) {
       const answer = await safeFetch(onSite('/small'), { kind: 'html', budget });
       expect(answer.status).toBe(200);
     }
-
     await expect(reasonFor(onSite('/small'), 'html', budget)).resolves.toBe('budget_exhausted');
     expect(budget.requests).toBe(FETCH_LIMITS.placeRequests);
-    // The refused request was never made, so the server counted the allowance and not one more.
     expect(hitsA.filter((hit) => hit.path === '/small')).toHaveLength(FETCH_LIMITS.placeRequests);
   });
 
   it('stops a place at its byte allowance, on the body that would cross it', async () => {
     const budget = createFetchBudget();
     const size = Math.floor(FETCH_LIMITS.placeBytes / 3);
-
     for (let index = 0; index < 3; index += 1) {
       const answer = await safeFetch(onSite(`/big/pdf/${size}`), { kind: 'pdf', budget });
       expect(answer.body.length).toBe(size);
     }
     expect(budget.bytes).toBe(FETCH_LIMITS.placeBytes);
-
     await expect(reasonFor(onSite(`/big/pdf/${size}`), 'pdf', budget)).resolves.toBe(
       'budget_exhausted',
     );
@@ -754,47 +694,33 @@ describe('safeFetch bounds', () => {
 describe('renderPage', () => {
   it('reads a page whose script, frame, image and socket all reach nothing', async () => {
     const result = await render(`http://127.0.0.1:${portA}/service-worker/`);
-
     if (result.kind !== 'ok') throw new Error(`expected a rendered page, got ${result.kind}`);
-    // The page's own menu is read, so this row is not merely a refusal of everything.
     expect(result.text).toContain('Galão');
     expect(result.text).toContain('1,60 €');
-
     const requested = hitsA.map((hit) => hit.path);
-    // The service worker was never registered, so its script was never requested.
     expect(requested).not.toContain('/service-worker/sw.js');
-    // And nothing but the document itself, and the robots.txt the chain fetched, was requested.
     expect(
       requested.filter((path) => path !== '/service-worker/' && path !== '/robots.txt'),
     ).toEqual([]);
-
-    // An unreviewed domain is refused before DNS, so neither hostile frame nor image was resolved.
     expect(lookups.filter((host) => host.endsWith(UNCERTAIN_SUFFIX))).toEqual([]);
     expect(refusalReasons()).toContain('policy_uncertain');
-    // The metadata address the page's own script asks for is refused by the address check, so the
-    // request never had an address to connect to.
     const metadata = attempts.filter((attempt) => attempt.url.startsWith('http://169.254.169.254'));
     expect(metadata.length).toBeGreaterThan(0);
     expect(metadata.every((attempt) => attempt.reason === 'blocked_address')).toBe(true);
-    // Of every hostile URL the page asked for, none was permitted and none failed after a connection:
-    // each was refused by a check that runs before a socket exists.
     expect(
       attempts
         .filter((attempt) => isHostile(attempt.url))
         .map((attempt) => attempt.reason)
         .filter((reason) => reason === null || !PRE_CONNECTION_REFUSALS.has(reason)),
     ).toEqual([]);
-    // No socket was dialed, and server B never saw anything.
     expect(upgrades).toEqual([]);
     expect(hitsB).toEqual([]);
   }, 30_000);
 
   it('refuses the unreviewed frame and image of an allowed page', async () => {
     const result = await render(onSite('/mixed-frames/'));
-
     if (result.kind !== 'ok') throw new Error(`expected a rendered page, got ${result.kind}`);
     expect(result.text).toContain('Fixture mixed frames');
-
     const reasons = refusalReasons(UNCERTAIN_SUFFIX);
     expect(reasons.length).toBeGreaterThan(0);
     expect(reasons.every((reason) => reason === 'policy_uncertain')).toBe(true);
@@ -803,18 +729,14 @@ describe('renderPage', () => {
 
   it('reports a login wall instead of reading the page behind it', async () => {
     const result = await render(onSite('/login-wall/'));
-
     expect(result.kind).toBe('login_wall');
   }, 30_000);
 
   it('reads an allowed page and reports the menu documents it links to', async () => {
     const page = await render(onSite('/menu-html/'));
-
     if (page.kind !== 'ok') throw new Error(`expected a rendered page, got ${page.kind}`);
     expect(page.text).toContain('Bitoque');
-
     const linked = await render(onSite('/menu-pdf-link/'));
-
     if (linked.kind !== 'ok') throw new Error(`expected a rendered page, got ${linked.kind}`);
     expect(linked.menuLinks.pdfs).toEqual([onSite('/menu-pdf-link/menu.pdf')]);
     expect(linked.menuLinks.images).toEqual([]);
@@ -824,12 +746,10 @@ describe('renderPage', () => {
 describe('logging', () => {
   it('carries no page text, and no key beyond reasons, hosts, kinds and counts', () => {
     expect(allLogs.length).toBeGreaterThan(0);
-
     const serialized = allLogs.map((line) => JSON.stringify(line)).join('\n');
     for (const pageText of ['Bitoque', 'Galão', '1,60 €', '12,50', '<html', '<!doctype']) {
       expect(serialized).not.toContain(pageText);
     }
-
     const unknownKeys = allLogs.flatMap((line) =>
       Object.keys(line).filter((key) => !ALLOWED_LOG_KEYS.has(key)),
     );

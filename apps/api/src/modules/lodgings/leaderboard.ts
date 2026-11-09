@@ -1,63 +1,35 @@
 /**
- * The lodging leaderboard, the witnessed-meetup facts that feed it and the guest counts shown
- * beside it (AAP 0.5.7, 0.5.2, 0.5.4).
+ * The lodging leaderboard, the witnessed-meetup facts that feed it and the guest counts shown beside it
+ * (AAP 0.5.7, 0.5.2, 0.5.4).
  *
  * Four shapes come out of this file: a city's ranked directory ({@link leaderboard}, behind
- * `GET /cities/:cityId/lodgings`), one lodging's own summary for its detail page
- * ({@link lodgingSummary}, behind `GET /lodgings/:id`), one lodging's standings for its own console
- * ({@link lodgingStats}, behind `GET /lodging-console/stats`) and the rows that record what
- * happened ({@link recordLodgingActivity}, {@link recordActivityForVerifiedClaim}). The two
- * writers are the only statements anywhere that create a `LodgingActivityFact`.
+ * `GET /cities/:cityId/lodgings`), one lodging's own summary for its detail page ({@link lodgingSummary}),
+ * one lodging's standings for its own console ({@link lodgingStats}) and the rows that record what
+ * happened ({@link recordLodgingActivity}, {@link recordActivityForVerifiedClaim}).
  *
  * The fact rows are the leaderboard's evidence and are deliberately impersonal (AAP 0.5.2): a fact
- * carries a lodging, a meetup, a keyed hash of the pair and the instant of completion, and no user
- * id at all, which is why a lodging's historical score is unchanged by a claim being deleted or an
- * account being erased. That hash (`pairKey`, the order-independent HMAC of the two ids under
- * `ANALYTICS_SALT`) is what lets one pair count once per 30 days without identifying anyone, and
- * the 90-day window {@link scoreFacts} applies is the window the console's 13 weekly points cover.
+ * carries a lodging, a meetup, a keyed hash of the pair and the instant of completion, and no user id at
+ * all, which is why a lodging's historical score is unchanged by a claim being deleted or an account
+ * being erased. That hash (`pairKey`, the order-independent HMAC of the two ids under `ANALYTICS_SALT`)
+ * is what lets one pair count once per 30 days without identifying anyone.
  *
- * This module is a leaf on purpose. It imports `@tablemate/db`, `@tablemate/server-core`,
- * `@tablemate/shared` and nothing from its own workspace, because `settlement/settle.ts`,
- * `consoles/routes.ts`, `admin/lodging-claims.ts` and the sibling `lodgings/*` modules all import
- * it, and a leaf cannot take part in an import cycle (AAP 0.3.2, AAP 0.5.1). Its services parameter
- * is therefore the app's services object narrowed structurally
- * ({@link LodgingLeaderboardServices}) rather than a type imported from `apps/api/src/app.ts`: that
- * composition root is another file's deliverable, it is not on this file's dependency whitelist,
- * and the narrowed interface states exactly the capabilities these functions use.
+ * Six invariants this module keeps: raw statements are `Prisma.sql` tagged templates with double-quoted
+ * identifiers, and every read of `lodging` or `venue` adds {@link fixturePredicate} for that alias,
+ * because a raw query bypasses the guarded client's fixture extension (AAP 0.5.2, 0.11.2); the cached
+ * board is a projection of the process's fixture policy, so its cache entry carries the environment as
+ * well as the city ({@link leaderboardCacheKey}), and a process outside `test` and `demo` is never served
+ * a board a fixture-allowing process computed (AAP 0.5.2); a verified claim stays active until the end of
+ * its `stayTo` in the lodging's city time ({@link currentStayPredicate}), never until the end of a UTC
+ * day (AAP 0.5.3, 0.5.7); a traveler who is deleted or awaiting erasure is not a current guest
+ * ({@link liveTravelerPredicate}) (AAP 0.5.2); the directory is bounded, listed so the bound cannot drop a
+ * scored lodging, and logged when the bound bit (AAP 0.1.1, 0.5.7, 0.11.1); and a lodging the bound left
+ * out is answered with its own numbers rather than as missing, so the bound can never turn a lodging the
+ * directory would list into a `404` (AAP 0.5.4, 0.5.7).
  *
- * Six invariants this module keeps:
- *
- * - Raw statements are `Prisma.sql` tagged templates with double-quoted identifiers, so no value is
- *   ever concatenated into SQL (AAP 0.11.2), and every statement that reads `lodging` or `venue`
- *   adds {@link fixturePredicate} for that alias, because a raw query bypasses the guarded client's
- *   fixture extension (AAP 0.5.2).
- * - The cached board is a projection of the process's fixture policy, so its cache entry carries the
- *   environment as well as the city ({@link leaderboardCacheKey}): a process outside `test` and
- *   `demo` is never served a board that a fixture-allowing process computed, even where the two
- *   share one Redis (AAP 0.5.2).
- * - A verified claim stays *active* until the end of its `stayTo` in the lodging's city time
- *   ({@link currentStayPredicate}), never until the end of a UTC day, so the directory's guest
- *   count, a lodging's guest list and the claim rules agree on who is currently staying
- *   (AAP 0.5.3, 0.5.7).
- * - A traveler who is deleted or awaiting erasure is not a current guest: every statement that
- *   counts or lists a live stay joins `"user"` and drops them ({@link liveTravelerPredicate}), so a
- *   claim that outlives `DELETE /me` until `account-erasure` removes it (AAP 0.5.2) has already
- *   left the directory's guest count and the guest list (AAP 0.5.7).
- * - A directory answer is bounded, and says so when the bound bit: the board carries at most
- *   {@link LODGING_DIRECTORY_LIMIT} lodgings, listed in an order that keeps a lodging which
- *   witnessed a meetup inside the window ahead of one that witnessed nothing, so the bound cannot
- *   drop a scored lodging; one lodging's score reads at most {@link LODGING_ACTIVITY_FACTS_LIMIT}
- *   of its window facts, newest first, on every read that scores it ({@link readWindowFacts} for the
- *   board, {@link readLodgingFacts} for one lodging alone), so the directory, the console and the
- *   detail page report one number. A cut directory and a lodging at that cap are each logged under
- *   their own event, so neither is read as complete (AAP 0.1.1, 0.5.7, 0.11.1).
- * - A lodging the directory's bound left out is answered with its own numbers rather than as
- *   missing: {@link lodgingSummary} builds one lodging's summary from that lodging's own row, facts
- *   and guest count and places it after the board the directory listed, so the bound can never turn
- *   a lodging the directory would list into a `404` (AAP 0.5.4, 0.5.7).
- *
- * @see AAP 0.5.7 for the leaderboard, visibility and claim rules, 0.5.2 for `LodgingActivityFact`
- *   and `LodgingClaim`, 0.5.4 for the directory and console routes, 0.8.1 for this file.
+ * This module is a leaf on purpose: it imports `@tablemate/db`, `@tablemate/server-core`,
+ * `@tablemate/shared` and nothing from its own workspace, so no import cycle reaches it (AAP 0.3.2,
+ * 0.5.1), and its services parameter is the app's services object narrowed structurally
+ * ({@link LodgingLeaderboardServices}) rather than a type imported from `apps/api/src/app.ts`.
  */
 
 import {
@@ -70,6 +42,7 @@ import {
   type DbTx,
 } from '@tablemate/db';
 import {
+  addLocalDays,
   localDateKey,
   pairKey,
   type Clock,
@@ -94,18 +67,15 @@ import {
 
 import type { Redis } from 'ioredis';
 
-// ---------------------------------------------------------------------------------------------
-// Windows, keys and table aliases
-// ---------------------------------------------------------------------------------------------
-
 /** The activity window, in milliseconds (AAP 0.5.7: the last 90 days). */
 const WINDOW_MS = LEADERBOARD_WINDOW_DAYS * DAY_MS;
 
 /** The pair dedupe window, in milliseconds (AAP 0.5.7: one pair counts once in any 30 days). */
 const PAIR_DEDUPE_MS = LEADERBOARD_PAIR_DEDUPE_DAYS * DAY_MS;
 
-/** One week, the width of a console trend point (AAP 0.5.4). */
-const WEEK_MS = 7 * DAY_MS;
+/** The width of a console trend point, in city-local calendar days (AAP 0.5.4): the trend steps back
+ * by this many local dates, never by a multiple of 24 h. */
+const WEEK_DAYS = 7;
 
 /**
  * The prefix of a city's leaderboard cache key, which {@link leaderboardCacheKey} completes with the
@@ -116,13 +86,6 @@ const CACHE_KEY_PREFIX = 'leaderboard:';
 /**
  * The version stamped into a city's cached board ({@link LeaderboardCacheEntry}, AAP 0.5.7).
  *
- * The entry holds the board {@link computeLeaderboard} has just validated field by field against
- * `LodgingSummary`, so the write path is the only place that board is validated and a hit needs no
- * pass of its own: a read accepts an entry whose stamp is this value and whose `items` is an array,
- * and recomputes anything else — a bare array an older process wrote, a stamp a newer one wrote, a
- * non-object, unreadable JSON. Bump it whenever the board's shape changes, and every entry written
- * under the old shape is recomputed rather than served; the 60-second TTL heals an entry either way.
- * That is what keeps the CPU a directory read spends from scaling with the board's size (AAP 0.1.1).
  */
 export const LEADERBOARD_CACHE_VERSION = 1;
 
@@ -133,24 +96,15 @@ export const LEADERBOARD_CACHE_VERSION = 1;
 const LODGINGS_TRUNCATED = 'lodgings_truncated';
 const LODGING_ACTIVITY_FACTS_CAPPED = 'lodging_activity_facts_capped';
 
-/** The alias the directory statement gives `lodging`. */
 const LODGING_ALIAS = 'l';
 
-/** The alias {@link currentStayPredicate} expects for `lodging_claim`. */
 const CLAIM_ALIAS = 'c';
 
-/** The alias {@link currentStayPredicate} expects for `city`. */
 const CITY_ALIAS = 'ci';
 
-/** The alias {@link liveTravelerPredicate} expects for `user`. */
 const USER_ALIAS = 'u';
 
-/** A calendar date as `YYYY-MM-DD`, the only spelling {@link toDateOnly} accepts. */
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-// ---------------------------------------------------------------------------------------------
-// Types (AAP 0.5.2, 0.5.4)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * One witnessed-meetup fact as the leaderboard reads it: a row of `LodgingActivityFact`
@@ -172,9 +126,7 @@ export interface ActivityFact {
  * weekly trend buckets; `score` is always `counted.length`.
  */
 export interface LodgingScore {
-  /** Facts of the window that counted: the lodging's `activityScore`. */
   score: number;
-  /** The `completedAt` of each counted fact, ascending. */
   counted: Date[];
 }
 
@@ -205,7 +157,6 @@ export interface LodgingActivityMeetup {
   readonly cityId: string;
 }
 
-/** The claim {@link recordActivityForVerifiedClaim} backfills facts for (AAP 0.5.2, 0.5.7). */
 export interface VerifiedClaimCoverage {
   readonly id: string;
   readonly userId: string;
@@ -215,7 +166,6 @@ export interface VerifiedClaimCoverage {
    * formatted `YYYY-MM-DD`; both are reduced to the calendar date.
    */
   readonly stayFrom: Date | string;
-  /** Last day of the stay, in the same two accepted forms as {@link VerifiedClaimCoverage.stayFrom}. */
   readonly stayTo: Date | string;
 }
 
@@ -234,7 +184,6 @@ export interface LodgingLeaderboardServices {
   readonly db: DbClient;
   /** The Redis connection used for the 60-second leaderboard cache (AAP 0.5.7). */
   readonly redis: { readonly client: Pick<Redis, 'get' | 'set' | 'del'> };
-  /** The injected clock (AAP 0.11.1). */
   readonly clock: Clock;
   /** The redacting logger; only cache-outage warnings are written from here (AAP 0.3.2). */
   readonly logger: Pick<Logger, 'warn'>;
@@ -243,10 +192,6 @@ export interface LodgingLeaderboardServices {
   /** The configured IANA zone of a city (`config/cities.json`, AAP 0.6.2). */
   readonly timezoneFor: (cityId: string) => string;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Scoring (AAP 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Scores facts by the leaderboard rule of AAP 0.5.7, keyed by lodging id.
@@ -267,23 +212,16 @@ export interface LodgingLeaderboardServices {
  * the window are absent from the result; a caller reads absence as a score of 0. Facts of one
  * (lodging, pair) are ordered by `completedAt` and, for equal instants, by their order in `facts`,
  * so the result does not depend on how the rows arrived.
- *
- * @param facts - The activity facts of one window, in any order.
- * @param now - The instant the 90-day window is measured back from; from `services.clock`.
- * @returns A map from lodging id to its score, holding only lodgings with a counted fact.
- * @see AAP 0.5.7 for the leaderboard rule, 0.5.2 for how the rows are written.
  */
 export function scoreFacts(facts: readonly ActivityFact[], now: Date): Map<string, LodgingScore> {
   const nowMs = now.getTime();
   const windowStartMs = nowMs - WINDOW_MS;
-
   // Group first, because the pair chain of one lodging is independent of every other lodging's.
   const groups = new Map<
     string,
     { lodgingId: string; instants: { at: number; order: number }[] }
   >();
   let order = 0;
-
   for (const fact of facts) {
     order += 1;
     const at = fact.completedAt.getTime();
@@ -299,9 +237,7 @@ export function scoreFacts(facts: readonly ActivityFact[], now: Date): Map<strin
       group.instants.push({ at, order });
     }
   }
-
   const counted = new Map<string, Date[]>();
-
   for (const group of groups.values()) {
     group.instants.sort((a, b) => a.at - b.at || a.order - b.order);
     let lastCountedMs: number | null = null;
@@ -318,13 +254,11 @@ export function scoreFacts(facts: readonly ActivityFact[], now: Date): Map<strin
       }
     }
   }
-
   const scores = new Map<string, LodgingScore>();
   for (const [lodgingId, instants] of counted) {
     instants.sort((a, b) => a.getTime() - b.getTime());
     scores.set(lodgingId, { score: instants.length, counted: instants });
   }
-
   return scores;
 }
 
@@ -357,11 +291,9 @@ function compareByName<T extends { readonly id: string; readonly name: string }>
 export function compareForLeaderboard(a: LeaderboardEntry, b: LeaderboardEntry): number {
   const aScored = a.activityScore > 0;
   const bScored = b.activityScore > 0;
-
   if (aScored !== bScored) {
     return aScored ? -1 : 1;
   }
-
   if (aScored) {
     if (a.activityScore !== b.activityScore) {
       return b.activityScore - a.activityScore;
@@ -370,7 +302,6 @@ export function compareForLeaderboard(a: LeaderboardEntry, b: LeaderboardEntry):
       return b.guestCount - a.guestCount;
     }
   }
-
   return compareByName(a, b);
 }
 
@@ -383,10 +314,6 @@ export function compareForLeaderboard(a: LeaderboardEntry, b: LeaderboardEntry):
  * client's rendering of that label must have exactly one definition.
  */
 export { toGuestCount };
-
-// ---------------------------------------------------------------------------------------------
-// SQL helpers (AAP 0.5.2, 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /** Rejects an alias before it is interpolated into SQL text (AAP 0.11.2). */
 function assertSqlAlias(alias: string): void {
@@ -412,12 +339,7 @@ function assertSqlAlias(alias: string): void {
  * that reaches the SQL — validated against the shared identifier pattern first, which is why this
  * is safe despite interpolating identifiers (AAP 0.11.2).
  *
- * @param claimAlias - The alias of `lodging_claim` in the caller's statement.
- * @param cityAlias - The alias of `city` in the caller's statement.
- * @param now - The instant the city-local "today" is derived from; from `services.clock`.
- * @returns The SQL fragment, ready to be interpolated into a `Prisma.sql` statement.
  * @throws RangeError when an alias is not a plain lower-case identifier.
- * @see AAP 0.5.3 for a claim's active period, 0.5.7 for the guest count rule.
  */
 export function currentStayPredicate(claimAlias: string, cityAlias: string, now: Date): Prisma.Sql {
   assertSqlAlias(claimAlias);
@@ -443,10 +365,7 @@ export function currentStayPredicate(claimAlias: string, cityAlias: string, now:
  * naming one. No value reaches the SQL: the alias is the only text, and it is validated against the
  * shared identifier pattern first (AAP 0.11.2).
  *
- * @param userAlias - The alias of `user` in the caller's statement.
- * @returns The SQL fragment, ready to be interpolated into a `Prisma.sql` statement.
  * @throws RangeError when the alias is not a plain lower-case identifier.
- * @see AAP 0.5.2 for erasure and the tombstone, 0.5.7 for the guest count and the guest list.
  */
 function liveTravelerPredicate(userAlias: string): Prisma.Sql {
   assertSqlAlias(userAlias);
@@ -476,13 +395,6 @@ function liveTravelerPredicate(userAlias: string): Prisma.Sql {
  * statement reads `lodging` and a raw query bypasses the guarded client's fixture filter
  * (AAP 0.5.2): the caller that owns the process's environment states which one the count is for,
  * the way `calls/priority.ts` does for its own raw statements.
- *
- * @param db - The guarded client or a transaction's client.
- * @param lodgingIds - The lodgings to count; duplicates are collapsed, an empty list returns an
- *   empty map without touching the database.
- * @param now - The instant the city-local "today" is derived from; from `services.clock`.
- * @param appEnv - The process's `APP_ENV`, which decides fixture visibility.
- * @returns A map from lodging id to its current verified guest count, holding every requested id.
  */
 export async function guestCountFor(
   db: DbClient | DbTx,
@@ -492,15 +404,12 @@ export async function guestCountFor(
 ): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   const wanted = [...new Set(lodgingIds)];
-
   for (const lodgingId of wanted) {
     counts.set(lodgingId, 0);
   }
-
   if (wanted.length === 0) {
     return counts;
   }
-
   const rows = await db.$queryRaw<GuestCountRow[]>(Prisma.sql`
     SELECT "c"."lodging_id"::text AS "lodging_id",
            count(*)::int AS "guests"
@@ -514,19 +423,13 @@ export async function guestCountFor(
        AND ${fixturePredicate(appEnv, LODGING_ALIAS)}
      GROUP BY "c"."lodging_id"
   `);
-
   for (const row of rows) {
     if (counts.has(row.lodging_id)) {
       counts.set(row.lodging_id, Number(row.guests));
     }
   }
-
   return counts;
 }
-
-// ---------------------------------------------------------------------------------------------
-// The city leaderboard (AAP 0.5.4, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The cache key of a city's leaderboard: `leaderboard:<APP_ENV>:<cityId>` (AAP 0.5.2, 0.5.7).
@@ -543,7 +446,6 @@ function leaderboardCacheKey(appEnv: AppEnv, cityId: string): string {
   return `${CACHE_KEY_PREFIX}${appEnv}:${cityId}`;
 }
 
-/** The stored number as a `LodgingSummary` can carry it: E.164, or no number at all. */
 function normalizePhone(phone: string | null): string | null {
   return phone !== null && E164.safeParse(phone).success ? phone : null;
 }
@@ -557,11 +459,6 @@ function normalizePhone(phone: string | null): string | null {
  * are published. The directory ({@link computeLeaderboard}) and one lodging's detail page
  * ({@link lodgingSummary}) both map through this function rather than each spelling the DTO out, so
  * the two answers for one lodging cannot describe it differently.
- *
- * @param row - The lodging's own row, carrying the current verified guest count its caller counted.
- * @param activityScore - The lodging's score over the activity window.
- * @param rank - The lodging's position in its city's activity order.
- * @returns The summary, which `LodgingSummary` validates at the boundary it is published from.
  */
 function toLodgingSummary(row: LodgingRow, activityScore: number, rank: number): LodgingSummary {
   return {
@@ -577,7 +474,6 @@ function toLodgingSummary(row: LodgingRow, activityScore: number, rank: number):
   };
 }
 
-/** The facts of one statement, reduced to what scoring reads. */
 function toActivityFacts(rows: readonly FactRow[]): ActivityFact[] {
   return rows.map((row) => ({
     lodgingId: row.lodging_id,
@@ -634,12 +530,6 @@ export const LODGING_ACTIVITY_FACTS_LIMIT = 1000;
  * carries it (AAP 0.5.2); that predicate is one value per lodging, so joining cannot change which of
  * a lodging's own facts survive the cap. The order is `completed_at DESC` alone, which is the order
  * the `lodging_activity_fact (lodging_id, completed_at)` index serves.
- *
- * @param services - The app's services, narrowed to what this module uses.
- * @param lodgingIds - The ids the directory statement listed; an empty list reads nothing.
- * @param now - The instant the window is measured back from; from `services.clock`.
- * @returns The window facts of those lodgings, at most {@link LODGING_ACTIVITY_FACTS_LIMIT} per
- *   lodging, in any order.
  */
 async function readWindowFacts(
   services: LodgingLeaderboardServices,
@@ -649,7 +539,6 @@ async function readWindowFacts(
   if (lodgingIds.length === 0) {
     return [];
   }
-
   const rows = await services.db.$queryRaw<BoundedFactRow[]>(Prisma.sql`
     SELECT "r"."lodging_id"::text AS "lodging_id",
            "r"."pair_key" AS "pair_key",
@@ -670,10 +559,8 @@ async function readWindowFacts(
      WHERE "r"."seq" <= ${LODGING_ACTIVITY_FACTS_LIMIT + 1}
        AND ${fixturePredicate(services.env.APP_ENV, LODGING_ALIAS)}
   `);
-
   const capped = new Set<string>();
   const facts: ActivityFact[] = [];
-
   for (const row of rows) {
     if (row.seq > LODGING_ACTIVITY_FACTS_LIMIT) {
       capped.add(row.lodging_id);
@@ -685,18 +572,15 @@ async function readWindowFacts(
       completedAt: row.completed_at,
     });
   }
-
   for (const lodgingId of capped) {
     services.logger.warn(
       { event: LODGING_ACTIVITY_FACTS_CAPPED, lodgingId, limit: LODGING_ACTIVITY_FACTS_LIMIT },
       'a lodging holds more facts in the window than the score reads; the oldest are left out of it',
     );
   }
-
   return facts;
 }
 
-/** The activity-ordered directory from the database: two bounded statements, then the pure rules. */
 async function computeLeaderboard(
   services: LodgingLeaderboardServices,
   cityId: string,
@@ -704,7 +588,6 @@ async function computeLeaderboard(
 ): Promise<LodgingSummary[]> {
   const appEnv = services.env.APP_ENV;
   const windowStart = new Date(now.getTime() - WINDOW_MS);
-
   // The guest count as the statement's own expression, written once and read twice: as the "guests"
   // column and as the count the order breaks a score tie by, so the number the directory answers and
   // the number it orders by cannot disagree. It counts exactly what `guestCountFor` counts, joining
@@ -717,7 +600,6 @@ async function computeLeaderboard(
            WHERE "c"."lodging_id" = "l"."id"
              AND ${currentStayPredicate(CLAIM_ALIAS, CITY_ALIAS, now)}
              AND ${liveTravelerPredicate(USER_ALIAS)})`;
-
   // One statement for the city's listed lodgings, in the order the bound cuts in: a lodging with a
   // fact inside the window first, then the current verified guest count, then name and id. That order
   // is not the board's order — `scoreFacts` and `compareForLeaderboard` below are the one
@@ -746,17 +628,14 @@ async function computeLeaderboard(
               "l"."id" ASC
      LIMIT ${LODGING_DIRECTORY_LIMIT + 1}
   `);
-
   const truncated = lodgingRows.length > LODGING_DIRECTORY_LIMIT;
   const listed = truncated ? lodgingRows.slice(0, LODGING_DIRECTORY_LIMIT) : lodgingRows;
-
   if (truncated) {
     services.logger.warn(
       { event: LODGINGS_TRUNCATED, cityId, limit: LODGING_DIRECTORY_LIMIT },
       'the city holds more lodgings than the directory answers; the rest are left out of it',
     );
   }
-
   const scores = scoreFacts(
     await readWindowFacts(
       services,
@@ -765,7 +644,6 @@ async function computeLeaderboard(
     ),
     now,
   );
-
   const scored = listed.map((row) => ({
     id: row.id,
     name: row.name,
@@ -773,15 +651,12 @@ async function computeLeaderboard(
     guestCount: Number(row.guests),
     row,
   }));
-
   scored.sort((a, b) => compareForLeaderboard(a, b));
-
   // Field by field through the one mapping this module has, so a column added to `lodging` cannot
   // reach a client and one lodging's detail page is described exactly as the board describes it.
   const items = scored.map((entry, index) =>
     toLodgingSummary(entry.row, entry.activityScore, index + 1),
   );
-
   return LodgingSummary.array().parse(items);
 }
 
@@ -812,7 +687,6 @@ function isLeaderboardCacheEntry(value: unknown): value is LeaderboardCacheEntry
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
-
   const entry = value as { readonly v?: unknown; readonly items?: unknown };
   return entry.v === LEADERBOARD_CACHE_VERSION && Array.isArray(entry.items);
 }
@@ -830,10 +704,6 @@ function isLeaderboardCacheEntry(value: unknown): value is LeaderboardCacheEntry
  * on the miss path and {@link writeLeaderboardCache} stored exactly that value, so the version stamp
  * is what gates a hit and the CPU a read spends does not scale with the board's size (AAP 0.1.1,
  * 0.5.7).
- *
- * @param services - The app's services, narrowed to what this module uses.
- * @param cityId - The city whose board may be cached.
- * @returns The cached board, or `null` when there is none this process may serve.
  */
 async function readLeaderboardCache(
   services: LodgingLeaderboardServices,
@@ -841,7 +711,6 @@ async function readLeaderboardCache(
 ): Promise<LodgingSummary[] | null> {
   const key = leaderboardCacheKey(services.env.APP_ENV, cityId);
   let raw: string | null;
-
   try {
     raw = await services.redis.client.get(key);
   } catch {
@@ -851,11 +720,9 @@ async function readLeaderboardCache(
     );
     return null;
   }
-
   if (raw === null) {
     return null;
   }
-
   let decoded: unknown;
   try {
     decoded = JSON.parse(raw);
@@ -866,7 +733,6 @@ async function readLeaderboardCache(
     );
     return null;
   }
-
   if (!isLeaderboardCacheEntry(decoded)) {
     services.logger.warn(
       { event: 'leaderboard_cache_invalid', cityId },
@@ -874,7 +740,6 @@ async function readLeaderboardCache(
     );
     return null;
   }
-
   return decoded.items;
 }
 
@@ -885,10 +750,6 @@ async function readLeaderboardCache(
  * `items` is the board {@link computeLeaderboard} has just validated against `LodgingSummary`, so
  * this is the one validation the cached board gets and the one place it is stored; a hit is gated by
  * the version stamp alone ({@link readLeaderboardCache}) rather than by a pass over the board.
- *
- * @param services - The app's services, narrowed to what this module uses.
- * @param cityId - The city whose board is stored.
- * @param items - The validated board, in activity order.
  */
 async function writeLeaderboardCache(
   services: LodgingLeaderboardServices,
@@ -896,7 +757,6 @@ async function writeLeaderboardCache(
   items: readonly LodgingSummary[],
 ): Promise<void> {
   const entry: LeaderboardCacheEntry = { v: LEADERBOARD_CACHE_VERSION, items: [...items] };
-
   try {
     await services.redis.client.set(
       leaderboardCacheKey(services.env.APP_ENV, cityId),
@@ -933,11 +793,6 @@ const boardsInFlight = new Map<string, Promise<LodgingSummary[]>>();
  * is never cached, the next caller recomputes, and no settled board is held for the life of the
  * process.
  *
- * @param services - The app's services, narrowed to what this module uses.
- * @param cityId - The city whose board is wanted.
- * @returns The activity-ordered board, one array shared by every caller that joined this
- *   recomputation; its callers treat it as read-only ({@link leaderboard} sorts a copy for
- *   `sort=name`).
  * @throws Whatever the statements or `LodgingSummary` raised; every caller that joined receives
  *   the same rejection.
  */
@@ -949,10 +804,8 @@ async function coalesceLeaderboard(
   if (running !== undefined) {
     return await running;
   }
-
   const started = recomputeLeaderboard(services, cityId);
   boardsInFlight.set(cityId, started);
-
   try {
     return await started;
   } finally {
@@ -1005,14 +858,8 @@ async function recomputeLeaderboard(
  * The route has already checked that the city exists and that the caller holds a proof for it, so
  * neither is re-checked here; a city with no lodging answers an empty list.
  *
- * @param services - The app's services, narrowed to what this module uses.
- * @param cityId - The city whose directory is wanted.
- * @param sort - `activity` (the default) or `name` (AAP 0.5.4).
- * @returns The city's lodgings, ranked; an empty array for a city with no listed lodging, and at
- *   most {@link LODGING_DIRECTORY_LIMIT} of them for a city that holds more.
  * @throws ZodError when a row cannot satisfy `LodgingSummary`, which is a defect rather than a
  *   client error: the stored data and this mapping would have to disagree.
- * @see AAP 0.5.7 for the scoring and ranking rules, 0.5.4 for the route and its DTO.
  */
 export async function leaderboard(
   services: LodgingLeaderboardServices,
@@ -1021,7 +868,6 @@ export async function leaderboard(
 ): Promise<LodgingSummary[]> {
   const cached = await readLeaderboardCache(services, cityId);
   const board = cached ?? (await coalesceLeaderboard(services, cityId));
-
   return sort === 'name' ? [...board].sort(compareByName) : board;
 }
 
@@ -1033,9 +879,6 @@ export async function leaderboard(
  * resolving one `verified` — so a rollback cannot leave a cold cache behind a change that never
  * happened. A Redis failure is logged and swallowed: the entry then simply lives out its
  * `LEADERBOARD_CACHE_SECONDS`.
- *
- * @param services - The app's services, narrowed to what this module uses.
- * @param cityId - The city whose entry is dropped.
  */
 export async function invalidateLeaderboard(
   services: LodgingLeaderboardServices,
@@ -1051,32 +894,53 @@ export async function invalidateLeaderboard(
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// One lodging's console standings (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
+/**
+ * The whole calendar days between two city-local date keys: positive when `later` is the later date,
+ * negative when it precedes `earlier`.
+ *
+ * Both keys are the fixed-width `YYYY-MM-DD` spelling {@link localDateKey} produces, and each is
+ * read at its own UTC midnight, so the difference is a whole number of days that no zone offset and
+ * no DST transition can enter. That is what makes a trend point seven *local* days: a fact one local
+ * day old measures a day however long that day was, where a millisecond difference would count it as
+ * up to an hour more or less (AAP 0.5.7, 0.11.1).
+ */
+function calendarDaysBetween(earlier: string, later: string): number {
+  const from = Date.parse(`${earlier}T00:00:00.000Z`);
+  const to = Date.parse(`${later}T00:00:00.000Z`);
+  return Math.round((to - from) / DAY_MS);
+}
 
-/** The weekly points of the 90-day trend, oldest first, summing to the lodging's score. */
-function trendFromCounted(counted: readonly Date[], tz: string, now: Date): TrendPoint[] {
-  const nowMs = now.getTime();
+/**
+ * The weekly points of the 90-day trend, oldest first, summing to the lodging's score (AAP 0.5.4).
+ *
+ * A point covers seven city-local calendar days and point 0 is the week just ended. Its `weekStart`
+ * is today's local date stepped back a whole number of weeks with {@link addLocalDays}, and a fact
+ * joins it by its own local date's distance from today in calendar days
+ * ({@link calendarDaysBetween}) — neither end of the rule is a fixed multiple of 24 h, because a
+ * millisecond window taken back from the current instant lands on the wrong local date after a DST
+ * change: at Europe/Lisbon's October change it leaves the two newest labels six local days apart and
+ * moves a boundary fact one bucket across. The clamp keeps a fact completing exactly on a boundary
+ * inside the trend rather than past its end, and every counted fact lands in one of the 13 points,
+ * so the points always sum to the score.
+ *
+ * Exported so the unit rows can pin that bucketing at the boundary itself, where the clock the
+ * console reads at runtime reaches it only once a year (AAP 0.11.2).
+ */
+export function trendFromCounted(counted: readonly Date[], tz: string, now: Date): TrendPoint[] {
+  const today = localDateKey(tz, now);
   const buckets = new Array<number>(LODGING_TREND_WEEKS).fill(0);
-
   for (const instant of counted) {
-    // Bucket 0 is the week just ended: a fact 3 days old scores in the most recent point, a fact 91
-    // days old in the oldest. The clamp keeps a fact completing exactly on a boundary inside the
-    // trend rather than past its end.
-    const weeks = Math.floor((nowMs - instant.getTime()) / WEEK_MS);
-    const index = Math.min(Math.max(weeks, 0), LODGING_TREND_WEEKS - 1);
+    const days = calendarDaysBetween(localDateKey(tz, instant), today);
+    const index = Math.min(Math.max(Math.floor(days / WEEK_DAYS), 0), LODGING_TREND_WEEKS - 1);
     buckets[index] = (buckets[index] ?? 0) + 1;
   }
-
   const trend: TrendPoint[] = [];
   for (let index = LODGING_TREND_WEEKS - 1; index >= 0; index -= 1) {
     trend.push({
-      weekStart: localDateKey(tz, new Date(nowMs - (index + 1) * WEEK_MS)),
+      weekStart: addLocalDays(today, -(index + 1) * WEEK_DAYS),
       activityScore: buckets[index] ?? 0,
     });
   }
-
   return trend;
 }
 
@@ -1091,12 +955,6 @@ function trendFromCounted(counted: readonly Date[], tz: string, now: Date): Tren
  * bound on the directory and its own larger number on its console, and the score would then depend on
  * which reader asked. A lodging at the bound reports the bound in all three, and `readWindowFacts`
  * logs it through `lodging_activity_facts_capped` on the board's read.
- *
- * @param db - The guarded client or a transaction's client.
- * @param lodgingId - The lodging whose window facts are wanted.
- * @param now - The instant the 90-day window is measured back from; from `services.clock`.
- * @returns The lodging's facts in the window, at most {@link LODGING_ACTIVITY_FACTS_LIMIT}, in any
- *   order.
  */
 async function readLodgingFacts(
   db: DbClient | DbTx,
@@ -1114,7 +972,6 @@ async function readLodgingFacts(
      ORDER BY "f"."completed_at" DESC
      LIMIT ${LODGING_ACTIVITY_FACTS_LIMIT}
   `);
-
   return toActivityFacts(rows);
 }
 
@@ -1147,9 +1004,6 @@ async function readLodgingFacts(
  * than the lodging's position in the city's full order, which no statement can count: the score is
  * the pair chain {@link scoreFacts} walks, not a number SQL can rank by.
  *
- * @param services - The app's services, narrowed to what this module uses.
- * @param lodgingId - The lodging whose standings are wanted.
- * @returns The console's DTO, built field by field.
  * @throws Error when no such lodging exists, which the console route cannot produce (it resolved
  *   the lodging from its own secret first) and which must not be answered as a standing.
  */
@@ -1158,25 +1012,20 @@ export async function lodgingStats(
   lodgingId: string,
 ): Promise<LodgingConsoleStats> {
   const now = services.clock.now();
-
   const lodging = await services.db.lodging.findUnique({
     where: { id: lodgingId },
     select: { id: true, cityId: true },
   });
-
   if (lodging === null) {
     throw new Error(`lodgingStats: no lodging with id ${lodgingId}`);
   }
-
   const listed = await leaderboard(services, lodging.cityId, 'activity');
   const position = listed.findIndex((item) => item.id === lodgingId);
   const rank = position === -1 ? listed.length + 1 : position + 1;
-
   const counted = scoreFacts(await readLodgingFacts(services.db, lodgingId, now), now).get(
     lodgingId,
   );
   const guests = await guestCountFor(services.db, [lodgingId], now, services.env.APP_ENV);
-
   return {
     rank,
     activityScore: counted?.counted.length ?? 0,
@@ -1188,10 +1037,6 @@ export async function lodgingStats(
     ),
   };
 }
-
-// ---------------------------------------------------------------------------------------------
-// One lodging's own summary — GET /lodgings/:id (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * One lodging's summary, built from that lodging's own row, facts and guests rather than from its
@@ -1225,14 +1070,8 @@ export async function lodgingStats(
  * (AAP 0.5.6) or is a fixture this policy may not see (AAP 0.5.2) is answered as one that does not
  * exist, and this function can never describe a lodging the directory refuses to list.
  *
- * @param services - The app's services, narrowed to what this module uses.
- * @param lodgingId - The lodging whose summary is wanted.
- * @param listedCount - How many lodgings the city's board listed (`leaderboard(...)`'s length); the
- *   rank this answer reports is that plus one.
- * @returns The lodging's own summary, or `null` when no listed, visible row has that id.
  * @throws ZodError when the row cannot satisfy `LodgingSummary`, which is a defect rather than a
  *   client error: the stored data and this mapping would have to disagree.
- * @see AAP 0.5.4 for the route and its DTO, 0.5.7 for the score, the rank and the fixture rule.
  */
 export async function lodgingSummary(
   services: LodgingLeaderboardServices,
@@ -1240,7 +1079,6 @@ export async function lodgingSummary(
   listedCount: number,
 ): Promise<LodgingSummary | null> {
   const now = services.clock.now();
-
   const rows = await services.db.$queryRaw<LodgingFields[]>(Prisma.sql`
     SELECT "l"."id"::text AS "id",
            "l"."city_id" AS "city_id",
@@ -1253,18 +1091,14 @@ export async function lodgingSummary(
        AND "l"."osm_missing_at" IS NULL
        AND ${fixturePredicate(services.env.APP_ENV, LODGING_ALIAS)}
   `);
-
   const fields = rows[0];
-
   if (fields === undefined) {
     return null;
   }
-
   const guests = await guestCountFor(services.db, [lodgingId], now, services.env.APP_ENV);
   const counted = scoreFacts(await readLodgingFacts(services.db, lodgingId, now), now).get(
     lodgingId,
   );
-
   return LodgingSummary.parse(
     toLodgingSummary(
       { ...fields, guests: guests.get(lodgingId) ?? 0 },
@@ -1274,11 +1108,6 @@ export async function lodgingSummary(
   );
 }
 
-// ---------------------------------------------------------------------------------------------
-// Writing facts (AAP 0.5.2, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
-/** A calendar date in the one spelling the SQL casts accept. */
 function toDateOnly(value: Date | string): string {
   if (typeof value !== 'string') {
     return value.toISOString().slice(0, 10);
@@ -1313,13 +1142,6 @@ function toDateOnly(value: Date | string): string {
  * and the settlement instant, never a user id. `createMany({ skipDuplicates: true })` is what
  * spells the `ON CONFLICT` in Prisma terms, and it is what makes a second settlement run of the
  * same meetup write nothing and report 0.
- *
- * @param tx - The settlement's transaction client; the facts commit with the outcome they describe.
- * @param services - The app's services, narrowed to what this module uses.
- * @param meetup - The settled meetup: its id, both participants, `startsAt` and the venue's city.
- * @param completedAt - The instant recorded on each fact; the settlement time by default.
- * @returns The number of facts inserted, 0 when nobody held a verified claim covering the day or
- *   when the facts already existed.
  */
 export async function recordLodgingActivity(
   tx: DbTx,
@@ -1329,7 +1151,6 @@ export async function recordLodgingActivity(
 ): Promise<number> {
   const localDate = localDateKey(services.timezoneFor(meetup.cityId), meetup.startsAt);
   const participants = [meetup.initiatorId, meetup.recipientId];
-
   // A verified claim covering the meetup's local date, by either participant. Only the claim table
   // is read, so no fixture predicate is needed: a claim is user data, and a fixture lodging outside
   // `test`/`demo` has no claim pointing at it.
@@ -1341,13 +1162,10 @@ export async function recordLodgingActivity(
        AND "c"."stay_from" <= CAST(${localDate} AS date)
        AND "c"."stay_to" >= CAST(${localDate} AS date)
   `);
-
   if (rows.length === 0) {
     return 0;
   }
-
   const pair = pairKey(services.env.ANALYTICS_SALT, meetup.initiatorId, meetup.recipientId);
-
   const inserted = await tx.lodgingActivityFact.createMany({
     data: rows.map((row) => ({
       lodgingId: row.lodging_id,
@@ -1357,7 +1175,6 @@ export async function recordLodgingActivity(
     })),
     skipDuplicates: true,
   });
-
   return inserted.count;
 }
 
@@ -1386,12 +1203,6 @@ export async function recordLodgingActivity(
  * injected clock; each fact carries the meetup's own `settledAt` as its completion time, so
  * backfilling never moves a historical score to today. Running it twice writes nothing the second
  * time.
- *
- * @param tx - The transaction that resolves the claim.
- * @param services - The app's services, narrowed to what this module uses.
- * @param claim - The claim that became verified: its id, owner, lodging and stay dates.
- * @returns The number of facts inserted.
- * @see AAP 0.5.7 for the leaderboard rule, 0.5.2 for what a fact holds.
  */
 export async function recordActivityForVerifiedClaim(
   tx: DbTx,
@@ -1401,7 +1212,6 @@ export async function recordActivityForVerifiedClaim(
   const now = services.clock.now();
   const stayFrom = toDateOnly(claim.stayFrom);
   const stayTo = toDateOnly(claim.stayTo);
-
   const rows = await tx.$queryRaw<CoveringMeetupRow[]>(
     coveringMeetupStatement(
       services.env.APP_ENV,
@@ -1409,11 +1219,9 @@ export async function recordActivityForVerifiedClaim(
       new Date(now.getTime() - WINDOW_MS),
     ),
   );
-
   if (rows.length === 0) {
     return 0;
   }
-
   const inserted = await tx.lodgingActivityFact.createMany({
     data: rows.map((row) => ({
       lodgingId: claim.lodgingId,
@@ -1423,15 +1231,9 @@ export async function recordActivityForVerifiedClaim(
     })),
     skipDuplicates: true,
   });
-
   return inserted.count;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Statement row shapes
-// ---------------------------------------------------------------------------------------------
-
-/** One row of the directory statement: a listed lodging with its current verified guest count. */
 interface LodgingRow {
   readonly id: string;
   readonly city_id: string;
@@ -1449,7 +1251,6 @@ interface LodgingRow {
  */
 type LodgingFields = Omit<LodgingRow, 'guests'>;
 
-/** One row of a facts statement. */
 interface FactRow {
   readonly lodging_id: string;
   readonly pair_key: string;
@@ -1461,16 +1262,13 @@ interface FactRow {
  * ({@link LODGING_ACTIVITY_FACTS_LIMIT}).
  */
 interface BoundedFactRow extends FactRow {
-  /** 1-based position among its lodging's window facts, newest first. */
   readonly seq: number;
 }
 
-/** One row of the covering-claims statement. */
 interface LodgingIdRow {
   readonly lodging_id: string;
 }
 
-/** One grouped row of the guest-count statement. */
 interface GuestCountRow {
   readonly lodging_id: string;
   readonly guests: number;

@@ -1,12 +1,11 @@
 /**
  * The web head: the document title and the description of the route in view.
  *
- * The web half of the `RouteHead` platform pair (Metro resolves the extensionless `./RouteHead` to
- * this file on web and to `RouteHead.native.tsx` on iOS and Android, the pattern `src/auth/storage`
- * and `src/payments/card-setup` already follow). `Head` is Expo Router's own head support: on web it
- * writes the `<title>` and `<meta>` elements it is given into `document.head` when it mounts and
- * again whenever they change, and it is a null component on native. It is rendered by the root
- * layout, so the elements below follow the route that layout is showing.
+ * The web half of the `RouteHead` platform pair (Metro resolves the extensionless `./RouteHead` here on web and to
+ * `RouteHead.native.tsx` on iOS and Android, the pattern `src/auth/storage` and `src/payments/card-setup` already
+ * follow). `Head` is Expo Router's own head support: on web it writes the `<title>` and `<meta>` elements it is given
+ * into `document.head` when it mounts and again whenever they change, and it is a null component on native. It is
+ * rendered by the root layout, so the elements below follow the route that layout is showing.
  */
 import type { ReactElement } from 'react';
 import { usePathname } from 'expo-router';
@@ -26,9 +25,6 @@ type OgMeta = Readonly<{ property: string; content: string }>;
 /**
  * One Open Graph pair.
  *
- * @param property - The Open Graph property, e.g. `og:title`.
- * @param content - Its value.
- * @returns The attributes an element spreads.
  */
 function ogMeta(property: string, content: string): OgMeta {
   return { property, content };
@@ -44,7 +40,6 @@ function ogMeta(property: string, content: string): OgMeta {
  * `document.title` write here and no effect to order against React's own rendering, because the
  * framework's head support is the mechanism.
  *
- * @returns The head elements of the route in view.
  */
 export function RouteHead(): ReactElement {
   const pathname = usePathname();

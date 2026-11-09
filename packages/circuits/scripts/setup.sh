@@ -8,36 +8,23 @@
 #   build/verification_key.json      the only circuit artefact the api image mounts
 #   build/artifacts.manifest.json    sizes and SHA-256 of the three artefacts, the clients' check
 #
-# In order: `groth16 setup` against the phase 1 file powersOfTau28_hez_final_22.ptau, two
-# contributions, a public beacon, a full `zkey verify` against the R1CS, and the verification-key
-# export. The transcript, the contribution hashes and the final key hashes go to docs/zk-proofs.md.
+# In order: `groth16 setup` against the phase 1 file powersOfTau28_hez_final_22.ptau, two contributions, a
+# public beacon, a full `zkey verify` against the R1CS, and the verification-key export. The transcript, the
+# contribution hashes and the final key hashes go to docs/zk-proofs.md. A development ceremony for this
+# environment only: the contributions are made by this script alone and the beacon is public.
 #
-# A development ceremony for this environment only: the contributions are made by this script alone
-# and the beacon is public. The multi-party production ceremony belongs to launch preparation and is
-# out of scope (AAP 0.7.2).
+# Invoked as `bash scripts/setup.sh` through the `circuit:setup` package script and root `circuits:setup`;
+# root `circuits:build` runs compile.sh first, which this script does not repeat.
 #
-# Invoked as `bash scripts/setup.sh` through the `circuit:setup` package script and root
-# `circuits:setup`; root `circuits:build` runs compile.sh first, which this script does not repeat.
-#
-# Environment knobs, all optional; `bash scripts/setup.sh --help` prints the same list.
-#
-#   PTAU_PATH              the phase 1 file. Default build/ptau/powersOfTau28_hez_final_22.ptau. An
-#                          existing file at that path is used as it stands and skips the download,
-#                          which is the fast path for a fresh checkout: point it at a verified copy
-#                          rather than fetch 4.8 GB again.
-#   PTAU_URL               the URL the file is downloaded from when it is absent. Default
-#                          https://circom.info/powersOfTau28_hez_final_22.ptau.
-#   PTAU_MIRROR            the URL tried only once PTAU_URL has failed. Default
-#                          https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_22.ptau.
-#   BEACON_HASH            the beacon's entropy: a supplied value reproduces an earlier ceremony and
-#                          must be 64 hex characters, and otherwise 32 fresh random bytes are used
-#                          and recorded, a beacon being public by definition.
-#   CIRCUITS_NODE_HEAP_MB  node's heap for the ceremony, which needs well over node's default.
-#                          Default 16384 MB.
-#   TMPDIR                 the directory the transcript, the step-output and the docs-block temp
-#                          files are created in. Default /tmp. The temp write_doc_block renames into
-#                          place is created next to the document instead, so its rename is atomic
-#                          whatever TMPDIR is.
+# Environment knobs, all optional; `bash scripts/setup.sh --help` prints the same list. PTAU_PATH names the
+# phase 1 file (default build/ptau/powersOfTau28_hez_final_22.ptau) and an existing file at that path is used
+# as it stands and skips the download, which is the fast path for a fresh checkout: point it at a verified
+# copy rather than fetch 4.8 GB again. BEACON_HASH is the beacon's entropy: a supplied value reproduces an
+# earlier ceremony and must be 64 hex characters, and otherwise 32 fresh random bytes are used and recorded,
+# a beacon being public by definition. CIRCUITS_NODE_HEAP_MB is node's heap for the ceremony, which needs well
+# over node's default (16384 MB). TMPDIR is where the transcript, the step-output and the docs-block temp
+# files are created (default /tmp); the temp write_doc_block renames into place is created next to the
+# document instead, so its rename is atomic whatever TMPDIR is.
 
 set -euo pipefail
 
@@ -121,9 +108,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# ---------------------------------------------------------------------------------------------
 # The build directory lock
-# ---------------------------------------------------------------------------------------------
 
 # build/ is shared with compile.sh, and every writing step here uses a fixed name inside it (the
 # phase 1 file, the intermediate keys, the proving key, the verification key and the manifest), so
@@ -190,9 +175,7 @@ done
 [ -n "$SNARKJS" ] || die "snarkjs is not installed under node_modules/.bin; run pnpm install"
 [ -n "$TSX" ] || die "tsx is not installed under node_modules/.bin; run pnpm install"
 
-# ---------------------------------------------------------------------------------------------
 # Phase 1 — the compiled circuit and the powers-of-tau file
-# ---------------------------------------------------------------------------------------------
 
 # CIRCUITS_NODE_HEAP_MB is the heap node gets for the whole ceremony, exported as NODE_OPTIONS
 # before the first step. It comes from the environment, so a value it cannot use is rejected here,
@@ -294,9 +277,7 @@ if [ "$PTAU_DIGEST" != "$PTAU_B2SUM" ]; then
 fi
 printf 'setup.sh: phase 1 file verified at %s (%s bytes)\n' "$PTAU" "$PTAU_BYTES"
 
-# ---------------------------------------------------------------------------------------------
 # Phase 2 — the ceremony
-# ---------------------------------------------------------------------------------------------
 
 # A circuit of a few million constraints needs well over node's default heap, and the run is long:
 # the step labels below are all the progress a reader gets for a while. CIRCUITS_NODE_HEAP_MB, checked
@@ -455,9 +436,7 @@ run_step 'phase 2: exporting the verification key' \
 [ -n "$HASH_2" ] || HASH_2="unavailable"
 [ -n "$BEACON_CONTRIBUTION" ] || BEACON_CONTRIBUTION="unavailable"
 
-# ---------------------------------------------------------------------------------------------
 # Phase 3 — artifacts.manifest.json (AAP 0.5.5)
-# ---------------------------------------------------------------------------------------------
 
 WASM_SIZE="$(file_size "$WASM")"
 WASM_SHA="$(stream_digest "$WASM" sha256)" || die "could not hash $WASM"
@@ -501,9 +480,7 @@ if ! ( cd "$PKG_DIR" && MANIFEST_PATH="$MANIFEST" "$TSX" --conditions=tablemate-
 fi
 printf 'setup.sh: %s parses against ArtifactsManifest\n' "$(basename "$MANIFEST")"
 
-# ---------------------------------------------------------------------------------------------
 # Phase 4 — docs/zk-proofs.md
-# ---------------------------------------------------------------------------------------------
 
 write_doc_block() {
     # write_doc_block <file> <block name> <content file>: replaces what sits between the named

@@ -17,26 +17,22 @@ import { base64ToBytes } from '../registry/leaves.ts';
 import type { TemplateFieldName } from '../registry/template-hash.ts';
 
 /**
- * Every code a {@link CircuitInputError} carries, each naming one way the input generator refuses a
- * message:
+ * Every code a {@link CircuitInputError} carries, each naming one way the input generator refuses a message:
  *
- * - `eml_malformed` — no header/body separator, a malformed header line or DKIM tag-list, a missing
- *   required DKIM tag, or invalid base64.
+ * - `eml_malformed` — no header/body separator, a malformed header line or DKIM tag-list, a missing required
+ *   DKIM tag, or invalid base64.
  * - `dkim_missing` — the message holds no `DKIM-Signature` field at all.
- * - `dkim_unsupported` — a signature the circuit cannot use: an `a=` other than `rsa-sha256`, an `l=`
- *   tag, an unknown `c=`, a `v=` other than `1` or a `bh=` that is not 32 bytes; and, from
- *   `./build-inputs.ts`, a key above 2057 bits, a signature not below the modulus, a signature header
- *   the circuit's `BodyHashRegex` cannot match, or a `bh=` value that is not contiguous there.
- * - `unsupported_issuer` — no supported key matches any signature's `d=`/`s=`, the state that puts
- *   "This booking site isn't supported yet." on the import screen (AAP 0.5.8).
- * - `header_too_long` — the signed header block exceeds the circuit's `maxHeadersLength`.
- * - `body_hash_mismatch` — the signed body does not hash to the `bh=` the signature commits to.
- * - `field_not_found` — a stay field's anchor is not in the signed body window.
- * - `field_ambiguous` — an anchor occurs more than once, so the field has no unique boundary.
- * - `field_invalid` — a field's value breaks its charset, terminator or date format.
- * - `city_not_supported` — the extracted city has no leaf in the active registry.
- * - `registry_mismatch` — the published registry, its root, its leaves, a template or the salt is
- *   inconsistent.
+ * - `dkim_unsupported` — a signature the circuit cannot use: an `a=` other than `rsa-sha256`, an `l=` tag, an
+ *   unknown `c=`, a `v=` other than `1`, a `bh=` that is not 32 bytes, or (from `./build-inputs.ts`) a key
+ *   above 2057 bits, a signature not below the modulus, or a `bh=` not contiguous in the signed header.
+ * - `unsupported_issuer` — no supported key matches any signature's `d=`/`s=`, which puts "This booking site
+ *   isn't supported yet." on the import screen (AAP 0.5.8).
+ * - `header_too_long`, `body_hash_mismatch` — the signed header block exceeds `maxHeadersLength`, or the
+ *   signed body does not hash to the `bh=` the signature commits to.
+ * - `field_not_found`, `field_ambiguous`, `field_invalid` — an anchor is absent from the signed body window,
+ *   occurs more than once, or the value breaks its charset, terminator or date format.
+ * - `city_not_supported`, `registry_mismatch` — the extracted city has no leaf in the active registry, or the
+ *   published registry, its root, its leaves, a template or the salt is inconsistent.
  */
 export const CIRCUIT_INPUT_ERROR_CODES = [
   'eml_malformed',
@@ -140,9 +136,8 @@ interface HeaderLine {
 /**
  * Turns bytes into a string of one code unit per byte, the latin1 spelling RFC 6376 works in.
  *
- * The round trip through {@link latin1ToBytes} is lossless for every byte, and the string is built in
- * chunks, because spreading a whole message's bytes over `String.fromCharCode` overflows the Hermes
- * stack.
+ * The round trip through {@link latin1ToBytes} is lossless for every byte; the string is built in chunks,
+ * because spreading a whole message's bytes over `String.fromCharCode` overflows the Hermes stack.
  *
  * @param bytes - The bytes to read.
  * @param start - The first byte to read.
@@ -151,7 +146,6 @@ interface HeaderLine {
  */
 export function bytesToLatin1(bytes: Uint8Array, start = 0, end = bytes.length): string {
   let text = '';
-
   for (let i = start; i < end; i += STRING_CHUNK) {
     const chunk: number[] = [];
     for (let j = i; j < Math.min(i + STRING_CHUNK, end); j += 1) {
@@ -159,7 +153,6 @@ export function bytesToLatin1(bytes: Uint8Array, start = 0, end = bytes.length):
     }
     text += String.fromCharCode(...chunk);
   }
-
   return text;
 }
 
@@ -172,7 +165,6 @@ export function bytesToLatin1(bytes: Uint8Array, start = 0, end = bytes.length):
  */
 export function latin1ToBytes(s: string): Uint8Array {
   const bytes = new Uint8Array(s.length);
-
   for (let i = 0; i < s.length; i += 1) {
     const unit = s.charCodeAt(i);
     if (unit > 0xff) {
@@ -180,7 +172,6 @@ export function latin1ToBytes(s: string): Uint8Array {
     }
     bytes[i] = unit;
   }
-
   return bytes;
 }
 
@@ -194,25 +185,19 @@ export function latin1ToBytes(s: string): Uint8Array {
  */
 export function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from = 0): number {
   const start = from < 0 ? 0 : from;
-
   if (needle.length === 0) return start;
   if (needle.length > haystack.length - start) return -1;
-
   const limit = haystack.length - needle.length;
-
   for (let i = start; i <= limit; i += 1) {
     let matched = true;
-
     for (let j = 0; j < needle.length; j += 1) {
       if (haystack[i + j] !== needle[j]) {
         matched = false;
         break;
       }
     }
-
     if (matched) return i;
   }
-
   return -1;
 }
 
@@ -224,11 +209,9 @@ export function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from = 0)
  */
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
-
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
   }
-
   return true;
 }
 
@@ -243,56 +226,45 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   for (const part of parts) {
     length += part.length;
   }
-
   const joined = new Uint8Array(length);
   let offset = 0;
-
   for (const part of parts) {
     joined.set(part, offset);
     offset += part.length;
   }
-
   return joined;
 }
 
 /**
  * Normalizes every bare LF to CRLF, so an LF-only `.eml` and its CRLF twin parse and canonicalize
- * identically (AAP 0.5.5; `test/inputs.test.ts` asserts the equivalence).
- *
- * A `.eml` exported from a mail client or uploaded from a share sheet routinely uses LF alone, while
- * SMTP, and so the bytes a `DKIM-Signature` covers, use CRLF. Normalizing here means the header
- * canonicalization, the body hash and the signature all see the line ending the signature was
- * computed over. A lone CR is left as it is, because RFC 5322 does not read it as a line break either.
+ * identically (AAP 0.5.5; `test/inputs.test.ts` asserts the equivalence). A `.eml` exported from a mail
+ * client routinely uses LF alone, while SMTP, and so the bytes a `DKIM-Signature` covers, use CRLF;
+ * normalizing here makes the header canonicalization, the body hash and the signature all see the line
+ * ending the signature was computed over. A lone CR is left as it is, because RFC 5322 does not read it as
+ * a line break either.
  *
  * @param bytes - The message bytes.
  * @returns The bytes with every bare LF doubled; a copy when any LF was bare.
  */
 export function normalizeLineEndings(bytes: Uint8Array): Uint8Array {
   let bareLfs = 0;
-
   for (let i = 0; i < bytes.length; i += 1) {
     if (bytes[i] === LF && (i === 0 || bytes[i - 1] !== CR)) {
       bareLfs += 1;
     }
   }
-
   if (bareLfs === 0) return bytes.slice();
-
   const normalized = new Uint8Array(bytes.length + bareLfs);
   let offset = 0;
-
   for (let i = 0; i < bytes.length; i += 1) {
     const byte = bytes[i] ?? 0;
-
     if (byte === LF && (i === 0 || bytes[i - 1] !== CR)) {
       normalized[offset] = CR;
       offset += 1;
     }
-
     normalized[offset] = byte;
     offset += 1;
   }
-
   return normalized;
 }
 
@@ -349,25 +321,20 @@ export interface ParsedEml {
 export function parseEml(bytes: Uint8Array): ParsedEml {
   const normalized = normalizeLineEndings(bytes);
   const separator = findHeaderEnd(normalized);
-
   // Without a blank line there is no body to sign; at offset 0 there are no headers to sign.
   if (separator < 0 || separator === 0) {
     fail('eml_malformed');
   }
-
   // Both halves are copies, so nothing of the caller's buffer is aliased into the returned value.
   const headers = parseHeaderBlock(normalized.slice(0, separator));
   const body = normalized.slice(separator + HEADER_BODY_SEPARATOR_BYTES);
   const dkimFields = headers.filter((field) => field.lowerName === 'dkim-signature');
-
   if (dkimFields.length === 0) {
     fail('dkim_missing');
   }
-
   const signatures: DkimSignature[] = [];
   const rejectedSignatures: RejectedSignature[] = [];
   let firstRejection: CircuitInputError | undefined;
-
   // A confirmation is often signed twice — an Ed25519 signature from the sending service beside the
   // issuer's RSA one — so an unusable signature is recorded rather than thrown away, and only a
   // message whose every signature was rejected fails.
@@ -378,16 +345,13 @@ export function parseEml(bytes: Uint8Array): ParsedEml {
       if (!(error instanceof CircuitInputError)) {
         throw error;
       }
-
       rejectedSignatures.push(rejectedSignatureOf(field, error));
       firstRejection ??= error;
     }
   }
-
   if (signatures.length === 0 && firstRejection !== undefined) {
     throw new CircuitInputError(firstRejection.code);
   }
-
   return { headers, body, signatures, rejectedSignatures };
 }
 
@@ -400,7 +364,6 @@ function findHeaderEnd(bytes: Uint8Array): number {
       return i;
     }
   }
-
   return -1;
 }
 
@@ -411,7 +374,6 @@ function findHeaderEnd(bytes: Uint8Array): number {
 function splitHeaderLines(block: Uint8Array): HeaderLine[] {
   const lines: HeaderLine[] = [];
   let start = 0;
-
   for (let i = 0; i < block.length; i += 1) {
     if (block[i] === CR && block[i + 1] === LF) {
       lines.push({ start, end: i });
@@ -419,11 +381,9 @@ function splitHeaderLines(block: Uint8Array): HeaderLine[] {
       start = i + 1;
     }
   }
-
   if (start < block.length) {
     lines.push({ start, end: block.length });
   }
-
   return lines;
 }
 
@@ -439,31 +399,24 @@ function parseHeaderBlock(block: Uint8Array): HeaderField[] {
   let start = -1;
   let end = 0;
   let firstNameEnd = 0;
-
   const flush = (): void => {
     if (start < 0) return;
-
     fields.push(headerFieldOf(block.slice(start, end), firstNameEnd - start));
     start = -1;
   };
-
   for (const line of splitHeaderLines(block)) {
     const first = block[line.start] ?? 0;
-
     if (first === SP || first === HTAB) {
       if (start < 0) fail('eml_malformed');
       end = line.end;
       continue;
     }
-
     flush();
     start = line.start;
     end = line.end;
     firstNameEnd = line.end;
   }
-
   flush();
-
   return fields;
 }
 
@@ -481,10 +434,8 @@ function parseHeaderBlock(block: Uint8Array): HeaderField[] {
 function headerFieldOf(raw: Uint8Array, nameEnd: number): HeaderField {
   const colon = indexOfByte(raw, COLON, 0, nameEnd);
   if (colon < 0) fail('eml_malformed');
-
   const name = bytesToLatin1(raw, 0, colon).replace(/[ \t]+$/, '');
   if (name.length === 0 || !isFieldName(name)) fail('eml_malformed');
-
   return { name, lowerName: asciiLower(name), raw };
 }
 
@@ -494,19 +445,16 @@ function isFieldName(name: string): boolean {
     const unit = name.charCodeAt(i);
     if (unit < 33 || unit > 126) return false;
   }
-
   return true;
 }
 
 /** A string's A–Z lowercased, leaving every other code unit as it stands. */
 function asciiLower(s: string): string {
   let lowered = '';
-
   for (let i = 0; i < s.length; i += 1) {
     const unit = s.charCodeAt(i);
     lowered += String.fromCharCode(unit >= 65 && unit <= 90 ? unit + 32 : unit);
   }
-
   return lowered;
 }
 
@@ -515,7 +463,6 @@ function indexOfByte(bytes: Uint8Array, byte: number, start: number, end: number
   for (let i = start; i < end; i += 1) {
     if (bytes[i] === byte) return i;
   }
-
   return -1;
 }
 
@@ -564,11 +511,9 @@ export interface DkimSignature {
 
 /**
  * A `DKIM-Signature` field the circuit cannot use, with the reason and the domain and selector the
- * tag-list yielded.
- *
- * Keeping it lets `./build-inputs.ts` tell `dkim_unsupported` from `unsupported_issuer`: when the
- * signature whose `d=`/`s=` matches a supported issuer is the rejected one, the message is a supported
- * site signed in a way the circuit does not implement, not an unsupported site.
+ * tag-list yielded. Keeping it tells `dkim_unsupported` from `unsupported_issuer`: when the signature whose
+ * `d=`/`s=` matches a supported issuer is the rejected one, the message is a supported site signed in a way
+ * the circuit does not implement, not an unsupported site.
  */
 export interface RejectedSignature {
   /** The `d=` tag, lowercased, when the tag-list yielded one. */
@@ -592,7 +537,6 @@ export interface RejectedSignature {
  */
 export function parseDkimSignature(field: HeaderField): DkimSignature {
   const tags = parseTagList(dkimValueText(field));
-
   const v = requiredTag(tags, 'v');
   const a = requiredTag(tags, 'a');
   const d = requiredTag(tags, 'd');
@@ -601,21 +545,17 @@ export function parseDkimSignature(field: HeaderField): DkimSignature {
   const bh = requiredTag(tags, 'bh');
   // `b` may be empty: `scripts/make-test-fixtures.ts` parses the unsigned draft it is about to sign.
   const b = requiredTag(tags, 'b');
-
   if (v !== '1' || a.toLowerCase() !== 'rsa-sha256' || tags.has('l')) {
     fail('dkim_unsupported');
   }
-
   const c = parseCanonicalization(tags.get('c'));
   const headerNames = headerNameList(h);
   const bhBase64 = stripWhitespace(bh);
   const bhBytes = decodeBase64Tag(bhBase64);
-
   // The circuit's body check compares against exactly one SHA-256 digest, so a shorter or longer `bh=`
   // could never match it. The key and signature bounds of the same class are checked in
   // `./build-inputs.ts`, which is where the registry's modulus is at hand.
   if (bhBytes.length !== SHA256_BYTES) fail('dkim_unsupported');
-
   return {
     field,
     v,
@@ -638,7 +578,6 @@ export function parseDkimSignature(field: HeaderField): DkimSignature {
 function dkimValueText(field: HeaderField): string {
   const text = bytesToLatin1(field.raw);
   const colon = text.indexOf(':');
-
   return (colon < 0 ? text : text.slice(colon + 1)).replace(/\r\n/g, '');
 }
 
@@ -655,23 +594,18 @@ const DKIM_TAG_PATTERN = /^([A-Za-z][A-Za-z0-9_]*)[ \t]*=[ \t]*([\s\S]*)$/;
 function parseTagList(value: string): Map<string, string> {
   const tags = new Map<string, string>();
   const pieces = value.split(';');
-
   for (let i = 0; i < pieces.length; i += 1) {
     const piece = (pieces[i] ?? '').trim();
-
     if (piece.length === 0) {
       if (i === pieces.length - 1) continue;
       fail('eml_malformed');
     }
-
     const match = DKIM_TAG_PATTERN.exec(piece);
     if (match === null) fail('eml_malformed');
-
     const name = match[1] ?? '';
     if (tags.has(name)) fail('eml_malformed');
     tags.set(name, match[2] ?? '');
   }
-
   return tags;
 }
 
@@ -684,7 +618,6 @@ function parseTagList(value: string): Map<string, string> {
 function requiredTag(tags: ReadonlyMap<string, string>, name: string): string {
   const value = tags.get(name);
   if (value === undefined) fail('eml_malformed');
-
   return value;
 }
 
@@ -701,18 +634,14 @@ function parseCanonicalization(value: string | undefined): {
   if (value === undefined) {
     return { header: 'simple', body: 'simple' };
   }
-
   const parts = value.toLowerCase().split('/');
   const header = canonicalizationOf(parts[0]);
-
   if (parts.length === 1) {
     if (header === undefined) fail('dkim_unsupported');
     return { header, body: 'simple' };
   }
-
   const body = parts.length === 2 ? canonicalizationOf(parts[1]) : undefined;
   if (header === undefined || body === undefined) fail('dkim_unsupported');
-
   return { header, body };
 }
 
@@ -728,13 +657,11 @@ function canonicalizationOf(name: string | undefined): Canonicalization | undefi
  */
 function headerNameList(value: string): string[] {
   const names: string[] = [];
-
   for (const piece of value.split(':')) {
     const name = piece.trim().toLowerCase();
     if (name.length === 0) fail('eml_malformed');
     names.push(name);
   }
-
   return names;
 }
 
@@ -767,7 +694,6 @@ function rejectedSignatureOf(field: HeaderField, error: CircuitInputError): Reje
   const value = dkimValueText(field);
   const d = lenientTagValue(value, 'd');
   const s = lenientTagValue(value, 's');
-
   return {
     ...(d !== undefined ? { d: d.toLowerCase() } : {}),
     ...(s !== undefined ? { s } : {}),
@@ -785,10 +711,8 @@ function lenientTagValue(value: string, tag: string): string | undefined {
     const separator = piece.indexOf('=');
     if (separator < 0) continue;
     if (piece.slice(0, separator).trim().toLowerCase() !== tag) continue;
-
     const found = piece.slice(separator + 1).trim();
     if (found.length > 0) return found;
   }
-
   return undefined;
 }

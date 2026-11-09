@@ -11,19 +11,18 @@
 #   android/src/main/jniLibs/<abi>/libmopro_bindings.so
 #   android/src/main/java/uniffi/mopro/mopro.kt  the Kotlin bindings android/build.gradle loads
 #
-# It builds the libraries only. Whether that integration works at zk-email scale inside an Expo
-# SDK 52 development build is unverified (AAP 0.2.4); scripts/native-smoke.sh decides that, per
-# platform, on a device or simulator.
+# It builds the libraries only. Whether that integration works at zk-email scale inside an Expo SDK 52
+# development build is unverified (AAP 0.2.4); scripts/native-smoke.sh decides that, per platform.
 #
-# Invoked as `bash scripts/build-native.sh [ios|android|all]` through the `native` package script
-# and root `circuits:native`. `pnpm circuits:compile` must have run first: rust/build.rs
-# transpiles the circuit's WASM witness generator into the app, so a library built against another
-# revision of the circuit proves nothing, and the libraries are rebuilt whenever the circuit
-# changes. Expect a long compile per target and a large resident set.
+# Invoked as `bash scripts/build-native.sh [ios|android|all]` through the `native` package script and root
+# `circuits:native`. `pnpm circuits:compile` must have run first: rust/build.rs transpiles the circuit's WASM
+# witness generator into the app, so a library built against another revision of the circuit proves nothing,
+# and the libraries are rebuilt whenever the circuit changes. Expect a long compile per target and a large
+# resident set.
 #
-# Environment: NATIVE_PLATFORMS (platforms when no argument is given, default `all`) and
-# ANDROID_NDK_HOME (the NDK cargo-ndk builds with, default $ANDROID_HOME/ndk/26.1.10909125).
-# TABLEMATE_CIRCUIT_WASM_DIR is exported here from the circuit build; rust/build.rs reads it.
+# Environment: NATIVE_PLATFORMS (platforms when no argument is given, default `all`) and ANDROID_NDK_HOME (the
+# NDK cargo-ndk builds with, default $ANDROID_HOME/ndk/26.1.10909125). TABLEMATE_CIRCUIT_WASM_DIR is exported
+# here from the circuit build; rust/build.rs reads it.
 
 set -euo pipefail
 
@@ -90,9 +89,7 @@ esac
 # have is a failure to report; under `all`, a platform this host cannot build is deferred instead.
 if [ "$PLATFORM" = "all" ]; then EXPLICIT=0; else EXPLICIT=1; fi
 
-# ---------------------------------------------------------------------------------------------
 # Prerequisites
-# ---------------------------------------------------------------------------------------------
 
 [ -f "$WASM" ] || die \
     "run pnpm circuits:compile first: $WASM is missing, and rust/build.rs transpiles the witness generator it holds"
@@ -140,9 +137,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---------------------------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------------------------
 
 resolve_ndk() {
     # resolve_ndk: prints the NDK directory cargo-ndk builds against, or nothing when there is none.
@@ -248,16 +243,13 @@ install_outputs() {
     rm -rf "$bindings"
 }
 
-# ---------------------------------------------------------------------------------------------
 # Build and install
-# ---------------------------------------------------------------------------------------------
 
 run_platform() {
     # run_platform <platform> <arch>...: builds one platform and installs its outputs, then sets
     # STATE to `built`, `pending (<reason>)` or `failed (<step>)`.
     local platform="$1" ndk
     shift
-
     if [ "$platform" = "ios" ]; then
         if [ "$(uname -s)" != "Darwin" ] || ! command -v xcrun >/dev/null 2>&1; then
             STATE="pending (macOS host required)"
@@ -276,10 +268,8 @@ run_platform() {
         # cargo-ndk reads this to pick the NDK, and the app links that NDK's libc++.
         export ANDROID_NDK_HOME="$ndk"
     fi
-
     require_targets "$platform" "$@"
     write_config_toml "$platform" "$@"
-
     printf 'build-native.sh: %s: mopro build --mode release (rust-witness transpiles the circuit WASM per target: a long compile that needs several GB of memory)\n' \
         "$platform"
     if ! (cd "$CRATE_DIR" && mopro build --mode release --platforms "$platform" \
@@ -287,7 +277,6 @@ run_platform() {
         STATE="failed (mopro build)"
         return 0
     fi
-
     INSTALL_FAILURE="installing the outputs"
     install_outputs "$platform" || {
         STATE="failed ($INSTALL_FAILURE)"

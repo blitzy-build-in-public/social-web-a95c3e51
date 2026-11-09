@@ -3,19 +3,6 @@
  * all five languages, the templates and the two scripts the relay speaks from, the booking name's
  * redaction, the classification window's byte bound, one whole call per script driven with fakes, and
  * the call-outcome lines those calls write (AAP 0.11.1).
- *
- * The disclosure is what the suite is named for (AAP 0.12.2): `disclosureFor` is the sentence
- * `twiml.ts` sends as the ConversationRelay `welcomeGreeting`, so each of the five languages is
- * checked against its own file and against the TwiML an answered call is served. Around it the same
- * rows hold that every word spoken is a template, that a value counts only once it has been read back
- * and confirmed, and that a guest's booking name reaches neither the provider nor a stored field.
- *
- * The calls are driven with fakes and no socket — `DialogueSession` takes its services, its
- * `CallContext` and its `RelayIo` as arguments — so nothing here opens a connection, reaches Twilio, a
- * provider or PostgreSQL, or waits for speech to play out, and the suite runs in the `unit` project
- * with Docker stopped (AAP 0.11.2). Its database is the two reads the session makes, faked in memory,
- * and its scripted turns are the voice simulator's own scenario files, so a unit row and an
- * integration row speak the same words.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -370,11 +357,6 @@ function silentLogger(): Logger {
 /**
  * The logger a driven call writes through, with every line it writes captured rather than printed
  * (AAP 0.11.1).
- *
- * `createLogger`'s `destination` exists for exactly this, and `debug` is the level the per-turn
- * lines are written at, so a line the suite reads back is one a `LOG_LEVEL=debug` run would show.
- *
- * @returns The logger, and the lines it wrote, parsed, in the order they were written.
  */
 function capturingLogger(): { readonly logger: Logger; readonly lines: Record<string, unknown>[] } {
   const lines: Record<string, unknown>[] = [];
@@ -404,17 +386,12 @@ function linesFor(
  * last in the window the caller sent, and `unclear` when none does. The voice simulator's own
  * responder applies that rule to every scenario at once, and this is the same rule for the one
  * scenario a row drives.
- *
- * Every property the classification schema declares is set, each null first: `understanding.ts` reads
- * the reply with a strict schema in which every key but the label is nullable, so a missing key would
- * read as `unclear`.
  */
 function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest) => unknown {
   return (request: LlmRequest): Record<string, unknown> => {
     if (request.jsonSchema?.name !== CLASSIFICATION_JSON_SCHEMA.name) {
       return {};
     }
-
     const window = request.messages.map((message) => message.content).join('\n');
     let matched: ScenarioTurn | undefined;
     let end = -1;
@@ -425,7 +402,6 @@ function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest
         matched = turn;
       }
     }
-
     const reply: Record<string, unknown> = {
       label: matched?.classify?.label ?? 'unclear',
       dish: null,
@@ -444,12 +420,6 @@ function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest
  * One whole call over fakes: the two database reads the session makes, a metered send that charges
  * nothing, a frozen clock, a capturing socket, a logger whose lines the case reads back, and no wait
  * for speech.
- *
- * The database object is asserted into `DbClient` once, on purpose: the session reads only
- * `callAttempt` and `$transaction`, while the client's type is the whole guarded Prisma surface.
- *
- * The keyring rides beside `DialogueServices` because the stay script's `prepare` reads it through
- * the `AppServices` contract it declares, which is what the session hands it at run time.
  */
 function driveScenario(input: {
   readonly ctx: CallContext;
@@ -469,7 +439,6 @@ function driveScenario(input: {
     superseded: false,
     status: input.taskStatus ?? 'in_progress',
   };
-
   const tx = {
     $queryRaw: () => Promise.resolve([attempt]),
     callAttempt: {
@@ -513,7 +482,6 @@ function driveScenario(input: {
       },
     },
   };
-
   const db = {
     callAttempt: {
       findUnique: () =>
@@ -521,16 +489,13 @@ function driveScenario(input: {
     },
     $transaction: (fn: (client: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as DbClient;
-
   const llm = createFakeLlmAdapter({ respond: scenarioResponder(input.turns) });
   const releaseLlm = vi.fn(() => Promise.resolve());
-
   /** Count, then send: the order the meter's own contract fixes (AAP 0.5.6). */
   const metered = (adapter: LlmAdapter, request: LlmRequest): Promise<LlmTurnCharge> =>
     adapter
       .complete(request, { timeoutMs: CLASSIFICATION_TURN_TIMEOUT_MS })
       .then((result) => ({ result, chargedMicros: 0, countedInputTokens: 0, remainingMicros: 0 }));
-
   const spend: LlmSpend = {
     reserveLlm: () => Promise.resolve(null),
     settleLlm: () => Promise.resolve(0),
@@ -544,7 +509,6 @@ function driveScenario(input: {
         remainingMicros: options.remainingMicros,
       })),
   };
-
   const frames: RelayOutboundFrame[] = [];
   const closed = vi.fn();
   const io: RelayIo = {
@@ -554,7 +518,6 @@ function driveScenario(input: {
     close: closed,
     wait: () => Promise.resolve(),
   };
-
   const services = {
     db,
     clock: createTestClock(),
@@ -570,7 +533,6 @@ function driveScenario(input: {
     timezoneFor: (cityId: string) => (cityId === LISBON.id ? LISBON.timezone : CHIANG_MAI.timezone),
     keyring: KEYRING,
   };
-
   return {
     session: new DialogueSession(services, input.ctx, undefined, io),
     frames,
@@ -643,7 +605,6 @@ describe('the five language files', () => {
       expect(Object.keys(LANGUAGE_FILES[language])).toEqual(reference);
     }
   });
-
   it('asks for the same placeholders per key, and none outside the declared five', () => {
     for (const key of TEMPLATE_KEYS) {
       const reference = placeholders(enUS[key]).sort();
@@ -660,7 +621,6 @@ describe('the five language files', () => {
       }
     }
   });
-
   it('states the two English disclosures exactly as the AAP writes them', () => {
     expect(enUS['greeting.menu_prices']).toBe(
       'Hello, this is an automated assistant calling on behalf of Tablemate to ask about your menu prices.',
@@ -669,7 +629,6 @@ describe('the five language files', () => {
       "Hello, this is an automated assistant calling on behalf of Tablemate to confirm a guest's stay.",
     );
   });
-
   it('discloses Tablemate in every other language, in its own words', () => {
     for (const language of LANGUAGES.filter((pairing) => pairing !== 'en-US')) {
       for (const kind of KINDS) {
@@ -688,11 +647,9 @@ describe('the five language files', () => {
 
 describe('the disclosure a call opens with', () => {
   const cases = LANGUAGES.flatMap((language) => KINDS.map((kind) => [language, kind] as const));
-
   it.each(cases)('%s/%s: speaks the greeting first and declares en-US', (language, kind) => {
     const greeting = disclosureFor(kind, language);
     expect(greeting).toBe(LANGUAGE_FILES[language][`greeting.${kind}`]);
-
     const document = renderTwiml({
       relayUrl: RELAY_URL,
       language,
@@ -740,7 +697,6 @@ describe('the menu price script', () => {
       expect(readback.vars['price']).toBeTruthy();
     }
   });
-
   const cases: readonly (readonly [
     string,
     readonly boolean[],
@@ -753,7 +709,6 @@ describe('the menu price script', () => {
     ['dropped mid-script after one item', [true], false, 'needs_review', 'low'],
     ['nothing collected', [], false, 'no_answer', null],
   ];
-
   it.each(cases)('reports %s', (_name, flags, finished, outcome, confidence) => {
     const result = menuPricesScript.result(menuCollected(flags), finished);
     expect(result.outcome).toBe(outcome);
@@ -783,7 +738,6 @@ describe('the stay verification script', () => {
     redactions: [BOOKING_NAME],
     currency: 'EUR',
   };
-
   it('asks one question, confirmed by the same answer a second time', () => {
     expect(lodgingStayVerificationScript.steps).toHaveLength(1);
     const step = lodgingStayVerificationScript.steps[0];
@@ -792,7 +746,6 @@ describe('the stay verification script', () => {
     expect(step?.confirmation).toBe('same_answer');
     expect(step?.readback({ answer: 'yes' }, STAY_CONTEXT, 'en-US').key).toBe('readback.stay');
   });
-
   it('names the guest and both dates, and nothing else, in every language', () => {
     for (const language of LANGUAGES) {
       for (const key of ['ask.stay', 'readback.stay'] as const) {
@@ -806,7 +759,6 @@ describe('the stay verification script', () => {
       }
     }
   });
-
   const cases: readonly (readonly [
     string,
     { readonly value: StayValue; readonly confirmed: boolean } | null,
@@ -825,7 +777,6 @@ describe('the stay verification script', () => {
     ],
     ['nothing collected', null, 'no_answer', null, null],
   ];
-
   it.each(cases)('reports %s', (_name, entry, outcome, confidence, answer) => {
     const collected = new Map<string, { value: StayValue; confirmed: boolean }>();
     if (entry !== null) {
@@ -852,7 +803,6 @@ describe('the stay script prepares a guest it may ask about', () => {
   // The script declares `AppServices` and reads the keyring and the logger from it; the cast names
   // that contract, because the rest of the composition root is what a unit test cannot build.
   const services = { keyring: KEYRING, logger: silentLogger() } as unknown as AppServices;
-
   it('returns the name, both dates and the redactions the window must use', async () => {
     const ctx = callContext({
       city: LISBON,
@@ -860,7 +810,6 @@ describe('the stay script prepares a guest it may ask about', () => {
       claim: claimRow(KEYRING),
     });
     const context = await lodgingStayVerificationScript.prepare(services, ctx);
-
     expect(context?.redactions).toContain(BOOKING_NAME);
     for (const language of ['en-US', 'th-TH'] as const) {
       const vars = context?.vars(language) ?? {};
@@ -870,7 +819,6 @@ describe('the stay script prepares a guest it may ask about', () => {
       expect(renderTemplate(language, 'ask.stay', vars)).toContain(BOOKING_NAME);
     }
   });
-
   const refusals: readonly (readonly [string, CallContext])[] = [
     [
       'a claim that already reached a terminal state',
@@ -902,7 +850,6 @@ describe('the stay script prepares a guest it may ask about', () => {
     ],
     ['a menu task', callContext({ city: LISBON, kind: 'menu_prices' })],
   ];
-
   it.each(refusals)('refuses %s', async (_name, ctx) => {
     await expect(lodgingStayVerificationScript.prepare(services, ctx)).resolves.toBeNull();
   });
@@ -926,21 +873,18 @@ describe('the utterance classifier', () => {
       'unclear',
     ]);
   });
-
   it('sends the most recent two kilobytes of a Thai and emoji window, unbroken', () => {
     const oldest = 'agent: สวัสดีค่ะ';
     const long = `callee: ${'ก'.repeat(1_200)}${'😀'.repeat(200)} สุดท้ายค่ะ`;
     const latest = 'ค่ะ ใช่ค่ะ';
     const request = buildClassificationRequest([oldest, long], 'stay_answer', latest, []);
     const content = request.messages.map((message) => message.content).join('\n');
-
     const lines = content.split('\n');
     const start = lines.indexOf('Conversation:') + 1;
     const end = lines.findIndex((line) => line.startsWith('Latest: '));
     expect(utf8ByteLength(lines.slice(start, end).join('\n'))).toBeLessThanOrEqual(
       CLASSIFICATION_WINDOW_MAX_BYTES,
     );
-
     // The newest words are kept and the older line is dropped whole.
     expect(content).toContain('สุดท้ายค่ะ');
     expect(content).toContain(`Latest: ${latest}`);
@@ -951,7 +895,6 @@ describe('the utterance classifier', () => {
     expect(content).not.toMatch(
       /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
     );
-
     expect(request.jsonSchema).toBe(CLASSIFICATION_JSON_SCHEMA);
     expect(request.maxTokens).toBe(CLASSIFICATION_MAX_OUTPUT_TOKENS);
   });
@@ -971,7 +914,6 @@ describe('a call driven turn by turn', () => {
     for (const turn of pricesHighScenario.turns) {
       await harness.session.onPrompt(turn.say);
     }
-
     expect(textFrames(harness.frames).map((frame) => templateOf('pt-PT', frame.token))).toEqual([
       'ask.cheapest_main',
       'readback.price',
@@ -985,7 +927,6 @@ describe('a call driven turn by turn', () => {
       'closing.thanks',
     ]);
     expect(harness.session.finalizedBy).toBe('completed');
-
     const recorded = harness.stores.attemptUpdates[0];
     expect(recorded?.['outcome']).toBe('completed');
     expect(recorded?.['confidence']).toBe('high');
@@ -1011,7 +952,6 @@ describe('a call driven turn by turn', () => {
     ).toEqual(['price', 'yes', 'price', 'yes', 'price', 'yes']);
     expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
-
   it('switches recognition and speech together on a preference for English', async () => {
     const harness = driveScenario({
       ctx: callContext({ city: CHIANG_MAI, kind: 'menu_prices' }),
@@ -1020,7 +960,6 @@ describe('a call driven turn by turn', () => {
     const turns = englishSwitchScenario.turns;
     await harness.session.start();
     await harness.session.onPrompt(firstTurn(turns).say);
-
     expect(harness.frames.slice(0, 4)).toEqual([
       {
         type: 'text',
@@ -1037,7 +976,6 @@ describe('a call driven turn by turn', () => {
         lang: 'en-US',
       },
     ]);
-
     for (const turn of turns.slice(1)) {
       await harness.session.onPrompt(turn.say);
     }
@@ -1047,14 +985,12 @@ describe('a call driven turn by turn', () => {
       expect(TEMPLATE_KEYS).toContain(templateOf('en-US', frame.token));
     }
     expect(templateOf('en-US', spoken.at(-1)?.token ?? '')).toBe('closing.thanks');
-
     const recorded = harness.stores.attemptUpdates[0];
     expect(recorded?.['outcome']).toBe('completed');
     expect(recorded?.['confidence']).toBe('high');
     // The price the callee said in baht is stored in the city's own currency (AAP 0.11.1).
     expect(capturedMenu(recorded)?.items[0]).toMatchObject({ currency: 'THB', amountMinor: 6000 });
   });
-
   it('closes on a refusal with the closing line of the call language', async () => {
     const harness = driveScenario({
       ctx: callContext({ city: LISBON, kind: 'menu_prices' }),
@@ -1062,7 +998,6 @@ describe('a call driven turn by turn', () => {
     });
     await harness.session.start();
     await harness.session.onPrompt(firstTurn(stopScenario.turns).say);
-
     const spoken = textFrames(harness.frames).map((frame) => frame.token);
     expect(spoken.at(-1)).toBe(renderTemplate('pt-PT', 'closing.refused'));
     expect(harness.frames.at(-1)).toEqual({ type: 'end' });
@@ -1081,7 +1016,6 @@ describe('a call driven turn by turn', () => {
     ]);
     expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
-
   it('marks the target and cancels its other tasks on a do-not-call request', async () => {
     const harness = driveScenario({
       ctx: callContext({ city: LISBON, kind: 'menu_prices' }),
@@ -1089,7 +1023,6 @@ describe('a call driven turn by turn', () => {
     });
     await harness.session.start();
     await harness.session.onPrompt(firstTurn(doNotCallScenario.turns).say);
-
     const spoken = textFrames(harness.frames).map((frame) => frame.token);
     expect(spoken.at(-1)).toBe(renderTemplate('pt-PT', 'closing.do_not_call'));
     expect(harness.frames.at(-1)).toEqual({ type: 'end' });
@@ -1098,7 +1031,6 @@ describe('a call driven turn by turn', () => {
     expect(harness.stores.targetUpdates).toEqual([{ id: PLACE_ID, doNotCall: true }]);
     expect(harness.stores.taskUpdates).toEqual([{ status: 'cancelled' }, { superseded: true }]);
   });
-
   it('ends a call whose task stopped being in_progress, and spends nothing on it', async () => {
     const harness = driveScenario({
       ctx: callContext({ city: LISBON, kind: 'menu_prices' }),
@@ -1107,7 +1039,6 @@ describe('a call driven turn by turn', () => {
     });
     await harness.session.start();
     await harness.session.onPrompt(firstTurn(pricesHighScenario.turns).say);
-
     expect(harness.session.finalizedBy).toBe('superseded');
     expect(harness.stores.attemptUpdates[0]?.['outcome']).toBe('no_answer');
     expect(harness.llm.calls.sent).toEqual([]);
@@ -1117,7 +1048,6 @@ describe('a call driven turn by turn', () => {
     expect(linesFor(harness.stores.lines, 'voice_turn')).toEqual([]);
     expect(linesFor(harness.stores.lines, 'voice_call_no_data')).toEqual([]);
   });
-
   it('verifies a stay without ever handing the guest name to the provider', async () => {
     const harness = driveScenario({
       ctx: callContext({
@@ -1131,19 +1061,16 @@ describe('a call driven turn by turn', () => {
     for (const turn of yesScenario.turns) {
       await harness.session.onPrompt(turn.say);
     }
-
     // The relay does speak the name — the question and the read-back both carry it — so the
     // redaction below is a real one rather than an absence of the string.
     const spoken = textFrames(harness.frames).map((frame) => frame.token);
     expect(spoken.some((line) => line.includes(BOOKING_NAME))).toBe(true);
-
     expect(harness.llm.calls.sent.length).toBeGreaterThan(0);
     for (const request of harness.llm.calls.sent) {
       expect(request).not.toContain(BOOKING_NAME);
       expect(request).not.toContain('Fixture');
       expect(request).not.toContain('Guest');
     }
-
     const recorded = harness.stores.attemptUpdates[0];
     expect(recorded?.['outcome']).toBe('completed');
     expect(recorded?.['confidence']).toBe('high');
@@ -1154,7 +1081,6 @@ describe('a call driven turn by turn', () => {
     expect(isRecord(fields) ? fields['answer'] : null).toBe('yes');
     expect(isRecord(fields) ? fields['confirmed'] : null).toBe(true);
   });
-
   it('logs every unclassified turn and the line that says the call ended with no data at all', async () => {
     // No scenario turns, so every prompt classifies `unclear` — the reply the credential-free `fake`
     // provider gives — and the dialogue collects nothing at all (AAP 0.5.6, 0.6.2).
@@ -1167,7 +1093,6 @@ describe('a call driven turn by turn', () => {
     for (let turn = 0; turn < 6; turn += 1) {
       await harness.session.onPrompt('Desculpe, não percebi.');
     }
-
     expect(harness.session.finalizedBy).toBe('completed');
     // One debug line per classified turn, each naming the label the turn classified as and the
     // question it was answering, so the log stream shows where the dialogue was lost (AAP 0.11.1).
@@ -1188,7 +1113,6 @@ describe('a call driven turn by turn', () => {
     }
     // No line carries the callee's words, however the call went (AAP 0.11.1, 0.12.2).
     expect(JSON.stringify(harness.stores.lines)).not.toContain('Desculpe');
-
     // The attempt keeps `no_answer`, the outcome the AAP fixes for a call that produced no data, and
     // the one line beside it says why: the dialogue ran and did not understand the callee, which is
     // not the same as a line nobody answered (AAP 0.5.2, 0.5.3, 0.11.1).

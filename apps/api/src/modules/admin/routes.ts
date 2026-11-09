@@ -4,72 +4,20 @@
  * lodging onboarding with their console-secret issue routes, the report queue, the crawl-domain
  * review queue and the language-model re-enable of AAP 0.5.6.
  *
- * Every handler here is a call and nothing else. The rule each route exposes is decided in the
- * module beside it — `metrics.ts` (`computeMetrics`, `reEnableLanguageModel`),
- * `disputes.ts` (`listDisputes`, `resolveDispute`), `call-tasks.ts` (`listCallTasks`,
- * `resolveCallTask`), `lodging-claims.ts` (`listLodgingClaims`, `resolveLodgingClaim`,
- * `bookingDetails`), `price-jobs.ts`
- * (`enqueuePriceJob`), `onboarding.ts` (`listVenues`, `createVenue`, `updateVenue`,
- * `issueVenueSecret`, `listLodgings`, `createLodging`, `issueLodgingSecret`), `reports.ts`
- * (`listReports`) and `crawl-domains.ts` (`listCrawlDomains`, `decideCrawlDomain`) — and a handler
- * passes that function the app's services, the authenticated operator's id and
- * `request.receivedAt`, in the order the module declares its parameters. No check, refusal,
- * transaction, counter or DTO is assembled here, and no refusal is translated: a module throws its
- * `AppError` and `plugins/errors.ts` renders it into the shared envelope with the status AAP 0.5.4
- * fixes (AAP 0.11.1).
+ * Every handler here is a call and nothing else: the rule each route exposes is decided in the
+ * module beside it, a handler passes that function the app's services, the authenticated operator's
+ * id and `request.receivedAt`, and `plugins/errors.ts` renders a module's `AppError` into the shared
+ * envelope with the status AAP 0.5.4 fixes (AAP 0.11.1).
  *
- * **The guard is group-level and never global (AAP 0.5.4).** `app.addHook('onRequest',
- * requireOperator)` is installed on this plugin's own context, which `app.ts` mounts under `/v1`,
- * so it covers exactly the routes below and cannot reach the traveler routes, the public routes, the
- * provider webhooks or the console routes. An operator is admitted by session and by `User.role`,
- * read from the database rather than from the token; a traveler's valid token answers `403
- * operator_only` and a missing, invalid or revoked one `401 token_invalid`. `/admin/*` is outside
- * the 18+ age gate, so no traveler guard is installed anywhere in this file (AAP 0.5.4).
+ * The guard is group-level and never global (AAP 0.5.4): `app.addHook('onRequest', requireOperator)`
+ * covers exactly the routes below and cannot reach the traveler routes, the public routes, the
+ * provider webhooks or the console routes. `/admin/*` is outside the 18+ age gate. Reads are
+ * unlimited and writes are counted: every POST and PATCH spreads `mutatingLimits(app)`.
  *
- * **Reads are unlimited, writes are counted (AAP 0.5.4).** Every POST and PATCH below spreads
- * `mutatingLimits(app)`, which runs the per-IP counter on `onRequest` and the per-user one on
- * `preHandler`: 60 a minute per operator, `RATE_LIMIT_IP_PER_MIN` per address, answered as
- * `429 rate_limited` with `Retry-After`, or as `503 service_unavailable` rather than an uncounted
- * request when the limiter's Redis store is unreachable (AAP 0.3.2). The plain reads carry no
- * counter at all. `GET /admin/lodging-claims/:id/booking-details` is a read that writes — it inserts
- * the `OperatorAccessLog` row that makes the disclosure auditable (AAP 0.5.2) — so it is the one GET
- * here that spreads the same limits.
- *
- * **Three answers carry a value nobody else may hold.** The two secret-issue routes answer the
- * plaintext console secret, which is shown once and stored only as a lookup hash beside a
- * ciphertext (AAP 0.3.2), and the booking-details route answers a guest's decrypted booking name and
- * reference. All three set `Cache-Control: no-store`, so no intermediary and no browser cache keeps
- * a copy (AAP 0.5.4). Nothing else in this file is cacheable either, but nothing else needs the
- * directive: every other answer lists rows an operator may re-read at will.
- *
- * **Time is the request's own instant.** Each handler passes `request.receivedAt`, the single
- * instant `plugins/clock.ts` stamps per request, and this file reads no clock of its own (AAP
- * 0.11.1). No handler logs: not a booking field, not a secret, not a report reason, not a phone
- * number. The modules record the event each rule calls for, naming ids only.
- *
- * Two choices AAP 0.5.4 leaves open are fixed here:
- *
- * - **A write answers the item it changed.** Each resolve, create and update route answers the
- *   updated DTO the module returned — the row as the queue would report it — rather than the row as
- *   it stood before the write or an empty body. The contract fixes the payload shape and not which
- *   moment of the row it shows, and an operator who has just resolved a dispute, onboarded a venue
- *   or issued a secret is best served by the state their click produced.
- * - **The routes are ordered as the contract lists them** — the dashboard, then the disputes, call
- *   tasks, lodging claims, price jobs, venues, lodgings, reports and crawl domains — so the
- *   registrations and the emitted document read in the same order as AAP 0.5.4. The re-enable route
- *   has no row in the contract's tables, so it stands after that sequence rather than inside it.
- *
- * Registration is synchronous, as in every other plugin the composition root installs, so the
- * returned promise is already resolved; `return Promise.resolve()` states that rather than relying
- * on the absence of an `await` (AAP 0.11.2: `@typescript-eslint/require-await`).
- *
- * @see AAP 0.5.4 for the routes, their schemas, their errors, the guard scope, the limits and the
- *   additive `booking-details` route, 0.5.6 for the suspension the re-enable clears, 0.5.1 for the
- *   admin component and the functions each handler calls, 0.5.3 for the dispute, call-task and claim
- *   lifecycles those functions own, 0.5.7 for the dashboard figures and the crawl policy, 0.3.2 for
- *   the rate limiting, the outbox and the console secrets, 0.5.2 for the booking fields and the audit
- *   log, 0.11.1 for the injected clock and the logging rules, 0.11.2 for the response-schema rule,
- *   and 0.8.1 for this file.
+ * Three answers carry a value nobody else may hold — the two plaintext console secrets, shown once,
+ * and a guest's decrypted booking name and reference — so all three set `Cache-Control: no-store`
+ * (AAP 0.3.2, 0.5.4). Time is the request's own instant, `request.receivedAt`, and this file reads no
+ * clock of its own and logs nothing (AAP 0.11.1).
  */
 
 import {
@@ -131,10 +79,7 @@ import { listReports } from './reports.ts';
 
 import type { FastifyRequest } from 'fastify';
 
-// Type-only, as in every sibling plugin and route module: `App` is the plan's one declaration of the
-// instance and of what it hands its modules (AAP 0.5.1), it is erased at compile time, and nothing of
-// `app.ts` is read here at runtime. `app.ts` registers this plugin with the `/v1` prefix, which is
-// what makes the routes below `/v1/admin/...`.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 
 /** The tag every route here groups under: a member of the document's own vocabulary (AAP 0.11.2). */
@@ -150,15 +95,12 @@ const ADMIN_TAG = 'admin' satisfies OpenApiTag;
 const NO_STORE_CACHE_CONTROL = 'no-store';
 
 /**
- * The authenticated operator's context, or a refusal.
  *
  * The group guard above admitted this request, so `request.auth` is set — but that is a property of
  * the registration, not of the handler: a hook that were moved, removed or shadowed would otherwise
  * leave a `TypeError` to be answered as `500 internal_error` where the contract requires `401
  * token_invalid`, and no compiler check would catch it.
  *
- * @param request - The request the operator guard admitted.
- * @returns The acting operator's context.
  * @throws AppError `token_invalid` (401) when no context is present.
  */
 function operatorAuth(request: FastifyRequest): AuthContext {
@@ -169,26 +111,15 @@ function operatorAuth(request: FastifyRequest): AuthContext {
 }
 
 /**
- * Registers the operator routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1` (AAP 0.5.1).
  *
  * The guard comes first and covers this context alone: `requireOperator` reads the access token and
  * the account's role, and installing it here rather than globally is what keeps `/admin/*` guarded
  * while the traveler, public, provider and console routes stay outside it (AAP 0.5.4). Every handler
  * below then delegates: it hands the module function the app's services, the operator's id where the
  * rule is audited or fenced on it, and `request.receivedAt`.
- *
- * @param app - The route instance; its `services` carry the guarded database client, the injected
- *   clock, the field keyring the booking fields are decrypted with, the BullMQ producers the price
- *   jobs are enqueued on, the outbox and the logger — the container every function called here reads.
- * @see AAP 0.5.4 for the routes, their schemas, their errors and the guard scope, and 0.5.3 for the
- *   lifecycles the resolutions apply.
  */
 export default function adminRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireOperator);
-
-  // 1. The dashboard (AAP 0.5.4). A read: no counter, and an unknown `cityId` is not an error here —
-  // it simply yields zero figures. A reversed range is the one refusal, and it is `computeMetrics`'s
-  // `400 invalid_field`.
   app.get(
     '/admin/metrics',
     {
@@ -201,9 +132,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => computeMetrics(request.server.services, request.query, request.receivedAt),
   );
-
-  // 2-3. The dispute queue and one operator's resolution of a dispute in it (AAP 0.5.4, 0.5.3). The
-  // resolution answers the dispute as the queue reports it, with the status its outcome produced.
   app.get(
     '/admin/disputes',
     {
@@ -215,7 +143,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listDisputes(request.server.services, request.receivedAt),
   );
-
   app.post(
     '/admin/disputes/:id/resolve',
     {
@@ -246,12 +173,6 @@ export default function adminRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
-  // 4-5. The call queue and one operator outcome on a `menu_prices` task (AAP 0.5.4, 0.5.3). The read
-  // pages: its strict query string carries the queue's own filters and its cursor, and a malformed
-  // cursor — like any other unusable value in that query — answers `400 invalid_field`. The lodging
-  // registry below pages the same way. A lodging-verification task is refused by `resolveCallTask` with
-  // `422 invalid_outcome`, because a claim is resolved through its own route below.
   app.get(
     '/admin/call-tasks',
     {
@@ -269,7 +190,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listCallTasks(request.server.services, request.query),
   );
-
   app.post(
     '/admin/call-tasks/:id/resolve',
     {
@@ -300,11 +220,6 @@ export default function adminRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
-  // 6-8. The lodging-claim queue, the operator's terminal outcome on a claim, and the audited read of
-  // one claim's booking details (AAP 0.5.4, 0.5.2). The details read is the additive route, permitted
-  // only while the claim is `pending_call` or `calling` and its details are not yet erased, which is
-  // why its `409` is `details_unavailable` rather than a status the queue shares.
   app.get(
     '/admin/lodging-claims',
     {
@@ -316,7 +231,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listLodgingClaims(request.server.services),
   );
-
   app.post(
     '/admin/lodging-claims/:id/resolve',
     {
@@ -347,7 +261,6 @@ export default function adminRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.get(
     '/admin/lodging-claims/:id/booking-details',
     {
@@ -377,20 +290,12 @@ export default function adminRoutes(app: App): Promise<void> {
         request.params.id,
         request.receivedAt,
       );
-
       // A guest's booking name and reference: shown to one operator for one manual verification call,
       // never cached anywhere (AAP 0.5.2, 0.5.4).
       reply.header('Cache-Control', NO_STORE_CACHE_CONTROL);
-
       return details;
     },
   );
-
-  // 9. One city's price jobs (AAP 0.5.4, 0.5.6). The answer is `202 { jobId }`: the work runs in
-  // `apps/workers`, never in this request. A city whose local day has used up its calls cap or its
-  // committed language-model spend is the early refusal `429 daily_cap_reached`, and both caps are
-  // still enforced where the work runs, so the refusal only saves the operator a job nobody would
-  // run today.
   app.post(
     '/admin/price-jobs',
     {
@@ -416,15 +321,10 @@ export default function adminRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       );
-
       reply.code(202);
       return queued;
     },
   );
-
-  // 10-13. The venue registry, its onboarding, its edit and its console secret (AAP 0.5.4, 0.5.6).
-  // Onboarding answers `201` with the new venue and the two edits answer `200` with the venue as it
-  // stands after them; the secret route answers the plaintext once, under `no-store`.
   app.get(
     '/admin/venues',
     {
@@ -436,7 +336,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listVenues(request.server.services),
   );
-
   app.post(
     '/admin/venues',
     {
@@ -463,12 +362,10 @@ export default function adminRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       );
-
       reply.code(201);
       return created;
     },
   );
-
   app.patch(
     '/admin/venues/:id',
     {
@@ -498,7 +395,6 @@ export default function adminRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/admin/venues/:id/secret',
     {
@@ -525,21 +421,12 @@ export default function adminRoutes(app: App): Promise<void> {
         request.params.id,
         request.receivedAt,
       );
-
       // Issued once and never readable again: re-issuing replaces the stored hash and ciphertext, so
       // the previous secret stops authenticating the console at once (AAP 0.3.2).
       reply.header('Cache-Control', NO_STORE_CACHE_CONTROL);
-
       return issued;
     },
   );
-
-  // 14-16. The lodging registry, the hand-entered lodging and its console secret (AAP 0.5.4, 0.5.6).
-  // The registry read is the one here that pages: its strict query string carries a city filter, a
-  // name search, a page size and its cursor, and any unusable value in it — a cursor this API did not
-  // write, a `limit` outside 1-500, a parameter the route does not carry — answers `400 invalid_field`.
-  // Issuing a secret is what makes a lodging a partner, which is why the place refresh is enqueued
-  // there and not when the row was created.
   app.get(
     '/admin/lodgings',
     {
@@ -557,7 +444,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listLodgings(request.server.services, request.query),
   );
-
   app.post(
     '/admin/lodgings',
     {
@@ -584,12 +470,10 @@ export default function adminRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       );
-
       reply.code(201);
       return created;
     },
   );
-
   app.post(
     '/admin/lodgings/:id/secret',
     {
@@ -616,15 +500,10 @@ export default function adminRoutes(app: App): Promise<void> {
         request.params.id,
         request.receivedAt,
       );
-
       reply.header('Cache-Control', NO_STORE_CACHE_CONTROL);
-
       return issued;
     },
   );
-
-  // 17. The report queue (AAP 0.5.4, request item 12). A read of rows that never change, so the
-  // reporter's free text is answered to an operator and to no one else.
   app.get(
     '/admin/reports',
     {
@@ -636,10 +515,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listReports(request.server.services),
   );
-
-  // 18-19. The crawl-policy review queue and one operator's decision on a domain (AAP 0.5.4, 0.5.6).
-  // `uncertain` is never accepted here: it is where an unreviewed domain already sits, and
-  // `decideCrawlDomain` answers `422 invalid_outcome` for it and for any other value.
   app.get(
     '/admin/crawl-domains',
     {
@@ -651,7 +526,6 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => listCrawlDomains(request.server.services),
   );
-
   app.patch(
     '/admin/crawl-domains/:domain',
     {
@@ -681,14 +555,6 @@ export default function adminRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
-  // 20. The operator's re-enable of language-model use (AAP 0.5.6). A mismatch suspends use in every
-  // city "until an operator re-enables it", so this is the write that ends the suspension the
-  // dashboard's Calls panel shows: it clears the shared `llm:suspended` flag and answers the flag as
-  // it then stands, beside the cumulative mismatch count it leaves untouched. It has no row in the
-  // contract's tables, which is why it stands after their sequence rather than inside it (see the
-  // ordering note above); the module's refusal is a `503 service_unavailable` when the flag's store
-  // cannot be reached, which the operator reads as a refusal rather than as an internal failure.
   app.post(
     '/admin/language-model/re-enable',
     {
@@ -707,6 +573,5 @@ export default function adminRoutes(app: App): Promise<void> {
     },
     async (request) => reEnableLanguageModel(request.server.services, operatorAuth(request).userId),
   );
-
   return Promise.resolve();
 }

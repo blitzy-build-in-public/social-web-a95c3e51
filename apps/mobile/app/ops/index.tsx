@@ -11,6 +11,7 @@ import {
   VariantPairing,
   colors,
   fontWeights,
+  layout,
   spacing,
   typography,
 } from '@tablemate/shared';
@@ -29,9 +30,21 @@ const REFERENCE_LABEL = 'Pilot reference';
 const REFERENCE_NOTE = 'A reference value for the pilot, not a target this build enforces.';
 const DATE_FORMAT_ERROR = 'Enter a date as YYYY-MM-DD.';
 const RANGE_ORDER_ERROR = 'The end date must not be before the start date.';
+/** What a date field takes, shown before Apply rather than only when Apply rejects it. */
+const DATE_HINT = 'Ten characters, as YYYY-MM-DD.';
+/** The dates' own guard: ten characters, typed on a keypad carrying the digits and the hyphen. */
+const DATE_INPUT = {
+  inputMode: 'numeric',
+  keyboardType: 'numbers-and-punctuation',
+  maxLength: 10,
+} as const;
 const CITY_GROUP_LABEL = 'City';
 const VARIANT_GROUP_LABEL = 'Variant pairing';
 const LLM_SUSPENDED_MESSAGE = 'Language-model use is suspended after a token-count mismatch';
+const LLM_MISMATCH_MESSAGE =
+  'A token-count mismatch suspends language-model use in every city until an operator re-enables it';
+const LLM_SUSPENDED_STATE = 'Suspended in every city';
+const LLM_ACTIVE_STATE = 'Active in every city';
 /** The control that ends that suspension, and the news a screen reader hears when it lands. */
 const RE_ENABLE_LABEL = 'Re-enable language model';
 const RE_ENABLED_NOTICE = 'Language-model use is re-enabled.';
@@ -53,11 +66,8 @@ const BLOCKED_REASON_LABELS: Record<BlockedReason, string> = {
   dispatch_unknown: 'Dispatch unconfirmed',
   no_final_status: 'No final call status',
 };
-const BAR_HEIGHT = 12;
-const BAR_FILL_INSET = 2;
-const BAR_FILL_RADIUS = (BAR_HEIGHT - BAR_FILL_INSET * 2) / 2;
-const BAR_MARKER_WIDTH = 2;
-const BAR_MARKER_CASING = 4;
+/** The corner the rate bar's fill takes, from the bar geometry the layout tokens state once. */
+const BAR_FILL_RADIUS = (layout.barHeight - layout.barFillInset * 2) / 2;
 const SVG_HIDDEN = {
   accessibilityElementsHidden: true,
   importantForAccessibility: 'no-hide-descendants',
@@ -92,6 +102,9 @@ const percentText = (fraction: number | null): string =>
   fraction === null ? NOTHING : `${(fraction * 100).toFixed(1)}%`;
 const referenceLine = (value: number | null): string =>
   `${REFERENCE_LABEL}: ${percentText(value)}. ${REFERENCE_NOTE}`;
+/** What a mismatch warning reports, in the singular or the plural. */
+const mismatchCountLine = (count: number): string =>
+  `${countText(count)} ${count === 1 ? 'mismatch' : 'mismatches'} recorded`;
 function defaultFilters(): Filters {
   const today = new Date();
   const start = new Date(today.getTime() - (DEFAULT_RANGE_DAYS - 1) * 86_400_000);
@@ -158,6 +171,15 @@ const lifecycleRows = ({ calls: { lifecycle } }: MetricsDto): readonly Stat[] =>
 ];
 const blockedRows = (blocked: readonly (readonly [string, number])[]): readonly Stat[] =>
   blocked.map(([reason, count]): Stat => [blockedReasonLabel(reason), countText(count)]);
+/** The spend section's state at all times (AAP 0.5.6): the mismatches recorded, and whether use is
+ * stopped. The suspension is fleet-wide, so no filter narrows it and no state can hide it. */
+const spendRows = ({ calls }: MetricsDto): readonly Stat[] => [
+  ['Token-count mismatches recorded', countText(calls.llmCountMismatches)],
+  ['Language-model use', calls.llmSuspended ? LLM_SUSPENDED_STATE : LLM_ACTIVE_STATE],
+];
+/** A mismatch warns in both states: while use is stopped, and once an operator re-enables it. */
+const llmWarningMessage = ({ llmSuspended }: MetricsDto['calls']): string =>
+  llmSuspended ? LLM_SUSPENDED_MESSAGE : LLM_MISMATCH_MESSAGE;
 const lodgingRows = ({ lodgingClaims }: MetricsDto): readonly Stat[] => [
   ['Submitted', countText(lodgingClaims.submitted)],
   ['Verified', countText(lodgingClaims.verified)],
@@ -170,17 +192,28 @@ const signupRows = ({ signups }: MetricsDto): readonly Stat[] => [
 ];
 function Bar({ label, value, max, reference }: BarProps): ReactElement {
   const marker = reference === undefined ? null : widthPercent(reference, max);
-  const fill = { width: widthPercent(value, max), height: BAR_HEIGHT - BAR_FILL_INSET * 2 };
-  const ends = { x1: marker ?? 0, x2: marker ?? 0, y1: 0, y2: BAR_HEIGHT };
+  const fill = {
+    width: widthPercent(value, max),
+    height: layout.barHeight - layout.barFillInset * 2,
+  };
+  const ends = { x1: marker ?? 0, x2: marker ?? 0, y1: 0, y2: layout.barHeight };
   const markerLine = (stroke: string, strokeWidth: number): ReactElement => (
     <Line stroke={stroke} strokeWidth={strokeWidth} {...ends} />
   );
   return (
-    <Svg {...SVG_HIDDEN} width="100%" height={BAR_HEIGHT} accessibilityLabel={label} aria-hidden>
-      <Rect x={0} y={0} width="100%" height={BAR_HEIGHT} fill={colors.surface} />
-      <Rect x={0} y={BAR_FILL_INSET} rx={BAR_FILL_RADIUS} fill={colors.primary} {...fill} />
-      {marker === null ? null : markerLine(colors.surface, BAR_MARKER_WIDTH + BAR_MARKER_CASING)}
-      {marker === null ? null : markerLine(colors.text, BAR_MARKER_WIDTH)}
+    <Svg
+      {...SVG_HIDDEN}
+      width="100%"
+      height={layout.barHeight}
+      accessibilityLabel={label}
+      aria-hidden
+    >
+      <Rect x={0} y={0} width="100%" height={layout.barHeight} fill={colors.surface} />
+      <Rect x={0} y={layout.barFillInset} rx={BAR_FILL_RADIUS} fill={colors.primary} {...fill} />
+      {marker === null
+        ? null
+        : markerLine(colors.surface, layout.barMarkerWidth + layout.barMarkerCasing)}
+      {marker === null ? null : markerLine(colors.text, layout.barMarkerWidth)}
     </Svg>
   );
 }
@@ -273,11 +306,27 @@ function Dashboard({ metrics, cities, reEnable }: DashboardProps): ReactElement 
           <StatRows items={priceRows(metrics)} />
         </Panel>
         <Panel title="Calls">
+          <Text style={styles.subheading}>By outcome</Text>
+          <StatRows items={outcomeRows(metrics)} />
+          <Text style={styles.subheading}>Lifecycle</Text>
+          <StatRows items={lifecycleRows(metrics)} />
+          <StatRows empty="Nothing blocked." items={blockedRows(blocked)} />
+          <Text style={styles.subheading}>Calls per day against the cap</Text>
+          {calls.perDay.map((day) => (
+            <DayBar key={`${day.cityId} ${day.localDate}`} cities={cities} day={day} />
+          ))}
+          {calls.perDay.length === 0 ? <Text style={styles.caption}>{NO_ROWS}</Text> : null}
+          <Text style={styles.subheading}>Language-model spend against the cap</Text>
+          {/* The mismatch warning belongs with the two facts it qualifies (AAP 0.5.6): a counted
+              mismatch suspends language-model use in every city until an operator re-enables it,
+              so the stop is stated in the spend section itself rather than at the card's head. */}
+          {calls.llmSuspended || calls.llmCountMismatches > 0 ? (
+            <Banner tone="warning" message={llmWarningMessage(calls)}>
+              {mismatchCountLine(calls.llmCountMismatches)}
+            </Banner>
+          ) : null}
           {calls.llmSuspended ? (
             <View style={styles.suspension}>
-              <Banner tone="warning" message={LLM_SUSPENDED_MESSAGE}>
-                {`${countText(calls.llmCountMismatches)} ${calls.llmCountMismatches === 1 ? 'mismatch' : 'mismatches'} recorded`}
-              </Banner>
               {/* AAP 0.5.6 suspends use in every city until an operator re-enables it, so the one
                   control that ends the suspension sits with the banner that reports it. */}
               <Button
@@ -291,17 +340,7 @@ function Dashboard({ metrics, cities, reEnable }: DashboardProps): ReactElement 
               )}
             </View>
           ) : null}
-          <Text style={styles.subheading}>By outcome</Text>
-          <StatRows items={outcomeRows(metrics)} />
-          <Text style={styles.subheading}>Lifecycle</Text>
-          <StatRows items={lifecycleRows(metrics)} />
-          <StatRows empty="Nothing blocked." items={blockedRows(blocked)} />
-          <Text style={styles.subheading}>Calls per day against the cap</Text>
-          {calls.perDay.map((day) => (
-            <DayBar key={`${day.cityId} ${day.localDate}`} cities={cities} day={day} />
-          ))}
-          {calls.perDay.length === 0 ? <Text style={styles.caption}>{NO_ROWS}</Text> : null}
-          <Text style={styles.subheading}>Language-model spend against the cap</Text>
+          <StatRows items={spendRows(metrics)} />
           {calls.spend.map((day) => (
             <SpendBar key={`${day.cityId} ${day.localDate}`} cities={cities} day={day} />
           ))}
@@ -384,9 +423,11 @@ export default function OpsDashboardScreen(): ReactElement {
             {dateFields.map(([field, label, testID, value, set]) => (
               <View key={field} style={styles.dateField}>
                 <TextField
+                  {...DATE_INPUT}
                   autoCapitalize="none"
                   autoCorrect={false}
                   error={rangeError?.field === field ? rangeError.message : null}
+                  hint={rangeError?.field === field ? undefined : DATE_HINT}
                   label={label}
                   onChangeText={set}
                   onSubmitEditing={applyDates}
@@ -395,7 +436,9 @@ export default function OpsDashboardScreen(): ReactElement {
                 />
               </View>
             ))}
-            <Button variant="secondary" label="Apply" onPress={applyDates} testID="ops-apply" />
+            <View style={styles.apply}>
+              <Button variant="secondary" label="Apply" onPress={applyDates} testID="ops-apply" />
+            </View>
           </View>
           <View style={styles.filterGroup}>
             <Text style={styles.filterLabel}>{CITY_GROUP_LABEL}</Text>
@@ -437,27 +480,29 @@ export default function OpsDashboardScreen(): ReactElement {
     </>
   );
 }
-/** The responsive widths of the wrapping rows, named once (AAP 0.5.8). */
-const DATE_FIELD_BASIS = 180;
-const DATE_FIELD_MIN_WIDTH = 160;
-const PANEL_BASIS = 340;
-const PANEL_MIN_WIDTH = 280;
-const HEADLINE_MAIN_BASIS = 240;
-const HEADLINE_ASIDE_BASIS = 200;
+/** The wrapping rows take their responsive widths from the `layout` tokens' `*Basis` and
+ * `*MinWidth` pairs, named once there rather than per row (AAP 0.5.8). */
 const WRAP = { flexDirection: 'row', flexWrap: 'wrap' } as const;
 
 const styles = StyleSheet.create({
   filters: { gap: spacing.md },
-  dateRow: { alignItems: 'flex-end', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
-  dateField: { flexBasis: DATE_FIELD_BASIS, flexGrow: 1, minWidth: DATE_FIELD_MIN_WIDTH },
+  dateRow: { alignItems: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  dateField: {
+    flexBasis: layout.dateFieldBasis,
+    flexGrow: 1,
+    minWidth: layout.dateFieldMinWidth,
+  },
+  // The field's own label line plus the gap under it, so Apply sits on the input line and stays
+  // there however many caption lines an error adds to a column beside it (AAP 0.5.8).
+  apply: { paddingTop: typography.label.lineHeight + spacing.xs },
   filterGroup: { gap: spacing.xs },
   filterLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   grid: { alignItems: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  panel: { flexBasis: PANEL_BASIS, flexGrow: 1, minWidth: PANEL_MIN_WIDTH },
+  panel: { flexBasis: layout.panelBasis, flexGrow: 1, minWidth: layout.panelMinWidth },
   headline: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  headlineMain: { flexBasis: HEADLINE_MAIN_BASIS, flexGrow: 1, gap: spacing.xs },
-  headlineAside: { flexBasis: HEADLINE_ASIDE_BASIS, gap: spacing.xs },
+  headlineMain: { flexBasis: layout.headlineMainBasis, flexGrow: 1, gap: spacing.xs },
+  headlineAside: { flexBasis: layout.headlineAsideBasis, gap: spacing.xs },
   rate: { ...typography.display, color: colors.text, fontWeight: fontWeights.bold },
   rateAside: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },
   body: { ...typography.body, color: colors.text },

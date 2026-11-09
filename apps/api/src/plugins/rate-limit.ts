@@ -1,46 +1,30 @@
 /**
  * Rate limiting: the per-IP, per-user, webhook and magic-link allowances a limited route carries
- * (AAP 0.5.4, AAP 0.3.2, AAP 0.11.2).
+ * (AAP 0.3.2, 0.5.4, 0.11.2).
  *
- * AAP 0.5.4 fixes the allowances. Every mutating route — POST, PUT, PATCH and DELETE, plus the two
- * state-writing reads that store a budget or a first view — is limited per user at
- * {@link RATE_LIMIT_USER_PER_MIN} requests a minute and per IP at `RATE_LIMIT_IP_PER_MIN` (default
- * 600). Webhook routes, which carry no user, get {@link RATE_LIMIT_WEBHOOK_IP_PER_MIN} a minute per
- * IP, because a provider's requests arrive from a handful of addresses. `POST /auth/magic-link` gets
- * {@link MAGIC_LINK_MAX_PER_EMAIL_PER_HOUR} an hour for one address, because it is the only route
- * that mails a link. Exceeding a limit answers `429 rate_limited` with `Retry-After`. The plugin
- * registers with `global: false`, so `GET /v1/health`, the console reads, every other read and the
- * test-control routes carry no counter at all.
+ * AAP 0.5.4 fixes the allowances: every mutating route — POST, PUT, PATCH and DELETE, plus the two
+ * state-writing reads — is limited per user at {@link RATE_LIMIT_USER_PER_MIN} requests a minute and per IP at
+ * `RATE_LIMIT_IP_PER_MIN`; webhook routes, which carry no user, get {@link RATE_LIMIT_WEBHOOK_IP_PER_MIN} a
+ * minute per IP; and `POST /auth/magic-link` gets {@link MAGIC_LINK_MAX_PER_EMAIL_PER_HOUR} an hour for one
+ * address. Exceeding a limit answers `429 rate_limited` with `Retry-After`. The plugin registers with
+ * `global: false`, so `GET /v1/health`, the console reads, every other read and the test-control routes carry no
+ * counter at all.
  *
- * The counters live in Redis and an unusable store fails closed (AAP 0.3.2): a request that cannot be
- * counted does not run, so it answers `503 service_unavailable` rather than passing unthrottled.
- * `skipOnError` therefore stays `false`, and {@link createRateLimitStore} rejects within
- * {@link RATE_LIMIT_STORE_TIMEOUT_MS} even when the server holds the connection open and answers
- * nothing — a paused or stalled Redis, which the fail-fast `client`-role connection cannot detect by
- * itself. The store error is an {@link AppError} marked by {@link RATE_LIMIT_STORE_ERROR}, which the
- * errors plugin answers with the 503 envelope; `errors.ts` does not import {@link
- * isRateLimitStoreError}, so no module cycle exists between the two.
+ * The counters live in Redis and an unusable store fails closed (AAP 0.3.2): a request that cannot be counted
+ * does not run, so it answers `503 service_unavailable` rather than passing unthrottled. `skipOnError` therefore
+ * stays `false`, and {@link createRateLimitStore} rejects within {@link RATE_LIMIT_STORE_TIMEOUT_MS} even when
+ * the server holds the connection open and answers nothing — a paused or stalled Redis, which the fail-fast
+ * `client`-role connection cannot detect by itself. The store error is an {@link AppError} marked by
+ * {@link RATE_LIMIT_STORE_ERROR}, which the errors plugin answers with the 503 envelope.
  *
- * Two counters can apply to one request (per-IP and per-user, or per-IP and per-email), and they are
- * driven through `app.createRateLimit` rather than `@fastify/rate-limit`'s throwing `app.rateLimit`
- * factory: the factory's handler marks the request as limited on the plugin's own per-request flag,
- * so a second such hook on one route returns without counting anything. The limiter
- * `createRateLimit` returns carries no flag, and {@link createLimit} writes the plugin's own
- * `x-ratelimit-*` and `Retry-After` headers around it, so every limited request carries the same
- * headers whichever counter caught it and a 429 answers with the same envelope.
- *
- * Where a hook runs is part of the contract (AAP 0.5.4): the per-IP counters are `onRequest` hooks,
- * so an unauthenticated or oversized request is refused before any body is parsed, and the per-user
- * and per-email counters are `preHandler` hooks — after the bearer guard has put the caller's
- * account on the request and after the route's schema has validated the body. Fastify runs a
- * context's own hooks before route-level hooks of the same type, so a module's group guard always
- * runs before the counter it precedes.
- *
- * @see AAP 0.5.4 for the allowances, the headers and the routes that carry them, 0.3.2 for the
- *   fail-closed store and the rate limiter's place in the request path, 0.5.1 for this plugin's
- *   registration in the composition root, and 0.11.2 for rate limits on every mutating route.
+ * Two counters can apply to one request (per-IP and per-user, or per-IP and per-email), and they are driven
+ * through `app.createRateLimit` rather than `@fastify/rate-limit`'s throwing `app.rateLimit` factory: the
+ * factory's handler marks the request as limited on the plugin's own per-request flag, so a second such hook on
+ * one route returns without counting anything. Where a hook runs is part of the contract (AAP 0.5.4): the per-IP
+ * counters are `onRequest` hooks, so an unauthenticated or oversized request is refused before any body is
+ * parsed, and the per-user and per-email counters are `preHandler` hooks, after the bearer guard has put the
+ * caller's account on the request and after the route's schema has validated the body.
  */
-
 import rateLimit from '@fastify/rate-limit';
 
 import { AppError } from './errors.ts';
@@ -85,7 +69,6 @@ declare module 'fastify' {
      */
     stateWritingRead?: boolean;
   }
-
   interface FastifyInstance {
     /**
      * The counters this module built, decorated on the root so every child context inherits them
@@ -306,16 +289,13 @@ export function createRateLimitStore(services: RateLimitServices): FastifyRateLi
       // plugin's own promise rejects on the failure and never settles twice either way.
       const settle = once(callback);
       const client = services.redis.client;
-
       if (client === undefined) {
         settle(storeFailure(services, new RateLimitStoreFault(FAULT_NOT_CONFIGURED)));
         return;
       }
-
       const timer = setTimeout(() => {
         settle(storeFailure(services, new RateLimitStoreFault(FAULT_TIMEOUT)));
       }, RATE_LIMIT_STORE_TIMEOUT_MS);
-
       void client.eval(COUNT_SCRIPT, 1, key, String(timeWindowMs)).then(
         (reply: unknown) => {
           clearTimeout(timer);
@@ -332,7 +312,6 @@ export function createRateLimitStore(services: RateLimitServices): FastifyRateLi
         },
       );
     }
-
     child(_routeOptions: unknown): FastifyRateLimitStore {
       return this;
     }
@@ -359,10 +338,6 @@ export function isRateLimitStoreError(error: unknown): boolean {
  * because `createRateLimit` exists only once the plugin has loaded. The counters are decorated on the
  * instance the caller passed — the root app — so a child context inherits them, which is what lets a
  * module that declares routes inside its own plugin spread the helpers.
- *
- * @param app - The app the limiter is registered on and the counters are decorated on.
- * @param services - The Redis connection, the two sizing values and the logger (see
- *   {@link RateLimitServices}).
  */
 export function registerRateLimit<
   RawServer extends RawServerBase = RawServerDefault,
@@ -390,7 +365,6 @@ export function registerRateLimit<
         rateLimitedMessage(retryAfterText(context.ttl / MILLISECONDS_PER_SECOND)),
       ),
   });
-
   app.after(() => {
     app.decorate(RATE_LIMIT_HOOKS, buildHooks(app, services));
   });
@@ -405,9 +379,6 @@ export function registerRateLimit<
  * parsed; the per-user counter runs in `preHandler`, after the group's bearer guard has put the
  * caller's account on the request. One counter per caller, shared by every mutating route: the
  * allowance AAP 0.5.4 sets is a budget for a user's writes in a minute, not a per-route one.
- *
- * @param app - The instance whose decorated hooks are read.
- * @returns Fresh `onRequest` and `preHandler` arrays over the shared counters.
  */
 export function mutatingLimits(app: RateLimitHost): RateLimitRouteOptions {
   const { perIp, perUser } = hooksOf(app);
@@ -417,8 +388,6 @@ export function mutatingLimits(app: RateLimitHost): RateLimitRouteOptions {
 /**
  * The hooks for a public mutating route that carries no user (AAP 0.5.4): `POST /auth/verify` and
  * `POST /auth/refresh`, which are limited per IP alone.
- *
- * @param app - The instance whose decorated hooks are read.
  */
 export function ipOnlyLimits(app: RateLimitHost): RateLimitRouteOptions {
   return { onRequest: [hooksOf(app).perIp], preHandler: [] };
@@ -432,8 +401,6 @@ export function ipOnlyLimits(app: RateLimitHost): RateLimitRouteOptions {
  * higher {@link RATE_LIMIT_WEBHOOK_IP_PER_MIN} allowance, because one provider's traffic arrives
  * from a handful of addresses. The hook is an `onRequest` hook, so an over-limit upgrade is refused
  * as plain HTTP before the connection is hijacked.
- *
- * @param app - The instance whose decorated hooks are read.
  */
 export function webhookLimits(app: RateLimitHost): RateLimitRouteOptions {
   return { onRequest: [hooksOf(app).perWebhookIp], preHandler: [] };
@@ -447,8 +414,6 @@ export function webhookLimits(app: RateLimitHost): RateLimitRouteOptions {
  * the body, and is keyed by {@link emailLookupHash} of the address, so the Redis key holds a keyed
  * digest and never an address. The route still answers `202` for every address it accepts, so the
  * limit is the only thing that varies with the address's request history.
- *
- * @param app - The instance whose decorated hooks are read.
  */
 export function magicLinkLimits(app: RateLimitHost): RateLimitRouteOptions {
   const { perIp, perEmail } = hooksOf(app);
@@ -504,14 +469,11 @@ function createLimit(app: RateLimitHost, plan: LimitPlan): RateLimitHook {
     timeWindow: plan.timeWindowMs,
     keyGenerator: plan.key,
   });
-
   return async (request, reply) => {
     const state = await limiter(request);
     if (state.isAllowed) return;
-
     setRateLimitHeaders(reply, state);
     if (!state.isExceeded) return;
-
     throw new AppError('rate_limited', rateLimitedMessage(retryAfterText(state.ttlInSeconds)));
   };
 }
@@ -546,10 +508,8 @@ function rateLimitedMessage(after: string): string {
 function retryAfterText(seconds: number): string {
   const whole = Math.max(1, Math.ceil(seconds));
   if (whole < 60) return `${whole} ${whole === 1 ? 'second' : 'seconds'}`;
-
   const minutes = Math.ceil(whole / 60);
   if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
-
   const hours = Math.ceil(minutes / 60);
   return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
 }
@@ -605,7 +565,6 @@ function magicLinkKeyFor(email: string, pepper: string): string {
 function authenticatedUserId(request: FastifyRequest): string | null {
   const auth = (request as { auth?: unknown }).auth;
   if (typeof auth !== 'object' || auth === null) return null;
-
   const identity = auth as Record<string, unknown>;
   return nonEmptyString(identity.userId) ?? nonEmptyString(identity.sub);
 }
@@ -657,7 +616,6 @@ function storeFailure(services: RateLimitServices, fault: RateLimitStoreFault): 
     },
     RATE_LIMIT_STORE_ERROR_EVENT,
   );
-
   const failure = new AppError('service_unavailable', RATE_LIMIT_STORE_UNAVAILABLE_MESSAGE, {
     cause: fault,
   });

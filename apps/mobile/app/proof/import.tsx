@@ -105,7 +105,12 @@ export default function ProofImportScreen(): ReactElement {
   const instruction = Platform.OS === 'web' ? INSTRUCTION : `${INSTRUCTION}${SHARE_INSTRUCTION}`;
   const sites = support?.unsupported ?? [];
   const unsupported = sites.length > 0 ? unsupportedIssuersText(sites) : null;
-  const retry = { label: RETRY_LABEL, onPress: () => void refetch(), testID: 'proof-config-retry' };
+  const retry = {
+    label: RETRY_LABEL,
+    onPress: () => void refetch(),
+    busy: config.isFetching,
+    testID: 'proof-config-retry',
+  };
   useEffect(() => {
     if (configError !== null) announce(configError);
   }, [configError]);

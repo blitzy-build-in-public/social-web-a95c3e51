@@ -1,11 +1,9 @@
 /**
- * The deposit-framing and lock-loss copy, character for character (AAP 0.1.2, 0.5.7, 0.5.8).
- *
- * The framing experiment varies exactly one thing -- the sentence a deposit screen and a deposit
- * notification show, `social` against `punitive` -- so a stray character, a Unicode apostrophe
- * included, would contaminate the hypothesis it exists to test. Every expected string below is
- * therefore typed out by hand rather than derived from `DEPOSIT_COPY_TEMPLATES`, and `toBe`
- * compares it byte for byte.
+ * The deposit-framing and lock-loss copy, character for character (AAP 0.1.2, 0.5.7, 0.5.8). The
+ * framing experiment varies exactly one thing -- the sentence a deposit screen and a deposit
+ * notification show -- so a stray character, a Unicode apostrophe included, would contaminate the
+ * hypothesis it exists to test; every expected string is therefore typed out by hand rather than
+ * derived from `DEPOSIT_COPY_TEMPLATES`, and `toBe` compares it byte for byte.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -18,8 +16,8 @@ import {
 import type { DepositCents } from '../src/index.ts';
 
 /**
- * One row per variant and deposit level: the request's sentences with the amount filled in. The
- * 1000-cent rows are the request's examples verbatim, and every apostrophe is ASCII U+0027.
+ * One row per variant and deposit level: the request's sentences with the amount filled in, the
+ * 1000-cent rows being the request's examples verbatim.
  */
 const FRAMING_COPY_ROWS = [
   ['social', 500, 'Hold a seat at the table. Your 5 USD comes back as soon as you both show up.'],
@@ -38,9 +36,8 @@ const WHOLE_USD_ROWS = [
 ] as const satisfies readonly (readonly [DepositCents, string])[];
 
 /**
- * Amounts a proposal can carry but no deposit level accepts (AAP 0.5.4, `422 deposit_invalid`).
- * Annotated `number` on purpose: a literal row would be the union `0|1|499|1500|10000`, which has
- * no overlap with `DepositCents` and so could not be asserted to it at all.
+ * Amounts a proposal can carry but no deposit level accepts (AAP 0.5.4, `422 deposit_invalid`);
+ * annotated `number` on purpose, since a literal row would narrow to the accepted union.
  */
 const NON_DEPOSIT_AMOUNTS: readonly number[] = [0, 1, 499, 1500, 10000];
 
@@ -48,10 +45,8 @@ describe('depositCopy', () => {
   it.each(FRAMING_COPY_ROWS)('%s at %i cents', (variant, cents, expected) => {
     expect(depositCopy(variant, cents)).toBe(expected);
   });
-
   it('has one row per variant and deposit level', () => {
     expect(FRAMING_COPY_ROWS.length).toBe(DEPOSIT_LEVELS_CENTS.length * Variant.options.length);
-
     const covered = FRAMING_COPY_ROWS.map((row) => `${row[0]}:${row[1]}`);
     for (const cents of DEPOSIT_LEVELS_CENTS) {
       for (const variant of Variant.options) {
@@ -59,7 +54,6 @@ describe('depositCopy', () => {
       }
     }
   });
-
   it.each(FRAMING_COPY_ROWS)('%s at %i cents is single-spaced plain text', (variant, cents) => {
     const copy = depositCopy(variant, cents);
     // A curly quote or a second space would change the sentence the recipient reads.
@@ -67,7 +61,6 @@ describe('depositCopy', () => {
     expect(copy).not.toMatch(/ {2}/);
     expect(copy).toBe(copy.trim());
   });
-
   it.each(NON_DEPOSIT_AMOUNTS)('%i cents is rejected for both variants', (cents) => {
     const amount = cents as DepositCents;
     expect(() => depositCopy('social', amount)).toThrow();
@@ -87,7 +80,6 @@ describe('LOCK_LOST_COPY', () => {
       'A card hold for this meetup ended before it could settle, so no deposit applies. Any hold still on your card is being released.',
     );
   });
-
   it('tells a participant whose captured deposit is reversed that it is being refunded', () => {
     expect(LOCK_LOST_COPY.refunded).toBe(
       'A card hold for this meetup ended before it could settle, so no deposit applies. The amount taken from your card is being refunded.',

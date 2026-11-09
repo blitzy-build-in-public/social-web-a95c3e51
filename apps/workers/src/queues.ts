@@ -1,34 +1,30 @@
 /**
- * The worker process's queue module (AAP 0.5.1, 0.5.6): the `WorkerContext` every job reads its
- * collaborators from, the table that maps a queue and a job name to its processor, and the BullMQ
- * `Worker` instances `apps/workers/src/main.ts` starts.
+ * The worker process's queue module (AAP 0.5.1, 0.5.6): the `WorkerContext` every job reads its collaborators from,
+ * the table that maps a queue and a job name to its processor, and the BullMQ `Worker` instances
+ * `apps/workers/src/main.ts` starts.
  *
- * Four rules shape it.
+ * Four rules shape it:
  *
- * - **Every queue but settlement.** `WORKER_QUEUES` is server-core's list of the queues this process
- *   consumes; `settlement` is absent because the API settles meetups in its own process, the one
- *   process holding the payment secret (AAP 0.3.2). This module therefore reads no payment variable,
- *   imports no payment SDK, and has no settlement entry in its processor table.
- * - **One connection per role.** Each `Worker` gets its own `worker`-role connection, the role whose
- *   options a blocking consumer requires; the `Queue` producers share one `producer` connection,
- *   opened on the first `add`; and the `client` connection in the context serves the caches, the
- *   per-domain throttle, the robots cache and the spend meter's suspension flag.
- * - **Every job is validated at the boundary.** A job name this queue does not accept, or data that
- *   does not satisfy the schema of the name it arrived under, fails once as an `UnrecoverableError`
- *   instead of being retried against a fault no retry can fix. Every other failure propagates, which
- *   is what asks BullMQ for the retry the queue's job options promise, and every handler is
- *   idempotent so that retry repeats no effect (AAP 0.3.2, 0.5.6).
- * - **Ownership is explicit.** `createWorkerContext` builds the collaborators a job needs and records
- *   which of them it built; `closeWorkerContext` closes those and only those.
+ * - Every queue but settlement. `WORKER_QUEUES` is server-core's list of the queues this process consumes;
+ *   `settlement` is absent because the API settles meetups in the one process holding the payment secret
+ *   (AAP 0.3.2), so this module reads no payment variable, imports no payment SDK and has no settlement entry in
+ *   its processor table.
+ * - One connection per role: each `Worker` gets its own `worker`-role connection, the role whose options a blocking
+ *   consumer requires; the `Queue` producers share one `producer` connection, opened on the first `add`; and the
+ *   `client` connection in the context serves the caches, the per-domain throttle, the robots cache and the spend
+ *   meter's suspension flag.
+ * - Every job is validated at the boundary: a job name this queue does not accept, or data that does not satisfy
+ *   the schema of the name it arrived under, fails once as an `UnrecoverableError` instead of being retried
+ *   against a fault no retry can fix, while every other failure propagates — which is what asks BullMQ for the
+ *   retry the queue's job options promise — and every handler is idempotent so that retry repeats no effect
+ *   (AAP 0.3.2, 0.5.6).
+ * - Ownership is explicit: `createWorkerContext` builds the collaborators a job needs and records which of them
+ *   it built, and `closeWorkerContext` closes those and only those.
  *
- * Time comes only from `ctx.clock` (AAP 0.11.1), and no error is logged by its own message: these
- * listeners span the menu, telephony, mail and database clients alike, so a failure is recorded as a
- * bounded token. Every `jobs/*.ts` imports `WorkerContext` from this file type-only, while this file
- * value-imports each job's `process`; never add a value import of this file to a job.
- *
- * @see AAP 0.3.2 for the process split and the ownership rules, 0.5.1 for the worker runtime, 0.5.6
- *   for the job table and its concurrency, 0.6.2 for the scoped environment and its credential-free
- *   modes, 0.8.1 for this file's inventory row.
+ * Time comes only from `ctx.clock` (AAP 0.11.1), and no error is logged by its own message: these listeners span
+ * the menu, telephony, mail and database clients alike, so a failure is recorded as a bounded token. Every
+ * `jobs/*.ts` imports `WorkerContext` from this file type-only, while this file value-imports each job's
+ * `process`; never add a value import of this file to a job.
  */
 
 import { readFileSync } from 'node:fs';
@@ -94,10 +90,6 @@ import { process as notifications } from './jobs/notifications.ts';
 import { process as placeRefresh } from './jobs/place-refresh.ts';
 import { process as priceFreshness } from './jobs/price-freshness.ts';
 
-/*
- * Types (AAP 0.5.1, 0.5.6)
- */
-
 /**
  * A job as a processor receives it: the three fields a handler reads, as a structural subset of
  * BullMQ's `Job`, so a test calls a processor with a plain object literal.
@@ -118,13 +110,11 @@ export type Processor = (job: ProcessorJob, ctx: WorkerContext) => Promise<unkno
 export type WorkerQueueName = Exclude<QueueName, typeof QUEUE.settlement>;
 
 /**
- * The queues `apps/workers` consumes, and the set `startWorkers` starts by default: server-core's own
- * list, which is every queue but `settlement`, because the API settles meetups in its process — the
- * one process holding the payment secret (AAP 0.3.2).
- *
- * The membership comes from server-core, so a queue added there is consumed here without a second
- * edit; narrowing the element type is what makes a lookup in {@link PROCESSORS} or
- * {@link WORKER_CONCURRENCY} exhaustive over the queues that really run here rather than partial.
+ * The queues `apps/workers` consumes, and the set `startWorkers` starts by default: server-core's own list, which is
+ * every queue but `settlement`, because the API settles meetups in the process holding the payment secret
+ * (AAP 0.3.2). The membership comes from server-core, so a queue added there is consumed here without a second edit,
+ * and narrowing the element type is what makes a lookup in {@link PROCESSORS} or {@link WORKER_CONCURRENCY}
+ * exhaustive over the queues that really run here.
  */
 export const WORKER_QUEUES: readonly WorkerQueueName[] = Object.freeze(
   CONSUMED_QUEUE_NAMES.filter((queue): queue is WorkerQueueName => queue !== QUEUE.settlement),
@@ -193,10 +183,6 @@ export type WorkerContextOverrides = Partial<WorkerContext> & {
   timezoneFor?: (cityId: string) => string;
 };
 
-/*
- * Constants
- */
-
 /** The city configuration the zone fallback and the seed both read (AAP 0.5.2). */
 const CITIES_FILE = 'config/cities.json';
 
@@ -207,11 +193,10 @@ const CITIES_FILE = 'config/cities.json';
 const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
- * What each queue runs at once (AAP 0.5.6). `notifications` and `call-results` are cheap and awaited
- * by a person; `menu-ingest` is 2 because each job drives Chromium, and the claim and erasure jobs are
- * 2 for the same bounded-resource reason. Everything else stays at 1: a second concurrent
- * `call-dispatch` would race its own claim inside one process, and the periodic refreshes have
- * nothing to gain from parallelism.
+ * What each queue runs at once (AAP 0.5.6). `notifications` and `call-results` are cheap and awaited by a person;
+ * `menu-ingest` is 2 because each job drives Chromium, and the claim and erasure jobs are 2 for the same
+ * bounded-resource reason. Everything else stays at 1: a second concurrent `call-dispatch` would race its own claim
+ * inside one process, and the periodic refreshes have nothing to gain from parallelism.
  */
 export const WORKER_CONCURRENCY: Readonly<Record<WorkerQueueName, number>> = Object.freeze({
   [QUEUE.notifications]: 5,
@@ -227,13 +212,11 @@ export const WORKER_CONCURRENCY: Readonly<Record<WorkerQueueName, number>> = Obj
 });
 
 /**
- * The processor of every queue and job name `apps/workers` runs (AAP 0.5.6), keyed by the `JOB`
- * constants rather than by their string values, so a renamed job fails this file's typecheck.
- *
- * Where a queue's job names share one module they share its `process`, which narrows the name itself:
- * `menu-ingest` is the fan-out and the per-place job, `call-dispatch` the per-city sweep and the
- * single claim's task, `lodging-claims` the 72-hour expiry and the daily stay expiry, `data-expiry`
- * its hourly and daily steps, and `account-erasure` one user and the daily sweep.
+ * The processor of every queue and job name `apps/workers` runs (AAP 0.5.6), keyed by the `JOB` constants rather than
+ * by their string values, so a renamed job fails this file's typecheck. Where a queue's job names share one module
+ * they share its `process`, which narrows the name itself: `menu-ingest` is the fan-out and the per-place job,
+ * `call-dispatch` the per-city sweep and the single claim's task, `lodging-claims` the 72-hour expiry and the daily
+ * stay expiry, `data-expiry` its hourly and daily steps, and `account-erasure` one user and the daily sweep.
  */
 export const PROCESSORS: Readonly<Record<WorkerQueueName, Readonly<Record<string, Processor>>>> = {
   [QUEUE.notifications]: { [JOB[QUEUE.notifications].deliver]: notifications },
@@ -263,10 +246,6 @@ export const PROCESSORS: Readonly<Record<WorkerQueueName, Readonly<Record<string
   },
 };
 
-/*
- * What a context owns, so only that is closed (AAP 0.3.2)
- */
-
 /** The producer side of one context: the connection its `Queue` instances share, made on first use. */
 interface ProducerState {
   /** The shared `producer` connection, or `null` while no job has been enqueued yet. */
@@ -290,28 +269,16 @@ interface OwnedResources {
 /** The resources of every context {@link createWorkerContext} built, keyed by that context. */
 const OWNED = new WeakMap<WorkerContext, OwnedResources>();
 
-/*
- * The context (AAP 0.5.1)
- */
-
 /**
  * Build the context every job of this process runs against (AAP 0.5.1, 0.6.2).
  *
- * Asynchronous because the spend meter needs the configured cities' zones before it can book a
- * reservation against a city's local day: the `City` rows are read once, here, with
- * `config/cities.json` as the fallback for a city the seed has not written yet.
+ * Asynchronous because the spend meter needs the configured cities' zones before it can book a reservation against
+ * a city's local day: the `City` rows are read once, here, with `config/cities.json` as the fallback for a city the
+ * seed has not written yet.
  *
- * A field a caller overrides is used as given and the corresponding default is not built, so a suite
- * that injects a clock, an adapter, a mailer or a transport opens no second connection and reaches no
- * provider: the `off`, `fake` and absent-token modes build no client at all, which is what lets the
- * `demo` stack start with no credential.
- *
- * @param env - the `workers` process's validated environment.
- * @param overrides - the fields and seams to replace (AAP 0.11.2); an empty object for a real run.
- * @returns the context, whose owned resources are closed by {@link closeWorkerContext}.
- * @throws Error when `config/cities.json` cannot be read, and whatever `createPrismaClient` or the
- *   adapters throw for a configuration they refuse — a start path, so it fails the process rather
- *   than a job.
+ * A field a caller overrides is used as given and the corresponding default is not built, so a suite that injects a
+ * clock, an adapter, a mailer or a transport opens no second connection and reaches no provider: the `off`, `fake`
+ * and absent-token modes build no client at all, which is what lets the `demo` stack start with no credential.
  */
 export async function createWorkerContext(
   env: WorkersEnv,
@@ -321,7 +288,6 @@ export async function createWorkerContext(
   const logger = override(overrides.logger, () =>
     createLogger({ name: 'workers', level: env.LOG_LEVEL, appEnv: env.APP_ENV }),
   );
-
   const db = override(overrides.db, () =>
     createPrismaClient({ databaseUrl: env.DATABASE_URL, appEnv: env.APP_ENV }),
   );
@@ -330,14 +296,12 @@ export async function createWorkerContext(
   );
   const keyring = override(overrides.keyring, () => keyringFromEnv(env));
   const llm = override(overrides.llm, () => createLlmAdapter(llmAdapterConfig(env)));
-
   // One producer connection for the whole process, opened when the first job is enqueued rather than
   // here, so a consumer that enqueues nothing holds no second socket.
   const producer: ProducerState = { connection: null, queues: new Map() };
   const queues: WorkerContext['queues'] = overrides.queues ?? {
     get(name: QueueName): Queue {
       let queue = producer.queues.get(name);
-
       if (queue === undefined) {
         producer.connection ??= createRedisConnection(env.REDIS_URL, 'producer', { logger });
         queue = new Queue(name, {
@@ -351,11 +315,9 @@ export async function createWorkerContext(
         queue.on('error', (error: Error) => reportRedisUnavailable(logger, 'producer', error));
         producer.queues.set(name, queue);
       }
-
       return queue;
     },
   };
-
   // Awaited rather than built lazily: the meter books a request against a city's local day, so every
   // zone has to be known before the first reservation. `override` is synchronous, hence the branch.
   const timezoneFor = overrides.timezoneFor ?? (await createConfiguredTimezoneLookup(db));
@@ -370,7 +332,6 @@ export async function createWorkerContext(
       logger,
     }),
   );
-
   const telephony = override(overrides.telephony, () =>
     telephonyFor(env, overrides.twilioHttpClient),
   );
@@ -389,7 +350,6 @@ export async function createWorkerContext(
   const push = override(overrides.push, () => createPushSender(env.EXPO_ACCESS_TOKEN ?? undefined));
   const blocklist = override(overrides.blocklist, () => loadBlocklist(findRepoRoot()));
   const browser = override(overrides.browser, () => createBrowserProvider());
-
   const safeFetch = override(overrides.safeFetch, () =>
     createSafeFetch({
       // Omitted rather than passed as `undefined`, so the resolver stays safe-fetch's own default.
@@ -411,7 +371,6 @@ export async function createWorkerContext(
       clock,
     }),
   );
-
   const context: WorkerContext = {
     env,
     clock,
@@ -430,7 +389,6 @@ export async function createWorkerContext(
     safeFetch,
     blocklist,
   };
-
   OWNED.set(context, {
     db: overrides.db === undefined ? db : null,
     redis: overrides.redis === undefined ? redis : null,
@@ -438,62 +396,45 @@ export async function createWorkerContext(
     browser: overrides.browser === undefined ? browser : null,
     producer,
   });
-
   return context;
 }
 
 /**
- * Close in order, each step on its own so one refusal does not strand the rest: the browser, every
- * producer this context created, the shared producer connection, the mailer, the `client` connection
- * and the database client.
- *
- * A context this factory did not build owns nothing here and is left untouched: an integration suite
- * closes the fixtures it assembled itself.
- *
- * @param ctx - the context `createWorkerContext` returned.
+ * Close in order, each step on its own so one refusal does not strand the rest: the browser, every producer this
+ * context created, the shared producer connection, the mailer, the `client` connection and the database client. A
+ * context this factory did not build owns nothing here and is left untouched.
  */
 export async function closeWorkerContext(ctx: WorkerContext): Promise<void> {
   const owned = OWNED.get(ctx);
-
   if (owned === undefined) {
     return;
   }
-
   const browser = owned.browser;
   if (browser !== null) {
     await closeStep(ctx.logger, 'browser', () => browser.close());
   }
-
   await Promise.all(
     [...owned.producer.queues].map(([queue, producer]) =>
       closeStep(ctx.logger, `queue:${queue}`, () => producer.close()),
     ),
   );
-
   const connection = owned.producer.connection;
   if (connection !== null) {
     await closeStep(ctx.logger, 'producer', () => connection.quit());
   }
-
   const mailer = owned.mailer;
   if (mailer !== null) {
     await closeStep(ctx.logger, 'mailer', () => mailer.close?.());
   }
-
   const redis = owned.redis;
   if (redis !== null) {
     await closeStep(ctx.logger, 'redis', () => redis.quit());
   }
-
   const db = owned.db;
   if (db !== null) {
     await closeStep(ctx.logger, 'db', () => db.$disconnect());
   }
 }
-
-/*
- * The workers (AAP 0.5.6)
- */
 
 /** One started BullMQ worker, with the queue it consumes and the connection it consumes on. */
 interface StartedWorker {
@@ -503,19 +444,13 @@ interface StartedWorker {
 }
 
 /**
- * Start one BullMQ `Worker` per queue (AAP 0.5.6), each on its own `worker`-role connection: BullMQ
- * rejects any other `maxRetriesPerRequest` on a connection it blocks on, and a queue that shares a
- * connection with a sibling stops draining when that sibling's fetch is in flight.
+ * Start one BullMQ `Worker` per queue (AAP 0.5.6), each on its own `worker`-role connection: BullMQ rejects any other
+ * `maxRetriesPerRequest` on a connection it blocks on, and a queue that shares a connection with a sibling stops
+ * draining when that sibling's fetch is in flight.
  *
- * Nothing here awaits Redis. A queue that is down when the process starts costs a delay in that
- * queue's work rather than a failed start, and the connection's own `error` listener keeps a
- * connection failure from reaching the process as an unhandled event.
- *
- * @param ctx - the context every processor is handed.
- * @param opts - `queues` limits the start to a subset, which is what a suite that drives one queue
- *   uses; every queue of {@link WORKER_QUEUES} is started by default.
- * @returns the function that drains and closes what was started. It resolves on every later call too,
- *   which is what makes it safe to register on both a signal handler and a shutdown path.
+ * Nothing here awaits Redis. A queue that is down when the process starts costs a delay in that queue's work rather
+ * than a failed start, and the connection's own `error` listener keeps a connection failure from reaching the
+ * process as an unhandled event.
  */
 export function startWorkers(
   ctx: WorkerContext,
@@ -523,7 +458,6 @@ export function startWorkers(
 ): () => Promise<void> {
   const started = (opts.queues ?? WORKER_QUEUES).map((queue) => startWorker(queue, ctx));
   let stopping: Promise<void> | null = null;
-
   return function stop(): Promise<void> {
     stopping ??= stopWorkers(started, ctx.logger);
     return stopping;
@@ -533,17 +467,14 @@ export function startWorkers(
 /**
  * Start one worker and attach its two listeners.
  *
- * The `failed` listener records the queue, the job's name and id, the attempts made and a bounded
- * failure token; the `error` listener records the queue and that token, because no job is in hand.
- * Neither logs the job's data nor an error's own message: the message of a failure raised below, by a
- * browser, a database or a mail transport, can quote the value it objected to, and this listener
- * covers every queue in the process.
+ * The `failed` listener records the queue, the job's name and id, the attempts made and a bounded failure token; the
+ * `error` listener records the queue and that token, because no job is in hand. Neither logs the job's data nor an
+ * error's own message, because the message of a failure raised by a browser, a database or a mail transport can
+ * quote the value it objected to and this listener covers every queue in the process.
  *
- * The `error` listener is throttled per queue, because a Redis that is down fires it on every
- * reconnect attempt: ten workers on one outage would otherwise write a line each per attempt and bury
- * the first failure, which is the one an operator reads. Keying the window by queue keeps that
- * readable without hiding a queue's own failure — each one still reports its first, and a queue whose
- * failure is different from its siblings' is not silenced by whichever reported first.
+ * The `error` listener is throttled per queue, because a Redis that is down fires it on every reconnect attempt: ten
+ * workers on one outage would otherwise write a line each per attempt and bury the first failure, which is the one
+ * an operator reads.
  */
 function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker {
   const connection = createRedisConnection(ctx.env.REDIS_URL, 'worker', { logger: ctx.logger });
@@ -554,7 +485,6 @@ function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker 
     // on the producer side, so a policy is stated once and belongs to the job it was added with.
     { connection, concurrency: WORKER_CONCURRENCY[queue] },
   );
-
   worker.on('failed', (job: Job<unknown, unknown, string> | undefined, error: Error) => {
     ctx.logger.warn({
       event: 'job_failed',
@@ -570,20 +500,19 @@ function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker 
       ctx.logger.warn({ event: 'worker_error', queue, code: failureToken(error) });
     });
   });
-
   return { queue, worker, connection };
 }
 
 /**
- * Run one job: look its processor up by queue and name, and hand it the three fields it reads plus a
- * context whose logger names the job.
+ * Run one job: look its processor up by queue and name, and hand it the three fields it reads plus a context whose
+ * logger names the job.
  *
- * A name this queue does not accept has no processor, and it fails once, as an `UnrecoverableError`,
- * instead of being retried against a wiring fault no retry can fix. A payload that does not satisfy
- * the schema of the name it arrived under is the same kind of fault, and every processor validates
- * its own data against its own queue and name before it does anything else, so that refusal becomes
- * the same single failure rather than five attempts. Everything else a processor throws propagates
- * unchanged, which is how it asks for the retry its job options promise (AAP 0.5.6, 0.11.1).
+ * A name this queue does not accept has no processor, and it fails once, as an `UnrecoverableError`, instead of being
+ * retried against a wiring fault no retry can fix. A payload that does not satisfy the schema of the name it arrived
+ * under is the same kind of fault, and every processor validates its own data against its own queue and name before
+ * it does anything else, so that refusal becomes the same single failure rather than five attempts. Everything else a
+ * processor throws propagates unchanged, which is how it asks for the retry its job options promise (AAP 0.5.6,
+ * 0.11.1).
  */
 async function runJob(
   queue: WorkerQueueName,
@@ -591,18 +520,15 @@ async function runJob(
   ctx: WorkerContext,
 ): Promise<unknown> {
   const processor = PROCESSORS[queue][job.name];
-
   if (processor === undefined) {
     throw new UnrecoverableError(`no processor is registered for the job "${queue}/${job.name}"`);
   }
-
   // The job id is bound here, at the hand-off, so every line the processor writes names the job it
   // belongs to (AAP 0.5.6); the `failed` listener writes the id from the job itself. The copy is
   // this job's alone and owns nothing: `ctx` keeps every collaborator, so `closeWorkerContext`, which
   // is called with the process context, still closes exactly what `createWorkerContext` built. A
   // hand-built test job carries no id, and the exported `Processor` contract is unchanged either way.
   const jobCtx = job.id === undefined ? ctx : { ...ctx, logger: withJobId(ctx.logger, job.id) };
-
   try {
     return await processor(
       job.id === undefined
@@ -619,9 +545,9 @@ async function runJob(
 }
 
 /**
- * Close every started worker, then the connection it consumed on: BullMQ's `close` waits for the job
- * a worker is running, so a shutdown drains rather than abandons it, and the connection is quit only
- * once its own worker has finished.
+ * Close every started worker, then the connection it consumed on: BullMQ's `close` waits for the job a worker is
+ * running, so a shutdown drains rather than abandons it, and the connection is quit only once its own worker has
+ * finished.
  */
 async function stopWorkers(started: readonly StartedWorker[], logger: Logger): Promise<void> {
   await Promise.all(
@@ -631,10 +557,6 @@ async function stopWorkers(started: readonly StartedWorker[], logger: Logger): P
     }),
   );
 }
-
-/*
- * Helpers
- */
 
 /**
  * `given` when a caller supplied it, otherwise what `make` builds. `??` is wrong for the two fields a
@@ -658,11 +580,9 @@ function telephonyFor(
   httpClient: TwilioHttpClient | undefined,
 ): TelephonyClient | null {
   const telephony = env.telephony;
-
   if (telephony.mode === 'off') {
     return null;
   }
-
   return createTelephonyClient({
     mode: telephony.mode,
     accountSid: telephony.accountSid,
@@ -687,26 +607,17 @@ function databaseSql(db: DbClient) {
 /**
  * The city-zone lookup the spend meter books a reservation against (AAP 0.5.6): the `City` rows this
  * database holds, with `config/cities.json` as the fallback for a city the seed has not written yet.
- *
- * @param db - the guarded client, read once as the context is built.
- * @returns a synchronous lookup, which is what `createLlmSpend` takes.
- * @throws Error naming the city id when neither source knows it: a job for a city this deployment
- *   does not have has no local day to book against.
  */
 async function createConfiguredTimezoneLookup(db: DbClient): Promise<(cityId: string) => string> {
   const zones = new Map<string, string>();
-
   for (const city of await db.city.findMany({ select: { id: true, timezone: true } })) {
     zones.set(city.id, city.timezone);
   }
-
   return (cityId: string): string => {
     const zone = zones.get(cityId) ?? configuredTimezone(cityId);
-
     if (zone === undefined) {
       throw new Error(`unknown city "${cityId}"`);
     }
-
     return zone;
   };
 }
@@ -726,26 +637,19 @@ function configuredTimezone(cityId: string): string | undefined {
  * The read is synchronous because it happens once, and the map it returns is what the fallback
  * consults for the life of the process: the file the seed loads its `City` rows from is the same file,
  * so a city the database holds only after a seed has been run is still schedulable before it.
- *
- * @returns every configured city's zone, keyed by slug.
- * @throws Error when the file cannot be read, does not parse as JSON, or fails `CitiesFile`.
  */
 function readConfiguredZones(): ReadonlyMap<string, string> {
   const file = path.join(findRepoRoot(), CITIES_FILE);
   let raw: unknown;
-
   try {
     raw = JSON.parse(readFileSync(file, 'utf8')) as unknown;
   } catch (error) {
     throw new Error(`city configuration ${CITIES_FILE} could not be read: ${messageOf(error)}`);
   }
-
   const parsed = CitiesFile.safeParse(raw);
-
   if (!parsed.success) {
     throw new Error(`city configuration ${CITIES_FILE} is invalid`);
   }
-
   return new Map(parsed.data.cities.map((city): [string, string] => [city.id, city.timezone]));
 }
 
@@ -755,23 +659,18 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * A short, safe label for a failed job or a dropped connection, used by every listener of this
- * module.
- *
- * It is the error's own `code` when it carries one (`ECONNREFUSED`, `ETIMEDOUT`, a Prisma `P2002`),
- * its class name otherwise, and `Error` for anything that is neither. The error's message is
- * deliberately not logged: one listener covers every queue here, and the message of a failure raised
- * by a browser, the database or a mail transport can quote the value it objected to. A code or a
- * class name tells an operator which failure to look for without carrying one.
+ * A short, safe label for a failed job or a dropped connection, used by every listener of this module: the error's
+ * own `code` when it carries one (`ECONNREFUSED`, `ETIMEDOUT`, a Prisma `P2002`), its class name otherwise, and
+ * `Error` for anything that is neither. The error's message is deliberately not logged: one listener covers every
+ * queue here, and the message of a failure raised by a browser, the database or a mail transport can quote the value
+ * it objected to.
  */
 function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {
     return 'Error';
   }
-
   const { code, name } = error as { code?: unknown; name?: unknown };
   const token = typeof code === 'string' && code.length > 0 ? code : name;
-
   return typeof token === 'string' && FAILURE_TOKEN_PATTERN.test(token) ? token : 'Error';
 }
 

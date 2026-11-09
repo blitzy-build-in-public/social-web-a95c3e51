@@ -1,35 +1,26 @@
 /**
- * The `notifications` queue: delivery of one outbox row's message to its recipient (AAP 0.3.2,
- * 0.3.3, 0.5.6).
+ * The `notifications` queue: delivery of one outbox row's message to its recipient (AAP 0.3.2, 0.3.3, 0.5.6).
  *
- * A domain transaction never sends anything. It writes a `Notification` outbox row — ids only — and
- * the API's dispatcher publishes that row as a `notifications`/`deliver` job carrying the row's id,
- * which is what makes this consumer idempotent per row: the per-channel Redis markers below are
- * written before the send, so a crash in that window leaves the row read as already sent by the next
- * run, and a failed send clears the marker so the retry still delivers.
+ * A domain transaction never sends anything. It writes a `Notification` outbox row — ids only — and the API's
+ * dispatcher publishes that row as a `notifications`/`deliver` job carrying the row's id, which is what makes this
+ * consumer idempotent per row: the per-channel Redis markers below are written before the send, so a crash in that
+ * window leaves the row read as already sent by the next run, and a failed send clears the marker so the retry still
+ * delivers.
  *
- * Two paths run through {@link process}:
+ * Two paths run through {@link process}. A magic link (`magicLinkTokenId`) is the one kind that carries a token
+ * instead of a recipient (AAP 0.3.2, 0.3.3): the token row's `expiresAt` is read first and an expired row is cleared
+ * without sending, because a backlogged job must never mail a dead link, and otherwise the address and the raw token
+ * are decrypted, the message is sent and `deliveryTokenCiphertext` is nulled in the same step, so the raw token stops
+ * existing as soon as it has been used once. Every other kind is addressed to a `userId` (AAP 0.5.6): a recipient who
+ * is gone or whose deletion has been requested is skipped, because a deleting account receives nothing (AAP 0.5.3),
+ * and the message is rendered from the ids, the recipient's own experiment variant and the public venue or lodging
+ * name (AAP 0.5.7, 0.5.8), pushed to the recipient's registered devices where Expo push is configured for them, and
+ * mailed where it is not — email is the web fallback, the only channel a browser has (AAP 0.3.4).
  *
- * - **magic link** (`magicLinkTokenId`), the one kind that carries a token instead of a recipient
- *   (AAP 0.3.2, 0.3.3). The token row's `expiresAt` is read first and an expired row is cleared
- *   without sending, because a backlogged job must never mail a dead link. Otherwise the address and
- *   the raw token are decrypted, the message is sent and `deliveryTokenCiphertext` is nulled in the
- *   same step, so the raw token stops existing as soon as it has been used once.
- * - **every other kind**, addressed to a `userId` (AAP 0.5.6). A recipient who is gone or whose
- *   deletion has been requested is skipped, because a deleting account receives nothing (AAP 0.5.3).
- *   The message is rendered from the ids, the recipient's own experiment variant and the public
- *   venue or lodging name (AAP 0.5.7, 0.5.8), pushed to the recipient's registered devices where
- *   Expo push is configured for them, and mailed where it is not — email is the web fallback, the
- *   only channel a browser has (AAP 0.3.4).
- *
- * Three rules hold throughout. Time comes from the injected clock and never from the wall clock
- * (AAP 0.11.1). No SMTP or Expo traffic runs inside a database transaction. And no log line carries
- * an email address, a token, a push token, a message body or a booking field: the fields logged are
- * the outbox id, the kind, the channel and, on a skip, the code under `skipReason` (AAP 0.11.1).
- *
- * @see AAP 0.3.2 for the outbox and the magic-link flow, 0.3.3 for SMTP and Expo push, 0.5.3 for the
- *   lifecycle a notification reports, 0.5.6 for the job table, 0.5.7 for the framing variant and
- *   0.5.8 for the copy `notify/templates.ts` renders.
+ * Three rules hold throughout: time comes from the injected clock and never from the wall clock (AAP 0.11.1); no SMTP
+ * or Expo traffic runs inside a database transaction; and no log line carries an email address, a token, a push
+ * token, a message body or a booking field, because the fields logged are the outbox id, the kind, the channel and,
+ * on a skip, the code under `skipReason` (AAP 0.11.1).
  */
 
 import { DateTime } from 'luxon';
@@ -56,16 +47,12 @@ import type {
 } from '../notify/templates.ts';
 import type { WorkerContext } from '../queues.ts';
 
-/*
- * What this job handles (AAP 0.3.2, 0.3.4).
- */
-
 /** The parsed payload of a `notification` outbox row: a kind and the ids it concerns. */
 type NotificationPayload = OutboxPayloadByKind['notification'];
 
 /**
- * The parsed data of a `notifications`/`deliver` job: that payload plus the row id the job carries,
- * which is what makes a redelivery of the row a no-op (AAP 0.3.2).
+ * The parsed data of a `notifications`/`deliver` job: that payload plus the row id the job carries, which is what
+ * makes a redelivery of the row a no-op (AAP 0.3.2).
  */
 type NotificationJobData = JobDataByQueueAndName['notifications']['deliver'];
 
@@ -79,9 +66,9 @@ const MAGIC_LINK_KIND: NotificationKind = 'magic_link';
 type DeliveryChannel = 'push' | 'email';
 
 /**
- * How long a sent marker lives. A redelivery only ever follows a dispatcher pass over the same row
- * within a job's retry horizon, so a week is far longer than any path that could repeat one, and
- * the marker then expires instead of leaving one key per outbox row in Redis forever.
+ * How long a sent marker lives. A redelivery only ever follows a dispatcher pass over the same row within a job's
+ * retry horizon, so a week is far longer than any path that could repeat one and the marker then expires instead of
+ * leaving one key per outbox row in Redis forever.
  */
 const SENT_KEY_TTL_SECONDS = 604_800;
 
@@ -94,36 +81,20 @@ const SENT_KEY_TTL_SECONDS = 604_800;
  */
 export type NotificationSkip =
   'missing' | 'expired' | 'already_sent' | 'user_deleted' | 'undecryptable' | 'no_channel';
-
 /**
- * What {@link process} did with one outbox row: the channel that carried the message, or why
- * nothing was sent. A skipped row is a decision, not a failure, so the job completes and BullMQ
- * records no retry for it.
+ * What {@link process} did with one outbox row: the channel that carried the message, or why nothing was sent. A
+ * skipped row is a decision, not a failure, so the job completes and BullMQ records no retry for it.
  */
 export type NotificationDeliveryResult =
   | { readonly channel: DeliveryChannel; readonly kind: NotificationKind }
   | { readonly skipped: NotificationSkip };
-
-/*
- * Requesting delivery (AAP 0.3.2).
- */
-
 /**
  * Writes the outbox row that asks for one notification, and returns its id.
  *
- * A `workers` job calls this inside the transaction that makes the change it announces, never
- * after it, so the message and the state it describes commit together: the API's outbox dispatcher
- * then delivers the row and a crash before the commit leaves neither. The payload is validated
- * before the insert, so an inconsistent row — a magic link without its token, or another kind
- * without its recipient — can never be committed.
- *
- * @param tx - the transaction the calling job is inside, so the row commits with its cause.
- * @param now - the instant of the change, from the injected clock (AAP 0.11.1).
- * @param payload - the kind and the ids it concerns. It carries no email address, name, booking
- *   field, coordinate or message body; the delivery job decrypts or loads what it needs.
- * @returns the new row's id, which becomes the job id that makes delivery idempotent.
- * @throws QueuePayloadError when `payload` does not satisfy the `notification` payload schema.
- * @see AAP 0.3.2 for the transactional outbox, 0.5.6 for the job table.
+ * A `workers` job calls this inside the transaction that makes the change it announces, never after it, so the
+ * message and the state it describes commit together and a crash before the commit leaves neither. The payload is
+ * validated before the insert, so an inconsistent row — a magic link without its token, or another kind without its
+ * recipient — can never be committed.
  */
 export async function writeNotificationOutbox(
   tx: DbTx,
@@ -131,18 +102,12 @@ export async function writeNotificationOutbox(
   payload: NotificationPayload,
 ): Promise<string> {
   const parsed = parseOutboxPayload('notification', payload);
-
   const row = await tx.outboxMessage.create({
     data: { kind: 'notification', payload: parsed, createdAt: now },
     select: { id: true },
   });
-
   return row.id;
 }
-
-/*
- * Redis markers, one per channel (AAP 0.3.2).
- */
 
 /** The key claiming `channel` for this outbox row's message. */
 function sentKey(outboxId: string, channel: DeliveryChannel): string {
@@ -164,12 +129,10 @@ async function channelAlreadySent(
  * Claims `channel` for this row's message.
  *
  * The marker is set with `NX`, so it never overwrites the marker an earlier run left, and its TTL is
- * {@link SENT_KEY_TTL_SECONDS}: the guarantee is per row and per channel, which is the granularity a
- * redelivery works at.
- *
- * It goes up before the send and not after it (see {@link sendChannelOnce}), so a crash between the
- * marker and the provider's answer is read as sent instead of sending twice: the marker claims the
- * channel, it is not a receipt of carriage, and only a send that delivered nothing removes it.
+ * {@link SENT_KEY_TTL_SECONDS}: the guarantee is per row and per channel, which is the granularity a redelivery works
+ * at. It goes up before the send and not after it, so a crash between the marker and the provider's answer is read as
+ * sent instead of sending twice: the marker claims the channel, it is not a receipt of carriage, and only a send that
+ * delivered nothing removes it.
  */
 async function markChannelSent(
   ctx: WorkerContext,
@@ -191,21 +154,15 @@ async function clearChannelSent(
 /**
  * Sends on `channel` with that channel's sent marker written before the send (AAP 0.3.2).
  *
- * The ordering is the invariant: the marker precedes the send, so a redelivery of the row — BullMQ's
- * own retry inside the queue's 5 tries, or the dispatcher publishing an undispatched row again —
- * finds the channel claimed and sends nothing, which is what makes this consumer idempotent on the
- * outbox row id (AAP 0.3.2, 0.5.6). The cost is one unsent message where the opposite order would
- * send a second one: a crash between the marker and the provider's answer is read as already sent,
- * because neither SMTP nor Expo offers an idempotency key that a retry could match against a
- * delivery which may never have happened.
+ * The ordering is the invariant: the marker precedes the send, so a redelivery of the row — BullMQ's own retry
+ * inside the queue's 5 tries, or the dispatcher publishing an undispatched row again — finds the channel claimed and
+ * sends nothing, which is what makes this consumer idempotent on the outbox row id. The cost is one unsent message
+ * where the opposite order would send a second one, because neither SMTP nor Expo offers an idempotency key that a
+ * retry could match against a delivery which may never have happened.
  *
- * A send that failed, and a send that delivered nothing at all, clear the marker again before they
- * rethrow or return, so a transient failure still delivers on the retry (AAP 0.11.1) and a push that
- * reached no device leaves the email fallback open.
- *
- * @param attempt - the channel's own send. It resolves `true` once the provider accepted the
- *   message, `false` when the provider accepted none of the recipients it was given.
- * @returns what `attempt` resolved, for the caller's channel decision.
+ * A send that failed, and a send that delivered nothing at all, clear the marker again before they rethrow or return,
+ * so a transient failure still delivers on the retry (AAP 0.11.1) and a push that reached no device leaves the email
+ * fallback open.
  */
 async function sendChannelOnce(
   ctx: WorkerContext,
@@ -214,7 +171,6 @@ async function sendChannelOnce(
   attempt: () => Promise<boolean>,
 ): Promise<boolean> {
   await markChannelSent(ctx, outboxId, channel);
-
   let delivered: boolean;
   try {
     delivered = await attempt();
@@ -222,11 +178,9 @@ async function sendChannelOnce(
     await clearChannelSent(ctx, outboxId, channel);
     throw error;
   }
-
   if (!delivered) {
     await clearChannelSent(ctx, outboxId, channel);
   }
-
   return delivered;
 }
 
@@ -243,17 +197,14 @@ async function clearDeliveryToken(ctx: WorkerContext, tokenId: string): Promise<
  */
 
 /**
- * The origin a message's links are built on: the sign-in URL of a magic link, and the base the app
- * opens a meetup from.
+ * The origin a message's links are built on: the sign-in URL of a magic link, and the base the app opens a meetup
+ * from.
  *
- * `WEB_ORIGIN` belongs to the `api` process's scope, and this process reads it where the deployment
- * provides it — `docker-compose.yml` passes it to the `workers` service, so the delivered stack
- * always has one, while a deployment that leaves it out still starts rather than losing the whole
- * process over a variable its own row does not carry. A message whose links cannot be built is not
- * worth sending, so the absence fails this job, and the row stays in the outbox for the retry and
- * for the operator to see, instead of a sign-in mail nobody can follow or a push pointing nowhere.
- *
- * @throws Error when the environment carries no `WEB_ORIGIN`.
+ * `WEB_ORIGIN` belongs to the `api` process's scope, and this process reads it where the deployment provides it,
+ * while a deployment that leaves it out still starts rather than losing the whole process over a variable its own row
+ * does not carry. A message whose links cannot be built is not worth sending, so the absence fails this job and the
+ * row stays in the outbox for the retry and for the operator to see, instead of a sign-in mail nobody can follow or a
+ * push pointing nowhere.
  */
 function webOriginFor(ctx: WorkerContext): string {
   const origin = ctx.env.WEB_ORIGIN;
@@ -263,53 +214,33 @@ function webOriginFor(ctx: WorkerContext): string {
   return origin;
 }
 
-/*
- * Processing one job (AAP 0.5.6).
- */
-
 /**
  * Delivers the notification the outbox row of `job.data` asks for, once (AAP 0.3.2).
  *
- * The row id the job carries is what makes a second run of the same job a no-op: the per-channel
- * markers of {@link deliver} record that a channel already carried the message. A skipped row
- * completes the job, while a failure of SMTP or Expo propagates so BullMQ retries the row (5 tries,
- * exponential backoff from 30 s), and the marker stops a retry from repeating a send that already
- * succeeded.
- *
- * @param job - the BullMQ job: its name must be `deliver`, and its data the row's payload plus
- *   `outboxId`.
- * @param ctx - the worker's dependencies: configuration, clock, logger, database, the `client`
- *   Redis connection and the field keyring.
- * @returns the channel that carried the message, or why nothing was sent.
- * @throws QueuePayloadError when the job name is not one this queue accepts, or its data does not
- *   satisfy the payload schema.
- * @see AAP 0.3.2 for the outbox, 0.3.3 for the channels, 0.5.6 for the queue.
+ * The row id the job carries is what makes a second run of the same job a no-op, through the per-channel markers of
+ * {@link deliver}. A skipped row completes the job, while a failure of SMTP or Expo propagates so BullMQ retries the
+ * row, and the marker stops a retry from repeating a send that already succeeded.
  */
 export async function process(
   job: { id?: string; name: string; data: unknown },
   ctx: WorkerContext,
 ): Promise<NotificationDeliveryResult> {
   const queue = QUEUE.notifications;
-
   // A name this queue does not accept has no schema to parse against, so it is refused here rather
   // than parsed as `deliver`: a foreign job arriving on this queue is a wiring fault, not a message.
   if (!isJobName(queue, job.name)) {
     throw new QueuePayloadError(`${queue}/${job.name}`);
   }
-
   const payload = parseJobData(queue, job.name, job.data);
-
   if (payload.magicLinkTokenId !== undefined) {
     return await deliverMagicLink(ctx, payload);
   }
-
   const recipientId = payload.userId;
   if (recipientId === undefined) {
     // The payload schema requires a recipient on every kind but the magic link (AAP 0.3.2), so this
     // guard is unreachable through the queue and exists for a hand-built job.
     throw new Error(`${payload.kind} notification carries no recipient`);
   }
-
   return await deliverToUser(ctx, payload, recipientId);
 }
 
@@ -331,13 +262,11 @@ async function deliverMagicLink(
   if (tokenId === undefined) {
     throw new Error(`${payload.kind} notification carries no magic-link token`);
   }
-
   const log = { outboxId: payload.outboxId, kind: payload.kind };
   const token = await ctx.db.magicLinkToken.findUnique({
     where: { id: tokenId },
     select: { emailCiphertext: true, deliveryTokenCiphertext: true, expiresAt: true },
   });
-
   if (token === null) {
     // Purged 24 hours after it expired (AAP 0.5.2): the link is long dead, so there is nothing to do.
     // The code travels under `skipReason`, not `reason`: the logger's redaction list censors `reason`
@@ -346,19 +275,16 @@ async function deliverMagicLink(
     ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'missing' });
     return { skipped: 'missing' };
   }
-
   if (token.expiresAt.getTime() <= ctx.clock.now().getTime()) {
     await clearDeliveryToken(ctx, tokenId);
     ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'expired' });
     return { skipped: 'expired' };
   }
-
   const ciphertext = token.deliveryTokenCiphertext;
   if (ciphertext === null) {
     ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'already_sent' });
     return { skipped: 'already_sent' };
   }
-
   if (await channelAlreadySent(ctx, payload.outboxId, 'email')) {
     // The earlier run claimed this channel and died before the row was cleared: clearing it here
     // finishes what that run started instead of mailing the link a second time.
@@ -366,19 +292,16 @@ async function deliverMagicLink(
     ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'already_sent' });
     return { skipped: 'already_sent' };
   }
-
   const secrets = magicLinkSecrets(ctx, token.emailCiphertext, ciphertext);
   if (secrets === null) {
     await clearDeliveryToken(ctx, tokenId);
     ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'undecryptable' });
     return { skipped: 'undecryptable' };
   }
-
   const rendered = renderNotification(MAGIC_LINK_KIND, {
     webOrigin: webOriginFor(ctx),
     magicLinkToken: secrets.token,
   });
-
   await sendChannelOnce(ctx, payload.outboxId, 'email', async () => {
     await ctx.mailer.send({
       to: secrets.to,
@@ -387,11 +310,9 @@ async function deliverMagicLink(
     });
     return true;
   });
-
   // The marker went up before the send and the token is cleared after it, so a crash in either
   // window leaves a row the next run clears instead of mailing the link a second time.
   await clearDeliveryToken(ctx, tokenId);
-
   ctx.logger.info({ event: 'notification_sent', ...log, channel: 'email' });
   return { channel: 'email', kind: MAGIC_LINK_KIND };
 }
@@ -410,22 +331,18 @@ async function deliverToUser(
     where: { id: recipientId },
     select: { emailCiphertext: true, deletedAt: true, deletionRequestedAt: true },
   });
-
   // An erased account is a tombstone and a deleting one is about to become one (AAP 0.5.2, 0.5.3):
   // neither is told anything, and the row is acknowledged rather than retried.
   if (user === null || user.deletedAt !== null || user.deletionRequestedAt !== null) {
     ctx.logger.info({ event: 'notification_skipped', ...log, skipReason: 'user_deleted' });
     return { skipped: 'user_deleted' };
   }
-
   const gathered = await gatherRenderData(ctx, payload, recipientId);
   if (gathered === null) {
     ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'missing' });
     return { skipped: 'missing' };
   }
-
   const rendered = renderNotification(payload.kind, gathered.data);
-
   return await deliver(
     ctx,
     payload,
@@ -435,10 +352,6 @@ async function deliverToUser(
     rendered,
   );
 }
-
-/*
- * Rendering the message (AAP 0.5.7, 0.5.8).
- */
 
 /** The meetup a notification concerns, as {@link loadMeetup} resolves it, or `null` once purged. */
 async function loadMeetup(ctx: WorkerContext, meetupId: string) {
@@ -488,9 +401,6 @@ interface GatheredNotification {
  *
  * A handle is absent rather than empty once its owner has been erased, so the copy falls back to its
  * generic phrase (`notify/templates.ts`).
- *
- * @returns the render data and the meetup id, or `null` when a row the payload names has been
- *   purged and there is therefore nothing to say.
  */
 async function gatherRenderData(
   ctx: WorkerContext,
@@ -498,32 +408,26 @@ async function gatherRenderData(
   recipientId: string,
 ): Promise<GatheredNotification | null> {
   const data: NotificationRenderData = { webOrigin: webOriginFor(ctx) };
-
   const dispute =
     payload.disputeId === undefined ? null : await loadDispute(ctx, payload.disputeId);
   if (payload.disputeId !== undefined && dispute === null) {
     return null;
   }
-
   const meetupId = payload.meetupId ?? dispute?.meetupId ?? null;
-
   if (meetupId !== null) {
     const meetup = await loadMeetup(ctx, meetupId);
     if (meetup === null) {
       return null;
     }
-
     data.meetupId = meetupId;
     data.venueName = meetup.venue.name;
     data.startsAtLocal = formatLocalStart(meetup.startsAt, meetup.venue.city.timezone);
-
     const counterpartHandle =
       (meetup.initiatorId === recipientId ? meetup.recipient.handle : meetup.initiator.handle) ??
       undefined;
     if (counterpartHandle !== undefined && counterpartHandle !== '') {
       data.counterpartHandle = counterpartHandle;
     }
-
     if (isDepositKind(payload.kind)) {
       data.variant = await framingVariant(ctx, recipientId, payload.kind);
       if (!isDepositLevel(meetup.depositCents)) {
@@ -531,13 +435,11 @@ async function gatherRenderData(
       }
       data.depositCents = meetup.depositCents;
     }
-
     const outcome = await outcomeFor(ctx, payload.kind, meetup, recipientId);
     if (outcome !== undefined) {
       data.outcome = outcome;
     }
   }
-
   if (payload.lodgingClaimId !== undefined) {
     const claim = await ctx.db.lodgingClaim.findUnique({
       where: { id: payload.lodgingClaimId },
@@ -552,11 +454,9 @@ async function gatherRenderData(
       data.outcome = claim.status;
     }
   }
-
   if (dispute !== null && payload.kind === 'dispute_resolved' && dispute.outcome !== null) {
     data.outcome = dispute.outcome;
   }
-
   return { data, meetupId };
 }
 
@@ -573,10 +473,6 @@ function isDepositKind(kind: NotificationKind): boolean {
 /**
  * The recipient's own framing variant (AAP 0.5.7): the framing sentence a deposit notification
  * carries is the recipient's variable, never the counterpart's.
- *
- * @throws Error when the recipient holds no assignment. Every account is assigned one at creation,
- *   so a missing row is a data fault rather than a transient failure: failing the job puts it in
- *   BullMQ's failed set, where an operator sees it, instead of dropping a message about money.
  */
 async function framingVariant(
   ctx: WorkerContext,
@@ -587,17 +483,11 @@ async function framingVariant(
     where: { userId: recipientId },
     select: { variant: true },
   });
-
   if (assignment === null) {
     throw new Error(`no experiment assignment for a ${kind} message`);
   }
-
   return assignment.variant;
 }
-
-/*
- * The outcome sentence (AAP 0.5.3, 0.5.7, 0.5.8).
- */
 
 /**
  * The outcome sentence `kind` selects, derived from the recipient's own side of the meetup, or
@@ -634,17 +524,14 @@ function forfeitOutcome(meetup: MeetupForNotification, recipientId: string): Not
   if (meetup.status !== 'forfeited') {
     return 'released';
   }
-
   const settlement = meetup.settlement;
   if (settlement === null) {
     // A forfeit and its settlement row are written in one transaction, so a missing row is a data
     // fault: refusing to guess is what keeps a wrong sentence about money off the wire.
     throw new Error(`no settlement record for the forfeited meetup ${meetup.id}`);
   }
-
   const present =
     meetup.initiatorId === recipientId ? settlement.initiatorPresent : settlement.recipientPresent;
-
   return present ? 'credit_granted' : 'deposit_captured';
 }
 
@@ -674,13 +561,8 @@ async function lockLostOutcome(
     where: { meetupId_ownerId: { meetupId, ownerId: recipientId } },
     select: { status: true },
   });
-
   return deposit?.status === 'captured' || deposit?.status === 'refunded' ? 'refund' : 'release';
 }
-
-/*
- * Choosing the channel (AAP 0.3.4).
- */
 
 /**
  * Sends one rendered notification on the channel the recipient has, once.
@@ -690,12 +572,6 @@ async function lockLostOutcome(
  * already claimed ends the job with nothing sent, and a send that reaches nobody on push — because
  * every token was invalid — falls through to email, so the recipient is not left uninformed by a
  * device that has gone away. Tokens Expo reports as unregistered are deleted.
- *
- * @param emailCiphertext - the recipient's stored address, `null` once their account is erased.
- * @returns the channel that carried the message, or why nothing was sent.
- * @throws the mailer's or the push sender's own failure, so the job retries (AAP 0.11.1). The
- *   channel's marker was written before the send, so the retry repeats no send; a failure or a push
- *   that reached no device has already cleared it again, so the retry can still deliver.
  */
 async function deliver(
   ctx: WorkerContext,
@@ -707,7 +583,6 @@ async function deliver(
 ): Promise<NotificationDeliveryResult> {
   const log = { outboxId: payload.outboxId, kind: payload.kind };
   const push = ctx.push;
-
   const tokens =
     push === null
       ? []
@@ -717,12 +592,10 @@ async function deliver(
             select: { token: true },
           })
         ).map((row) => row.token);
-
   if (push !== null && tokens.length > 0) {
     if (await channelAlreadySent(ctx, payload.outboxId, 'push')) {
       return { skipped: 'already_sent' };
     }
-
     // The push data carries identifiers only: it reaches the device unredacted (AAP 0.3.4).
     const data = meetupId === null ? { kind: payload.kind } : { kind: payload.kind, meetupId };
     const delivered = await sendChannelOnce(ctx, payload.outboxId, 'push', async () => {
@@ -731,28 +604,23 @@ async function deliver(
         body: rendered.body,
         data,
       });
-
       if (result.invalidTokens.length > 0) {
         await ctx.db.pushToken.deleteMany({
           where: { userId: recipientId, token: { in: result.invalidTokens } },
         });
       }
-
       // A push that reached no device is not a delivery, so its marker comes off again and the
       // message falls through to email below.
       return result.sent > 0;
     });
-
     if (delivered) {
       ctx.logger.info({ event: 'notification_sent', ...log, channel: 'push' });
       return { channel: 'push', kind: payload.kind };
     }
   }
-
   if (await channelAlreadySent(ctx, payload.outboxId, 'email')) {
     return { skipped: 'already_sent' };
   }
-
   if (emailCiphertext === null) {
     // No device to push to and no address to mail: the account holds no stored address. An erased
     // or deleting recipient is skipped before here, so this is a data gap rather than a tombstone,
@@ -760,25 +628,18 @@ async function deliver(
     ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'no_channel' });
     return { skipped: 'no_channel' };
   }
-
   const to = decryptAddress(ctx, emailCiphertext);
   if (to === null) {
     ctx.logger.warn({ event: 'notification_skipped', ...log, skipReason: 'undecryptable' });
     return { skipped: 'undecryptable' };
   }
-
   await sendChannelOnce(ctx, payload.outboxId, 'email', async () => {
     await ctx.mailer.send({ to, subject: rendered.emailSubject, text: rendered.emailText });
     return true;
   });
-
   ctx.logger.info({ event: 'notification_sent', ...log, channel: 'email' });
   return { channel: 'email', kind: payload.kind };
 }
-
-/*
- * Secrets (AAP 0.3.2).
- */
 
 /**
  * The address and the raw token of a magic-link row, or `null` when either cannot be decrypted.

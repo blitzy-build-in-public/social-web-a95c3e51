@@ -3,49 +3,19 @@
  * `admin/disputes.ts`, 0.5.4 `GET /admin/disputes` and `POST /admin/disputes/:id/resolve`, 0.5.3
  * "Dispute lifecycle").
  *
- * {@link listDisputes} answers what an operator has to act on: every open dispute, nearest deadline
- * first, with the venue it concerns and each participant's handle and check-in result — the
- * check-ins are what a `settle_by_checkins` resolution decides on; and behind the open ones, the
- * resolved ones newest first, so a fresh filing can be judged against how the last dispute on that
- * meetup ended.
+ * {@link listDisputes} answers what an operator has to act on — every open dispute, nearest deadline
+ * first, and behind them the resolved ones newest first — and {@link resolveDispute} is the only
+ * place a dispute becomes `resolved` with an outcome, through the table of {@link resolutionPlan}.
  *
- * {@link resolveDispute} records the operator's decision, and it is the only place a dispute becomes
- * `resolved` with an outcome. Its decisions are the table of {@link resolutionPlan}, one row per
- * meetup status and outcome:
+ * Three properties the money decision rests on: the meetup row lock comes first, so two operators
+ * resolving one dispute, and an operator racing a settlement or a hold loss, are serialized and the
+ * second sees the first one's result; no provider call runs inside the transaction, so a failure to
+ * reach the provider after the commit is not the operator's error and the 60-second sweeper resumes
+ * it (AAP 0.3.2); and an account deletion waiting on this dispute is unblocked here, because a
+ * resolution is the instant such an account can finally be erased (AAP 0.5.3).
  *
- * | meetup status | `settle_by_checkins` | `no_fault` |
- * |---|---|---|
- * | `locked` | close the dispute, and settle at once when `now` has reached `startsAt + 45 min`; before that the meetup stays `locked`, check-in stays open and the outcome waits for the timer, so a check-in made in between counts (AAP 0.5.3) | the `operator_no_fault` transition, which releases both holds and changes no reputation (AAP 0.5.3) |
- * | `forfeited` | close the dispute and change nothing: the forfeit already happened | fence the absent party's capture, reverse it with a `refund` operation that waits on that capture, void the attendee's Table Credit `grant`, then the same `operator_no_fault` transition (AAP 0.5.3) |
- * | `completed`, `unattended`, and every other status | close the dispute and change nothing (AAP 0.5.3: "a `completed` or `unattended` one can only be resolved `settle_by_checkins`, which changes nothing") | `422 invalid_outcome` |
- *
- * Three properties the money decision rests on:
- *
- *  - **The meetup row lock comes first.** Every resolution opens one transaction, takes
- *    `SELECT … FOR UPDATE` on the meetup through `lockMeetup` — the lock cancel, block, deletion,
- *    check-in, dispute filing, settlement and the hold-loss webhooks also take — and only then
- *    re-reads the dispute under its own lock (AAP 0.5.3). Two operators resolving one dispute, and
- *    an operator racing a settlement or a hold loss, are therefore serialized and the second sees
- *    the first one's result.
- *  - **No provider call runs inside the transaction.** Every Stripe mutation is a `PaymentOperation`
- *    row planned here and executed after the commit by `runOperationsFor`; a Redis call — the timer
- *    removals a transition schedules, the notification kick — is registered through `after`
- *    (AAP 0.3.2). A failure to reach the provider after the commit is not the operator's error: the
- *    resolution is durable, the plan is durable and the 60-second sweeper resumes it.
- *  - **An account deletion waiting on this dispute is unblocked here.** A `locked` meetup with an
- *    open dispute is left to the operator with its holds and its dispute, so this resolution is the
- *    instant such an account can finally be erased; {@link resolveDispute} re-queues that erasure in
- *    its own transaction (AAP 0.5.3, `writeAccountErasure`).
- *
- * No log line carries the filer's free text, and none carries a handle: the resolution line names
- * the dispute, the meetup and the outcome, and nothing else (AAP 0.11.1). Time arrives as the `now`
- * argument and never from a clock of this file's own (AAP 0.11.1).
- *
- * @see AAP 0.5.1 for this file's place in the admin component, 0.5.2 for the `Dispute`,
- *   `MeetupSettlement`, `TableCreditEntry` and `CheckIn` rows, 0.5.3 for the dispute lifecycle, the
- *   transition tables and the erasure that follows a resolved dispute, 0.5.4 for the two routes,
- *   their DTO and their errors, 0.3.2 for the outbox, the executor and the fencing, and 0.8.1 for
- *   this file.
+ * No log line carries the filer's free text, and none carries a handle (AAP 0.11.1). Time arrives as
+ * the `now` argument and never from a clock of this file's own.
  */
 
 import { Prisma, type DbTx } from '@tablemate/db';
@@ -83,13 +53,7 @@ import { settleDueAt } from '../settlement/timers.ts';
 
 import type { AppServices } from '../../app.ts';
 
-// ---------------------------------------------------------------------------------------------
-// The queue bound (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * How many resolved disputes {@link listDisputes} returns beside the open ones.
- *
  * An implementation choice, not a contract value: AAP 0.5.4 declares no cursor for
  * `GET /admin/disputes` and fixes no page size, and the operator's work is the open queue — the
  * open disputes are always returned in full, because they are the ones an operator must act on
@@ -106,36 +70,22 @@ const DISPUTE_RESOLVED = 'dispute_resolved';
 /** The one log line a settlement that could not run yet writes (AAP 0.3.2). */
 const DISPUTE_SETTLE_DEFERRED = 'dispute_settle_deferred';
 
-// ---------------------------------------------------------------------------------------------
-// The queue row and its DTO (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * One row as {@link disputeSource} returns it: the columns of `Dispute`, the venue it concerns and
  * the two participants' handles and check-in results.
  *
- * The timestamps are `Date`s and the check-in results are the `CheckInResult` literals the
- * statement's `CASE` produces, because the statement is read through `$queryRaw`'s type argument —
- * the mapper below is the only place they are turned into the DTO's own values.
  */
 export interface DisputeQueueRow {
-  /** The dispute's id. */
   readonly id: string;
-  /** The meetup it concerns. */
   readonly meetupId: string;
-  /** The venue's city, the column the operator filters the queue by. */
   readonly cityId: string;
-  /** The venue's name, so the operator need not look an id up. */
   readonly venueName: string;
-  /** The subject of the dispute (AAP 0.5.2). */
   readonly kind: DisputeKind;
   /** The filer's free text, empty once the 180-day purge has taken it (AAP 0.5.2). */
   readonly reason: string;
-  /** `open` until this resolution, `resolved` afterwards. */
   readonly status: DisputeStatus;
   /** When it was filed, `deadlineAt = openedAt + 5 days` (AAP 0.5.3). */
   readonly openedAt: Date;
-  /** The operator's five-day deadline for it (AAP 0.5.3, 0.12.2). */
   readonly deadlineAt: Date;
   /** Whether it is open and past its deadline, or already flagged by the escalation job. */
   readonly overdue: boolean;
@@ -143,9 +93,7 @@ export interface DisputeQueueRow {
   readonly initiatorHandle: string | null;
   /** The recipient's handle, null once that account was erased (AAP 0.5.2). */
   readonly recipientHandle: string | null;
-  /** The initiator's check-in result, null when they never checked in. */
   readonly initiatorCheckIn: CheckInResult | null;
-  /** The recipient's check-in result, null when they never checked in. */
   readonly recipientCheckIn: CheckInResult | null;
 }
 
@@ -183,10 +131,6 @@ export function toAdminDisputeDto(row: DisputeQueueRow): AdminDisputeDto {
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The queue statement (AAP 0.5.4, 0.11.2)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * One participant's check-in result for the dispute's meetup (AAP 0.5.4): `pass` when that
  * participant holds a passing check-in, `fail` when their check-ins only ever failed, and null when
@@ -204,7 +148,6 @@ function checkInResult(role: ParticipantRole): Prisma.Sql {
   const participant = Prisma.raw(
     role === 'initiator' ? '"m"."initiator_id"' : '"m"."recipient_id"',
   );
-
   return Prisma.sql`(
       SELECT CASE WHEN bool_or("ci"."result" = 'pass') THEN 'pass'
                   WHEN bool_or("ci"."result" = 'fail') THEN 'fail'
@@ -268,12 +211,6 @@ function disputeSource(now: Date): Prisma.Sql {
  * Read-only: no transaction, no row lock, and not one of the state-writing reads, so the
  * account-deletion write fence does not apply (AAP 0.5.3). `now` decides `overdue` alone and binds
  * as a parameter, so a test can cross a deadline by moving the clock (AAP 0.11.1).
- *
- * @param services - The app's services, read for the guarded client's parameterized raw read.
- * @param now - The instant `overdue` is judged at, from the injected clock.
- * @returns The mapped queue; an empty `items` array when nothing has been disputed.
- * @see AAP 0.5.4 for the route, its DTO and the `403 operator_only` guard the route applies,
- *   0.5.3 for the deadline and the escalation flag, 0.12.2 for the five-day rule they enforce.
  */
 export async function listDisputes(
   services: AppServices,
@@ -293,14 +230,9 @@ export async function listDisputes(
              CASE WHEN "d"."status" = 'open' THEN "d"."deadline_at" END ASC,
              "d"."resolved_at" DESC
   `);
-
   return { items: rows.map((row: DisputeQueueRow) => toAdminDisputeDto(row)) };
 }
 
-/**
- * One dispute as the shared statement reads it, for the answer a resolution gives (AAP 0.5.4), or
- * null when no dispute has that id.
- */
 async function findDisputeRow(
   services: AppServices,
   disputeId: string,
@@ -310,13 +242,8 @@ async function findDisputeRow(
     ${disputeSource(now)}
     WHERE "d"."id" = ${disputeId}::uuid
   `);
-
   return rows[0] ?? null;
 }
-
-// ---------------------------------------------------------------------------------------------
-// The decision table (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * What one resolution does to the dispute's meetup, as the action {@link resolutionPlan} selects
@@ -330,7 +257,6 @@ async function findDisputeRow(
  */
 export type DisputeResolutionAction =
   'close_only' | 'settle_by_checkins' | 'no_fault' | 'reverse_forfeit' | 'invalid';
-
 /**
  * What {@link resolutionPlan} decided, in the form {@link resolveDispute} applies (AAP 0.5.3).
  *
@@ -340,11 +266,9 @@ export type DisputeResolutionAction =
  * reversed and the attendee's credit voided.
  */
 export interface ResolutionPlan {
-  /** The row of the table this status and outcome select. */
   readonly action: DisputeResolutionAction;
   /** True when the settlement runs after the commit: a `locked` meetup whose window has closed. */
   readonly settleNow: boolean;
-  /** True when the meetup takes the `operator_no_fault` transition (AAP 0.5.3). */
   readonly noFault: boolean;
   /** True when a post-settlement forfeit's money is reversed (AAP 0.5.3). */
   readonly reverseForfeit: boolean;
@@ -388,19 +312,12 @@ const RESOLUTION_ACTIONS: Readonly<
 };
 
 /**
- * The plan a meetup status and an operator outcome select (AAP 0.5.3).
- *
  * Pure, structural and free of I/O, so the whole table is exercised without a database. `settleDue`
  * is whether `now` has reached `settleDueAt(startsAt)`, the instant check-in closes; it changes one
  * row alone — a `locked` meetup resolved `settle_by_checkins` — because "an operator
  * `settle_by_checkins` resolution after `startsAt + 45 min` settles at once; one made earlier only
  * closes the dispute, leaves the meetup `locked` with check-in open, and the outcome waits for the
  * timer".
- *
- * @param meetupStatus - The meetup's status as the resolution read it under its row lock.
- * @param outcome - The operator's outcome, already validated against `DisputeOutcome`.
- * @param settleDue - Whether `now` has reached the instant check-in closes, `startsAt + 45 min`.
- * @returns The action to apply and the three effects it carries.
  */
 export function resolutionPlan(
   meetupStatus: MeetupStatus,
@@ -408,7 +325,6 @@ export function resolutionPlan(
   settleDue: boolean,
 ): ResolutionPlan {
   const action = RESOLUTION_ACTIONS[meetupStatus][outcome];
-
   return {
     action,
     settleNow: action === 'settle_by_checkins' && settleDue,
@@ -417,11 +333,6 @@ export function resolutionPlan(
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The resolution (AAP 0.5.3, 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
-/** The dispute columns a resolution decides on, read under the dispute's own row lock. */
 type LockedDispute = Pick<Dispute, 'id' | 'status'>;
 
 /**
@@ -437,18 +348,14 @@ async function lockDispute(tx: DbTx, disputeId: string): Promise<LockedDispute |
   const rows = await tx.$queryRaw<LockedDispute[]>(Prisma.sql`
     SELECT "id", "status" FROM "dispute" WHERE "id" = ${disputeId}::uuid FOR UPDATE
   `);
-
   return rows[0] ?? null;
 }
 
-/** The venue's city, for the resolution's analytics column, or undefined when it cannot be read. */
 async function venueCityId(tx: DbTx, venueId: string): Promise<string | undefined> {
   const venue = await tx.venue.findUnique({ where: { id: venueId }, select: { cityId: true } });
-
   return venue?.cityId;
 }
 
-/** The account holding one side of a meetup (AAP 0.5.2). */
 function userIdOf(
   meetup: Pick<MeetupRow, 'initiatorId' | 'recipientId'>,
   role: ParticipantRole,
@@ -473,8 +380,6 @@ function absentRole(initiatorPresent: boolean, recipientPresent: boolean): Parti
 }
 
 /**
- * Reverse a forfeit's money for an operator `no_fault` (AAP 0.5.3, 0.3.2).
- *
  * The decision AAP 0.5.3 gives the `forfeited → no_fault` row, in its order: the absent party's
  * capture is fenced first, so a capture that has not run cannot run afterwards; the reversal is
  * planned to depend on that capture, so a capture already `executing` — which cannot be fenced — is
@@ -490,9 +395,6 @@ function absentRole(initiatorPresent: boolean, recipientPresent: boolean): Parti
  * the resolution has to reverse: the dispute stays open for a human rather than an outcome being
  * applied to money that was never identified.
  *
- * @param tx - The transaction, holding the meetup row lock.
- * @param meetup - The locked meetup, which is `forfeited`.
- * @param now - The instant of the resolution, from the injected clock.
  * @throws AppError `invalid_outcome` when the settlement or the deposit the reversal needs cannot be
  *   identified; the caller has already refused every other unusable state.
  */
@@ -502,26 +404,20 @@ async function reverseForfeit(tx: DbTx, meetup: MeetupRow, now: Date): Promise<v
     settlement === null
       ? null
       : absentRole(settlement.initiatorPresent, settlement.recipientPresent);
-
   if (forfeited === null) {
     throw new AppError(
       'invalid_outcome',
       'The settlement of this meetup names no absent party whose deposit could be reversed.',
     );
   }
-
   const deposits = await depositsForMeetup(tx, meetup.id);
   const deposit = deposits.find((candidate) => candidate.role === forfeited) ?? null;
-
   if (deposit === null) {
     throw new AppError('invalid_outcome', 'The absent party of this meetup has no deposit.');
   }
-
   const fenced = await fenceCaptures(tx, deposit.id, now);
-
   if (fenced.capture === null) {
     const hold = await findHoldOperation(tx, deposit.id, deposit.currentAttempt);
-
     await planRelease(
       tx,
       {
@@ -535,7 +431,6 @@ async function reverseForfeit(tx: DbTx, meetup: MeetupRow, now: Date): Promise<v
   } else {
     await planReversal(tx, deposit, fenced.capture, now);
   }
-
   await tx.tableCreditEntry.createMany({
     data: [
       {
@@ -564,7 +459,6 @@ async function hasOpenDispute(tx: DbTx, userId: string): Promise<boolean> {
     },
     select: { id: true },
   });
-
   return open !== null;
 }
 
@@ -588,16 +482,12 @@ async function hasOpenDispute(tx: DbTx, userId: string): Promise<boolean> {
  *
  * A second row for an account already queued is harmless: the job deletes by id and is idempotent,
  * and each row gets its own job id.
- *
- * @param tx - The resolution's transaction, which has already written the resolved dispute.
- * @param participantIds - The meetup's two sides, in meetup order.
  */
 async function requeueErasures(tx: DbTx, participantIds: readonly string[]): Promise<void> {
   const users = await tx.user.findMany({
     where: { id: { in: [...participantIds] } },
     select: { id: true, deletionRequestedAt: true },
   });
-
   for (const user of users) {
     if (user.deletionRequestedAt === null) {
       continue;
@@ -605,7 +495,6 @@ async function requeueErasures(tx: DbTx, participantIds: readonly string[]): Pro
     if (await hasOpenDispute(tx, user.id)) {
       continue;
     }
-
     await writeAccountErasure(tx, user.id);
   }
 }
@@ -660,10 +549,8 @@ function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {
     return 'Error';
   }
-
   const { code, name } = error as { code?: unknown; name?: unknown };
   const token = typeof code === 'string' && code.length > 0 ? code : name;
-
   if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
     return 'Error';
   }
@@ -698,22 +585,9 @@ function failureToken(error: unknown): string {
  * Nothing here logs the dispute's reason text or a handle, and the log line is written after the
  * commit, when the decision is durable (AAP 0.11.1).
  *
- * @param services - The app's services: the guarded client, the injected clock, the logger, the
- *   outbox dispatcher, the `settlement` queue the transition's timer work uses, the payments gateway
- *   the settlement and the executor reach, and the `pubsub` the status frame is published on.
- * @param operatorId - The acting operator, whose own write fence runs first and who is recorded as
- *   the resolution's actor (AAP 0.5.3).
- * @param disputeId - The dispute being resolved.
- * @param body - The validated `ResolveDispute`; its `outcome` is checked against `DisputeOutcome`.
- * @param now - The instant the resolution is judged at, from the injected clock: the dispute's
- *   `resolvedAt`, and the instant the check-in window is compared against.
- * @returns The resolved dispute, re-read as the queue reports it.
  * @throws AppError `invalid_outcome` (422) for an outcome outside the operator's two, for a dispute
  *   already resolved, and for a `no_fault` on a meetup with no hold or capture to decide — a
  *   `completed` or `unattended` one in particular; `not_found` (404) for an unknown dispute id.
- * @see AAP 0.5.3 for the dispute lifecycle, the two resolutions and the transition each applies,
- *   0.5.4 for the route, its body and its errors, 0.5.7 for the outcome table the settlement applies
- *   and the Table Credit it voids, 0.3.2 for the fencing and the executor.
  */
 export async function resolveDispute(
   services: AppServices,
@@ -723,22 +597,17 @@ export async function resolveDispute(
   now: Date,
 ): Promise<AdminDisputeDto> {
   const parsed = DisputeOutcome.safeParse(body.outcome);
-
   if (!parsed.success) {
     throw new AppError('invalid_outcome');
   }
-
   const outcome = parsed.data;
-
   const target = await services.db.dispute.findUnique({
     where: { id: disputeId },
     select: { meetupId: true },
   });
-
   if (target === null) {
     throw new AppError('not_found');
   }
-
   const decided = await transact(
     services,
     async (tx, after) => {
@@ -746,30 +615,24 @@ export async function resolveDispute(
       // cancellation, a block or a hold-loss webhook that is holding this row has decided the status
       // this resolution is about to read (AAP 0.5.3).
       const meetup = await lockMeetup(tx, target.meetupId);
-
       if (meetup === null) {
         throw new AppError('not_found');
       }
-
       const dispute = await lockDispute(tx, disputeId);
-
       if (dispute === null) {
         throw new AppError('not_found');
       }
       if (dispute.status === 'resolved') {
         throw new AppError('invalid_outcome');
       }
-
       const plan = resolutionPlan(
         meetup.status,
         outcome,
         now.getTime() >= settleDueAt(meetup.startsAt).getTime(),
       );
-
       if (plan.action === 'invalid') {
         throw new AppError('invalid_outcome');
       }
-
       if (plan.reverseForfeit) {
         await reverseForfeit(tx, meetup, now);
       }
@@ -783,45 +646,36 @@ export async function resolveDispute(
           source: 'operator',
         });
       }
-
       await tx.dispute.update({
         where: { id: disputeId },
         data: { status: 'resolved', outcome, resolvedAt: now, resolutionNote: null },
       });
-
       await notifyAll(tx, [meetup.initiatorId, meetup.recipientId], 'dispute_resolved', {
         meetupId: meetup.id,
         disputeId,
       });
-
       // The city is the venue's, read once for the event's column; a venue that cannot be read
       // leaves the column null rather than failing a resolution the operator needs (AAP 0.5.7).
       const cityId = await venueCityId(tx, meetup.venueId);
-
       await emit(tx, services, 'dispute_resolved', operatorId, {
         meetupId: meetup.id,
         ...(cityId === undefined ? {} : { cityId }),
         props: { outcome },
       });
-
       // After the dispute is resolved, so this call's own dispute is not found as a remaining open
       // one (AAP 0.5.3).
       await requeueErasures(tx, [meetup.initiatorId, meetup.recipientId]);
-
       return { settleNow: plan.settleNow, plannedMoney: plan.noFault || plan.reverseForfeit };
     },
     { fenceUserId: operatorId },
   );
-
   services.logger.info(
     { event: DISPUTE_RESOLVED, disputeId, meetupId: target.meetupId, outcome },
     DISPUTE_RESOLVED,
   );
-
   if (decided.settleNow) {
     await settleAfterResolution(services, target.meetupId, disputeId);
   }
-
   // The transaction planned at least one Stripe call in three of the four resolutions: the release
   // of both holds a `no_fault` writes, the reversing refund of a post-settlement one, or the money
   // the settlement planned. `runOperationsFor` never throws — a failure is logged and the sweeper
@@ -829,12 +683,9 @@ export async function resolveDispute(
   if (decided.plannedMoney || decided.settleNow) {
     await runOperationsFor(services, { meetupId: target.meetupId });
   }
-
   const row = await findDisputeRow(services, disputeId, now);
-
   if (row === null) {
     throw new AppError('not_found');
   }
-
   return toAdminDisputeDto(row);
 }

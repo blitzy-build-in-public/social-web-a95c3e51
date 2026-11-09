@@ -35,7 +35,16 @@ import { CardSetup } from '../../../src/payments/card-setup';
 import type { CardSetupResult } from '../../../src/payments/card-setup';
 import { completeNextAction } from '../../../src/payments/next-action';
 import { queryClient, queryKeys, useMe, useMeetup } from '../../../src/state/meetup-store';
-import { Avatar, Banner, Button, Card, ListItem, Screen, announce } from '../../../src/ui';
+import {
+  Avatar,
+  Banner,
+  Button,
+  Card,
+  ListItem,
+  Screen,
+  announce,
+  useAppNoticeMessage,
+} from '../../../src/ui';
 import type { BannerTone } from '../../../src/ui';
 
 const SCREEN_TITLE = 'Meetup';
@@ -395,6 +404,7 @@ type Notice = { readonly message: string; readonly tone: BannerTone };
 export default function MeetupDetailScreen(): ReactElement {
   const params = useLocalSearchParams<{ id: string }>();
   const meetupId = typeof params.id === 'string' ? params.id : '';
+  const noticeMessage = useAppNoticeMessage();
   const meetupQ = useMeetup(meetupId);
   const meQ = useMe();
   const citiesQ = useQuery({
@@ -561,7 +571,12 @@ export default function MeetupDetailScreen(): ReactElement {
   const deadline = meetup?.status === 'proposed' ? meetup.recipientDeadline : null;
   const respondBy = deadline === null ? null : `Respond by ${formatInCity(deadline, cityZone)}`;
   const refetch = (): void => void meetupQ.refetch();
-  const retry = { label: 'Try again', onPress: refetch, testID: 'meetup-retry' };
+  const retry = {
+    label: 'Try again',
+    onPress: refetch,
+    busy: meetupQ.isFetching,
+    testID: 'meetup-retry',
+  };
   const back = { label: 'Back to meetups', variant: 'secondary' as const, testID: 'meetup-back' };
   const cancel = { label: 'Cancel meetup', variant: 'secondary' as const, testID: 'meetup-cancel' };
   const toRow = (item: MeetupLink): ReactElement => (
@@ -577,7 +592,9 @@ export default function MeetupDetailScreen(): ReactElement {
       <Screen edges={SCREEN_EDGES} testID="meetup-detail">
         {errorMessage !== null && <Banner {...ERROR_BANNER} message={errorMessage} />}
         {notice !== null && <Banner {...notice} testID="meetup-notice" />}
-        {meetupQ.isPending && <Text style={styles.muted} children="Loading…" />}
+        {meetupQ.isPending && noticeMessage === null && (
+          <Text style={styles.muted} children="Loading…" />
+        )}
         {notFound && (
           <Card testID="meetup-not-found">
             <Text style={styles.body}>{COPY.missing}</Text>

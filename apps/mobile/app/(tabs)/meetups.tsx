@@ -11,7 +11,16 @@ import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { CHECKED_IN_NOTICE } from '../../src/copy/strings';
 import { meetupsInPages, queryKeys, useMeetups } from '../../src/state/meetup-store';
-import { Avatar, Banner, Button, Chip, ListItem, Screen, announce } from '../../src/ui';
+import {
+  Avatar,
+  Banner,
+  Button,
+  Chip,
+  ListItem,
+  Screen,
+  announce,
+  useAppNoticeMessage,
+} from '../../src/ui';
 const CITIES_STALE_TIME_MS = 60 * 60 * 1000;
 /**
  * How many viewports of rows the tab keeps mounted: the rows on screen plus about half a screen either
@@ -120,6 +129,7 @@ function meetupRow(meetup: MeetupDto, cityZones: ReadonlyMap<string, string>): R
 }
 export default function MeetupsScreen(): ReactElement {
   const [filter, setFilter] = useState<MeetupFilter>('all');
+  const noticeMessage = useAppNoticeMessage();
   const active = MEETUP_FILTERS[filter];
   const meetups = useMeetups(active.role, active.status);
   const cities = useQuery({
@@ -134,12 +144,21 @@ export default function MeetupsScreen(): ReactElement {
   const items = meetups.data === undefined ? [] : meetupsInPages(meetups.data.pages);
   const errorMessage = meetups.isError ? messageFor(meetups.error) : null;
   const hasRows = items.length > 0;
-  const showLoading = !hasRows && errorMessage === null && meetups.isPending;
+  // The session cannot be restored while the API is unreachable, so this read never runs and stays
+  // pending for as long as that lasts: the app notice above the screen already explains the failure,
+  // so the loading line yields to it instead of sitting under it for ever.
+  const showLoading =
+    !hasRows && errorMessage === null && noticeMessage === null && meetups.isPending;
   const showEmpty = !hasRows && errorMessage === null && !meetups.isPending;
   const paging = meetups.isFetchingNextPage;
   const retry = () => void meetups.refetch();
   const showMore = () => void meetups.fetchNextPage();
-  const retryAction = { label: 'Try again', onPress: retry, testID: 'meetups-retry' };
+  const retryAction = {
+    label: 'Try again',
+    onPress: retry,
+    busy: meetups.isFetching,
+    testID: 'meetups-retry',
+  };
   useEffect(() => {
     if (errorMessage !== null) announce(errorMessage);
   }, [errorMessage]);

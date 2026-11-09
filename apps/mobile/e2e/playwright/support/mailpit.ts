@@ -1,14 +1,12 @@
 /**
- * Reads a Tablemate magic-link email back out of Mailpit, so the end-to-end suite can sign an actor
- * in without a real inbox (AAP 0.3.3, 0.11.2); criteria 1, 3 and 8 depend on it.
+ * Reads a Tablemate magic-link email back out of Mailpit, so the end-to-end suite can sign an actor in
+ * without a real inbox (AAP 0.3.3); criteria 1, 3 and 8 depend on it.
  *
- * `POST /v1/auth/magic-link` answers `202` and never reveals the token, so the link exists only in
- * the mail the `notifications` job delivers: `magicLinkUrl` writes `${WEB_ORIGIN}/auth/verify?token=`
- * into the message text (apps/workers/src/notify/templates.ts). The fields read here are Mailpit
- * v1.33.0's -- `messages[].ID` and `Created` from `/api/v1/search`, `Text` and `HTML` from
- * `/api/v1/message/<id>`. The payload is narrowed from `unknown`, `mailpitUrl` arrives as an argument
- * (`api-actor.ts` is the suite's only environment reader), and nothing is logged: the token and the
- * mail text stay in memory (AAP 0.11.1).
+ * `POST /v1/auth/magic-link` answers `202` and never reveals the token, so the link exists only in the
+ * mail the `notifications` job delivers: `magicLinkUrl` writes `${WEB_ORIGIN}/auth/verify?token=` into the
+ * message text. The fields read here are Mailpit v1.33.0's — `messages[].ID` and `Created` from
+ * `/api/v1/search`, `Text` and `HTML` from `/api/v1/message/<id>`. The payload is narrowed from `unknown`,
+ * `mailpitUrl` arrives as an argument, and nothing is logged: the token and the mail text stay in memory.
  */
 
 /** How the caller asks for a link: the instant it recorded, Mailpit's origin, and its patience. */
@@ -41,16 +39,13 @@ const CLOCK_SLACK_MS = 1_000;
 const MAGIC_LINK_PATTERN = /https?:\/\/[^\s"'<>]+\/auth\/verify\?token=[A-Za-z0-9_\-.~%]+/;
 
 /**
- * Waits for the magic-link email addressed to `email` and returns the link it carries (AAP 0.11.2):
- * every 500 ms it reads the newest message to that address received at or after `since` and looks for
- * the link in the body. A message without a usable link, an HTTP error, an unreachable container and
- * an unparseable body are all transient inside the deadline, which alone ends the wait.
+ * Waits for the magic-link email addressed to `email` and returns the link it carries: every 500 ms it
+ * reads the newest message to that address received at or after `since` and looks for the link in the
+ * body. A message without a usable link, an HTTP error, an unreachable container and an unparseable body
+ * are all transient inside the deadline, which alone ends the wait.
  *
- * @param email The address the magic link was requested for.
- * @param options `since`, `mailpitUrl`, and optionally `timeoutMs` and the acting `purpose`.
- * @returns The link, its token and the Mailpit message id.
- * @throws Error when nothing arrives in time, naming the `purpose` only -- never the address, the
- * token or the mail text.
+ * @throws Error when nothing arrives in time, naming the `purpose` only -- never the address, the token
+ * or the mail text.
  */
 export async function waitForMagicLink(
   email: string,
@@ -61,11 +56,9 @@ export async function waitForMagicLink(
   const origin = mailpitUrl.replace(/\/+$/, '');
   const searchUrl = `${origin}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`;
   const deadline = Date.now() + timeoutMs;
-
   while (Date.now() < deadline) {
     const budget = Math.min(REQUEST_TIMEOUT_MS, Math.max(deadline - Date.now(), 1));
     const newest = newestSince(await fetchJson(searchUrl, budget), since);
-
     if (newest !== undefined) {
       const messageUrl = `${origin}/api/v1/message/${encodeURIComponent(newest.id)}`;
       const message = magicLinkIn(await fetchJson(messageUrl, budget), newest.id);
@@ -73,16 +66,11 @@ export async function waitForMagicLink(
         return message;
       }
     }
-
     await sleep(POLL_INTERVAL_MS);
   }
-
   throw new Error(`magic link for ${purpose ?? 'e2e account'} not received within ${timeoutMs} ms`);
 }
 
-/* Internals. */
-
-/** One candidate message: Mailpit's id and the instant it was received. */
 interface Candidate {
   id: string;
   created: number;
@@ -92,17 +80,14 @@ interface Candidate {
 function newestSince(body: unknown, since: number): Candidate | undefined {
   const messages = propertyOf(body, 'messages');
   if (!Array.isArray(messages)) return undefined;
-
   const floor = since - CLOCK_SLACK_MS;
   let newest: Candidate | undefined;
-
   for (const message of messages) {
     const id = stringOf(propertyOf(message, 'ID'));
     const created = Date.parse(stringOf(propertyOf(message, 'Created')) ?? '');
     if (id === undefined || !Number.isFinite(created) || created < floor) continue;
     if (newest === undefined || created > newest.created) newest = { id, created };
   }
-
   return newest;
 }
 
@@ -117,7 +102,6 @@ function magicLinkIn(detail: unknown, messageId: string): MagicLinkMessage | und
     MAGIC_LINK_PATTERN.exec((html ?? '').replaceAll('&amp;', '&'));
   const link = match?.[0];
   if (link === undefined) return undefined;
-
   try {
     const token = new URL(link).searchParams.get('token');
     return token === null || token === '' ? undefined : { link, token, messageId };
@@ -140,19 +124,16 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   }
 }
 
-/** Reads one property off a parsed JSON value, or undefined when the value is no object. */
 function propertyOf(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null
     ? (value as Record<string, unknown>)[key]
     : undefined;
 }
 
-/** A non-empty string, or undefined for every other JSON value. */
 function stringOf(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-/** Waits one polling interval. */
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(() => resolve(), ms));
 }

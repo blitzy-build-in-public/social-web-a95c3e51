@@ -1,43 +1,31 @@
 /**
- * Groth16 verification of a submitted itinerary proof, and the server-side checks that bind it to
- * the circuit configuration this API published (AAP 0.5.5).
+ * Groth16 verification of a submitted itinerary proof, and the server-side checks that bind it to the
+ * circuit configuration this API published (AAP 0.5.5).
  *
  * `POST /itinerary-proofs` hands this module the only thing the server ever receives about a booking
- * confirmation — `{ proof, publicSignals }` — and answers with the stay that proof proves. The checks
- * run in the order AAP 0.5.5 fixes, each answering its own code:
+ * confirmation — `{ proof, publicSignals }` — and answers with the stay that proof proves. The checks run
+ * in the order AAP 0.5.5 fixes, each answering its own code: every signal must be a canonical field
+ * element and the proof must verify against the mounted verification key, or `422 proof_invalid`; the
+ * `nullifierSalt` signal must equal the published `NULLIFIER_SALT`; the `registryRoot` signal must be a
+ * root this process publishes, or `422 issuer_not_allowlisted`; the `cityId` and `issuerId` signals must
+ * name entries of that registry, the city's slug must resolve in the launch-city configuration and both
+ * date signals must decode as calendar dates; and the stay must be between `STAY_MIN_DAYS` and
+ * `STAY_MAX_DAYS`, or `422 stay_out_of_range`.
  *
- *   0. every signal is a canonical field element — a value at or above the BN254 scalar field order
- *      is `422 proof_invalid`;
- *   1. the proof verifies against the mounted verification key — `422 proof_invalid`;
- *   2. the `nullifierSalt` signal equals the published `NULLIFIER_SALT` — `422 proof_invalid`;
- *   3. the `registryRoot` signal is a root this process publishes — `422 issuer_not_allowlisted`;
- *   4. the `cityId` and `issuerId` signals name entries of that registry, the city's slug resolves in
- *      the launch-city configuration, and both date signals decode as calendar dates —
- *      `422 proof_invalid`;
- *   5. the stay is between `STAY_MIN_DAYS` and `STAY_MAX_DAYS` — `422 stay_out_of_range`.
+ * Step 6 of that order belongs to the route: `routes.ts` spends the returned `nullifier` by inserting it
+ * into `SpentNullifier`, which answers `409 nullifier_used` (AAP 0.5.2, 0.5.5). Canonicalizing the signals
+ * first is what makes that insert the one key a booking has — `FieldElement` admits leading zeros, so
+ * `"007"` and `"7"` would otherwise be two spellings of one nullifier and slip past a unique index — and
+ * it is also what verification is fed, so the signals that verifies are the signals the checks below read.
  *
- * Step 6 of that order belongs to the route: `routes.ts` spends the returned `nullifier` by inserting
- * it into `SpentNullifier`, which answers `409 nullifier_used` (AAP 0.5.2, 0.5.5). Canonicalizing the
- * signals first is what makes that insert the one key a booking has — `FieldElement` admits leading
- * zeros, so `"007"` and `"7"` would otherwise be two spellings of one nullifier and slip past a
- * unique index — and it is also what verification is fed, so the signals that verifies are the
- * signals the checks below read.
- *
- * No proving happens here, and the API image holds no proving key, no circuit WASM, no witness
- * generator and no private input (AAP 0.5.5, 0.12.2). This file names two snarkjs calls and nothing
- * else of the package: the Groth16 verification, and the curve entry point that returns the
- * process-wide BN254 instance.
- *
- * The hot path is deliberately free of I/O after the first call. ffjavascript's `buildBn128` reuses
- * the singleton `globalThis.curve_bn128` whenever it is asked without `singleThread`, and snarkjs'
- * Groth16 verifier asks for the curve on every call, so one built instance serves every later proof
- * and a verification costs a pairing check rather than a WebAssembly module build — which is what the
- * 500 ms server-verification budget rests on (AAP 0.1.1). {@link closeVerifier} releases that
- * instance, because its worker threads would otherwise keep a process alive after `app.close()`.
- *
- * @see AAP 0.5.5 for the circuit, its public signals and this check order, 0.5.1 for
- *   `verifyItineraryProof`, 0.4.2 for the mounted verification key, 0.11.1 for the logging points and
- *   0.12.2 for the no-server-proving constraint.
+ * No proving happens here, and the API image holds no proving key, no circuit WASM, no witness generator
+ * and no private input (AAP 0.5.5, 0.12.2). The hot path is deliberately free of I/O after the first call:
+ * ffjavascript's `buildBn128` reuses the singleton `globalThis.curve_bn128` whenever it is asked without
+ * `singleThread`, and snarkjs' Groth16 verifier asks for the curve on every call, so one built instance
+ * serves every later proof and a verification costs a pairing check rather than a WebAssembly module
+ * build — which is what the 500 ms server-verification budget rests on (AAP 0.1.1). {@link closeVerifier}
+ * releases that instance, because its worker threads would otherwise keep a process alive after
+ * `app.close()`.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -54,12 +42,8 @@ import { signalDateToIso, stayDays } from './validity.ts';
 // `AppServices` declaration every module of `apps/api/src/modules` names (AAP 0.5.1).
 import type { AppServices } from '../../app.ts';
 
-/* The circuit's own numbers (AAP 0.5.5). */
-
-/** The one circuit artefact the `api` image mounts, beside the artefact manifest (AAP 0.4.2). */
 const VERIFICATION_KEY_FILE = 'verification_key.json';
 
-/** The curve the circuit and its verification key use, under the name snarkjs asks it by. */
 const BN128 = 'bn128';
 
 /**
@@ -69,10 +53,7 @@ const BN128 = 'bn128';
  */
 const FIELD_ORDER = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
-/** The one log event a rejected submission writes, and the level it is written at. */
 const PROOF_REJECTED = 'proof_rejected';
-
-/* snarkjs 0.7.6 (AAP 0.5.5). */
 
 /**
  * The BN254 curve instance ffjavascript builds, as the one member this module calls on it: releasing
@@ -108,8 +89,6 @@ interface Snarkjs {
  */
 const snarkjs = createRequire(import.meta.url)('snarkjs') as Snarkjs;
 
-/* The verification key and the shared curve. */
-
 /**
  * The parsed `verification_key.json`: the Groth16 key `pnpm circuits:setup` writes and the `api`
  * image mounts (AAP 0.4.2, 0.5.5). Only the three fields the shape check reads are typed; the key
@@ -131,7 +110,6 @@ export interface VerificationKey {
  */
 export type VerifierServices = Pick<AppServices, 'env' | 'logger'>;
 
-/** The logger a rejection is recorded in. */
 type VerifierLogger = VerifierServices['logger'];
 
 /**
@@ -150,16 +128,10 @@ export type Groth16Verify = (
  */
 const defaultVerify: Groth16Verify = (verificationKey, publicSignals, proof) =>
   snarkjs.groth16.verify(verificationKey, publicSignals, proof);
-
-/** The stay a verified proof proves, as the route stores it (AAP 0.5.2, 0.5.5). */
 export interface VerifiedItinerary {
-  /** The city slug the proof is for, a `City.id`, resolved from the circuit's `cityId` signal. */
   readonly cityId: string;
-  /** The configured circuit city id of {@link VerifiedItinerary.cityId}. */
   readonly circuitCityId: number;
-  /** The arrival date, `YYYY-MM-DD`. */
   readonly arrivalDate: string;
-  /** The departure date, `YYYY-MM-DD`. */
   readonly departureDate: string;
   /** The allowlisted issuer's integer id, from the proof's `issuerId` signal. */
   readonly issuerId: number;
@@ -227,7 +199,6 @@ function reject(logger: VerifierLogger, code: ErrorCode): AppError {
 async function readVerificationKey(): Promise<VerificationKey> {
   const file = VERIFICATION_KEY_FILE;
   let text: string;
-
   try {
     text = await readFile(circuitsBuildPath(file), 'utf8');
   } catch (error) {
@@ -236,17 +207,14 @@ async function readVerificationKey(): Promise<VerificationKey> {
     }
     throw error;
   }
-
   let parsed: unknown;
   let parseError: unknown;
-
   try {
     parsed = JSON.parse(text) as unknown;
   } catch (error) {
     parseError = error;
     parsed = undefined;
   }
-
   if (!isVerificationKey(parsed)) {
     throw new AppError('service_unavailable', undefined, {
       cause: new Error(
@@ -266,14 +234,12 @@ async function readVerificationKey(): Promise<VerificationKey> {
  * process started is picked up by the next proof submission, and a suite that never proves still
  * starts without the artefacts.
  *
- * @returns The parsed verification key.
  * @throws {AppError} `service_unavailable` when the file is absent, is not JSON, or is not the
  *   Groth16 key over BN254 with seven public signals.
  */
 export async function loadVerificationKey(): Promise<VerificationKey> {
   const inFlight = keyLoad ?? readVerificationKey();
   keyLoad = inFlight;
-
   try {
     return await inFlight;
   } catch (error) {
@@ -296,7 +262,6 @@ async function warmCurve(): Promise<void> {
   if (cachedCurve !== undefined || curves === undefined) {
     return;
   }
-
   try {
     cachedCurve = await (curveBuild ??= curves.getCurveFromName(BN128));
   } catch {
@@ -310,25 +275,20 @@ async function warmCurve(): Promise<void> {
  * shutdown alive.
  *
  * Idempotent and never throwing: a second close, or a close before any proof arrived, does nothing.
- * @returns When the curve's threads have stopped.
  */
 export async function closeVerifier(): Promise<void> {
   const curve = cachedCurve;
   cachedCurve = undefined;
   curveBuild = undefined;
-
   if (curve === undefined) {
     return;
   }
-
   try {
     await curve.terminate();
   } catch {
     // The instance was already terminated, or its threads are gone: nothing left to release.
   }
 }
-
-/* Reading the signals (AAP 0.5.5). */
 
 /**
  * Each signal's position in circuit order, off the shared contract: a signal is read by name, never
@@ -346,7 +306,6 @@ const SIGNAL_INDEX = new Map<PublicSignalName, number>(
 function signalText(signals: readonly string[], name: PublicSignalName): string {
   const index = SIGNAL_INDEX.get(name);
   const value = index === undefined ? undefined : signals[index];
-
   if (value === undefined || !FieldElement.safeParse(value).success) {
     throw new AppError('proof_malformed');
   }
@@ -379,10 +338,8 @@ function canonicalSignals(
   logger: VerifierLogger,
 ): Readonly<Record<PublicSignalName, bigint>> {
   const canonical = {} as Record<PublicSignalName, bigint>;
-
   for (const name of PUBLIC_SIGNAL_NAMES) {
     const value = BigInt(signalText(signals, name));
-
     if (value >= FIELD_ORDER) {
       throw reject(logger, 'proof_invalid');
     }
@@ -391,22 +348,12 @@ function canonicalSignals(
   return canonical;
 }
 
-/* Verification (AAP 0.5.5). */
-
 /**
  * Verifies a submitted itinerary proof and checks that it proves a stay this API accepts (AAP 0.5.5).
  *
  * The checks run in the order the module documentation lists, and the value returned is the stay the
  * proof proves, with its nullifier in canonical form for the route's `SpentNullifier` insert.
  *
- * @param services - The app's services: the environment the accepted roots and the published salt come
- *   from, and the logger a rejection is recorded in.
- * @param submission - The validated `ProofSubmission`; the schema has already fixed its seven decimal
- *   signals, which this call canonicalizes before either verifying or reading them.
- * @param deps - The verification and the key, injectable so a unit test runs without built artefacts.
- *   Both default to this process's own: snarkjs' Groth16 verification, and the mounted verification
- *   key.
- * @returns The city, the stay dates, the issuer, the nullifier and the registry root the proof proved.
  * @throws {AppError} `proof_malformed` for a submission that does not carry the seven signals;
  *   `proof_invalid` for a signal outside the field, a proof that does not verify, a salt that is not
  *   the published one, an unknown city or issuer, or a date signal that is not a calendar date;
@@ -420,19 +367,15 @@ export async function verifyItineraryProof(
   deps: { readonly verify?: Groth16Verify; readonly verificationKey?: VerificationKey } = {},
 ): Promise<VerifiedItinerary> {
   const logger = services.logger;
-
   // 0. Canonical field elements.
   const canonical = canonicalSignals(submission.publicSignals, logger);
   const signals = PUBLIC_SIGNAL_NAMES.map((name) => canonical[name].toString());
-
   // 1. Groth16 verification against the mounted key.
   const verificationKey = deps.verificationKey ?? (await loadVerificationKey());
   const verify = deps.verify ?? defaultVerify;
-
   if (deps.verify === undefined) {
     await warmCurve();
   }
-
   let verified: boolean;
   try {
     verified = await verify(verificationKey, signals, submission.proof);
@@ -441,55 +384,44 @@ export async function verifyItineraryProof(
     // API does not accept, and the thrown value can carry signal material that must not be logged.
     throw reject(logger, 'proof_invalid');
   }
-
   if (!verified) {
     throw reject(logger, 'proof_invalid');
   }
-
   // 2. The published nullifier salt: it is what makes the nullifier below the one this API's
   // spent-nullifier registry holds, so a proof built for another salt is not this API's proof.
   if (canonical.nullifierSalt !== BigInt(services.env.NULLIFIER_SALT)) {
     throw reject(logger, 'proof_invalid');
   }
-
   // 3. An active registry root. The proof's city and issuer are then read out of that same registry,
   // so a root and its entries can never be mixed.
   const registry = activeRegistries(services.env).find(
     (candidate) => BigInt(candidate.root) === canonical.registryRoot,
   );
-
   if (registry === undefined) {
     throw reject(logger, 'issuer_not_allowlisted');
   }
-
   // 4. The city, the issuer and the two dates, all of which the registry and the launch-city
   // configuration decide.
   const circuitCityId = signalInteger(canonical.cityId, logger);
   const registryCity = registry.cities.find((entry) => entry.cityId === circuitCityId);
   const city = registryCity === undefined ? undefined : cityBySlug(registryCity.slug);
-
   if (registryCity === undefined || city === undefined) {
     throw reject(logger, 'proof_invalid');
   }
-
   const issuerId = signalInteger(canonical.issuerId, logger);
   if (!registry.issuers.some((entry) => entry.issuerId === issuerId)) {
     throw reject(logger, 'proof_invalid');
   }
-
   const arrivalDate = signalDateToIso(canonical.arrivalDate);
   const departureDate = signalDateToIso(canonical.departureDate);
-
   if (arrivalDate === null || departureDate === null) {
     throw reject(logger, 'proof_invalid');
   }
-
   // 5. The stay bound.
   const stay = stayDays(arrivalDate, departureDate);
   if (stay < STAY_MIN_DAYS || stay > STAY_MAX_DAYS) {
     throw reject(logger, 'stay_out_of_range');
   }
-
   return {
     // The configured city's own id: the registry was built from this configuration, so the two agree,
     // and the row is stored under the slug the rest of the API uses.

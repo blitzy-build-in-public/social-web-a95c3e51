@@ -1,18 +1,9 @@
 /**
  * The server-core barrel: the server-only utilities shared by `apps/api`, `apps/workers` and
- * `packages/db/seed` (AAP 0.3.2) — the injected clock, the redacting logger, city-local time,
- * field encryption and hashing, the queue names, payload schemas, connections and job defaults,
- * the Twilio client and its call allowlist, the language-model adapter with its spend reservation,
- * and the per-process environment schemas.
- *
- * It is resolved only by Node processes. `apps/mobile` and `apps/venue-console` never import it,
- * which is what keeps the field-encryption keys, the Stripe secret, the Twilio credentials and the
- * provider SDKs out of a client bundle.
- *
- * Re-exports only: no renamed export, no default export, no top-level statement. Loading the barrel
- * therefore opens no Redis connection, reads no environment variable and constructs no SDK client.
- * Every exported name is unique across the modules below, because a duplicate would make the star
- * exports ambiguous (TS2308); a new collision is renamed at its source module, never aliased here.
+ * `packages/db/seed` (AAP 0.3.2) — the injected clock, the redacting logger, city-local time, field
+ * encryption and hashing, the queue names, payload schemas, connections and job defaults, the
+ * Twilio client and its call allowlist, the language-model adapter with its spend reservation, and
+ * the per-process environment schemas.
  */
 
 export * from './clock.ts';

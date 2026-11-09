@@ -1,22 +1,18 @@
 /**
  * The venue QR scanner, native half of the `venue-scanner` platform pair (AAP 0.3.4, AAP 0.5.8).
  *
- * Metro resolves the check-in screen's extensionless `../../../src/checkin/venue-scanner` to this
- * file on iOS and Android and to `venue-scanner.web.tsx` in the browser. On the two native
- * platforms `expo-camera` 16.0.18 opens the camera, asks for the foreground permission as the
- * scanner mounts and reads the venue console's QR form of the same six digits the manual field
- * takes (AAP 0.3.1, 0.3.4). The web half renders no scanner at all, which is why a screen renders
- * `VenueScanner` unconditionally and never asks which platform it is running on: manual entry is
- * the guaranteed path everywhere (AAP 0.3.4).
+ * Metro resolves the check-in screen's extensionless path to this file on iOS and Android and to
+ * `venue-scanner.web.tsx` in the browser. On the two native platforms `expo-camera` 16.0.18 opens the camera, asks for
+ * the foreground permission as the scanner mounts and reads the venue console's QR form of the same six digits the
+ * manual field takes (AAP 0.3.1, 0.3.4); the web half renders no scanner, which is why a screen renders `VenueScanner`
+ * unconditionally and never asks which platform it is running on, manual entry being the guaranteed path everywhere
+ * (AAP 0.3.4).
  *
- * A scanned payload is a code and nothing else. A payload that is not exactly `CODE_DIGITS` digits
- * is refused here with the banner and the announcement the field's own copy uses, and a payload
- * already seen is ignored, because a viewfinder decodes the same code on every frame it is shown
- * in. No frame, image or payload is stored or logged (AAP 0.12.2).
- *
- * Permission is foreground only and its usage strings come from the `expo-camera` config plugin in
- * `app.config.ts`. A refusal is not a dead end: the screen's manual field is always there, so this
- * half only says the camera is off.
+ * A scanned payload is a code and nothing else. A payload that is not exactly `CODE_DIGITS` digits is refused here with
+ * the banner and the announcement the field's own copy uses, and a payload already seen is ignored, because a
+ * viewfinder decodes the same code on every frame it is shown in; no frame, image or payload is stored or logged
+ * (AAP 0.12.2). Permission is foreground only and its usage strings come from the `expo-camera` config plugin in
+ * `app.config.ts`; a refusal is not a dead end, because the screen's manual field is always there.
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -110,8 +106,6 @@ function CameraScanner({ onCode, onClose }: CameraScannerProps): ReactElement {
  * opens in its place, which reports one scanned code through `onCode`. The browser half renders
  * nothing, so a screen needs no platform check of its own (AAP 0.3.4).
  *
- * @param props - {@link VenueScannerProps}
- * @returns The scan control, or the open viewfinder while it is running.
  */
 export const VenueScanner: VenueScannerComponent = ({ onCode }) => {
   const [scanning, setScanning] = useState(false);

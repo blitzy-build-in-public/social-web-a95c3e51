@@ -1,22 +1,14 @@
 /**
- * `.eml` intake on the web: the booking confirmation the traveller picks, as in-memory bytes
- * (AAP 0.3.4, AAP 0.5.5 "Intake and cleanup").
+ * `.eml` intake on the web: the booking confirmation the traveller picks, as in-memory bytes (AAP 0.3.4, AAP 0.5.5).
+ * The web half of the `./eml-intake` platform pair, which Metro resolves an extensionless import to in a browser and
+ * to `eml-intake.native.ts` under Hermes; the `satisfies` checks below hold this half to the same names and the same
+ * {@link EmlIntake} contract.
  *
- * The web half of the `./eml-intake` platform pair. Metro resolves the import screen's extensionless
- * `./eml-intake` to this file in a browser and to `eml-intake.native.ts` under Hermes, and the
- * `satisfies` checks below hold this half to the same five names and the same {@link EmlIntake}
- * contract, because `moduleSuffixes` type-checks that extensionless import against the native file
- * alone.
- *
- * Nothing on this platform writes an `.eml` anywhere: the picker reads the chosen file inside the
- * page and the handle's bytes are the only copy this flow holds. `release()` zero-fills them all the
- * same and revokes the URI when it is a `blob:` URL this page created, so no byte of the email
- * outlives the attempt. Nothing here is logged, stored or put into an error — a confirmation email
- * is commonly named after its booking reference.
- *
- * SDK 52's web picker reads the file with `FileReader.readAsDataURL`, so the asset carries a `data:`
- * URL beside the `File`. The `File` is the primary read path and the URI the fallback, and a `data:`
- * URL being an in-memory string is simply discarded with the handle.
+ * Nothing on this platform writes an `.eml` anywhere: the picker reads the chosen file inside the page, the handle's
+ * bytes are the only copy this flow holds, and `release()` zero-fills them and revokes the URI when it is a `blob:`
+ * URL this page created, so no byte of the email outlives the attempt. Nothing here is logged, stored or put into an
+ * error. SDK 52's web picker reads the file with `FileReader.readAsDataURL`, so the asset carries a `data:` URL beside
+ * the `File`; the `File` is the primary read path and the in-memory `data:` URL is discarded with the handle.
  */
 import * as DocumentPicker from 'expo-document-picker';
 
@@ -26,11 +18,9 @@ import type { EmlHandle, EmlIntake, ZkClientErrorCode } from './prover.ts';
 type NativeIntake = typeof import('./eml-intake.native.ts');
 
 /*
- * What the picker accepts: browsers often report no MIME type for an `.eml`, so the extension is
- * offered beside the type, and on the web the two become the file input's `accept` list.
- *
- * `copyToCacheDirectory` is deliberately not passed: it is a native option, and the web picker copies
- * nothing to a filesystem, so no app-owned copy exists for this half to delete (AAP 0.5.5).
+ * Browsers often report no MIME type for an `.eml`, so the extension is offered beside the type, and on the web the
+ * two become the file input's `accept` list. `copyToCacheDirectory` is deliberately not passed: it is a native
+ * option, and the web picker copies nothing to a filesystem (AAP 0.5.5).
  */
 const ACCEPTED_TYPES = ['message/rfc822', '.eml'];
 
@@ -49,14 +39,9 @@ async function readBytes(asset: DocumentPicker.DocumentPickerAsset): Promise<Uin
 }
 
 /**
- * Opens the browser's file picker for one booking confirmation (AAP 0.3.4).
- *
- * The bytes it hands back are the email; `release()` erases them and must be called on every path of
- * the attempt — success, failure and cancellation alike (AAP 0.5.5). A cancelled pick, or a success
- * carrying no asset, is `null` rather than a failure.
- *
- * @returns The picked file, or `null` when the traveller cancelled.
- * @throws A `ZkClientError` with `eml_read_failed` when the picker or the read fails.
+ * The bytes it hands back are the email; `release()` erases them and must be called on every path of the attempt —
+ * success, failure and cancellation alike (AAP 0.5.5). A cancelled pick, or a success carrying no asset, is `null`
+ * rather than a failure (AAP 0.3.4).
  */
 export async function pickEml(): Promise<EmlHandle | null> {
   let result: DocumentPicker.DocumentPickerResult;
@@ -65,19 +50,15 @@ export async function pickEml(): Promise<EmlHandle | null> {
   } catch {
     throw fail('eml_read_failed');
   }
-
   if (result.canceled) return null;
-
   const asset = result.assets[0];
   if (asset === undefined) return null;
-
   let bytes: Uint8Array;
   try {
     bytes = await readBytes(asset);
   } catch {
     throw fail('eml_read_failed');
   }
-
   let held: DocumentPicker.DocumentPickerAsset | null = asset;
   let released = false;
   return {
@@ -96,11 +77,8 @@ export async function pickEml(): Promise<EmlHandle | null> {
 }
 
 /**
- * Rejects on the web: a browser has no share target for files, so the import screen reaches this flow
- * through {@link pickEml} instead (AAP 0.3.4). The parameter is kept so both halves of the pair are
- * driven the same way.
- *
- * @throws A `ZkClientError` with `share_intake_unsupported`.
+ * A browser has no share target for files, so the import screen reaches this flow through {@link pickEml} instead;
+ * the parameter is kept so both halves of the pair are driven the same way (AAP 0.3.4).
  */
 export function fromShareIntent(_uri: string): Promise<EmlHandle> {
   return Promise.reject(fail('share_intake_unsupported'));

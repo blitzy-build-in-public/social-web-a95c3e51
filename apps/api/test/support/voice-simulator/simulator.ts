@@ -1,48 +1,6 @@
 /**
  * The scripted telephony simulator: Twilio's own side of an automated call, played in-process
  * (AAP 0.5.6, AAP 0.11.2).
- *
- * A call the product dispatches is played out here rather than placed. The create returns a SID, and
- * the lifecycle then posts the signed status callbacks Twilio would post, fetches the
- * ConversationRelay TwiML from the API, opens the relay socket and sends each scripted utterance as a
- * `prompt` frame until the API closes the session. The suite therefore gets a deterministic call — an
- * answer, a script, a refusal, a machine, a busy line or a dropped connection — and asserts what the
- * API did with it (AAP 0.12.1 criteria 12, 14 and 17).
- *
- * Two behaviours here are deliberate and load-bearing:
- *
- *  - **Every request is signed over the URL Twilio would have called, and sent to the API's real
- *    address.** `API_PUBLIC_URL` is what the API rebuilds its signature check from
- *    (`src/modules/voice-agent/signature.ts`), so signing the public URL is the only way a signature
- *    can ever match; the HTTP posts and the socket go to `targetUrl` — a `TestApp.listen()` base URL,
- *    or the compose service address — so a suite runs with no public hostname. A create URL whose
- *    origin is not `apiPublicUrl` is recorded as a failure and still signed exactly as given, because
- *    that is what Twilio would do with it.
- *  - **The simulator waits for the agent's turn before every prompt.** ConversationRelay speaks first
- *    (the TwiML's `welcomeGreeting`, then the dialogue's first question), and each scripted utterance
- *    is an answer to the question the API just asked, which is what makes a turn's classification
- *    unambiguous. A turn the agent never answers within `stepTimeoutMs` is recorded as `agent_timeout`
- *    and the session is closed, so a broken dialogue fails fast instead of hanging a suite.
- *
- * Nothing here logs a phone number, a signature, an utterance or the auth token, and no failure is
- * thrown into an unrelated test: everything the lifecycle could not do is recorded on the call as a
- * failure carrying a step name, a status or an error code (AAP 0.11.1, AAP 0.12.2). The auth token is
- * `TWILIO_SIMULATOR.authToken`, a published test value, and it is never written out here.
- *
- * State lives in each {@link createVoiceSimulator} closure, because a suite runs two app instances in
- * one process: each gets its own call store, target, scenario map and vendor switch.
- *
- * `vendor-down` is an in-process scenario only. A refused connection is what makes a dispatch
- * *definite* (server-core classifies `ECONNREFUSED` that way), and a connection already accepted
- * cannot produce one — so criterion 17's isolation check runs through the injected HTTP client, where
- * {@link vendorDownError} is thrown before any call exists, and the standalone server refuses to serve
- * that scenario at all.
- *
- * @see AAP 0.5.6 for the simulator, the scripts, the caps and the disclosure; AAP 0.3.2 for the
- *   relay-refusal semantics and the dispatch reconciliation; AAP 0.3.3 for the Twilio integration row
- *   and the signature check; AAP 0.6.2 for `TELEPHONY_MODE=simulator`, `VOICE_SIM_URL` and the fixed
- *   non-secret token; AAP 0.11.2 for the suites that use it; AAP 0.12.2 for disclosure first and
- *   `record: false`.
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
@@ -103,26 +61,12 @@ import vendorDownScenario from './scenarios/vendor-down.json' with { type: 'json
 import wantsHumanScenario from './scenarios/wants-human.json' with { type: 'json' };
 import yesScenario from './scenarios/yes.json' with { type: 'json' };
 
-// ---------------------------------------------------------------------------------------------
-// The Twilio request signature (AAP 0.3.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * Twilio's request signature for a URL and its posted fields (AAP 0.3.3): a base64 HMAC-SHA1, keyed
  * by the account's auth token, over the URL followed by each parameter name and value concatenated in
  * ascending key order. The simulator computes it locally — the `twilio` SDK is imported only by
  * `packages/server-core/src/telephony/twilio-client.ts` (AAP 0.11.1) — and so can a test that wants to
  * forge or tamper with one.
- *
- * A relay upgrade carries no fields and a socket is signed over its URL alone, which is why `params`
- * defaults to empty and why the default auth token is {@link TWILIO_SIMULATOR}'s published test value
- * rather than a secret (AAP 0.6.2).
- *
- * @param url - The URL exactly as the provider would call it: the public address, query string and
- *   all, never the address the simulator sends the request to.
- * @param params - Every field of the request, as strings; empty for a WebSocket upgrade.
- * @param authToken - The signing token; the simulator's own by default.
- * @returns The base64 signature for the `X-Twilio-Signature` header.
  */
 export function twilioSignature(
   url: string,
@@ -135,10 +79,6 @@ export function twilioSignature(
   }
   return createHmac('sha1', authToken).update(data, 'utf8').digest('base64');
 }
-
-// ---------------------------------------------------------------------------------------------
-// Scenarios (AAP 0.5.6, AAP 0.11.2)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The scripts one call can play, in `./scenarios/<name>.json` (AAP 0.8.1). Every one of the twelve
@@ -194,10 +134,6 @@ const ScenarioClassifyValue = z.union([z.string(), z.number(), z.boolean(), z.nu
  * What the classifier answers for one scripted utterance, and the values it reads back (AAP 0.5.6).
  * `values` carries only the fields the turn really said, and `classify` is absent when the turn is not
  * classified at all — a turn whose words the model cannot use, which is what `unclear` is for.
- *
- * The label set is the classifier's own exported vocabulary, `UTTERANCE_LABELS`, rather than a copy:
- * a turn's scripted label is therefore always one `understanding.ts` can read, and the two cannot
- * drift apart.
  */
 const ScenarioClassify = z.strictObject({
   label: z.enum(UTTERANCE_LABELS),
@@ -295,21 +231,11 @@ function readClassificationProperties(): readonly string[] {
  * Lazy on purpose: importing this module has no side effect, so a unit suite that only wants
  * {@link scenarioClassifier} or {@link twilioSignature} still parses nothing, and a broken scenario
  * file fails the suite that reads it with that file named.
- *
- * @returns The scenarios by name, deep-frozen at runtime and shared by every simulator in the
- *   process: a mutation attempt throws rather than silently changing what another simulator plays.
- * @throws Error when a scenario file does not match {@link ScenarioSchema}, when its `name` disagrees
- *   with its file, when a rule the plain schema cannot express is broken (a human answer that scripts
- *   no turn and does not drop before the first prompt, a drop beyond the last turn, a duration on an
- *   unanswered call, a classification value the classifier's schema does not declare), or when two
- *   turns anywhere share identical words with different classifications — which would make
- *   {@link scenarioClassifier} ambiguous.
  */
 export function loadScenarios(): ReadonlyMap<ScenarioName, Scenario> {
   if (parsedScenarios !== null) {
     return parsedScenarios;
   }
-
   const scenarios = new Map<ScenarioName, Scenario>();
   for (const name of SCENARIO_NAMES) {
     const file = `./scenarios/${name}.json`;
@@ -324,7 +250,6 @@ export function loadScenarios(): ReadonlyMap<ScenarioName, Scenario> {
     scenarios.set(name, parsed.data);
   }
   assertUnambiguousTurns(scenarios);
-
   const frozen = freezeScenarios(scenarios);
   parsedScenarios = frozen;
   return frozen;
@@ -394,20 +319,6 @@ function assertUnambiguousTurns(scenarios: ReadonlyMap<ScenarioName, Scenario>):
 /**
  * Freeze everything {@link loadScenarios} hands out, so the immutability it documents holds at
  * runtime and not only in its type (AAP 0.11.2).
- *
- * The map is process-wide on purpose, so without this a suite that deleted a name or pushed a turn
- * would change what every other simulator and every later test in the same worker plays, and the
- * outcome would depend on the order the suites ran in. Every scenario, its `turns` array, each turn,
- * each turn's `classify` and that `classify`'s `values` are frozen too, because a scenario object
- * reached through a frozen map is still mutable on its own.
- *
- * `Object.freeze(map)` alone would not be enough: `Map.prototype.set`, `delete` and `clear` keep
- * working on a frozen map. The three are therefore shadowed by own properties that refuse and name
- * the supported way to play something else. Only a map this module builds is frozen — a map a suite
- * passes through `VoiceSimulatorOptions.scenarios` belongs to that suite and is left exactly as given.
- *
- * @param scenarios - The scenarios {@link loadScenarios} just parsed and checked.
- * @returns The same map, deep-frozen, to be cached as the process's scenarios.
  */
 function freezeScenarios(
   scenarios: Map<ScenarioName, Scenario>,
@@ -425,7 +336,6 @@ function freezeScenarios(
     Object.freeze(scenario.turns);
     Object.freeze(scenario);
   }
-
   const refuse = (): never => {
     throw new Error(
       'the scenario map is immutable: a suite that needs a different scenario should pass its own ' +
@@ -440,7 +350,6 @@ function freezeScenarios(
       configurable: false,
     });
   }
-
   Object.freeze(scenarios);
   return scenarios;
 }
@@ -454,10 +363,6 @@ function describeIssues(error: z.ZodError): string {
     .join('; ');
 }
 
-// ---------------------------------------------------------------------------------------------
-// The classifier stand-in (AAP 0.5.6, AAP 0.11.2)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * The stand-in for the provider's utterance classifier, reading a scenario's own words back.
  *
@@ -466,24 +371,6 @@ function describeIssues(error: z.ZodError): string {
  * `createFakeLlmAdapter({ respond })`: it finds the last scripted utterance that appears in the
  * conversation window the caller sent and answers with that turn's classification, so a call advances
  * exactly as the scenario scripts it.
- *
- * The window is searched by whole utterance, never by keyword, and the turn whose occurrence *ends*
- * latest wins — that is the callee's most recent words, which is what makes the answer a function of
- * one turn rather than of the dialogue's whole history. Ties go to the longer utterance. A request
- * that is not a classification is answered with `{}`, the fake's own default, so menu extraction and
- * every other model user in the suite are unaffected.
- *
- * The reply carries every property the classification schema declares, each `null` first, then the
- * label, then the turn's own values: `understanding.ts` parses the reply with a strict schema in which
- * every key but the label is nullable, so a missing key would read as `unclear`. `unclear` is also
- * what a window matching no scripted turn produces.
- *
- * The function's shape satisfies `NonNullable<FakeLlmOptions['respond']>`, which its return type
- * states; it takes the request as a parameter rather than an annotation so its TSDoc documents the
- * behaviour a suite relies on.
- *
- * @param request - The request the adapter was asked to count or send.
- * @returns The scripted classification as a plain object, or `{}` for any other request.
  */
 export function scenarioClassifier(
   request: LlmRequest,
@@ -494,10 +381,8 @@ export function scenarioClassifier(
   ) {
     return {};
   }
-
   const window = request.messages.map((message) => message.content).join('\n');
   const turn = lastTurnIn(window);
-
   const reply: Record<string, unknown> = {};
   for (const property of CLASSIFICATION_PROPERTIES) {
     reply[property] = null;
@@ -532,10 +417,6 @@ function lastTurnIn(window: string): ScenarioTurn | null {
   }
   return best === null ? null : best.turn;
 }
-
-// ---------------------------------------------------------------------------------------------
-// What one simulated call recorded (AAP 0.11.2)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The create parameters the SDK sent, as they were observed (AAP 0.5.6).
@@ -702,8 +583,6 @@ export interface VoiceSimulatorOptions {
  *
  * It is a {@link SimCallTarget}, so {@link VoiceSimulator.httpClient} can be handed to
  * `createTelephonyClient({ httpClient })` and every REST request the SDK builds is answered here.
- * {@link VoiceSimulator.startCall} additionally accepts a {@link StartCallInput}, which is what lets a
- * suite play a call the API never dispatched.
  */
 export interface VoiceSimulator extends SimCallTarget {
   /** The transport to inject into the Twilio client, so the SDK's calls reach this simulator. */
@@ -735,10 +614,6 @@ export interface VoiceSimulator extends SimCallTarget {
   /** The same, for a suite that is finished with the simulator. */
   close(): void;
 }
-
-// ---------------------------------------------------------------------------------------------
-// The simulator (AAP 0.5.6, AAP 0.11.2)
-// ---------------------------------------------------------------------------------------------
 
 /** How long a step waits for the agent before it is recorded as a timeout. */
 const DEFAULT_STEP_TIMEOUT_MS = 10_000;
@@ -814,9 +689,6 @@ interface SimRuntime {
 /**
  * `createVoiceSimulator`'s own target: the {@link SimCallTarget} the SDK's transport is handed, plus
  * the wider {@link VoiceSimulator.startCall} a test can call with a {@link StartCallInput}.
- *
- * The SDK only ever calls `startCall` with a create request, and a method's parameters are checked
- * bivariantly, so a wider one stays a {@link SimCallTarget}.
  */
 interface SimulatorTarget extends SimCallTarget {
   startCall(
@@ -830,12 +702,6 @@ interface SimulatorTarget extends SimCallTarget {
  * All state — the calls, the per-number scenarios, the vendor switch and the default scenario — lives
  * in this closure, so a suite that builds two apps gets two independent simulators and no call,
  * assignment or switch leaks between them.
- *
- * @param options - The public URL signatures are computed over, the API's real address, the scenarios
- *   and the clock.
- * @returns The simulator, whose `httpClient` is the transport to inject into the Twilio client.
- * @throws Error when `apiPublicUrl` or `targetUrl` is not an absolute `http(s)` URL, or when a
- *   scenario name the options name is not in the scenario map.
  */
 export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimulator {
   const apiBase = options.apiPublicUrl.replace(/\/+$/, '');
@@ -853,8 +719,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     options.targetUrl === undefined ? undefined : readHttpOrigin(options.targetUrl, 'targetUrl');
   let down = false;
 
-  // --- the call store ------------------------------------------------------------------------
-
   /** The scenario `name` names, or an error naming it — a scenario map a suite replaced may lack it. */
   function scenarioNamed(name: ScenarioName): Scenario {
     const scenario = scenarios.get(name);
@@ -863,45 +727,37 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     }
     return scenario;
   }
-
   /** Which scenario a call to `to` plays: the explicit one, the number's, then the default. */
   function resolveScenarioName(to: string, explicit: ScenarioName | undefined): ScenarioName {
     return explicit ?? assignments.get(to) ?? defaultScenario;
   }
-
   /** Record a failure on a call under the step it happened at (AAP 0.11.1). */
   function fail(runtime: SimRuntime, step: string, detail: string): void {
     runtime.call.failures.push({ step, detail });
   }
-
   /** Record something the dialogue did that no scenario asked for. */
   function warn(runtime: SimRuntime, step: string, detail: string): void {
     runtime.call.warnings.push({ step, detail });
   }
-
   /** Move the call's status and stamp the resource's `date_updated`. */
   function setStatus(runtime: SimRuntime, status: TwilioCallStatus): void {
     runtime.call.status = status;
     runtime.updatedAt = now();
   }
-
   /** Clear a tracked timer, so an aborted call leaves none behind. */
   function clearTimer(runtime: SimRuntime, timer: NodeJS.Timeout): void {
     clearTimeout(timer);
     runtime.timers.delete(timer);
   }
-
   /** Finish the call's lifecycle: the resolved promise `waitForCall` waits on, exactly once. */
   function settleCall(runtime: SimRuntime): void {
     runtime.call.done = true;
     runtime.settle();
   }
-
   /** The address a call posts to: its own override, then the simulator's current target. */
   function addressFor(runtime: SimRuntime): string | undefined {
     return runtime.target ?? targetUrl;
   }
-
   /** Abort one call: unblock its awaits, drop its socket, forget its timers and settle it. */
   function abortRuntime(runtime: SimRuntime): void {
     if (runtime.call.done) {
@@ -920,7 +776,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     runtime.timers.clear();
     settleCall(runtime);
   }
-
   /** One runtime, with everything the lifecycle starts from. */
   function createRuntime(
     params: SimCallCreateParams,
@@ -985,18 +840,9 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     };
   }
 
-  // --- the lifecycle ------------------------------------------------------------------------
-
   /**
    * Play one call: the callbacks Twilio posts, the TwiML it fetches, the relay it opens and the
    * ending it reports.
-   *
-   * Everything the lifecycle cannot do is recorded on the call; nothing is thrown out of it. The
-   * final callback belongs in the `finally`, because every path — an answer, a refusal, a machine, a
-   * fetch that failed, a socket that never opened, an abort — owes Twilio its last status callback
-   * and the waiters on the call one ending.
-   *
-   * @param runtime - The call to play.
    */
   async function playCall(runtime: SimRuntime): Promise<void> {
     const { call, scenario } = runtime;
@@ -1009,28 +855,23 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         return;
       }
       assertOrigins(runtime);
-
       runtime.step = 'initiated';
       setStatus(runtime, 'initiated');
       await postStatus(runtime, 'initiated');
-
       // Twilio rings a line it found; a call it rejected outright never rings.
       if (scenario.answer !== 'failed') {
         runtime.step = 'ringing';
         setStatus(runtime, 'ringing');
         await postStatus(runtime, 'ringing');
       }
-
       if (UNANSWERED_ANSWERS.includes(scenario.answer)) {
         return;
       }
-
       runtime.step = 'answered';
       call.answeredBy = scenario.answer === 'machine' ? 'machine_start' : 'human';
       runtime.startedAt = now();
       setStatus(runtime, 'in-progress');
       await postStatus(runtime, 'in-progress');
-
       runtime.step = 'twiml';
       const twiml = await fetchTwiml(runtime);
       if (twiml === null) {
@@ -1041,7 +882,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       if (twiml.hangup) {
         return;
       }
-
       runtime.step = 'relay';
       const language = twiml.language ?? scenario.language ?? 'en-US';
       if (
@@ -1081,7 +921,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       settleCall(runtime);
     }
   }
-
   /** Report the ending: the final status, its duration, its error code and the closing callback. */
   async function finishCall(runtime: SimRuntime): Promise<void> {
     const { call, scenario } = runtime;
@@ -1092,7 +931,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     runtime.endedAt = now();
     runtime.updatedAt = now();
     runtime.step = 'final';
-
     const code =
       override?.errorCode ??
       (scenario.errorCode === undefined ? undefined : String(scenario.errorCode));
@@ -1103,13 +941,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       });
     }
   }
-
   /**
    * Post one status callback for the current status (AAP 0.3.2).
    *
    * The body is validated against the shared callback schema before it is signed — a self-check, so a
    * simulator that sent a body the API would refuse fails here rather than looking like a rejection.
-   * Only the events the create subscribed to are posted, in the order the call reaches them.
    */
   async function postStatus(
     runtime: SimRuntime,
@@ -1121,7 +957,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     if (!runtime.events.includes(event)) {
       return;
     }
-
     const params: Record<string, string> = {
       CallSid: call.sid,
       AccountSid: TWILIO_SIMULATOR.accountSid,
@@ -1143,13 +978,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     if (options.errorCode !== undefined) {
       params['ErrorCode'] = options.errorCode;
     }
-
     const checked = TwilioStatusCallback.safeParse(params);
     if (!checked.success) {
       fail(runtime, `${event}_callback`, `invalid body: ${describeIssues(checked.error)}`);
       return;
     }
-
     const sequence = runtime.sequence;
     const answer = await post(
       runtime,
@@ -1164,15 +997,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       httpStatus: answer === null ? null : answer.status,
     });
   }
-
   /**
    * Fetch the ConversationRelay TwiML for the answered call and read it (AAP 0.5.6).
    *
    * The fetch carries the `CallSid`, the machine-detection verdict and the attempt id in its query,
    * which is what the route adopts the attempt from; the document is parsed by {@link parseTwiml}.
-   *
-   * @returns The parsed document, or `null` when the fetch failed — which the lifecycle reports as
-   *   Twilio's HTTP retrieval failure.
    */
   async function fetchTwiml(runtime: SimRuntime): Promise<SimTwiml | null> {
     const { call } = runtime;
@@ -1188,13 +1017,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     if (call.answeredBy !== null) {
       params['AnsweredBy'] = call.answeredBy;
     }
-
     const checked = TwilioTwimlRequest.safeParse(params);
     if (!checked.success) {
       fail(runtime, 'twiml', `invalid body: ${describeIssues(checked.error)}`);
       return null;
     }
-
     const answer = await post(runtime, runtime.params.twimlUrl, params, 'twiml_fetch_failed');
     call.twiml.httpStatus = answer === null ? null : answer.status;
     if (answer === null || answer.status !== 200) {
@@ -1203,16 +1030,12 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     Object.assign(call.twiml, parseTwiml(answer.body));
     return call.twiml;
   }
-
   /**
    * Post one request to the API, signed over the public URL and sent to the target's address.
    *
    * The two are deliberately different: the API rebuilds the signed URL from `API_PUBLIC_URL` and the
    * request it received, so the signature can only match when it covers the public address, while the
    * connection has to reach wherever the API is actually listening.
-   *
-   * @returns The answer's status and body, or `null` when the request could not be made — a failure is
-   *   recorded either way, and an aborted call records none.
    */
   async function post(
     runtime: SimRuntime,
@@ -1225,7 +1048,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       fail(runtime, step, 'the simulator has no target address');
       return null;
     }
-
     try {
       const publicTarget = new URL(publicUrl);
       const sendUrl = `${readHttpOrigin(address, 'targetUrl')}${publicTarget.pathname}${publicTarget.search}`;
@@ -1250,7 +1072,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       return null;
     }
   }
-
   /** Record a create URL that does not use `apiPublicUrl`, which Twilio would still sign as given. */
   function assertOrigins(runtime: SimRuntime): void {
     const urls: ReadonlyArray<readonly [string, string]> = [
@@ -1263,7 +1084,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       }
     }
   }
-
   /** The call store's record of one call, in the field names twilio 6.2.0 reads. */
   function toResource(runtime: SimRuntime): SimCallResource {
     const { call } = runtime;
@@ -1286,7 +1106,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       uri: `/2010-04-01/Accounts/${TWILIO_SIMULATOR.accountSid}/Calls/${call.sid}.json`,
     };
   }
-
   /** Whether a call matches a list request's `To`, `From` and `StartTime>` filters. */
   function matchesFilter(runtime: SimRuntime, filter: SimCallListFilter): boolean {
     if (filter.to !== undefined && filter.to !== runtime.call.to) {
@@ -1305,12 +1124,9 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     }
     return true;
   }
-
   /**
    * Resolve after `ms`, tracked like every other timer so an abort cannot leave it behind.
    *
-   * @param runtime - The call the timer belongs to.
-   * @param ms - How long to wait.
    */
   function delay(runtime: SimRuntime, ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -1321,7 +1137,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       runtime.timers.add(timer);
     });
   }
-
   /** Resolve when `promise` does, or reject with the message when the timer fires first. */
   function raceTimeout(
     runtime: SimRuntime,
@@ -1347,20 +1162,9 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     });
   }
 
-  // --- the relay ----------------------------------------------------------------------------
-
   /**
    * Open the relay socket, answer each agent utterance with the next scripted turn, and stop on the
    * dialogue's `end`, on a drop, on a close or on a timeout (AAP 0.5.6).
-   *
-   * The socket is signed over the relay URL exactly as the TwiML wrote it — the public `wss://`
-   * address — while the connection goes to the target's host, so the API's signature check over its
-   * own `publicRelayUrl` matches. A refused upgrade (over `VOICE_RELAY_MAX_SESSIONS`, or a bad
-   * signature) is recorded as `relayRefusedStatus` and ends the call `failed`: AAP 0.3.2 gives a
-   * refused relay no error code, because Twilio reports it as a failed call of its own.
-   *
-   * @param runtime - The call, whose TwiML and socket this reads and writes.
-   * @param language - The language the conversation opens in, from the TwiML or the scenario.
    */
   async function runRelay(runtime: SimRuntime, language: CallLanguage): Promise<void> {
     const { call, scenario } = runtime;
@@ -1374,7 +1178,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       runtime.finalOverride = { status: 'failed' };
       return;
     }
-
     let socketUrl: string;
     try {
       const base = new URL(address);
@@ -1385,13 +1188,11 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       runtime.finalOverride = { status: 'failed' };
       return;
     }
-
     const pending: RelayEvent[] = [];
     const waiters: { resolve: (event: RelayEvent) => void; timer: NodeJS.Timeout | null }[] = [];
     const closed = deferred();
     let currentLanguage = language;
     let utterance = '';
-
     /** Hand one event to the loop, or hold it until the loop asks for one. */
     function deliver(event: RelayEvent): void {
       const waiter = waiters.shift();
@@ -1404,7 +1205,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       }
       waiter.resolve(event);
     }
-
     /** The next event, or `timeout` when the step outlasts the step bound. */
     function nextEvent(): Promise<RelayEvent> {
       return new Promise<RelayEvent>((resolve) => {
@@ -1428,7 +1228,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         waiters.push(waiter);
       });
     }
-
     /** Wake every waiting step with a close, so an abort cannot leave one hanging. */
     function wake(): void {
       closed.resolve();
@@ -1443,7 +1242,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         waiter.resolve({ kind: 'closed' });
       }
     }
-
     /** Read one frame the agent sent (AAP 0.5.6). */
     function onAgentFrame(value: unknown): void {
       const frame = RelayOutboundFrame.safeParse(value);
@@ -1482,24 +1280,20 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
           return;
       }
     }
-
     const socket = new WebSocket(socketUrl, {
       headers: { 'X-Twilio-Signature': twilioSignature(relayUrl) },
     });
     runtime.socket = socket;
-
     // The handshake's outcome, as a promise rather than a flag: the listeners below settle it, and a
     // promise cannot be narrowed by the analysis the way a `let` the listeners assign would be.
     let handshake: (outcome: 'open' | 'refused' | 'failed') => void = () => undefined;
     const ready = new Promise<'open' | 'refused' | 'failed'>((resolve) => {
       handshake = resolve;
     });
-
     runtime.wake = (): void => {
       wake();
       handshake('failed');
     };
-
     socket.on('open', () => {
       handshake('open');
     });
@@ -1527,7 +1321,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         warn(runtime, 'invalid_agent_frame', 'unparseable');
       }
     });
-
     const outcome = await ready;
     if (outcome !== 'open') {
       runtime.finalOverride = { status: 'failed' };
@@ -1536,7 +1329,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     if (call.aborted) {
       return;
     }
-
     const setup = RelayInboundFrame.safeParse({
       type: 'setup',
       sessionId: `VX${randomBytes(16).toString('hex')}`,
@@ -1553,7 +1345,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       return;
     }
     socket.send(JSON.stringify(setup.data));
-
     let sent = 0;
     for (;;) {
       // Before the first prompt and before waiting for one is the drop that leaves no data at all.
@@ -1579,7 +1370,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       if (event.kind === 'end') {
         break;
       }
-
       // The agent finished an utterance: answer it with the next scripted turn. A script with none
       // left leaves the loop waiting for the agent's own ending, which the step bound finishes.
       const turn = scenario.loopLastTurn === true ? lastTurn(scenario.turns) : scenario.turns[sent];
@@ -1601,7 +1391,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         break;
       }
     }
-
     if (socket.readyState === socket.OPEN) {
       socket.close(1000);
     }
@@ -1611,7 +1400,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       await Promise.race([closed.promise, delay(runtime, stepTimeoutMs)]);
     }
   }
-
   /** Send one scripted utterance as a final `prompt` frame. `false` ends the relay loop. */
   function sendPrompt(
     runtime: SimRuntime,
@@ -1639,8 +1427,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     return true;
   }
 
-  // --- the target, the call store and the suite's controls -----------------------------------
-
   /** Build the two URLs and the create parameters {@link StartCallInput} does not carry. */
   function buildCreateParams(input: StartCallInput): SimCallCreateParams {
     const query = `attemptId=${encodeURIComponent(input.attemptId)}`;
@@ -1657,7 +1443,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       machineDetection: null,
     };
   }
-
   /** What the SDK's create request said, as evidence about recording, the bound and the events. */
   function observedCreateParams(params: SimCallCreateParams): SimCreateParams {
     return {
@@ -1668,7 +1453,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       statusCallbackMethod: params.statusCallbackMethod,
     };
   }
-
   /** Abort every call in flight and forget the calls, the assignments and the vendor switch. */
   function reset(): void {
     for (const runtime of runtimes) {
@@ -1680,7 +1464,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
     down = false;
     defaultScenario = initialDefault;
   }
-
   const target: SimulatorTarget = {
     startCall(input: SimCallCreateParams | StartCallInput): Promise<{
       sid: string;
@@ -1692,14 +1475,12 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         const explicit = fromSdk ? undefined : input.scenario;
         const name = resolveScenarioName(params.to, explicit);
         const scenario = scenarioNamed(name);
-
         // A down vendor never leaves a call behind: the create is refused before the call exists,
         // which is what makes the dispatch failure *definite* rather than one the task may never
         // redial (AAP 0.3.2, AAP 0.12.1 criterion 17).
         if (down || scenario.vendor === 'down') {
           throw vendorDownError();
         }
-
         const runtime = createRuntime(
           params,
           name,
@@ -1725,19 +1506,16 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
       }
     },
-
     fetchCall(sid: string): SimCallResource | null {
       const runtime = bySid.get(sid);
       return runtime === undefined ? null : toResource(runtime);
     },
-
     listCalls(filter: SimCallListFilter): SimCallResource[] {
       return [...runtimes]
         .reverse()
         .filter((runtime) => matchesFilter(runtime, filter))
         .map((runtime) => toResource(runtime));
     },
-
     isVendorDown(to?: string): boolean {
       if (down) {
         return true;
@@ -1746,23 +1524,18 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       return scenarios.get(name)?.vendor === 'down';
     },
   };
-
   return {
     ...target,
     httpClient: createSimulatorHttpClient(target),
-
     get calls(): readonly SimCall[] {
       return runtimes.map((runtime) => runtime.call);
     },
-
     get defaultScenario(): ScenarioName {
       return defaultScenario;
     },
-
     setTarget(url: string): void {
       targetUrl = readHttpOrigin(url, 'targetUrl');
     },
-
     setScenarioFor(e164: string, name: ScenarioName): void {
       if (!E164.safeParse(e164).success) {
         throw new Error('setScenarioFor requires an E.164 number');
@@ -1770,27 +1543,22 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       scenarioNamed(name);
       assignments.set(e164, name);
     },
-
     setDefaultScenario(name: ScenarioName): void {
       scenarioNamed(name);
       defaultScenario = name;
     },
-
     vendorDown(on: boolean): void {
       down = on;
     },
-
     startCall(input: SimCallCreateParams | StartCallInput): Promise<{
       sid: string;
       status: 'queued';
     }> {
       return target.startCall(input);
     },
-
     callsTo(e164: string): readonly SimCall[] {
       return runtimes.filter((runtime) => runtime.call.to === e164).map((runtime) => runtime.call);
     },
-
     async waitForCall(callSid: string, options: { timeoutMs?: number } = {}): Promise<SimCall> {
       const runtime = bySid.get(callSid);
       if (runtime === undefined) {
@@ -1810,7 +1578,6 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
       }
       return runtime.call;
     },
-
     async waitIdle(options: { timeoutMs?: number } = {}): Promise<void> {
       const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
       const deadline = Date.now() + timeoutMs;
@@ -1832,18 +1599,12 @@ export function createVoiceSimulator(options: VoiceSimulatorOptions): VoiceSimul
         );
       }
     },
-
     reset,
-
     close(): void {
       reset();
     },
   };
 }
-
-// ---------------------------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------------------------
 
 /** The last turn of a script, which a `loopLastTurn` scenario repeats. */
 function lastTurn(turns: readonly ScenarioTurn[]): ScenarioTurn | undefined {
@@ -1961,16 +1722,12 @@ function toRfc2822(date: Date): string {
  * shape is fixed by `modules/voice-agent/twiml.ts`, and the three things a suite reads off it — the
  * relay address, the greeting, the parameters — sit in its first tag. Every attribute value is
  * unescaped, because the greeting carries the city's own apostrophes and accents.
- *
- * @param xml - The document the TwiML route answered with.
- * @returns Everything {@link SimTwiml} carries but the HTTP status, which the fetch set.
  */
 function parseTwiml(xml: string): Omit<SimTwiml, 'httpStatus'> {
   const relay = /<\s*ConversationRelay\b([^>]*)>/i.exec(xml);
   const attributes = relay === null ? {} : readAttributes(relay[1] ?? '');
   const language = attributes['language'];
   const parsedLanguage = language === undefined ? null : CallLanguage.safeParse(language);
-
   return {
     hangup: /<\s*Hangup\b/i.test(xml),
     relayUrl: attributes['url'] ?? null,
@@ -2033,10 +1790,6 @@ function fromCodePoint(match: string, digits: string, radix: number): string {
     : match;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The standalone server and its CLI (AAP 0.6.2, AAP 0.11.2)
-// ---------------------------------------------------------------------------------------------
-
 /** The port `VOICE_SIM_URL`'s server listens on when `PORT` names none. */
 const DEFAULT_VOICE_SIM_PORT = 4010;
 
@@ -2077,15 +1830,6 @@ export interface VoiceSimulatorServer {
  * the SDK builds to `VOICE_SIM_URL`, so `apps/workers` dispatches through it with no credential and no
  * network; and the compose `voice-sim` service is this binary with `API_PUBLIC_URL` and
  * `VOICE_SIM_TARGET_URL` set.
- *
- * `vendor-down` is the one scenario this server refuses, on both surfaces: an accepted connection
- * cannot be refused at the TCP layer, so destroying it yields a non-definite error the dispatcher must
- * treat as ambiguous, which is not what criterion 17 checks. The in-process simulator, where
- * {@link vendorDownError} is thrown before the connection is made, is the only place it means what it
- * says.
- *
- * @param options - The port, the bind address, the two URLs and the scenarios.
- * @returns The server, its simulator and its `close`.
  */
 export async function startVoiceSimulatorServer(
   options: VoiceSimulatorServerOptions,
@@ -2098,7 +1842,6 @@ export async function startVoiceSimulatorServer(
     scenarios,
     ...(options.defaultScenario === undefined ? {} : { defaultScenario: options.defaultScenario }),
   });
-
   /** Answer one REST request from the SDK's forwarding transport (AAP 0.3.3). */
   async function serveRest(
     request: IncomingMessage,
@@ -2118,7 +1861,6 @@ export async function startVoiceSimulatorServer(
       typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body ?? null),
     );
   }
-
   /** Answer the simulator's own control routes, which a suite or an operator script calls. */
   async function serveControl(
     request: IncomingMessage,
@@ -2145,7 +1887,6 @@ export async function startVoiceSimulatorServer(
     }
     return false;
   }
-
   const server = createServer((request, response) => {
     void (async (): Promise<void> => {
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? host}`);
@@ -2182,18 +1923,15 @@ export async function startVoiceSimulatorServer(
       }
     })();
   });
-
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(options.port, host, () => {
       resolve();
     });
   });
-
   const bound = server.address();
   const port = typeof bound === 'object' && bound !== null ? bound.port : options.port;
   const reachable = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-
   return {
     url: `http://${reachable}:${port}`,
     simulator,
@@ -2217,11 +1955,6 @@ export async function startVoiceSimulatorServer(
  * raised, because a client still uploading when the server answers can see its socket reset instead
  * of reading the response. The refusal is {@link payloadTooLargeError}, and the server answers it
  * with `413` and {@link PAYLOAD_TOO_LARGE} (AAP 0.11.1).
- *
- * @param request - The request whose body to read.
- * @returns The body, as text, when it is within the bound.
- * @throws An `Error` carrying `code: 'PAYLOAD_TOO_LARGE'` for a body over the bound, and the
- *   request stream's own error when it fails.
  */
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -2363,7 +2096,6 @@ async function runVoiceSimulatorCli(): Promise<void> {
   const targetUrl = requireCliVariable('VOICE_SIM_TARGET_URL');
   const defaultScenario = readCliDefaultScenario(process.env['VOICE_SIM_DEFAULT_SCENARIO']);
   const assignments = readCliAssignments(process.env['VOICE_SIM_SCENARIOS']);
-
   const server = await startVoiceSimulatorServer({
     port,
     apiPublicUrl,
@@ -2373,7 +2105,6 @@ async function runVoiceSimulatorCli(): Promise<void> {
   for (const [number, name] of assignments) {
     server.simulator.setScenarioFor(number, name);
   }
-
   const stop = (): void => {
     void server.close().then(() => {
       process.exit(0);

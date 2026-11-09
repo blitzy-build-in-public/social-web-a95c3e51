@@ -1,37 +1,11 @@
 /**
- * The witnessed check-in of AAP 0.5.4 and criterion 6 (AAP 0.8.1): the venue's rotating code, the
- * 150 m geofence, the window from `startsAt − 15 min` to `startsAt + 45 min`, and what an attempt
- * leaves behind. The geofence's own edge is probed as well, not only the distances either side of
- * it: its boundary cases stand where the database's `ST_Project` places them and are pinned with the
- * metres the route's own `ST_Distance` reports back, which is the one place an implementation
- * comparing `< 150` can be caught (a degree offset cannot stand there — see {@link projected}).
+ * The witnessed check-in: the venue's rotating code, the 150 m geofence, the window from
+ * `startsAt − 15 min` to `startsAt + 45 min`, and what an attempt leaves behind.
  *
- * Three contracts are pinned, each of them a rule the product depends on:
- *
- *  - **The refusals arrive in the contract's order** (AAP 0.5.4): `403 not_participant`,
- *    `409 not_locked`, `409 already_checked_in`, `410 outside_window`, `422 invalid_code`,
- *    `422 outside_geofence`. A request breaking two rules is answered with the first, so the
- *    precedence case submits a wrong code from 200 metres away and reads `invalid_code`.
- *  - **The code is the server's** (AAP 0.5.7): the accepted counters are `T` and one step either
- *    side of it, and a code two steps old is refused — criterion 6's row. No instant here is
- *    device-supplied: every reading comes from the injected `TestClock`, moved onto a meetup's own
- *    boundaries, and the code itself from the venue's own secret.
- *  - **The stored row holds no coordinates** (AAP 0.5.2, 0.12.2): `check_in` carries no coordinate
- *    column, a pass keeps its result and its distance bucket alone, and a refusal that passed the
- *    status and window checks commits a `fail` row with its failure code and a null bucket.
- *
- * The second pass has its own group: it sets `Meetup.bothCheckedInAt` and emits exactly one
- * `both_checked_in` funnel stage, whichever order the two attendees arrive in, and it does not wait
- * for settlement (AAP 0.5.7).
- *
- * Every secret is minted by a fixture at run time and every instant comes from the injected clock,
- * so nothing credential-shaped is written here (AAP 0.11.1).
- *
- * @see AAP 0.5.7 for the acceptance rule and the rotating code, 0.5.4 for the route and its error
- *   order, 0.5.2 for the `CheckIn` columns, 0.11.2 for the harness this file drives, 0.12.1 for
- *   criterion 6, and 0.8.1 for its place in the inventory.
+ * Two rules the cases turn on: the refusals arrive in the contract's order, so a request breaking
+ * two rules is answered with the first, and the stored row holds the result and a distance bucket
+ * and no coordinate column at all.
  */
-
 import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -79,13 +53,10 @@ import type {
   VenueFixture,
 } from '../support/factories.ts';
 
-/** `POST /v1/meetups/:id/check-in`, under the `/v1` prefix the composition root mounts (AAP 0.5.1). */
 const CHECK_IN_PATH = (meetupId: string): string => `/v1/meetups/${meetupId}/check-in`;
 
-/** `GET /v1/venue/check-in-code`: the code the console of a venue displays at the clock's instant. */
 const VENUE_CODE_PATH = '/v1/venue/check-in-code';
 
-/** One of the five seeded launch cities; a venue belongs to a city, not to the suite. */
 const CITY_ID = 'lisbon';
 
 /** A venue location no rule or fixture produces by accident (AAP 0.12.2): a value that leaked into
@@ -104,14 +75,11 @@ const NEAR_METERS = DISTANCE_BUCKET_SPLIT_METERS - 20; // 30 m: inside the geofe
 const MID_METERS = DISTANCE_BUCKET_SPLIT_METERS + 70; // 120 m: bucket `m50_150`
 const FRINGE_METERS = GEOFENCE_METERS - 10; // 140 m: still inside the geofence
 const OUTSIDE_METERS = GEOFENCE_METERS + 50; // 200 m: criterion 6's refusal
-
-/** The counters a venue's code is accepted for: `T` and {@link CODE_TOLERANCE_STEPS} either side. */
 const TOLERATED_STEPS: readonly number[] = Array.from(
   { length: 2 * CODE_TOLERANCE_STEPS + 1 },
   (_unused, index) => index - CODE_TOLERANCE_STEPS,
 );
 
-/** The app these cases drive, built once for the file (AAP 0.11.2). */
 let t: TestApp;
 
 beforeAll(async () => {
@@ -129,9 +97,6 @@ afterAll(async () => {
   await t.close();
 });
 
-/* Fixtures (AAP 0.5.2, 0.5.3) */
-
-/** One meetup, its venue, its two attendees and an account that is in neither side of it. */
 interface Base {
   readonly venue: VenueFixture;
   readonly meetup: MeetupFixture;
@@ -141,10 +106,10 @@ interface Base {
 }
 
 /**
- * A meetup in `status` for a fresh pair at a fresh secret-bearing venue (AAP 0.5.3). `makeMeetup`
- * writes the rows the state machine would have left, so a `held` deposit is a real authorization at
- * the provider this run points at — the stateful proxy in `STRIPE_MODE=mock` — and the default start
- * is two hours out for a meetup that is still open and three hours back for a final one.
+ * A meetup in `status` for a fresh pair at a fresh secret-bearing venue. `makeMeetup` writes the
+ * rows the state machine would have left, so a `held` deposit is a real authorization at the
+ * provider this run points at; the default start is two hours out when open, three hours back when
+ * final.
  */
 async function pairIn(status: MeetupStatus): Promise<Base> {
   const venue = await makeVenue(t, { cityId: CITY_ID, ...VENUE_LOCATION });
@@ -152,7 +117,6 @@ async function pairIn(status: MeetupStatus): Promise<Base> {
   const recipient = await makeUser(t);
   const stranger = await makeUser(t);
   const meetup = await makeMeetup(t, { status, initiator, recipient, venue });
-
   return { venue, meetup, initiator, recipient, stranger };
 }
 
@@ -163,14 +127,12 @@ async function lockedPair(): Promise<Base> {
   return base;
 }
 
-/** The same, with the clock on the far side of one end of the check-in window (AAP 0.5.7). */
 async function lockedPairPast(point: MeetupPoint, offsetMs: number): Promise<Base> {
   const base = await lockedPair();
   t.time.toMeetupPoint(base.meetup, point, offsetMs);
   return base;
 }
 
-/** The secret a fixture minted, as the value `withSecret: true` promises. */
 function issued(secret: string | null): string {
   if (secret === null) {
     throw new Error('the fixture was built without a console secret');
@@ -178,9 +140,6 @@ function issued(secret: string | null): string {
   return secret;
 }
 
-/* Requests (AAP 0.5.4, 0.5.7) */
-
-/** The device coordinates a case submits: due north of the venue by `meters` (AAP 0.5.7). */
 function offsetMeters(origin: LatLng, meters: number): LatLng {
   return { lat: origin.lat + meters / METERS_PER_DEGREE_LAT, lng: origin.lng };
 }
@@ -216,12 +175,10 @@ async function projected(venue: VenueFixture, meters: number): Promise<LatLng> {
                ) AS p
       ) AS projected
   `;
-
   const row = rows[0];
   if (row === undefined) {
     throw new Error(`ST_Project returned no coordinate ${meters} m north of the venue`);
   }
-
   return { lat: row.lat, lng: row.lng };
 }
 
@@ -241,21 +198,18 @@ async function projected(venue: VenueFixture, meters: number): Promise<LatLng> {
  */
 async function measuredMeters(venue: VenueFixture, point: LatLng): Promise<number> {
   const meters = await distanceFrom(t.services.db, 'venue', venue.id, point, t.env.APP_ENV);
-
   if (meters === null) {
     throw new Error('the venue carries no location to measure the probe from');
   }
   return meters;
 }
 
-/** The code the venue's console displays at the clock's current instant (AAP 0.5.4). */
 async function displayedCode(secret: string): Promise<string> {
   const response = await callRoute(t.app, {
     method: 'GET',
     url: VENUE_CODE_PATH,
     headers: { [VENUE_SECRET_HEADER]: secret },
   });
-
   expect(response.status, `GET /v1/venue/check-in-code answered ${response.status}`).toBe(200);
   return VenueCodeResponse.parse(response.json()).code;
 }
@@ -266,7 +220,6 @@ async function displayedCode(secret: string): Promise<string> {
  */
 function unmatchedCode(secret: string, now: Date): string {
   const accepted = new Set(TOLERATED_STEPS.map((step) => codeFor(secret, shifted(now, step)).code));
-
   for (let value = 0; value < 10 ** CODE_DIGITS; value += 1) {
     const candidate = String(value).padStart(CODE_DIGITS, '0');
     if (!accepted.has(candidate)) {
@@ -276,18 +229,13 @@ function unmatchedCode(secret: string, now: Date): string {
   throw new Error('every six-digit code is tolerated, which no venue secret can produce');
 }
 
-/** `at` moved by `steps` of {@link CODE_STEP_SECONDS}, which is what a code's counter counts. */
 function shifted(at: Date, steps: number): Date {
   return new Date(at.getTime() + steps * CODE_STEP_SECONDS * 1000);
 }
 
-/** What a case may replace in one submitted check-in. */
 interface AttemptOptions {
-  /** The meetup to check in to; the base's own unless a case asks for another (the unknown id). */
   readonly meetupId?: string;
-  /** The code to submit; the venue's current one otherwise. */
   readonly code?: string;
-  /** How far from the venue the device stands, due north. Default {@link NEAR_METERS}. */
   readonly distanceM?: number;
   /** The exact coordinates to submit, for a case that must stand on a measured boundary; the
    * {@link offsetMeters} of `distanceM` otherwise (AAP 0.5.7). */
@@ -306,7 +254,6 @@ async function attemptCheckIn(
   const code = options.code ?? (await displayedCode(issued(base.venue.secret)));
   const at = options.point ?? offsetMeters(base.venue, options.distanceM ?? NEAR_METERS);
   const meetupId = options.meetupId ?? base.meetup.id;
-
   // The access token is signed at the clock's current instant, so a case that jumped an hour
   // forward does not present the expired one `makeUser` minted (AAP 0.3.3).
   return callRoute(t.app, {
@@ -317,7 +264,6 @@ async function attemptCheckIn(
   });
 }
 
-/** Assert a `200` and parse the shared `CheckInResponse`, which every accepted case reads. */
 function expectAccepted(response: RouteResponse): CheckInResponse {
   expect(
     response.status,
@@ -326,19 +272,14 @@ function expectAccepted(response: RouteResponse): CheckInResponse {
   return CheckInResponse.parse(response.json());
 }
 
-/* Stored state (AAP 0.5.2, 0.12.2) */
-
-/** The columns `table` holds, from the catalog: what the migration actually created. */
 async function tableColumns(table: string): Promise<string[]> {
   const held = await t.services.db.$queryRaw<{ column_name: string }[]>`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = ${table}
   `;
-
   return held.map((row) => row.column_name).sort();
 }
 
-/** The one check-in row `user` left on `meetupId`, as the three fields a case asserts on. */
 async function checkInRow(meetupId: string, user: FixtureRef) {
   return t.services.db.checkIn.findFirst({
     where: { meetupId, userId: user.id },
@@ -346,29 +287,22 @@ async function checkInRow(meetupId: string, user: FixtureRef) {
   });
 }
 
-/** How many `both_checked_in` stages the meetup emitted: one, and only on the second pass. */
 async function bothCheckedInEvents(meetupId: string): Promise<number> {
   return t.services.db.analyticsEvent.count({ where: { name: 'both_checked_in', meetupId } });
 }
 
-/** `Meetup.bothCheckedInAt`, the instant the pair's second pass set, or null. */
 async function bothCheckedInAt(meetupId: string): Promise<Date | null> {
   const meetup = await t.services.db.meetup.findUniqueOrThrow({
     where: { id: meetupId },
     select: { bothCheckedInAt: true },
   });
-
   return meetup.bothCheckedInAt;
 }
 
-/* Refusals (AAP 0.5.4, criterion 6) */
-
-/** One refusal, the request that earns it, and the answer the contract fixes (AAP 0.5.4). */
 interface RefusalRow {
   readonly label: string;
   readonly status: number;
   readonly code: ErrorCode;
-  /** The meetup to attempt against; a locked pair at its start unless a row asks for another. */
   readonly pair?: () => Promise<Base>;
   readonly attempt: (base: Base) => Promise<RouteResponse>;
 }
@@ -432,7 +366,6 @@ it.each(rows(REFUSALS))(
   },
 );
 
-/** One rejected attempt that still commits a `fail` row (AAP 0.5.2, 0.5.4). */
 interface RejectionRow {
   readonly label: string;
   readonly code: ErrorCode;
@@ -487,22 +420,17 @@ it.each(rows(REJECTIONS))('answers 422 $code for $label', async ({ code, attempt
 
 it('answers invalid_code when the code and the distance are both wrong', async () => {
   const base = await lockedPair();
-
   const response = await attemptCheckIn(base, base.initiator, {
     code: unmatchedCode(issued(base.venue.secret), t.time.now()),
     distanceM: OUTSIDE_METERS,
   });
-
   // The code is judged before the geofence (AAP 0.5.4), so the first broken rule is the answer.
   expectError(response, 422, 'invalid_code');
 });
 
-/* Accepted check-ins (AAP 0.5.7, criterion 6) */
-
 describe('an accepted check-in', () => {
   it('is accepted at both ends of the window', async () => {
     const base = await lockedPair();
-
     // Fifteen minutes before the start to 45 minutes after it, both ends inclusive (AAP 0.5.7); the
     // minute beyond either end is refused, one group above.
     t.time.toMeetupPoint(base.meetup, 'startsAt-15m');
@@ -510,7 +438,6 @@ describe('an accepted check-in', () => {
       status: 'locked',
       bothCheckedIn: false,
     });
-
     t.time.toMeetupPoint(base.meetup, 'startsAt+45m');
     expect(expectAccepted(await attemptCheckIn(base, base.recipient))).toEqual({
       status: 'locked',
@@ -522,7 +449,6 @@ describe('an accepted check-in', () => {
     const base = await lockedPair();
     const secret = issued(base.venue.secret);
     const now = t.time.now();
-
     // The tolerance absorbs the round trip between the console and the attendee (AAP 0.5.7).
     const stale = expectAccepted(
       await attemptCheckIn(base, base.initiator, {
@@ -530,7 +456,6 @@ describe('an accepted check-in', () => {
       }),
     );
     expect(stale.bothCheckedIn).toBe(false);
-
     const early = expectAccepted(
       await attemptCheckIn(base, base.recipient, {
         code: codeFor(secret, shifted(now, 1)).code,
@@ -541,14 +466,12 @@ describe('an accepted check-in', () => {
 
   it('stores the bucket the distance falls in, and nothing else about where it was made', async () => {
     const base = await lockedPair();
-
     expect(
       expectAccepted(await attemptCheckIn(base, base.initiator, { distanceM: NEAR_METERS })),
     ).toEqual({ status: 'locked', bothCheckedIn: false });
     expect(
       expectAccepted(await attemptCheckIn(base, base.recipient, { distanceM: MID_METERS })),
     ).toEqual({ status: 'locked', bothCheckedIn: true });
-
     expect(await checkInRow(base.meetup.id, base.initiator)).toEqual({
       result: 'pass',
       distanceBucket: 'lt_50',
@@ -563,9 +486,7 @@ describe('an accepted check-in', () => {
 
   it('is accepted just inside the geofence', async () => {
     const base = await lockedPair();
-
     const response = await attemptCheckIn(base, base.recipient, { distanceM: FRINGE_METERS });
-
     expect(expectAccepted(response)).toEqual({ status: 'locked', bothCheckedIn: false });
     expect(await checkInRow(base.meetup.id, base.recipient)).toEqual({
       result: 'pass',
@@ -576,7 +497,6 @@ describe('an accepted check-in', () => {
 
   it('is accepted at the geofence itself, which an exclusive comparison would refuse', async () => {
     const base = await lockedPair();
-
     // AAP 0.5.7 accepts `ST_Distance(venue.location, point) <= 150` m, so the edge belongs to the
     // accepted side, and the only probe an implementation comparing `< 150` refuses is one the
     // database measures at exactly the geofence. The pin below is the point of this case: it reads
@@ -584,7 +504,6 @@ describe('an accepted check-in', () => {
     // off the edge fails here rather than silently stopping discriminating.
     const onEdge = await projected(base.venue, GEOFENCE_METERS);
     expect(await measuredMeters(base.venue, onEdge)).toBe(GEOFENCE_METERS);
-
     expect(expectAccepted(await attemptCheckIn(base, base.initiator, { point: onEdge }))).toEqual({
       status: 'locked',
       bothCheckedIn: false,
@@ -611,8 +530,6 @@ describe('an accepted check-in', () => {
   });
 });
 
-/* What an attempt leaves behind (AAP 0.5.2, 0.5.7, 0.12.2) */
-
 describe('the rows a check-in leaves', () => {
   /** The two refusals that still record an attempt, having passed the status and window checks. */
   interface RecordedFailure {
@@ -620,7 +537,6 @@ describe('the rows a check-in leaves', () => {
     readonly failureCode: ErrorCode;
     readonly attempt: (base: Base) => Promise<RouteResponse>;
   }
-
   const RECORDED_FAILURES: readonly RecordedFailure[] = [
     {
       label: 'an invalid code',
@@ -636,14 +552,11 @@ describe('the rows a check-in leaves', () => {
       attempt: async (base) => attemptCheckIn(base, base.initiator, { distanceM: OUTSIDE_METERS }),
     },
   ];
-
   it.each(rows(RECORDED_FAILURES))(
     'commits a fail row for $label, with its code and no bucket',
     async ({ failureCode, attempt }) => {
       const base = await lockedPair();
-
       expectError(await attempt(base), 422, failureCode);
-
       expect(await checkInRow(base.meetup.id, base.initiator)).toEqual({
         result: 'fail',
         distanceBucket: null,
@@ -651,7 +564,6 @@ describe('the rows a check-in leaves', () => {
       });
     },
   );
-
   it.each(rows<ParticipantRole>(['initiator', 'recipient']))(
     // `%s` rather than `$first`: this table's rows are bare values, not objects, so the title
     // interpolates the argument.
@@ -659,15 +571,12 @@ describe('the rows a check-in leaves', () => {
     async (first) => {
       const base = await lockedPair();
       const second: ParticipantRole = first === 'initiator' ? 'recipient' : 'initiator';
-
       expect(expectAccepted(await attemptCheckIn(base, base[first])).bothCheckedIn).toBe(false);
       // One pass alone is not the pair's completion, and the funnel stage follows the second only.
       expect(await bothCheckedInAt(base.meetup.id)).toBeNull();
       expect(await bothCheckedInEvents(base.meetup.id)).toBe(0);
-
       const now = t.time.now();
       const both = expectAccepted(await attemptCheckIn(base, base[second]));
-
       expect(both).toEqual({ status: 'locked', bothCheckedIn: true });
       expect((await bothCheckedInAt(base.meetup.id))?.getTime()).toBe(now.getTime());
       expect(await bothCheckedInEvents(base.meetup.id)).toBe(1);
@@ -678,26 +587,22 @@ describe('the rows a check-in leaves', () => {
       ).toBe(2);
     },
   );
-
   it('leaves the submitted coordinates out of every logged field', async () => {
     // `createTestApp` exposes no logger injection point (its options are the environment, the clock,
     // the language model, the gateway and whether to start background work), and pino's default
     // destination writes to fd 1 rather than through `process.stdout`, so the live line is not
     // captured here: the redaction list both processes share is the evidence instead.
     const base = await lockedPair();
-
     expect(expectAccepted(await attemptCheckIn(base, base.initiator))).toEqual({
       status: 'locked',
       bothCheckedIn: false,
     });
-
     // The stored row is the result and the bucket, which is all the coordinates may influence.
     expect(await checkInRow(base.meetup.id, base.initiator)).toEqual({
       result: 'pass',
       distanceBucket: 'lt_50',
       failureCode: null,
     });
-
     // pino censors a field named `lat`, `lng`, `latitude`, `longitude` or `coords` at the bare name
     // and under four wrappers, so a coordinate inside a DTO or a request body is censored too
     // (AAP 0.3.2, 0.11.1).

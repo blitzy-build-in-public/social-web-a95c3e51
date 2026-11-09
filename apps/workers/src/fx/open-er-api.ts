@@ -1,10 +1,9 @@
 /**
- * The daily USD FX table and the conversion built on it (AAP 0.3.3; conversion 0.5.6): `fx-refresh`
- * stores what {@link fetchUsdTable} returns through {@link toFxRows}, and the menu and call
- * pipelines convert a local price with {@link fxRateFor} and {@link toUsdCents}, keeping the rate's
- * date as `fxDate`. The endpoint arrives as an argument and a row's date is the provider's own, so
- * this module reads no environment, no clock and no query of its own — and each failure carries a
- * code, never a response body.
+ * The daily USD FX table and the conversion built on it (AAP 0.3.3; conversion 0.5.6): `fx-refresh` stores what
+ * {@link fetchUsdTable} returns through {@link toFxRows}, and the menu and call pipelines convert a local price
+ * with {@link fxRateFor} and {@link toUsdCents}, keeping the rate's date as `fxDate`. The endpoint arrives as an
+ * argument and a row's date is the provider's own, so this module reads no environment, no clock and no query of
+ * its own, and each failure carries a code rather than a response body.
  */
 
 import { z } from 'zod';
@@ -30,9 +29,9 @@ export type FxCurrency = (typeof FX_CURRENCIES)[number];
  */
 export type UsdTable = {
   /**
-   * The UTC day the provider's rates belong to, `YYYY-MM-DD`, from its own `time_last_update_unix`.
-   * It is what {@link toFxRows} stores as `FxRate.date`, so a table served late keys the day it
-   * belongs to rather than the day the job happened to run.
+   * The UTC day the provider's rates belong to, `YYYY-MM-DD`, from its own `time_last_update_unix`: what
+   * {@link toFxRows} stores as `FxRate.date`, so a table served late keys the day it belongs to rather than the
+   * day the job happened to run.
    */
   date: string;
   /** Units of the quoted currency per 1 USD, by currency code — the provider's direction. */
@@ -49,10 +48,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * The provider's success envelope (AAP 0.3.3), loose because a real table carries many more keys.
- * `result` and `base_code` are pinned — a bad request is answered with `{ result: 'error' }` under
- * HTTP 200, and another unit would be inverted before it was stored — and each rate must be
- * positive, which rules out a division by zero.
+ * The provider's success envelope (AAP 0.3.3), loose because a real table carries many more keys. `result` and
+ * `base_code` are pinned — a bad request is answered with `{ result: 'error' }` under HTTP 200, and another unit
+ * would be inverted before it was stored — and each rate must be positive, which rules out a division by zero.
  */
 const UsdTableResponse = z.looseObject({
   result: z.literal('success'),
@@ -64,10 +62,6 @@ const UsdTableResponse = z.looseObject({
 /**
  * Reads the provider's latest USD table in one request (AAP 0.3.3).
  *
- * @param url The endpoint, `FX_URL` in the workers environment.
- * @param opts An optional deadline, `30_000` ms by default.
- * @returns The table and the UTC date of its last update.
- * @throws Error with no body in the message — `fx_fetch_failed` on a transport failure or a non-2xx
  * answer, `fx_response_invalid` on a body outside the envelope above or on a timestamp no `Date` can
  * represent. `fx-refresh` lets it out to have BullMQ retry, and the rows already stored keep serving
  * conversions ("the last good table stays in use").
@@ -77,7 +71,6 @@ export async function fetchUsdTable(
   opts: { timeoutMs?: number } = {},
 ): Promise<UsdTable> {
   let response: Response;
-
   try {
     response = await fetch(url, {
       headers: { accept: 'application/json' },
@@ -86,34 +79,26 @@ export async function fetchUsdTable(
   } catch (error) {
     throw new Error('fx_fetch_failed: transport', { cause: error });
   }
-
   if (!response.ok) {
     throw new Error(`fx_fetch_failed: HTTP ${response.status}`);
   }
-
   let body: unknown;
-
   try {
     body = await response.json();
   } catch {
     throw new Error('fx_response_invalid');
   }
-
   const parsed = UsdTableResponse.safeParse(body);
-
   if (!parsed.success) {
     throw new Error('fx_response_invalid', { cause: parsed.error });
   }
-
   // Built once, before any getter reads it: an unrepresentable timestamp yields an invalid `Date`
   // whose `toISOString` throws an untyped RangeError, which the envelope's positive integer alone
   // does not rule out.
   const updatedAt = new Date(parsed.data.time_last_update_unix * 1_000);
-
   if (Number.isNaN(updatedAt.getTime())) {
     throw new Error('fx_response_invalid');
   }
-
   return {
     date: updatedAt.toISOString().slice(0, 10),
     rates: parsed.data.rates,
@@ -121,30 +106,22 @@ export async function fetchUsdTable(
 }
 
 /**
- * Turns a fetched table into the `FxRate` rows of the table's own date: one per {@link FX_CURRENCIES}
- * entry, in that order, ready for `createMany` or for `upsert({ where: { date_currency: … } })`.
+ * Turns a fetched table into the `FxRate` rows of the table's own date, one per {@link FX_CURRENCIES} entry and
+ * in that order, ready for `createMany` or for `upsert({ where: { date_currency: … } })`.
  *
- * The provider quotes units of a currency per 1 USD, and the row stores the USD one unit of that
- * currency buys: `FxRate.usdPerUnit = 1 / rates[currency]`, rounded to the column's own scale, so a
- * conversion made from the value computed here and one made from the value the database returns
- * agree (AAP 0.5.6).
- *
- * @param table A table from {@link fetchUsdTable}.
- * @throws Error naming the currency when the table omits one; RangeError on a table date that is not
- * `YYYY-MM-DD`.
+ * The provider quotes units of a currency per 1 USD and the row stores the USD one unit of that currency buys:
+ * `FxRate.usdPerUnit = 1 / rates[currency]`, rounded to the column's own scale, so a conversion made from the
+ * value computed here and one made from the value the database returns agree (AAP 0.5.6).
  */
 export function toFxRows(
   table: UsdTable,
 ): { date: Date; currency: FxCurrency; usdPerUnit: Prisma.Decimal }[] {
   const day = utcDate(table.date);
-
   return FX_CURRENCIES.map((currency) => {
     const rate = table.rates[currency];
-
     if (rate === undefined) {
       throw new Error(`fx_rate_missing: ${currency}`);
     }
-
     return {
       date: day,
       currency,
@@ -156,16 +133,10 @@ export function toFxRows(
 }
 
 /**
- * The rate to convert a price captured on `date` (AAP 0.5.6): the latest row on or before the
- * capture date, so a day whose refresh failed still converts through the last good table — the AAP
- * sets no staleness limit, so none is applied. USD needs no row; it is the stored unit and always
- * converts at 1.
- *
- * @param db The client or the transaction the caller is already in.
- * @param currency The price's ISO 4217 code.
- * @param date The capture date, `YYYY-MM-DD`.
- * @returns The rate and its date, as `fxDate`, or `null` when no row reaches back that far — the
- * caller then drops the item as `currency_unsupported`.
+ * The rate to convert a price captured on `date` (AAP 0.5.6): the latest row on or before the capture date, so a
+ * day whose refresh failed still converts through the last good table, and the AAP sets no staleness limit. USD
+ * needs no row — it is the stored unit and always converts at 1 — and a currency the table does not cover leaves
+ * the caller nothing to convert with, so it drops the item as `currency_unsupported`.
  */
 export async function fxRateFor(
   db: DbClient | DbTx,
@@ -175,30 +146,20 @@ export async function fxRateFor(
   if (currency === 'USD') {
     return { date, usdPerUnit: new Prisma.Decimal(1) };
   }
-
   const row = await db.fxRate.findFirst({
     where: { currency, date: { lte: utcDate(date) } },
     orderBy: { date: 'desc' },
     select: { date: true, usdPerUnit: true },
   });
-
   return row === null
     ? null
     : { date: row.date.toISOString().slice(0, 10), usdPerUnit: row.usdPerUnit };
 }
 
 /**
- * Converts a price in the currency's minor units to whole USD cents (AAP 0.5.6).
- *
- * The computation stays in `Prisma.Decimal` throughout: a float would lose cents at the scale of an
- * IDR amount and could round a repeat of the same conversion differently, and stored money is
- * always integer USD cents (AAP 0.11.1).
- *
- * @param localAmountMinor The amount as parsed, in the currency's minor units.
- * @param currency The price's ISO 4217 code.
- * @param usdPerUnit The rate {@link fxRateFor} returned.
- * @throws RangeError on an amount that is not a non-negative integer, and Error naming the currency
- * when {@link MINOR_UNIT_EXPONENT} does not cover it.
+ * Converts a price in the currency's minor units to whole USD cents (AAP 0.5.6). The computation stays in
+ * `Prisma.Decimal` throughout: a float would lose cents at the scale of an IDR amount, could round a repeat of
+ * the same conversion differently, and stored money is always integer USD cents (AAP 0.11.1).
  */
 export function toUsdCents(
   localAmountMinor: number,
@@ -208,11 +169,9 @@ export function toUsdCents(
   if (!Number.isSafeInteger(localAmountMinor) || localAmountMinor < 0) {
     throw new RangeError('fx_amount_invalid');
   }
-
   if (!isPriceCurrency(currency)) {
     throw new Error(`currency_unsupported: ${currency}`);
   }
-
   return new Prisma.Decimal(localAmountMinor)
     .div(new Prisma.Decimal(10).pow(MINOR_UNIT_EXPONENT[currency]))
     .mul(usdPerUnit)
@@ -222,13 +181,12 @@ export function toUsdCents(
 }
 
 /**
- * Reads a `YYYY-MM-DD` date as the UTC midnight Prisma stores in an `@db.Date` column, so the value
- * is the same day whatever the process's own zone is.
+ * Reads a `YYYY-MM-DD` date as the UTC midnight Prisma stores in an `@db.Date` column, so the value is the same
+ * day whatever the process's own zone is.
  */
 function utcDate(date: string): Date {
   if (!DATE_PATTERN.test(date)) {
     throw new RangeError('fx_date_invalid');
   }
-
   return new Date(`${date}T00:00:00.000Z`);
 }

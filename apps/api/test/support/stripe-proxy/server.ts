@@ -2,31 +2,6 @@
  * The HTTP proxy in front of `stripe-mock`: every Stripe request the API's gateway makes passes
  * through it, the mock validates the request, and every endpoint it models is answered statefully
  * (AAP 0.3.3, AAP 0.4.2, AAP 0.6.2).
- *
- * With `STRIPE_MODE=mock`, `STRIPE_API_BASE` points the `stripe` SDK at this server, so
- * `apps/api/src/modules/payments/stripe-gateway.ts` calls it exactly as it calls `api.stripe.com`,
- * with `stripe/stripe-mock:v0.206.0` behind it as the validator. The order of the four steps is what
- * lets a suite drive the recovery rules of AAP 0.3.2:
- *
- *  1. An `Idempotency-Key` claim, before anything is sent anywhere: a replay is answered from the
- *     stored result, a changed parameter is a `400`, and a concurrent duplicate is a `409`.
- *  2. An injected `fail` fault, refused at once, so the state never performed the request and a retry
- *     under the same key performs it rather than replaying a failure.
- *  3. Validation, by forwarding the original request to `stripe-mock`: a `4xx` it answers is returned
- *     unchanged, and its `2xx` is replaced by the state's own answer for a path the state models.
- *  4. An injected `drop` or `delay` fault, applied around the answer *after* the state has changed —
- *     exactly an ambiguous result, whose effect stands while the caller sees a connection error or a
- *     timeout, and which the operation replays later under its original key.
- *
- * No credential lives here: the SDK's `Authorization` header is forwarded unchanged, and no log line
- * carries a header, a body or a parameter. Time is never read here either — `state.now()` is the only
- * clock — and the two timers this file owns, a `delay` fault and the upstream timeout, are cleared by
- * `close()`.
- *
- * @see AAP 0.3.2 for the idempotency, hold-loss and reconciliation rules this server makes testable;
- *   AAP 0.3.3 for the `stripe-mock` row and the `STRIPE_API_BASE` wiring; AAP 0.4.2 for the image and
- *   the compose service; AAP 0.6.2 for `STRIPE_MOCK_UPSTREAM` and the healthcheck; AAP 0.11.2 for the
- *   integration suites and the faults they inject.
  */
 import { randomBytes } from 'node:crypto';
 import {
@@ -113,8 +88,6 @@ const INTENT_STATUSES = [
  *
  * They are removed from the **validation copy alone** — the copy forwarded to the mock — and never
  * from the parameters the state answers from, so a strip can never change what the proxy performs.
- * The list starts empty on purpose: an entry is added only once an integration run shows the mock
- * refusing a parameter the SDK really sends, and each names the parameter, the mock version and why.
  */
 export const VALIDATION_STRIP_PARAMS: readonly {
   readonly method: string;
@@ -126,15 +99,6 @@ export const VALIDATION_STRIP_PARAMS: readonly {
 /**
  * Parse an `application/x-www-form-urlencoded` body — or a query string — into Stripe's bracket
  * notation (AAP 0.3.3).
- *
- * `metadata[meetupId]=m1` becomes `{ metadata: { meetupId: 'm1' } }`, `expand[0]=latest_charge` and
- * `expand[]=latest_charge` become arrays, `invoice_settings[default_payment_method]=pm_…` nests, and
- * a repeated key appends. Every scalar stays a string, because that is what Stripe sends and what the
- * state's own readers (`scalar`, `integer`, `record`, `expandHas`) expect: `'true'` is a boolean and
- * an amount is a decimal string.
- *
- * @param text - The body or query string, with or without a leading `?`.
- * @returns The parameter tree the mock is validated with and the state is answered from.
  */
 export function parseStripeForm(text: string): StripeParams {
   const params: StripeParams = {};
@@ -148,9 +112,6 @@ export function parseStripeForm(text: string): StripeParams {
 /**
  * Encode a parameter tree back into `application/x-www-form-urlencoded` form: the inverse of
  * {@link parseStripeForm}, used only for the validation copy.
- *
- * @param params - The parameter tree to encode.
- * @returns The encoded body.
  */
 export function encodeStripeForm(params: StripeParams): string {
   const search = new URLSearchParams();
@@ -355,7 +316,6 @@ function headerOf(request: IncomingMessage, name: string): string | undefined {
  * is still uploading when the server answers would otherwise see its socket reset instead of the
  * refusal (AAP 0.11.1).
  *
- * @throws A {@link PayloadTooLargeError} for a body over the bound, and the stream's own error.
  */
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -483,14 +443,12 @@ async function serveStripe(
   const abortClaim = (): void => {
     if (claimKey !== null) runtime.state.idempotencyAbort(claimKey);
   };
-
   const fault = runtime.state.takeFault(target.method, target.path);
   if (fault !== null && fault.kind === 'fail') {
     abortClaim();
     writeAnswer(target, response, faultAnswer(fault.status ?? 500));
     return;
   }
-
   const validated = await forwardToUpstream({
     upstream: runtime.upstream,
     target,
@@ -557,10 +515,6 @@ interface ForwardOptions {
 /**
  * Validate one request by sending it to `stripe-mock` and reading its answer (AAP 0.3.3).
  *
- * @param options - The upstream, the request, the body to validate and the timers to track.
- * @returns The mock's answer, or `null` when it could not be reached or did not answer inside
- *   {@link UPSTREAM_TIMEOUT_MS}; the caller answers that with `500 api_error`, so a mock that is not
- *   running fails a suite visibly instead of looking like a request the provider refused.
  */
 function forwardToUpstream(options: ForwardOptions): Promise<UpstreamAnswer | null> {
   const { upstream, target, body, timers } = options;
@@ -887,10 +841,6 @@ export interface StripeProxy {
  * or events: a `globalSetup` starts it on an ephemeral port and hands the URL to every worker, and the
  * compose `stripe-proxy` service is the same server bound to `0.0.0.0`.
  *
- * @param options - The port, the upstream and the bind address.
- * @returns The running proxy. `close` clears the delay timers, drops the open connections and then
- *   stops listening, and it is idempotent, because a teardown may call it after a failure.
- * @throws When `upstream` is not an absolute HTTP URL, or when the port cannot be bound.
  */
 export async function startStripeProxy(options: StripeProxyOptions): Promise<StripeProxy> {
   const upstream = upstreamUrl(options.upstream);

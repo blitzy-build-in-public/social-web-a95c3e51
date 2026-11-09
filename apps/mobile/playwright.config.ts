@@ -1,44 +1,32 @@
 /**
  * Playwright configuration for the Tablemate web end-to-end suite (AAP 0.8.1, 0.11.2).
  *
- * `pnpm --filter @tablemate/mobile e2e:web` runs this file — `playwright test -c playwright.config.ts`
- * — against the stack `scripts/e2e.ts` has already started (`docker compose up -d --wait`), which is
- * why no `webServer` is configured here: the suite starts nothing and only reads the origins below.
+ * `pnpm --filter @tablemate/mobile e2e:web` runs this file against the stack `scripts/e2e.ts` has already started, which
+ * is why no `webServer` is configured here: the suite starts nothing and only reads the origins below.
  *
- * The suite is serial by construction. One stack, one seeded city day and one test clock are shared by
- * every spec, and the harness keeps at most one browser context per actor at a time (`contextFor`
- * refuses a second), so `workers: 1` with `fullyParallel: false` is what the specs assume. A retry
- * would replay a walk whose holds and nullifiers are already spent, so `retries` stays 0.
+ * The suite is serial by construction. One stack, one seeded city day and one test clock are shared by every spec, and
+ * the harness keeps at most one browser context per actor at a time, so `workers: 1` with `fullyParallel: false` is what
+ * the specs assume; a retry would replay a walk whose holds and nullifiers are already spent, so `retries` stays 0.
  *
- * Chromium runs every spec. Firefox and WebKit run `web-proving.spec.ts` alone: it is the one walk
- * that proves the fixture booking on the device, and AAP 0.3.4 requires that proof to be generated in
- * each engine's own build — "the two latest Chrome, Safari and Firefox" read as their desktop
- * releases (AAP 0.7.3), so every project below takes a desktop device descriptor. The accessibility
- * audit stays in the Chromium project for the reason that spec's own header gives, and the criterion
- * walks are Chrome walks because they drive the app's file picker, clock and geolocation.
+ * Chromium runs every spec; Firefox and WebKit run `web-proving.spec.ts` alone, because AAP 0.3.4 requires that proof to
+ * be generated in each engine's own build, so every project takes a desktop device descriptor. The accessibility audit
+ * stays in the Chromium project for the reason that spec's own header gives, and the criterion walks are Chrome walks
+ * because they drive the app's file picker, clock and geolocation.
  *
  * Environment — the four origins and the two modes the harness uses, with the names and defaults of
- * `e2e/playwright/support/api-actor.ts`, which reads them itself for the specs. Nothing here is
- * exported for a spec to import.
- *   - `E2E_WEB_URL` (`http://localhost:8080`) — the web app's origin, and `use.baseURL` below.
- *   - `E2E_CONSOLE_URL` (`http://localhost:8090`) — the venue and lodging console's origin.
- *   - `E2E_API_URL` (`http://localhost:3000`) — the API's origin; every caller appends `/v1`.
- *   - `E2E_MAILPIT_URL` (`http://localhost:8025`) — Mailpit, where the magic links are read from.
- *   - `STRIPE_MODE` (`mock`) — `test` only on a stack holding Stripe test-mode keys, which is what
- *     lets the criterion walks confirm a card (AAP 0.11.2); `mock` skips them with `BLOCKED_REASON`.
- *   - `TEST_CONTROL_TOKEN` — no default, and deliberately absent from `metadata`, which is written to
- *     disk and read by `docs/acceptance.md`. A spec that needs the test clock reads it itself and
- *     fails with its name (AAP 0.11.2), so this file neither fails nor skips when it is unset: a
- *     listing of the suite must work with no stack and no token.
+ * `e2e/playwright/support/api-actor.ts`, which reads them itself: `E2E_WEB_URL` (the web app's origin, and
+ * `use.baseURL`), `E2E_CONSOLE_URL`, `E2E_API_URL` (every caller appends `/v1`), `E2E_MAILPIT_URL` (where the magic
+ * links are read from), `STRIPE_MODE` (`test` only on a stack holding Stripe test-mode keys, which is what lets the
+ * criterion walks confirm a card (AAP 0.11.2); `mock` skips them with `BLOCKED_REASON`), and `TEST_CONTROL_TOKEN`,
+ * which has no default and is deliberately absent from `metadata`, because that is written to disk and read by
+ * `docs/acceptance.md`; a spec that needs the test clock reads it itself and fails with its name (AAP 0.11.2), so a
+ * listing of the suite works with no stack and no token.
  *
- * Reports: `.local/e2e/playwright/` under the repository root (git-ignored) holds `results.json` for
- * the run and, under `artifacts/`, the trace and screenshot of a failure. `web-proving.spec.ts` also
- * writes one row per engine to `.local/e2e/web-proving/<engine>.json`, which is what
- * `docs/zk-performance.md` records pass, fail or pending from; the metadata below is what
- * `docs/acceptance.md` takes the mode of a run from (AAP 0.12).
- *
- * Browsers: `pnpm --filter @tablemate/mobile exec playwright install --with-deps chromium firefox
- * webkit`, which `scripts/e2e.ts` runs before the suite.
+ * Reports: `.local/e2e/playwright/` (git-ignored) holds `results.json` for the run and, under `artifacts/`, the trace
+ * and screenshot of a failure; `web-proving.spec.ts` also writes one row per engine to `.local/e2e/web-proving/`, which
+ * is what `docs/zk-performance.md` records pass, fail or pending from, and the metadata below is what
+ * `docs/acceptance.md` takes the mode of a run from (AAP 0.12). Browsers are installed by
+ * `playwright install --with-deps chromium firefox webkit`, which `scripts/e2e.ts` runs before the suite.
  */
 import { defineConfig, devices } from '@playwright/test';
 
@@ -114,14 +102,12 @@ function envVar(name: string): string {
 function originVar(name: string, fallback: string): string {
   const configured = envVar(name).replace(/\/+$/, '');
   const value = configured === '' ? fallback : configured;
-
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
     throw new Error(`${name} must be an origin such as ${fallback}`);
   }
-
   const isOrigin = parsed.pathname === '/' && parsed.search === '' && parsed.hash === '';
   if (!isOrigin || !(parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
     throw new Error(`${name} must be an origin such as ${fallback}`);
@@ -146,23 +132,18 @@ const env = suiteEnv();
 export default defineConfig({
   testDir: './e2e/playwright',
   testMatch: '**/*.spec.ts',
-
   /* One shared stack, one seeded city day and one test clock: the specs run in file order, serially. */
   fullyParallel: false,
   workers: 1,
   retries: 0,
-
   /* A committed `test.only` must fail the run wherever the suite is not being driven by hand: the
    * delivered suite's only driver, `pnpm test:e2e` through `scripts/e2e.ts`, sets no `CI`, and no
    * pipeline file is delivered (AAP 0.7.2), so the guard is unconditional rather than gated on `CI`. */
   forbidOnly: true,
-
   timeout: TEST_TIMEOUT_MS,
   expect: { timeout: EXPECT_TIMEOUT_MS },
-
   outputDir: `${REPORT_DIR}/artifacts`,
   reporter: [['list'], ['json', { outputFile: `${REPORT_DIR}/results.json` }]],
-
   /* The mode the run used belongs to every result it produces (AAP 0.12); the test-control token is
    * part of the same contract and never of the report (AAP 0.12.2). */
   metadata: {
@@ -172,7 +153,6 @@ export default defineConfig({
     mailpitUrl: env.mailpitUrl,
     stripeMode: env.stripeMode,
   },
-
   use: {
     baseURL: env.webUrl,
     trace: 'retain-on-failure',
@@ -181,10 +161,8 @@ export default defineConfig({
     locale: 'en-US',
     timezoneId: 'UTC',
   },
-
   /* Geolocation and permissions are granted per context inside the specs: each context plays a
    * different traveler, standing at the venue that meetup is at (AAP 0.5.7, criterion 6). */
-
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     {

@@ -37,10 +37,8 @@
  * Public domain, no warranty.
  * ---------------------------------------------------------------------------------------------
  *
- * Client-safe: this module runs under Hermes, in the browser Web Worker and in Node, so it imports
- * nothing and uses no Node built-in, no global `Buffer`, no `TextEncoder`, no DOM API and no I/O, and
- * its only module-load work is declaring the constant tables, deriving `SHA256_IV` from them and
- * allocating one scratch buffer.
+ * Client-safe: it imports nothing and uses no Node built-in, no global `Buffer`, no `TextEncoder`, no DOM
+ * API and no I/O; its only module-load work is the constant tables and one scratch buffer.
  */
 
 /**
@@ -57,10 +55,7 @@ const K = new Uint32Array([
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
-/**
- * The eight initial hash words of FIPS 180-4 §5.3.3 — `6a09e667 bb67ae85 3c6ef372 a54ff53a
- * 510e527f 9b05688c 1f83d9ab 5be0cd19`.
- */
+/** The eight initial hash words of FIPS 180-4 §5.3.3. */
 const IV = new Uint32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ]);
@@ -87,7 +82,6 @@ const W = new Uint32Array(64);
 function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: number): void {
   for (let block = 0; block < blocks; block += 1) {
     const base = offset + block * 64;
-
     for (let t = 0; t < 16; t += 1) {
       const at = base + t * 4;
       W[t] =
@@ -97,16 +91,13 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
           (data[at + 3] ?? 0)) >>>
         0;
     }
-
     for (let t = 16; t < 64; t += 1) {
       const w2 = W[t - 2] ?? 0;
       const w15 = W[t - 15] ?? 0;
       const s1 = ((w2 >>> 17) | (w2 << 15)) ^ ((w2 >>> 19) | (w2 << 13)) ^ (w2 >>> 10);
       const s0 = ((w15 >>> 7) | (w15 << 25)) ^ ((w15 >>> 18) | (w15 << 14)) ^ (w15 >>> 3);
-
       W[t] = ((W[t - 7] ?? 0) + s1 + ((W[t - 16] ?? 0) + s0)) >>> 0;
     }
-
     let a = state[0] ?? 0;
     let b = state[1] ?? 0;
     let c = state[2] ?? 0;
@@ -115,7 +106,6 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
     let f = state[5] ?? 0;
     let g = state[6] ?? 0;
     let h = state[7] ?? 0;
-
     for (let t = 0; t < 64; t += 1) {
       const sum1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
       const choose = (e & f) ^ (~e & g);
@@ -123,7 +113,6 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
       const sum0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
       const majority = (a & b) ^ (a & c) ^ (b & c);
       const temp2 = (sum0 + majority) | 0;
-
       h = g;
       g = f;
       f = e;
@@ -133,7 +122,6 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
       b = a;
       a = (temp1 + temp2) | 0;
     }
-
     state[0] = ((state[0] ?? 0) + a) >>> 0;
     state[1] = ((state[1] ?? 0) + b) >>> 0;
     state[2] = ((state[2] ?? 0) + c) >>> 0;
@@ -155,7 +143,6 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
  */
 function stateToBytes(state: Uint32Array): Uint8Array {
   const out = new Uint8Array(32);
-
   for (let i = 0; i < 8; i += 1) {
     const word = state[i] ?? 0;
     const at = i * 4;
@@ -164,7 +151,6 @@ function stateToBytes(state: Uint32Array): Uint8Array {
     out[at + 2] = (word >>> 8) & 0xff;
     out[at + 3] = word & 0xff;
   }
-
   return out;
 }
 
@@ -176,18 +162,17 @@ function stateToBytes(state: Uint32Array): Uint8Array {
 export const SHA256_IV: Uint8Array = stateToBytes(IV);
 
 /**
- * Pads `message` to a whole number of SHA-256 blocks: a `0x80` byte, zeros up to 56 mod 64 bytes,
- * then the message's bit length over eight big-endian bytes (FIPS 180-4 §5.1.1). Mirrors the
- * helpers' `sha256Pad(message, maxShaBytes)`, which returns the same two values as a tuple.
+ * Pads `message` to a whole number of SHA-256 blocks: a `0x80` byte, zeros up to 56 mod 64 bytes, then the
+ * message's bit length over eight big-endian bytes (FIPS 180-4 §5.1.1). Mirrors the helpers'
+ * `sha256Pad(message, maxShaBytes)`, which returns the same two values as a tuple.
  *
  * @param message - The bytes to pad.
- * @param maxLength - The padded buffer's size in bytes: a non-negative multiple of 64, normally the
- *   circuit's header or body bound.
- * @returns The `maxLength`-byte padded buffer, zero-filled beyond `paddedLength`, and the padded
- *   length in bytes.
- * @throws {RangeError} When `maxLength` is not a non-negative multiple of 64, or when the padded
- *   message does not fit in it — the latter is what `build-inputs.ts` maps to `header_too_long` for
- *   the header.
+ * @param maxLength - The padded buffer's size in bytes: a non-negative multiple of 64, normally the circuit's
+ *   header or body bound.
+ * @returns The `maxLength`-byte padded buffer, zero-filled beyond `paddedLength`, and the padded length in
+ *   bytes.
+ * @throws {RangeError} When `maxLength` is not a non-negative multiple of 64, or when the padded message does
+ *   not fit in it — the latter is what `build-inputs.ts` maps to `header_too_long` for the header.
  */
 export function sha256Pad(
   message: Uint8Array,
@@ -196,16 +181,13 @@ export function sha256Pad(
   if (!Number.isInteger(maxLength) || maxLength < 0 || maxLength % 64 !== 0) {
     throw new RangeError('sha256Pad: maxLength is not a non-negative integer multiple of 64');
   }
-
   const paddedLength = 64 * Math.ceil((message.length + 9) / 64);
   if (paddedLength > maxLength) {
     throw new RangeError('sha256Pad: padded length exceeds maxLength');
   }
-
   const padded = new Uint8Array(maxLength);
   padded.set(message, 0);
   padded[message.length] = 0x80;
-
   // The bit length as two big-endian words: len * 8 = hi * 2^32 + lo, exact because every length
   // here is far below 2^53, for which the split below is the same arithmetic the helpers' int64
   // writer performs.
@@ -220,50 +202,46 @@ export function sha256Pad(
   padded[at + 5] = (lo >>> 16) & 0xff;
   padded[at + 6] = (lo >>> 8) & 0xff;
   padded[at + 7] = lo & 0xff;
-
   return { padded, paddedLength };
 }
 
 /**
  * The SHA-256 state after compressing `prefix` to its last block boundary: the helpers'
- * `partialSha(msg, msgLen)`, which is `new Hash().update(msg, msgLen).cacheState()`. Nothing is
- * finalized, so the result is the state the remaining blocks continue from.
+ * `partialSha(msg, msgLen)`, which is `new Hash().update(msg, msgLen).cacheState()`. Nothing is finalized,
+ * so the result is the state the remaining blocks continue from.
  *
  * @param prefix - The whole blocks already hashed; an empty prefix yields {@link SHA256_IV}.
  * @returns A fresh 32-byte state.
- * @throws {RangeError} When `prefix.length` is not a multiple of 64, because a partial block would
- *   leave the state the rest of the message could not continue from.
+ * @throws {RangeError} When `prefix.length` is not a multiple of 64, because a partial block would leave the
+ *   state the rest of the message could not continue from.
  */
 export function partialSha(prefix: Uint8Array): Uint8Array {
   if (prefix.length % 64 !== 0) {
     throw new RangeError('partialSha: prefix length is not a multiple of 64 bytes');
   }
-
   const state = new Uint32Array(IV);
   compress(state, prefix, 0, prefix.length / 64);
-
   return stateToBytes(state);
 }
 
 /**
- * Splits a padded message into the state up to `cut` and the remaining bytes the in-circuit verifier
- * hashes: the helpers' `generatePartialSHA`, which derives the cut from a selector string, with the
- * cut passed in instead. `build-inputs.ts` supplies `cut = max(0, paddedLength - 960)`, so the
- * window the circuit proves over is the whole padded body when it fits and the trailing 960 bytes
- * otherwise, exactly as `circuits/lib/body_window.circom` constrains it.
+ * Splits a padded message into the state up to `cut` and the remaining bytes the in-circuit verifier hashes:
+ * the helpers' `generatePartialSHA`, which derives the cut from a selector string, with the cut passed in
+ * instead. `build-inputs.ts` supplies `cut = max(0, paddedLength - 960)`, so the window the circuit proves
+ * over is the whole padded body when it fits and the trailing 960 bytes otherwise, exactly as
+ * `circuits/lib/body_window.circom` constrains it.
  *
  * @param padded - The padded message from {@link sha256Pad}.
  * @param paddedLength - Its block-aligned padded length; bytes beyond it are padding and are not read.
  * @param cut - Where to split, on a 64-byte boundary of the padded message.
  * @param maxRemaining - The window bound: a non-negative multiple of 64, 960 for the 1,024-byte
  *   `EmailVerifier` body bound.
- * @returns The state after the prefix, the window of `maxRemaining` bytes, and the window's real
- *   length. The helpers copy the whole `padded.slice(cut)` and zero-pad it to the bound; the first
- *   `maxRemaining` bytes of that copy are the ones returned here, which is what the oracle comparison
- *   in `test/inputs.test.ts` reads.
- * @throws {RangeError} When `maxRemaining` is not a non-negative multiple of 64, when `paddedLength`
- *   is not a 64-byte multiple inside `padded`, when `cut` is not a 64-byte boundary of the padded
- *   message, or when the remaining bytes do not fit in `maxRemaining`.
+ * @returns The state after the prefix, the window of `maxRemaining` bytes, and the window's real length. The
+ *   helpers copy the whole `padded.slice(cut)` and zero-pad it to the bound; the first `maxRemaining` bytes of
+ *   that copy are the ones returned here, which is what the oracle comparison in `test/inputs.test.ts` reads.
+ * @throws {RangeError} When `maxRemaining` is not a non-negative multiple of 64, when `paddedLength` is not a
+ *   64-byte multiple inside `padded`, when `cut` is not a 64-byte boundary of the padded message, or when the
+ *   remaining bytes do not fit in `maxRemaining`.
  */
 export function generatePartialSha(
   padded: Uint8Array,
@@ -276,23 +254,18 @@ export function generatePartialSha(
       'generatePartialSha: maxRemaining is not a non-negative integer multiple of 64',
     );
   }
-
   if (!Number.isInteger(paddedLength) || paddedLength % 64 !== 0 || paddedLength > padded.length) {
     throw new RangeError('generatePartialSha: paddedLength is not a 64-byte multiple of padded');
   }
-
   if (!Number.isInteger(cut) || cut % 64 !== 0 || cut < 0 || cut > paddedLength) {
     throw new RangeError('generatePartialSha: cut is not a 64-byte boundary of the padded message');
   }
-
   const bodyRemainingLength = paddedLength - cut;
   if (bodyRemainingLength > maxRemaining) {
     throw new RangeError('generatePartialSha: bodyRemainingLength exceeds maxRemaining');
   }
-
   const precomputedSha = partialSha(padded.subarray(0, cut));
   const bodyRemaining = new Uint8Array(maxRemaining);
   bodyRemaining.set(padded.subarray(cut, paddedLength), 0);
-
   return { precomputedSha, bodyRemaining, bodyRemainingLength };
 }

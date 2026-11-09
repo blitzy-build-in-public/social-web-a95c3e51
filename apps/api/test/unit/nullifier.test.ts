@@ -5,24 +5,17 @@
  * `{ proof, publicSignals }` a proof of a stay this API accepts — and AAP 0.5.5 fixes the order its
  * checks run in: canonical field elements, the Groth16 verification, the published nullifier salt, a
  * registry root this process publishes, the city and issuer that root's registry holds, the two dates
- * as calendar dates, and the 1-120 day stay bound. The order is what gives each refusal its own code —
- * a salt that is not the published one is `proof_invalid` while an unlisted root is
- * `issuer_not_allowlisted` — so every row below is one change from an otherwise accepted submission,
- * and `verifyCalls` states whether a check before the verification already refused it.
+ * as calendar dates, and the 1-120 day stay bound. That order is what gives each refusal its own code
+ * — a salt that is not the published one is `proof_invalid` while an unlisted root is
+ * `issuer_not_allowlisted` — so every row below is one change from an otherwise accepted submission.
+ * The verification itself and the key it is handed are injected, so this suite needs no circuit build:
+ * everything a refusal is decided against — the environment loader, the logger, the committed city,
+ * issuer and registry configuration — is real.
  *
- * The two injectable dependencies AAP 0.5.5 leaves open keep this suite independent of the circuit
- * build, which is git-ignored and absent on a fresh checkout: the verification itself, and the key.
- * What is real is everything a refusal is decided against — the environment loader, the logger, and
- * the committed city, issuer and registry configuration.
- *
- * The second half covers the rule off the circuit, `nullifierOf` of `@tablemate/circuits`:
- * `Poseidon(refLength, pack[ref][0], pack[ref][1], salt)`. Hashing the length with the zero-padded
- * bytes is what makes one booking yield one nullifier however its reference is laid out, which is the
- * key `SpentNullifier` holds (AAP 0.12.2). The `409 nullifier_used` that insert answers belongs to the
- * route, and to `integration/proofs.test.ts`.
- *
- * @see AAP 0.5.4 for the code each refusal answers and the stay bound, 0.6.2 for the credential-free
- *   posture this environment takes, 0.11.1 for the table-driven convention, and 0.8.1 for this file.
+ * The second half covers the rule off the circuit, `nullifierOf` of `@tablemate/circuits`: hashing the
+ * reference length with its zero-padded bytes is what makes one booking yield one nullifier however
+ * the reference is laid out, which is the key `SpentNullifier` holds (AAP 0.12.2). The
+ * `409 nullifier_used` that insert answers belongs to the route, and to `integration/proofs.test.ts`.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -60,8 +53,6 @@ const STATUS = {
 
 /** One of the four codes {@link STATUS} covers. */
 type RefusalCode = keyof typeof STATUS;
-
-/* The refusals' own values, and the stay bound (AAP 0.5.4, 0.5.5) */
 
 /** The published nullifier salt: a short decimal field element, public by design. */
 const NULLIFIER_SALT = '1234567';
@@ -162,8 +153,6 @@ beforeEach(() => {
   verify.mockResolvedValue(true);
 });
 
-/* The accepted submission, built from the committed configuration (AAP 0.5.5) */
-
 /** The configuration value a lookup found, or the failure naming what this run is missing. */
 function required<T>(value: T | undefined, what: string): T {
   if (value === undefined) {
@@ -239,8 +228,6 @@ function addDays(ymd: string, days: number): string {
   const day = String(at.getUTCDate()).padStart(2, '0');
   return `${at.getUTCFullYear()}${month}${day}`;
 }
-
-/* The check order (AAP 0.5.5) */
 
 /**
  * One refusal: the signals that differ from an accepted submission, the code it must answer,
@@ -332,18 +319,14 @@ describe('verifyItineraryProof — the check order of AAP 0.5.5', () => {
       verify.mockResolvedValue(false);
     }
     const checked = { env: row.env ?? SERVICES.env, logger: SERVICES.logger };
-
     await expect(
       verifyItineraryProof(checked, submission(row.signals), DEPS),
     ).rejects.toMatchObject({ code: row.code, httpStatus: STATUS[row.code] });
-
     expect(verify).toHaveBeenCalledTimes(row.verifyCalls ?? 1);
   });
-
   it.each(ACCEPTED_STAYS)('$name is accepted', async ({ days }) => {
     const departureDate = addDays(ARRIVAL, days);
     const accepted = submission({ departureDate });
-
     await expect(verifyItineraryProof(SERVICES, accepted, DEPS)).resolves.toEqual({
       cityId: 'lisbon',
       circuitCityId: LISBON.circuitCityId,
@@ -355,12 +338,9 @@ describe('verifyItineraryProof — the check order of AAP 0.5.5', () => {
       registryRoot: TEST_REGISTRY.root,
     });
   });
-
   it('verifies the submitted proof against the injected key and the signals in order', async () => {
     const accepted = submission();
-
     await verifyItineraryProof(SERVICES, accepted, DEPS);
-
     expect(verify).toHaveBeenCalledExactlyOnceWith(
       VERIFICATION_KEY,
       accepted.publicSignals,
@@ -368,8 +348,6 @@ describe('verifyItineraryProof — the check order of AAP 0.5.5', () => {
     );
   });
 });
-
-/* The nullifier rule (AAP 0.5.5) */
 
 /** A booking reference: the canonical 1-32 bytes the circuit hashes with their length and the salt. */
 const REFERENCE = new TextEncoder().encode('TM-8QF2K1');
@@ -444,18 +422,14 @@ describe('nullifierOf — the nullifier rule of AAP 0.5.5', () => {
   it.each(NULLIFIER_ROWS)('$name', ({ left, right, rightSalt, same }) => {
     const leftHash = nullifierOf(left, NULLIFIER_SALT);
     const rightHash = nullifierOf(right, rightSalt ?? NULLIFIER_SALT);
-
     expect(leftHash === rightHash).toBe(same);
   });
-
   it.each([1, 32])('a %i-byte reference hashes inside the field', (length) => {
     const bytes = Uint8Array.from({ length }, (_, index) => index + 1);
     const value = nullifierOf(bytes, NULLIFIER_SALT);
-
     expect(value).toBeGreaterThanOrEqual(0n);
     expect(value).toBeLessThan(FIELD_ORDER);
   });
-
   it.each(REFUSED_REFERENCES)('$name is refused', ({ reference }) => {
     expect(() => nullifierOf(reference, NULLIFIER_SALT)).toThrow(RangeError);
   });

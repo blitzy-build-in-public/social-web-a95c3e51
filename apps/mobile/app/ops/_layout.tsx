@@ -11,14 +11,13 @@ import {
   colors,
   fontWeights,
   interactionOpacity,
+  layout,
   radii,
   spacing,
   typography,
 } from '@tablemate/shared';
 
 import { useSession } from '../../src/state/session-store';
-
-const MAX_CONTENT_WIDTH = 1200;
 
 const NAV_ITEMS: readonly NavItem[] = [
   { href: '/ops', label: 'Dashboard' },
@@ -91,12 +90,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: layout.maxContentWidth,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     width: '100%',
   },
-  content: { alignSelf: 'center', flex: 1, maxWidth: MAX_CONTENT_WIDTH, width: '100%' },
+  content: { alignSelf: 'center', flex: 1, maxWidth: layout.maxContentWidth, width: '100%' },
   link: {
     alignItems: 'center',
     borderColor: colors.border,

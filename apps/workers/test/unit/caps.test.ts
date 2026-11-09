@@ -6,25 +6,6 @@
  * The call half runs `reserveCall` over an in-memory `call_budget_day` whose two statements are the
  * ones `src/calls/caps.ts` issues, with the same predicate in the `UPDATE`: 41 reservations racing
  * for the last of a 40-call day claim exactly 40 slots, which is criterion 17's rule held at its
- * boundary (its end-to-end proof is `tests/system/caps-and-isolation.test.ts`). Because the fake
- * reads the predicate out of the statement's own text, deleting `"calls" < cap` from `caps.ts` lets
- * all 41 through and fails this suite — the guarantee is the SQL, not the test's own bookkeeping.
- *
- * The spend half drives `extractMenuItems` through a real `createLlmSpend` meter over a memory
- * counter, so the count-then-reserve-then-send-then-reconcile order is the module's: a success
- * charges only the reported usage and releases the rest, a failed send charges the whole
- * reservation because its tokens may already be billed, and a chunk that does not fit is counted
- * and never sent, which is the refusal `menu-ingest` answers by deferring to 00:05 local.
- *
- * No database, no Redis and no network: the counters are memory implementations of the same
- * interfaces the SQL ones satisfy, and the provider is the fake adapter (AAP 0.5.6). Time comes
- * from `createTestClock` and every city-local conversion from `time/city-time.ts`; no test reads the
- * wall clock (AAP 0.11.1). The deferred hour `09:00` is written out here rather than imported from
- * `@tablemate/shared`, which is outside this suite's dependency set: a change to the hour the module
- * ships has to fail this suite.
- *
- * @see AAP 0.5.6 for the caps, the 09:00 deferral, the dialogue budget and the refusal rules;
- *   0.5.3 for the call-task lifecycle they gate; 0.12.1 for criterion 17; 0.8.1 for this file.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -70,21 +51,17 @@ import type {
 } from '@tablemate/server-core';
 import type { RawSqlClient } from '@tablemate/db';
 
-/** The plan's launch city and the local day its cap is counted on (AAP 0.5.6, criterion 17). */
 const CITY = 'lisbon';
 const LOCAL_DATE = '2026-11-10';
 const NEXT_LOCAL_DATE = '2026-11-11';
 
-/** `CAP_CALLS_PER_CITY_DAY` (AAP 0.5.6): the 41st task of the day is deferred, not dialed. */
 const CALL_CAP = 40;
 
-/** `CAP_LLM_USD_PER_CITY_DAY` in micro-dollars: 25 USD (AAP 0.5.6). */
 const CAP_MICROS = 25_000_000;
 
 /** `LLM_MAX_TURNS_PER_CALL` (AAP 0.5.6): the turns one call's dialogue budget is reserved for. */
 const MAX_TURNS = 60;
 
-/** The hour a task over either cap is next attempted, and the hour `menu-ingest` defers to. */
 const DEFERRED_HOUR = '09:00';
 const MENU_DEFERRAL_HOUR = '00:05';
 
@@ -97,10 +74,8 @@ const ZONES = [
   'Asia/Makassar',
 ] as const;
 
-/** The zones the harness knows: `timezoneFor` throws for anything else, as city configuration does. */
 const ZONE_BY_CITY: Record<string, string> = { lisbon: 'Europe/Lisbon', canggu: 'Asia/Makassar' };
 
-/** A menu whose text is short enough to be one chunk, and its one priced item. */
 const MENU_TEXT = 'Bitoque 12,50 €\nFrango 9,90 €';
 const MENU_ITEM = {
   name: 'Bitoque',
@@ -112,7 +87,6 @@ const MENU_ITEM = {
   ticketType: null,
 } as const;
 
-/** The request `extractMenuItems` builds for {@link MENU_TEXT}: identical byte for byte. */
 const MENU_REQUEST = buildExtractionRequest(chunkText(MENU_TEXT)[0] ?? '', 'EUR');
 
 // ---------------------------------------------------------------------------------------------
@@ -124,7 +98,6 @@ interface BudgetRow {
   calls: number;
 }
 
-/** What one executed statement did: the rows an `UPDATE … RETURNING` produced, and rows touched. */
 interface SqlResult {
   rows: BudgetRow[];
   touched: number;
@@ -133,10 +106,6 @@ interface SqlResult {
 /**
  * The minimal raw-SQL executor those two statements run against (AAP 0.11.2): rows in a `Map` keyed
  * by city and local date, and each statement recognised by the SQL text the module writes.
- *
- * `apply` is synchronous, and the tagged-template entry point yields one microtask before it runs,
- * so 41 concurrent reservations interleave between their `INSERT` and their `UPDATE` exactly as 41
- * requests would — which is what makes the cap a decision rather than an ordering accident.
  */
 function createSqlFake(): {
   rows: Map<string, BudgetRow>;
@@ -150,7 +119,6 @@ function createSqlFake(): {
     statements.push(text);
     const key = `${String(values[0])}|${String(values[1])}`;
     const row = rows.get(key);
-
     if (text.includes('ON CONFLICT')) {
       // `(city_id, local_date)` is the primary key, so the insert only ever creates the row.
       if (row === undefined) {
@@ -159,7 +127,6 @@ function createSqlFake(): {
       }
       return { rows: [], touched: 0 };
     }
-
     if (text.includes('GREATEST')) {
       if (row === undefined) {
         return { rows: [], touched: 0 };
@@ -167,7 +134,6 @@ function createSqlFake(): {
       row.calls = Math.max(row.calls - 1, 0);
       return { rows: [], touched: 1 };
     }
-
     if (text.includes('"calls" = "calls" + 1')) {
       const current = row ?? { calls: 0 };
       rows.set(key, current);
@@ -180,7 +146,6 @@ function createSqlFake(): {
       current.calls += 1;
       return { rows: [current], touched: 1 };
     }
-
     throw new Error(`unrecognised statement: ${text}`);
   };
 
@@ -310,7 +275,6 @@ function createCaptureLogger(): {
   };
 }
 
-/** The meter, its logger and the observable state one spend case needs. */
 interface Harness {
   store: MemorySpendStore;
   spend: LlmSpend;
@@ -376,7 +340,6 @@ async function menuArithmetic(): Promise<{ counted: number; bound: number; charg
   };
 }
 
-/** The largest bound of one classification turn over a full window, counted by the fake provider. */
 async function largestTurnBound(llm: LlmAdapter): Promise<number> {
   const bounds = await Promise.all(
     EXPECTED_ANSWERS.map(async (expected) => {
@@ -397,15 +360,12 @@ async function largestTurnBound(llm: LlmAdapter): Promise<number> {
 describe('reserveCall', () => {
   it('lets exactly the cap through when 41 reservations race for the last slot', async () => {
     const { statements, rows, sql } = createSqlFake();
-
     const claimed = await Promise.all(
       Array.from({ length: CALL_CAP + 1 }, () => reserveCall(sql, CITY, LOCAL_DATE, CALL_CAP)),
     );
-
     expect(claimed.filter((granted) => granted)).toHaveLength(CALL_CAP);
     expect(claimed.filter((granted) => !granted)).toHaveLength(1);
     expect(rows.get(`${CITY}|${LOCAL_DATE}`)?.calls).toBe(CALL_CAP);
-
     // The guarantee lives in the statement's own predicate, so the statement must carry it: without
     // `calls < cap` PostgreSQL updates unconditionally and the 41st reservation would be granted.
     const update = statements.find((text) => text.includes('"calls" = "calls" + 1'));
@@ -415,7 +375,6 @@ describe('reserveCall', () => {
 
   it('rejects a local date that is not YYYY-MM-DD and a cap that is not a non-negative integer', async () => {
     const { statements, sql } = createSqlFake();
-
     await expect(reserveCall(sql, CITY, '10/11/2026', CALL_CAP)).rejects.toThrow(RangeError);
     await expect(reserveCall(sql, CITY, LOCAL_DATE, 40.5)).rejects.toThrow(RangeError);
     await expect(releaseCall(sql, CITY, 'yesterday')).rejects.toThrow(RangeError);
@@ -430,7 +389,6 @@ describe('reserveCall', () => {
     await Promise.all(
       Array.from({ length: CALL_CAP }, () => reserveCall(sql, CITY, LOCAL_DATE, CALL_CAP)),
     );
-
     expect(await reserveCall(sql, cityId, localDate, CALL_CAP)).toBe(true);
     expect(rows.get(`${cityId}|${localDate}`)?.calls).toBe(1);
     expect(rows.get(`${CITY}|${LOCAL_DATE}`)?.calls).toBe(CALL_CAP);
@@ -443,12 +401,10 @@ describe('releaseCall', () => {
     await Promise.all(
       Array.from({ length: CALL_CAP }, () => reserveCall(sql, CITY, LOCAL_DATE, CALL_CAP)),
     );
-
     await releaseCall(sql, CITY, LOCAL_DATE);
     expect(rows.get(`${CITY}|${LOCAL_DATE}`)?.calls).toBe(CALL_CAP - 1);
     expect(await reserveCall(sql, CITY, LOCAL_DATE, CALL_CAP)).toBe(true);
     expect(rows.get(`${CITY}|${LOCAL_DATE}`)?.calls).toBe(CALL_CAP);
-
     // A slot given back twice — a retried job, a definite rejection plus a late reconciliation —
     // must not push the day below zero and hand out slots it never had.
     const second = createSqlFake();
@@ -463,7 +419,6 @@ describe('capDeferral', () => {
   it.each(ZONES)('%s defers to 09:00 on the following local day', (tz) => {
     const next = localTimeOn(tz, NEXT_LOCAL_DATE, DEFERRED_HOUR).toISOString();
     const afternoon = localTimeOn(tz, LOCAL_DATE, '14:00');
-
     expect(capDeferral(tz, afternoon).toISOString()).toBe(
       nextLocalDayAt(tz, afternoon, DEFERRED_HOUR).toISOString(),
     );
@@ -483,7 +438,6 @@ describe('capDeferral', () => {
 // The language-model spend cap (AAP 0.5.6)
 // ---------------------------------------------------------------------------------------------
 
-/** One chunk-failure case: the label, the fake provider's script, and whether a send happened. */
 type FailureCase = readonly [label: string, options: FakeLlmOptions, sent: boolean];
 
 /**
@@ -501,20 +455,16 @@ describe('extractMenuItems under the city cap', () => {
     const { logger, store, spend } = createHarness();
     const { charged, bound } = await menuArithmetic();
     const llm = createFakeLlmAdapter({ respond: () => ({ items: [MENU_ITEM] }) });
-
     const result = await extractMenuItems(MENU_TEXT, extractionDeps(llm, spend, logger));
-
     expect(result.items).toEqual([MENU_ITEM]);
     expect(result.drops).toEqual({});
     // One count, one send: the count is the reservation's own evidence, never a second request.
     expect(llm.calls.counted).toHaveLength(1);
     expect(llm.calls.sent).toHaveLength(1);
     expect(llm.calls.sent[0]).toBe(llm.calls.counted[0]);
-
     const row = store.row(CITY, LOCAL_DATE);
     expect(row.spent).toBe(charged);
     expect(row.reserved).toBe(0);
-    // The reservation bounded the spend, and the charge is strictly below the bound it replaced.
     expect(row.spent).toBeLessThanOrEqual(bound);
     expect(row.spent).toBeLessThan(bound);
   });
@@ -525,21 +475,17 @@ describe('extractMenuItems under the city cap', () => {
       const { lines, logger, store, spend } = createHarness();
       const { bound } = await menuArithmetic();
       const llm = createFakeLlmAdapter(options);
-
       const result = await extractMenuItems(MENU_TEXT, extractionDeps(llm, spend, logger));
-
       // A failed chunk is dropped, not thrown: `menu-ingest` keeps the place and its remaining
       // chunks, and the phone fallback still applies (AAP 0.5.6).
       expect(result).toEqual({ items: [], drops: { llm_error: 1 } });
       expect(llm.calls.counted).toHaveLength(1);
       expect(llm.calls.sent).toHaveLength(sent ? 1 : 0);
-
       const row = store.row(CITY, LOCAL_DATE);
       // A send whose answer was lost may already have been billed, so its whole reservation is
       // charged; a count that failed never reached a reservation at all.
       expect(row.spent).toBe(sent ? bound : 0);
       expect(row.reserved).toBe(0);
-
       const failed = lines.find((line) => line.fields['event'] === 'menu_extract_chunk_failed');
       expect(failed).toMatchObject({
         level: 'warn',
@@ -559,15 +505,11 @@ describe('extractMenuItems under the city cap', () => {
     const { logger, store, spend } = createHarness();
     const { bound } = await menuArithmetic();
     const row = store.row(CITY, LOCAL_DATE);
-    // One micro-dollar short of the next chunk's worst case, so the day cannot absorb it.
     row.spent = CAP_MICROS - (bound - 1);
     const llm = createFakeLlmAdapter({ respond: () => ({ items: [MENU_ITEM] }) });
-
     await expect(
       extractMenuItems(MENU_TEXT, extractionDeps(llm, spend, logger)),
     ).rejects.toBeInstanceOf(LlmBudgetRefusedError);
-
-    // Counted once, and never sent: the refusal is what `menu-ingest` answers by deferring the job.
     expect(llm.calls.counted).toHaveLength(1);
     expect(llm.calls.sent).toHaveLength(0);
     expect(row.spent).toBe(CAP_MICROS - (bound - 1));
@@ -578,7 +520,6 @@ describe('extractMenuItems under the city cap', () => {
     'defers the refused job to 00:05 local the next day in %s',
     (tz) => {
       const now = localTimeOn(tz, LOCAL_DATE, '10:00');
-
       expect(nextLocalDayAt(tz, now, MENU_DEFERRAL_HOUR).toISOString()).toBe(
         localTimeOn(tz, NEXT_LOCAL_DATE, MENU_DEFERRAL_HOUR).toISOString(),
       );
@@ -591,7 +532,6 @@ describe('dialogueBudgetMicros', () => {
     const { store, spend } = createHarness();
     const llm = createFakeLlmAdapter();
     const perTurn = await largestTurnBound(llm);
-
     const budget = await dialogueBudgetMicros({
       llm,
       spend,
@@ -601,7 +541,6 @@ describe('dialogueBudgetMicros', () => {
     });
     expect(budget).toBe(MAX_TURNS * perTurn);
     expect(budget).toBeGreaterThan(0);
-
     const half = await dialogueBudgetMicros({
       llm,
       spend,
@@ -610,7 +549,6 @@ describe('dialogueBudgetMicros', () => {
       timeoutMs: CLASSIFICATION_TURN_TIMEOUT_MS,
     });
     expect(half).toBe((MAX_TURNS / 2) * perTurn);
-
     // Counting a turn sends nothing and reserves nothing: the budget is a figure before it is a
     // reservation, which is why a call that cannot reserve it is simply never dialed.
     expect(store.row(CITY, LOCAL_DATE)).toEqual({ spent: 0, reserved: 0 });
@@ -620,9 +558,6 @@ describe('dialogueBudgetMicros', () => {
   it('counts the bounded window once per expected answer', async () => {
     const llm = createFakeLlmAdapter();
     await largestTurnBound(llm);
-
-    // The count endpoint is free and sends nothing (AAP 0.2.3), so every question of the script is
-    // counted and the window each covers is the plan's own bound.
     expect(EXPECTED_ANSWERS).toHaveLength(4);
     expect(llm.calls.counted).toHaveLength(EXPECTED_ANSWERS.length);
     expect(CLASSIFICATION_WINDOW_MAX_BYTES).toBe(2_000);

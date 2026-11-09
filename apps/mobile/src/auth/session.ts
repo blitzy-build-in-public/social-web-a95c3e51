@@ -7,7 +7,9 @@
  * `POST /auth/verify` answers, keeping the access token here and writing the refresh token to
  * storage before the session is exposed; every later `401 token_invalid` is recovered by
  * `refreshAccessToken`, which `./client` and `./ws` reach through `configureAuth`; `bootstrap`
- * restores a session after a reload; and `signOut` ends one.
+ * restores a session after a reload, and is also what `./client` awaits through the `ensureSession`
+ * hook, so a read a screen issues at mount waits for the restored token instead of leaving
+ * unauthenticated; and `signOut` ends one.
  *
  * Four invariants hold here. This module alone writes `../state/session-store`, and `setSignedIn`
  * runs only once the refresh token is in storage. The access token never leaves memory (AAP 0.5.2).
@@ -34,6 +36,7 @@ import {
   getSessionSnapshot,
   sessionFromMe,
   setConsented,
+  setRestoreFailure,
   setSignedIn,
   setSignedOut,
 } from '../state/session-store';
@@ -93,6 +96,25 @@ let signOutInFlight: Promise<void> | null = null;
 let bootstrapInFlight: Promise<BootstrapResult> | null = null;
 
 /**
+ * The failure the last restore attempt ended with, or null. {@link ensureSession} refuses a request
+ * with it, so a caller sees the failure that actually stopped the restore — a `network_error` above
+ * all — rather than a generic one, and `../state/session-store` carries its code so a screen whose
+ * own read never ran has something to show instead of a loading line.
+ */
+let lastRestoreFailure: ApiError | null = null;
+
+/**
+ * Records how a restore attempt ended: the {@link ApiError} that stopped it, or null once one has
+ * produced a session or a sign-out has ended it. The single place the record is written, so every
+ * reader of {@link lastRestoreFailure} sees one value — and the store is told from the same line, so
+ * a screen reads the same attempt rather than a second one of its own.
+ */
+function recordRestoreFailure(failure: ApiError | null): void {
+  lastRestoreFailure = failure;
+  setRestoreFailure(failure === null ? null : failure.code);
+}
+
+/**
  * The in-memory access token, or null while signed out. `./client` and `./ws` read it through the
  * hooks installed at the foot of this file; no screen needs it, and no copy of it is persisted.
  */
@@ -150,7 +172,9 @@ export async function verifyToken(token: string): Promise<MeDto> {
  * The three answers are deliberate. `signed_out` means the stored token was refused, and the session
  * with it is gone. `unavailable` means nothing was proved — `network_error`, `rate_limited`,
  * `service_unavailable`, a 5xx answer, or a storage the client cannot read — so the stored token
- * stays where it is, the store stays in `loading`, and an offline start never erases a session.
+ * stays where it is, the store stays in `loading`, and an offline start never erases a session. That
+ * attempt's code reaches the store with it, which is what lets a screen tell this state from a
+ * restore that is still running.
  */
 export function bootstrap(): Promise<BootstrapResult> {
   const running = bootstrapInFlight;
@@ -173,6 +197,7 @@ async function restoreSession(): Promise<BootstrapResult> {
   } catch {
     // A storage the client cannot read is a local failure, not an absent session: the token stays
     // where it is, so the caller retries instead of signing the traveler out.
+    recordRestoreFailure(unavailable());
     return 'unavailable';
   }
 
@@ -187,7 +212,10 @@ async function restoreSession(): Promise<BootstrapResult> {
     access = await refreshAccessToken();
   } catch (error) {
     // A token that is spent, revoked or belonged to a deleted account (AAP 0.11.2, AAP 0.5.3).
-    if (!isRefusal(error)) return 'unavailable';
+    if (!isRefusal(error)) {
+      recordRestoreFailure(isApiError(error) ? error : unavailable());
+      return 'unavailable';
+    }
     await signOut({ remote: false });
     return 'signed_out';
   }
@@ -199,12 +227,41 @@ async function restoreSession(): Promise<BootstrapResult> {
     me = await apiClient.getMe();
   } catch (error) {
     // The session was revoked between the rotation and this read.
-    if (!isRefusal(error)) return 'unavailable';
+    if (!isRefusal(error)) {
+      recordRestoreFailure(isApiError(error) ? error : unavailable());
+      return 'unavailable';
+    }
     await signOut({ remote: false });
     return 'signed_out';
   }
 
-  return publishSession(me, access, sessionEpoch) ? 'signed_in' : settledResult();
+  const published = publishSession(me, access, sessionEpoch);
+  // A session is held from here on, so nothing stays recorded to refuse a request with.
+  recordRestoreFailure(null);
+  return published ? 'signed_in' : settledResult();
+}
+
+/**
+ * Waits until a session's access token is held, for `./client` to await before the first
+ * authenticated send of a cold load (AAP 0.3.3).
+ *
+ * A session already held resolves at once. Otherwise this joins the single-flight {@link bootstrap}
+ * rather than starting a rotation of its own, so a load whose restore is already running pays one
+ * rotation: refresh tokens rotate with reuse detection, and a second concurrent one would end the
+ * session (AAP 0.11.2).
+ *
+ * @throws ApiError the failure the restore ended with when it answered `unavailable` — a
+ * `network_error`, a `rate_limited`, a `service_unavailable` — and this module's own `401
+ * token_invalid` when there was no session to restore, which is what the API would have answered to a
+ * request sent without a token. Either way the request is refused rather than sent unauthenticated.
+ */
+async function ensureSession(): Promise<void> {
+  if (accessToken !== null) return;
+
+  const result = await bootstrap();
+  if (result === 'signed_in') return;
+  if (result === 'unavailable') throw lastRestoreFailure ?? unavailable();
+  throw refusal();
 }
 
 /**
@@ -332,6 +389,8 @@ async function finishSignOut(remote: boolean): Promise<void> {
   } finally {
     await clearRefreshToken();
     accessToken = null;
+    // Nothing is left to refuse a request with: the session did not survive the sign-out.
+    recordRestoreFailure(null);
     disconnect();
     queryClient.clear();
     setSignedOut();
@@ -451,11 +510,12 @@ function unavailable(): ApiError {
 
 // Installed once, at first load, and never re-installed: `./client` and `./ws` read the hooks per
 // call and a module body runs once per instance, so a second call would only replace them with the
-// same three functions. `onSignedOut` is local-only by design — `./client` calls it only after the
+// same four functions. `onSignedOut` is local-only by design — `./client` calls it only after the
 // session is already invalid (a refresh token refused as reused, or a request refused twice,
 // AAP 0.11.2), and a remote logout from there would recurse into the refresh that is failing.
 configureAuth({
   getAccessToken,
+  ensureSession,
   refresh: refreshAccessToken,
   onSignedOut: () => signOut({ remote: false }),
 });

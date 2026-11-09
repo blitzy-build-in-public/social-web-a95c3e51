@@ -1,24 +1,6 @@
 /**
  * The calling-hours rule's unit suite (AAP 0.5.6): the 09:00-20:00 window in the business's own
  * city, the `now + CAP_CALL_SECONDS <= 20:00` bound, and the deferral to the next 09:00 local.
- *
- * Every instant is written as UTC and its city-local reading is stated beside it, so a failure names
- * the boundary it broke rather than an offset. The offsets come from the pinned luxon 3.7.2 through
- * `packages/server-core/src/time/city-time.ts`, the only place that speaks a zone (AAP 0.11.1): all
- * five launch cities appear here, and Lisbon carries the two readings a DST transition produces.
- *
- * The cases come in two forms, and they check the rule from both sides. The tables below write the
- * UTC instant out, which pins the arithmetic the rule performs on a caller's `Date`, while the
- * `describe.each(ZONES)` cases derive it from the city's own clock through `localTimeOn` plus an
- * explicit seconds offset and assert the deferral against `nextLocalDayAt`, so a wall-time
- * conversion that drifts from the zone fails here rather than in production.
- *
- * `CAP_CALL_SECONDS` is the environment variable that supplies the call's length (AAP 0.6.2); its
- * 300-second default, which is also Twilio's `timeLimit`, is what the boundary cases use.
- *
- * @see AAP 0.5.6 for the window and the deferral, 0.6.2 for the cap's default, 0.11.1 for the
- *   injected clock, and 0.12.2 for the "Calling hours 09:00-20:00 local, at most 2 attempts at least
- *   24 h apart, disclosure first, do-not-call honoured" constraint this suite serves.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -32,13 +14,10 @@ import {
   withinCallingHours,
 } from '../../src/calls/calling-hours.ts';
 
-/** `CAP_CALL_SECONDS` (AAP 0.5.6). */
 const CAP_CALL_SECONDS = 300;
 
-/** A window case: the city's zone, the instant, how long the call may last, and the verdict. */
 type WindowCase = readonly [zone: string, at: string, maxSeconds: number, within: boolean];
 
-/** A deferral case: the city's zone, the instant, and the next 09:00 local as a UTC instant. */
 type DeferralCase = readonly [zone: string, at: string, next: string];
 
 /**
@@ -83,26 +62,18 @@ const WINDOW_CASES: readonly WindowCase[] = [
  * midnight, none of which depends on the call's length.
  */
 const EDGE_CASES: readonly WindowCase[] = [
-  // A zero-length call closes at exactly 20:00:00 local, which is inside, one second later is not.
   ['Europe/Lisbon', '2026-07-01T19:00:00Z', 0, true], // 20:00:00 local
   ['Europe/Lisbon', '2026-07-01T19:00:01Z', 0, false], // 20:00:01 local
-  // A five-hour call fits only while it ends by 20:00 local.
   ['Europe/Lisbon', '2026-07-01T14:00:00Z', 18_000, true], // 15:00:00 -> 20:00:00 local
   ['Europe/Lisbon', '2026-07-01T14:00:00Z', 18_001, false], // 15:00:00 -> 20:00:01 local
-  // The city is open but the call would run past 20:00, and a late evening is outside entirely.
   ['Asia/Makassar', '2026-07-01T12:00:00Z', 3_600, false], // 20:00:00 -> 21:00:00 local
   ['Asia/Makassar', '2026-07-01T15:30:00Z', CAP_CALL_SECONDS, false], // 23:30:00 local
-  // A span whose end falls on the next local date is outside: it is not on `now`'s local date.
   ['Asia/Makassar', '2026-07-01T14:00:00Z', 7_200, false], // 22:00:00 -> 00:00:00 next day
   ['Europe/Lisbon', '2026-07-01T08:00:00Z', 86_400, false], // 09:00:00 -> 09:00:00 next day
 ];
 
 /**
  * The next 09:00 local for an instant outside the window, in every launch city's zone (AAP 0.5.6).
- *
- * An instant strictly before 09:00 gets today's; 09:00:00 itself, anything past 19:55 and any
- * evening already out of the window get the following local day's. The two Lisbon rows cover the
- * spring-forward day, where the 09:00 instant moves from 08:00Z to 09:00Z.
  */
 const DEFERRAL_CASES: readonly DeferralCase[] = [
   ['Europe/Lisbon', '2026-07-01T08:00:00Z', '2026-07-02T08:00:00Z'], // exactly 09:00 local
@@ -191,7 +162,6 @@ const LOCAL_DEFERRAL_CASES: readonly LocalDeferralCase[] = [
   ['23:30', 0, true],
 ];
 
-/** A DST case: the Lisbon date, the UTC instant of its 06:00 local, and of its 09:00 local. */
 type DstCase = readonly [day: string, sixLocalUtc: string, opensUtc: string];
 
 /**
@@ -312,8 +282,6 @@ describe('Lisbon daylight saving', () => {
     const opens = new Date(opensUtc);
     expect(sixLocal.toISOString()).toBe(sixLocalUtc);
     expect(localTimeOn('Europe/Lisbon', day, CALLING_HOURS_START).toISOString()).toBe(opensUtc);
-
-    // The opening instant is inside the window; the second before it is outside and defers to it.
     expect(withinCallingHours('Europe/Lisbon', opens, CAP_CALL_SECONDS)).toBe(true);
     const justBefore = new Date(opens.getTime() - 1_000);
     expect(withinCallingHours('Europe/Lisbon', justBefore, CAP_CALL_SECONDS)).toBe(false);

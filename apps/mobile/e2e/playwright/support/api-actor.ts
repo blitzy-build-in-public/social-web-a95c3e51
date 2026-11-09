@@ -40,18 +40,11 @@ import type {
   Page,
 } from '@playwright/test';
 
-/*
- * The suite's vocabulary.
- */
-
-/** The two traveler actors of criterion 1, and the operator the queues are driven as (AAP 0.11.2). */
 export type Role = 'a' | 'b' | 'operator';
 
-/** What `e2eEnv` resolves: the stack's origins and the two mode switches the suite reacts to. */
 export interface E2eEnv {
   readonly webUrl: string;
   readonly consoleUrl: string;
-  /** The API origin, to which `/v1` is appended by every request. */
   readonly apiUrl: string;
   readonly mailpitUrl: string;
   readonly testControlToken: string;
@@ -59,7 +52,6 @@ export interface E2eEnv {
   readonly stripeMode: 'test' | 'mock';
 }
 
-/** A response schema as this harness reads one: the shared Zod schema, typed by what it parses to. */
 interface ResponseSchema<T> {
   parse(value: unknown): T;
 }
@@ -75,7 +67,6 @@ type Submission = ReturnType<typeof ProofSubmission.parse>;
 type MeetupPage = ReturnType<typeof MeetupListResponse.parse>;
 type Meetup = MeetupPage['items'][number];
 
-/** One actor's persisted, non-secret state plus the chain its access tokens are minted from. */
 interface ActorRecord {
   email: string;
   userId: string;
@@ -116,14 +107,12 @@ interface Registry {
   magicLinks: Record<string, number[]>;
 }
 
-/** One meetup day for a criterion walk: what to propose and what the clock was moved to. */
 export interface MeetupDay {
   localDate: string;
   startsAt: string;
   timezone: string;
 }
 
-/** The non-secret facts a spec may assert on, for either actor. */
 export interface ActorInfo {
   email: string;
   userId: string;
@@ -133,20 +122,14 @@ export interface ActorInfo {
   departureDate: string | null;
 }
 
-/*
- * Constants.
- */
-
 /** What `scripts/e2e.ts` writes for every flow it can only run with Stripe test-mode keys. */
 export const BLOCKED_REASON = 'Blocked — Stripe test-mode keys not supplied';
 
 /** The workspace marker that locates the repository root, as every other harness does. */
 const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
 
-/** Where everything this harness writes lives, relative to the repository root (AAP 0.11.2). */
 const LOCAL_DIR = '.local';
 
-/** The directory the registry and the recorded proof request live in. */
 const E2E_DIR = 'e2e';
 
 /** The cached harness proofs, shared in name with the API's own fixture-proof cache. */
@@ -159,7 +142,6 @@ const PROOF_REQUEST_NAME = 'actor-a-proof-request.json';
 /** The committed fixture emails, by stem (AAP 0.8.1). */
 const FIXTURE_DIR = 'packages/circuits/fixtures/test-issuer';
 
-/** `pnpm circuits:build`'s output: the files `snarkjs` proves with. */
 const BUILD_DIR = 'packages/circuits/build';
 
 /** The seed's console secrets, written once and reused by every reader (AAP 0.5.2). */
@@ -189,28 +171,23 @@ const TEST_CARD = {
 /** A missing circuit build is one failure, naming the command that fixes it. */
 const MISSING_ARTEFACTS = `circuit artefacts missing at ${BUILD_DIR} — run pnpm circuits:build`;
 
-/*
- * Environment: the suite's only reader, memoized so the defaults cannot drift between callers.
- */
+/* Environment: the suite's only reader, memoized so the defaults cannot drift between callers. */
 
 let envCache: E2eEnv | undefined;
 
 /** The stack this suite runs against (AAP 0.11.2), read once.
  *
- * @returns The frozen environment.
  * @throws Error naming `TEST_CONTROL_TOKEN` when it is unset.
  */
 export function e2eEnv(): E2eEnv {
   const existing = envCache;
   if (existing !== undefined) return existing;
-
   const testControlToken = envVar('TEST_CONTROL_TOKEN');
   if (testControlToken === '') {
     throw new Error(
       'TEST_CONTROL_TOKEN is not set: the e2e stack must run with APP_ENV=test and that token, which scripts/e2e.ts supplies',
     );
   }
-
   envCache = Object.freeze({
     webUrl: originOf('E2E_WEB_URL', 'http://localhost:8080'),
     consoleUrl: originOf('E2E_CONSOLE_URL', 'http://localhost:8090'),
@@ -219,18 +196,15 @@ export function e2eEnv(): E2eEnv {
     testControlToken,
     stripeMode: envVar('STRIPE_MODE') === 'test' ? 'test' : 'mock',
   });
-
   return envCache;
 }
 
-/** One environment variable, trimmed. */
 function envVar(name: string): string {
   const from = process.env as Record<string, string | undefined>;
   const value = from[name];
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/** One origin from the environment, without a trailing slash, or the published default. */
 function originOf(name: string, fallback: string): string {
   const configured = envVar(name);
   return (configured === '' ? fallback : configured).replace(/\/+$/, '');
@@ -239,10 +213,9 @@ function originOf(name: string, fallback: string): string {
 /**
  * A locator for the visible element carrying one test id.
  *
- * React Navigation keeps a hidden copy of every screen mounted — a `display: none` twin of each
- * `data-testid` — so a plain `getByTestId` resolves to one that is not on screen and a click on it
- * never lands. `:visible` is what selects the live copy, and it is how every screen and tab is
- * reached here.
+ * React Navigation keeps a hidden copy of every screen mounted — a `display: none` twin of each `data-testid`
+ * — so a plain `getByTestId` resolves to one that is not on screen and a click on it never lands; `:visible`
+ * is what selects the live copy.
  */
 function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`);
@@ -251,14 +224,11 @@ function visible(page: Page, testID: string): Locator {
 /**
  * Waits until one of `testIDs` is on screen and answers it.
  *
- * A screen is reached with `page.goto` or a tab press, and between the two the app re-renders: a
- * click issued in that window lands on a node React has already replaced and changes nothing. So
- * every step waits for the screen it moved to before it touches anything on it.
- *
- * Every node carrying an id is examined rather than the first one in document order, for the reason
- * {@link visible} gives: React Navigation keeps a hidden copy of each screen mounted, and that copy
- * is usually the earlier of the two, so its zero-sized box would answer for a screen that is on
- * screen. An id counts as arrived when any of its nodes is laid out and not `visibility: hidden`.
+ * A screen is reached with `page.goto` or a tab press, and between the two the app re-renders: a click issued
+ * in that window lands on a node React has already replaced and changes nothing, so every step waits for the
+ * screen it moved to before touching anything on it. Every node carrying an id is examined rather than the
+ * first in document order, for the reason {@link visible} gives, and an id counts as arrived when any of its
+ * nodes is laid out and not `visibility: hidden`.
  *
  * @throws Error when none of the ids appears inside the deadline.
  */
@@ -280,29 +250,23 @@ async function awaited(
       { timeout: timeoutMs },
     )
     .catch(() => null);
-
   const found: unknown = handle === null ? undefined : await handle.jsonValue();
   if (typeof found === 'string') return found;
-
   throw new Error(`none of ${testIDs.join(', ')} appeared within ${String(timeoutMs)} ms`);
 }
 
-/*
- * Paths. Everything this harness writes lives under the git-ignored `.local/` (AAP 0.11.2).
- */
+/* Paths. Everything this harness writes lives under the git-ignored `.local/`. */
 
 let rootCache: string | undefined;
 
 /**
  * The repository root: the nearest ancestor of the working directory holding the workspace marker.
  *
- * @returns Its absolute path.
  * @throws Error when no ancestor holds `pnpm-workspace.yaml`.
  */
 export function repoRoot(): string {
   const existing = rootCache;
   if (existing !== undefined) return existing;
-
   let dir = resolve(process.cwd());
   for (;;) {
     if (existsSync(join(dir, WORKSPACE_MARKER))) {
@@ -315,18 +279,11 @@ export function repoRoot(): string {
   }
 }
 
-/** An absolute path inside `.local/e2e/`. */
 export function localPath(...segments: readonly string[]): string {
   return join(repoRoot(), LOCAL_DIR, E2E_DIR, ...segments);
 }
 
-/** Writes one JSON result under `.local/e2e/<kind>/<name>.json`, creating the directory.
- *
- * @param kind - The result's group, such as `criterion3`.
- * @param name - Its file name, extension included.
- * @param data - Any JSON-serializable value.
- * @returns The path written.
- */
+/** Writes one JSON result under `.local/e2e/<kind>/<name>.json`, creating the directory. */
 export function writeResult(kind: string, name: string, data: unknown): string {
   const file = localPath(kind, name);
   mkdirSync(dirname(file), { recursive: true });
@@ -334,12 +291,10 @@ export function writeResult(kind: string, name: string, data: unknown): string {
   return file;
 }
 
-/** A fresh address for an account that is not one of the two actors, e.g. a throwaway operator. */
 export function throwawayEmail(purpose: string): string {
   return `e2e-${purpose}-${randomHex(8)}@example.com`;
 }
 
-/** Random hex characters, from the platform's own entropy source. */
 function randomHex(chars: number): string {
   return randomBytes(Math.ceil(chars / 2))
     .toString('hex')
@@ -352,8 +307,8 @@ function digestOf(text: string, chars: number): string {
 }
 
 /*
- * The registry: the stack's own scratch state, keyed by the test-control token so a fresh stack
- * starts from a fresh registry and a rerun against the same one reuses its accounts (AAP 0.11.2).
+ * The registry: the stack's own scratch state, keyed by the test-control token so a fresh stack starts
+ * from a fresh registry and a rerun against the same one reuses its accounts.
  */
 
 let registryCache: Registry | null = null;
@@ -363,7 +318,6 @@ function registryFile(): string {
   return localPath(`actors-${digestOf(e2eEnv().testControlToken, 12)}.json`);
 }
 
-/** An empty registry: no accounts, no venue, no consumed days. */
 function emptyRegistry(): Registry {
   return {
     refreshKey: null,
@@ -376,24 +330,20 @@ function emptyRegistry(): Registry {
   };
 }
 
-/** The registry, read once per process. */
 function registry(): Registry {
   const existing = registryCache;
   if (existing !== null) return existing;
-
   const file = registryFile();
   if (!existsSync(file)) {
     registryCache = emptyRegistry();
     return registryCache;
   }
-
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, 'utf8')) as unknown;
   } catch {
     throw new Error(`${file} is not JSON — delete it and restart the stack`);
   }
-
   registryCache = asRegistry(raw);
   return registryCache;
 }
@@ -402,7 +352,6 @@ function registry(): Registry {
 function saveRegistry(): void {
   const file = registryFile();
   mkdirSync(dirname(file), { recursive: true });
-
   const temporary = `${file}.${String(process.pid)}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(registry(), null, 2)}\n`, { mode: 0o600 });
   chmodSync(temporary, 0o600);
@@ -414,10 +363,8 @@ function asRegistry(raw: unknown): Registry {
   if (!isRecord(raw)) {
     throw new Error(`${registryFile()} is not a registry object — delete it and restart the stack`);
   }
-
   const actors = isRecord(raw.actors) ? raw.actors : {};
   const operator = isRecord(raw.operator) ? raw.operator : null;
-
   return {
     refreshKey: text(raw.refreshKey),
     actors: { a: asActor(actors.a), b: asActor(actors.b) },
@@ -436,13 +383,11 @@ function asRegistry(raw: unknown): Registry {
   };
 }
 
-/** One actor record, or null when the file carries nothing usable for it. */
 function asActor(raw: unknown): ActorRecord | null {
   if (!isRecord(raw)) return null;
   const email = text(raw.email);
   const refreshToken = text(raw.refreshToken);
   if (email === null || refreshToken === null) return null;
-
   return {
     email,
     refreshToken,
@@ -455,22 +400,18 @@ function asActor(raw: unknown): ActorRecord | null {
   };
 }
 
-/** The venue record, or null when any field of it is missing. */
 function asVenue(raw: unknown): VenueRecord | null {
   if (!isRecord(raw)) return null;
   const id = text(raw.id);
   const cityId = text(raw.cityId);
   const secret = text(raw.secret);
   if (id === null || cityId === null || secret === null) return null;
-
   const lat = number(raw.lat);
   const lng = number(raw.lng);
   if (lat === null || lng === null) return null;
-
   return { id, cityId, lat, lng, secret };
 }
 
-/** The consumed-day cursor, or null when any field of it is missing. */
 function asCursor(raw: unknown): CursorRecord | null {
   if (!isRecord(raw)) return null;
   const overlapStart = text(raw.overlapStart);
@@ -480,26 +421,21 @@ function asCursor(raw: unknown): CursorRecord | null {
   if (overlapStart === null || overlapEnd === null || lastLocalDate === null || timezone === null) {
     return null;
   }
-
   return { overlapStart, overlapEnd, lastLocalDate, timezone };
 }
 
-/** Whether a parsed JSON value is an object with named fields. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** A non-empty string, or null for every other JSON value. */
 function text(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
-/** A finite number, or null. */
 function number(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-/** A map of string to string, keeping only well-formed entries. */
 function asStringMap(value: unknown): Record<string, string> {
   if (!isRecord(value)) return {};
   const out: Record<string, string> = {};
@@ -510,7 +446,6 @@ function asStringMap(value: unknown): Record<string, string> {
   return out;
 }
 
-/** A map of address to the instants a magic link was requested for it. */
 function asTimestamps(value: unknown): Record<string, number[]> {
   if (!isRecord(value)) return {};
   const out: Record<string, number[]> = {};
@@ -522,9 +457,7 @@ function asTimestamps(value: unknown): Record<string, number[]> {
   return out;
 }
 
-/*
- * The HTTP client: one request shape for every call, and refusals that carry no body (AAP 0.11.1).
- */
+/* The HTTP client: one request shape for every call, and refusals that carry no body. */
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -532,7 +465,6 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export class ApiCallError extends Error {
   readonly status: number;
   readonly code: string;
-
   constructor(method: string, path: string, status: number, code: string) {
     super(`${method} ${path} → ${status} ${code}`);
     this.name = 'ApiCallError';
@@ -541,7 +473,6 @@ export class ApiCallError extends Error {
   }
 }
 
-/** What one request needs: the path relative to `/v1`, a bearer, a body, extra headers, a schema. */
 export interface ApiRequestOptions<T> {
   method: Method;
   /** The path after `/v1`, e.g. `/meetups` — the only place `/v1` is not written out. */
@@ -554,8 +485,6 @@ export interface ApiRequestOptions<T> {
 
 /** One authenticated-or-public API call (AAP 0.5.4).
  *
- * @param options - The method, the path and the request's own parts.
- * @returns The parsed body, or `undefined` where the route answers none.
  * @throws {ApiCallError} For every non-2xx answer.
  * @throws Error when a 2xx body does not match the shared schema.
  */
@@ -572,13 +501,11 @@ async function send<T>(options: ApiRequestOptions<T>): Promise<T | undefined> {
   const headers: Record<string, string> = { ...options.headers };
   if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
   if (options.body !== undefined) headers['content-type'] = 'application/json';
-
   const response = await fetch(`${e2eEnv().apiUrl}/v1${options.path}`, {
     method: options.method,
     headers,
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   });
-
   if (!response.ok) {
     throw new ApiCallError(
       options.method,
@@ -587,18 +514,14 @@ async function send<T>(options: ApiRequestOptions<T>): Promise<T | undefined> {
       await errorCodeOf(response),
     );
   }
-
   if (response.status === 202 || response.status === 204) return undefined;
-
   let raw: unknown;
   try {
     raw = await response.json();
   } catch {
     throw new Error(`${options.method} ${options.path} → ${response.status} is not JSON`);
   }
-
   if (options.schema === undefined) return undefined;
-
   try {
     return options.schema.parse(raw);
   } catch {
@@ -608,7 +531,6 @@ async function send<T>(options: ApiRequestOptions<T>): Promise<T | undefined> {
   }
 }
 
-/** The error code a failing answer carried, or a stand-in when its envelope cannot be read. */
 async function errorCodeOf(response: Response): Promise<string> {
   try {
     return ErrorEnvelope.parse(await response.json()).error.code;
@@ -618,12 +540,10 @@ async function errorCodeOf(response: Response): Promise<string> {
 }
 
 /*
- * Sessions. Each role has exactly one refresh chain, and the chain rotates only when no page holds
- * that role's bearer, because a second rotation of the same token is read as reuse and revokes the
- * session (AAP 0.11.2).
+ * Sessions. Each role has exactly one refresh chain, and the chain rotates only when no page holds that
+ * role's bearer, because a second rotation of the same token is read as reuse and revokes the session.
  */
 
-/** A role's cached access token, with the instant it was minted. */
 interface Chain {
   accessToken: string;
   obtainedAt: number;
@@ -631,7 +551,6 @@ interface Chain {
 
 const chains = new Map<Role, Chain>();
 
-/** The registry record a role's chain rotates, or null when the role has not signed in. */
 function sessionOf(role: Role): { email: string; refreshToken: string } | null {
   const reg = registry();
   return role === 'operator' ? reg.operator : reg.actors[role];
@@ -640,7 +559,6 @@ function sessionOf(role: Role): { email: string; refreshToken: string } | null {
 /** Stores a rotated refresh token at once: a rotation the file does not carry is a lost session. */
 function setRefreshToken(role: Role, refreshToken: string): void {
   const reg = registry();
-
   if (role === 'operator') {
     if (reg.operator === null) return;
     reg.operator.refreshToken = refreshToken;
@@ -649,20 +567,16 @@ function setRefreshToken(role: Role, refreshToken: string): void {
     if (actor === null) return;
     actor.refreshToken = refreshToken;
   }
-
   saveRegistry();
 }
 
-/** Whether a cached access token is close enough to its 15-minute expiry to rotate instead. */
 function stale(chain: Chain): boolean {
   return Date.now() - chain.obtainedAt >= ACCESS_TOKEN_TRUST_MS;
 }
 
-/** The access token to send as a role. */
 async function accessToken(role: Role): Promise<string> {
   const open = openContexts.get(role);
   const cached = chains.get(role);
-
   if (open !== undefined) {
     if (open.bearer !== null) return open.bearer;
     if (cached !== undefined && !stale(cached)) return cached.accessToken;
@@ -670,18 +584,15 @@ async function accessToken(role: Role): Promise<string> {
       `no bearer captured from the ${role} page yet: it must make one authenticated request before the API is called`,
     );
   }
-
   if (cached !== undefined && !stale(cached)) return cached.accessToken;
   return await rotate(role);
 }
 
-/** Rotates a role's refresh token and caches the access token it answers with (AAP 0.11.2). */
 async function rotate(role: Role): Promise<string> {
   const session = sessionOf(role);
   if (session === null) {
     throw new Error(`actor ${role} has no session: call ensureActors() first`);
   }
-
   let rotated: Rotation;
   try {
     rotated = await apiRequest({
@@ -696,17 +607,11 @@ async function rotate(role: Role): Promise<string> {
     }
     throw error;
   }
-
   setRefreshToken(role, rotated.refreshToken);
   chains.set(role, { accessToken: rotated.accessToken, obtainedAt: Date.now() });
   return rotated.accessToken;
 }
 
-/*
- * The actor-scoped client.
- */
-
-/** The client one role drives: every call carries that role's own session (AAP 0.11.2). */
 export interface ActorApi {
   get<T>(path: string, schema: ResponseSchema<T>): Promise<T>;
   post<T>(path: string, schema: ResponseSchema<T>, body?: unknown): Promise<T>;
@@ -714,12 +619,6 @@ export interface ActorApi {
   delete(path: string): Promise<void>;
 }
 
-/**
- * The client of one role.
- *
- * @param role - The actor whose token every call is authorised with.
- * @returns The four verbs over `/v1` paths.
- */
 export function api(role: Role): ActorApi {
   return {
     async get<T>(path: string, schema: ResponseSchema<T>): Promise<T> {
@@ -749,41 +648,36 @@ export function api(role: Role): ActorApi {
 /**
  * Runs one authenticated call, retrying it once with a live token after a `401 token_invalid`.
  *
- * The access token lasts 15 minutes of the API's own clock, and a suite moves that clock days
- * forward through `POST /v1/test/clock`, so the token it held a moment ago can be expired without a
- * second passing for the caller. A page that is open rotates the chain itself, so its next bearer
- * is waited for; otherwise the chain is rotated here, which is the only place outside a page that
- * may do so.
+ * The access token lasts 15 minutes of the API's own clock, and a suite moves that clock days forward, so the
+ * token it held a moment ago can be expired without a second passing for the caller. A page that is open
+ * rotates the chain itself, so its next bearer is waited for; otherwise the chain is rotated here, which is the
+ * only place outside a page that may do so.
  */
 async function attempt<T>(role: Role, run: (token: string) => Promise<T>): Promise<T> {
   try {
     return await run(await accessToken(role));
   } catch (error) {
     if (!(error instanceof ApiCallError) || error.status !== 401) throw error;
-
     const open = openContexts.get(role);
     if (open !== undefined) {
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
       if (open.bearer !== null) return await run(open.bearer);
       throw new Error(`the ${role} page sent no token the API accepts — reset the stack`);
     }
-
     chains.delete(role);
     return await run(await rotate(role));
   }
 }
 
-/** The operator client: the dashboard, the queues, the registry and the secret issue routes. */
 export function operatorApi(): ActorApi {
   return api('operator');
 }
 
 /*
- * Sign-in. The API allows 5 links an hour per address, so every request is recorded and a sixth is
- * a refusal rather than a loop (AAP 0.5.4).
+ * Sign-in. The API allows 5 links an hour per address, so every request is recorded and a sixth is a
+ * refusal rather than a loop (AAP 0.5.4).
  */
 
-/** What a sign-in yields: the session it minted and the account it belongs to. */
 export interface SignIn {
   email: string;
   userId: string;
@@ -797,28 +691,22 @@ function noteMagicLinkRequest(email: string, purpose: string): void {
   const reg = registry();
   const now = Date.now();
   const recent = (reg.magicLinks[email] ?? []).filter((at) => now - at < MAGIC_LINK_WINDOW_MS);
-
   if (recent.length >= MAGIC_LINK_BUDGET) {
     throw new Error(
       `${purpose}: ${String(recent.length)} magic links already requested for this address within the hour, the API's limit is ${String(MAGIC_LINK_BUDGET)} — reset the stack`,
     );
   }
-
   reg.magicLinks[email] = [...recent, now];
   saveRegistry();
 }
 
 /** Signs an account in through the API and records its consent when the account is new (AAP 0.11.2).
  *
- * @param email - The address to sign in, which is never logged.
- * @param purpose - The role or flow the refusal messages name, e.g. `actor-a`.
- * @returns The session, with the account it created or resumed.
  * @throws Error when the magic-link budget is spent, the link is refused, or Mailpit never carries it.
  */
 export async function signInViaApi(email: string, purpose: string): Promise<SignIn> {
   const since = Date.now();
   noteMagicLinkRequest(email, purpose);
-
   try {
     await apiRequest({ method: 'POST', path: '/auth/magic-link', body: { email } });
   } catch (error) {
@@ -829,13 +717,11 @@ export async function signInViaApi(email: string, purpose: string): Promise<Sign
     }
     throw error;
   }
-
   const message = await waitForMagicLink(email, {
     since,
     mailpitUrl: e2eEnv().mailpitUrl,
     purpose,
   });
-
   let verified: Verified;
   try {
     verified = await apiRequest({
@@ -850,7 +736,6 @@ export async function signInViaApi(email: string, purpose: string): Promise<Sign
     }
     throw error;
   }
-
   const session: SignIn = {
     email,
     userId: verified.user.id,
@@ -858,7 +743,6 @@ export async function signInViaApi(email: string, purpose: string): Promise<Sign
     refreshToken: verified.refreshToken,
     me: verified.user,
   };
-
   if (session.me.consents.ageConfirmedAt === null) {
     session.me = await apiRequest({
       method: 'POST',
@@ -868,16 +752,12 @@ export async function signInViaApi(email: string, purpose: string): Promise<Sign
       schema: MeDto,
     });
   }
-
   return session;
 }
 
-/** Signs an account in through the real sign-in screen, which is how the web and native walks reach the app (AAP 0.11.2).
+/** Signs an account in through the real sign-in screen, which is how the web and native walks reach the
+ * app (AAP 0.11.2).
  *
- * @param context - A fresh browser context; one holding a session would never show the form.
- * @param email - The address to sign in.
- * @param purpose - The role or flow the refusal messages name.
- * @returns The page, sitting on the Discover tab.
  * @throws Error when the form, the mail or the tabs never appear.
  */
 export async function signInViaUi(
@@ -898,27 +778,21 @@ async function driveSignIn(
   purpose: string,
 ): Promise<void> {
   const { webUrl, mailpitUrl } = e2eEnv();
-
   await page.goto(`${webUrl}/`);
   const form = await awaited(page, ['sign-in-email', 'tab-discover']);
   if (form === 'tab-discover') {
     throw new Error(`the ${purpose} page was already signed in: use a fresh context`);
   }
-
   await visible(page, 'sign-in-email').fill(email);
-
   const since = Date.now();
   noteMagicLinkRequest(email, purpose);
   await visible(page, 'sign-in-submit').click();
-
   const message = await waitForMagicLink(email, { since, mailpitUrl, purpose });
   await page.goto(message.link);
-
   // The link verifies on mount and routes on what the account still needs: the age gate for a new
   // account, the tabs for one that has already passed it.
   const landed = await awaited(page, ['age-gate', 'tab-discover']);
   if (landed === 'age-gate') await passAgeGate(page);
-
   await visible(page, 'tab-discover').waitFor({ timeout: PAGE_READY_TIMEOUT_MS });
   await discoverRefreshKey(context);
 }
@@ -933,22 +807,19 @@ async function driveSignIn(
 async function passAgeGate(page: Page): Promise<void> {
   const submit = visible(page, 'age-gate-submit');
   const deadline = Date.now() + PAGE_READY_TIMEOUT_MS;
-
   while (!(await submit.isEnabled())) {
     if (Date.now() >= deadline) {
       throw new Error('the age gate never accepted the adult confirmation');
     }
-
     const adult = visible(page, 'age-gate-adult');
-    const toggle = adult.locator('input[type="checkbox"]');
-    const on = (await toggle.count()) > 0 && (await toggle.isChecked());
+    // The `Switch` primitive carries the state on the control the test id names, so nothing nested
+    // is selected here.
+    const on = (await adult.count()) > 0 && (await adult.isChecked());
     if (!on && (await adult.count()) > 0) {
       await adult.click().catch(() => undefined);
     }
-
     await page.waitForTimeout(200);
   }
-
   await submit.click();
 }
 
@@ -956,31 +827,24 @@ async function passAgeGate(page: Page): Promise<void> {
 function discoverRefreshKey(context: BrowserContext): Promise<void> {
   const reg = registry();
   if (reg.refreshKey !== null) return Promise.resolve();
-
   const origin = new URL(e2eEnv().webUrl).origin;
-
   return context.storageState().then((state) => {
     const keys = (
       state.origins.find((candidate) => candidate.origin === origin)?.localStorage ?? []
     )
       .map((entry) => entry.name)
       .filter((name) => name.toLowerCase().includes('refresh'));
-
     if (keys.length !== 1) {
       throw new Error(
         `the signed-in page held ${String(keys.length)} refresh-token storage keys, expected exactly one`,
       );
     }
-
     reg.refreshKey = keys[0] ?? null;
     saveRegistry();
   });
 }
 
-/*
- * Hand-off contexts: a role's page, the bearer it sends, and the one chain rule that keeps the
- * session alive (AAP 0.11.2).
- */
+/* Hand-off contexts: a role's page, the bearer it sends, and the one chain rule that keeps the session alive. */
 
 /** One open page, and the last bearer it sent to the API. */
 interface OpenContext {
@@ -996,10 +860,6 @@ const PAGE_READY_TIMEOUT_MS = 30_000;
 
 /** Opens a page for a role, holding that role's session in the storage key the web client reads.
  *
- * @param browser - The browser to open the context in.
- * @param role - Whose session the page carries.
- * @param options - Playwright context options, such as a viewport or `locale`.
- * @returns The context and its page.
  * @throws Error when the role already has an open context, or has not signed in yet.
  */
 export async function contextFor(
@@ -1010,14 +870,12 @@ export async function contextFor(
   if (openContexts.has(role)) {
     throw new Error(`role ${role} already has an open page: release it before opening another`);
   }
-
   const reg = registry();
   const refreshKey = reg.refreshKey;
   const session = sessionOf(role);
   if (refreshKey === null || session === null) {
     throw new Error(`role ${role} has no stored session: call ensureActors() first`);
   }
-
   const storageKey = refreshKey;
   const context = await browser.newContext({
     ...options,
@@ -1032,15 +890,12 @@ export async function contextFor(
       ],
     },
   });
-
   const page = await context.newPage();
   const entry: OpenContext = { context, page, bearer: null };
   openContexts.set(role, entry);
   captureBearers(entry);
-
   await page.goto('/');
   await visible(page, 'tab-discover').waitFor({ timeout: PAGE_READY_TIMEOUT_MS });
-
   return { context, page };
 }
 
@@ -1048,7 +903,6 @@ export async function contextFor(
 function captureBearers(entry: OpenContext): void {
   entry.page.on('request', (request) => {
     if (!request.url().startsWith(e2eEnv().apiUrl)) return;
-
     const header = request.headers()['authorization'];
     if (header?.startsWith('Bearer ') === true) {
       entry.bearer = header.slice('Bearer '.length);
@@ -1058,8 +912,6 @@ function captureBearers(entry: OpenContext): void {
 
 /** Adopts the page's rotated refresh token and closes it (AAP 0.11.2).
  *
- * @param role - The role the page belonged to.
- * @param context - That page's context, closed here.
  * @throws Error when the role has no open context, or the page holds no refresh token.
  */
 export async function releaseContext(role: Role, context: BrowserContext): Promise<void> {
@@ -1067,29 +919,25 @@ export async function releaseContext(role: Role, context: BrowserContext): Promi
   if (entry === undefined || entry.context !== context) {
     throw new Error(`role ${role} has no page to release`);
   }
-
   const refreshKey = registry().refreshKey;
   const state = await context.storageState();
   const stored = state.origins
     .flatMap((origin) => origin.localStorage)
     .find((record) => record.name === refreshKey);
-
   if (refreshKey === null || stored === undefined || stored.value === '') {
     throw new Error(`the ${role} page held no refresh token under the discovered key`);
   }
-
   setRefreshToken(role, stored.value);
   if (entry.bearer !== null) {
     chains.set(role, { accessToken: entry.bearer, obtainedAt: Date.now() });
   }
-
   openContexts.delete(role);
   await context.close();
 }
 
 /*
- * Proofs: the harness proves exactly as a device does — inputs from the email, snarkjs over the
- * artefacts `pnpm circuits:build` wrote — and sends `{ proof, publicSignals }` alone (AAP 0.5.5).
+ * Proofs: the harness proves exactly as a device does — inputs from the email, snarkjs over the artefacts
+ * `pnpm circuits:build` wrote — and sends `{ proof, publicSignals }` alone (AAP 0.5.5).
  */
 
 type FixtureName = 'valid' | 'valid-second';
@@ -1105,7 +953,6 @@ interface Groth16Prover {
   };
 }
 
-/** The circuit build this harness proves with, and the manifest that names it. */
 interface Artefacts {
   wasm: string;
   zkey: string;
@@ -1119,17 +966,14 @@ function fixturePath(name: FixtureName): string {
   return file;
 }
 
-/** The build directory's three files, or the one failure that names the command producing them. */
 function artefacts(): Artefacts {
   const dir = join(repoRoot(), BUILD_DIR);
   const wasm = join(dir, 'tablemate_itinerary.wasm');
   const zkey = join(dir, 'tablemate_itinerary.zkey');
   const manifestFile = join(dir, 'artifacts.manifest.json');
-
   if (!existsSync(wasm) || !existsSync(zkey) || !existsSync(manifestFile)) {
     throw new Error(MISSING_ARTEFACTS);
   }
-
   return {
     wasm,
     zkey,
@@ -1144,14 +988,11 @@ function proofCacheFile(eml: Uint8Array, zkeySha256: string, salt: string): stri
     .update(zkeySha256, 'utf8')
     .update(salt, 'utf8')
     .digest('hex');
-
   return join(repoRoot(), LOCAL_DIR, PROOF_CACHE_DIR, `${digest}.json`);
 }
 
-/** The cached proof at `file`, or null: scratch state a shape change may invalidate. */
 function readCachedProof(file: string): Submission | null {
   if (!existsSync(file)) return null;
-
   try {
     return ProofSubmission.parse(JSON.parse(readFileSync(file, 'utf8')) as unknown);
   } catch {
@@ -1163,7 +1004,6 @@ function readCachedProof(file: string): Submission | null {
 function writeCachedProof(file: string, submission: Submission): void {
   mkdirSync(dirname(file), { recursive: true });
   const temporary = `${file}.${String(process.pid)}.tmp`;
-
   writeFileSync(temporary, JSON.stringify(submission));
   renameSync(temporary, file);
 }
@@ -1181,8 +1021,6 @@ function terminateCurve(): void {
 
 /** A proof of one committed fixture booking, in the client's role (AAP 0.11.2).
  *
- * @param name - The fixture to prove.
- * @returns The `{ proof, publicSignals }` body `POST /itinerary-proofs` accepts.
  * @throws Error when the artefacts are missing, the email cannot be proved, or the prover answers
  * something that is not a proof.
  */
@@ -1190,15 +1028,12 @@ export async function harnessProof(name: FixtureName): Promise<Submission> {
   const zk: Zk = await apiRequest({ method: 'GET', path: '/zk/config', schema: ZkConfig });
   const build = artefacts();
   const eml = new Uint8Array(readFileSync(fixturePath(name)));
-
   const cache = proofCacheFile(eml, build.manifest.files.zkey.sha256, zk.nullifierSalt);
   const cached = readCachedProof(cache);
   if (cached !== null) return cached;
-
   const built = buildCircuitInputs(eml, zk.issuers, zk.registry, {
     nullifierSalt: zk.nullifierSalt,
   });
-
   let submission: Submission;
   try {
     submission = ProofSubmission.parse(
@@ -1209,7 +1044,6 @@ export async function harnessProof(name: FixtureName): Promise<Submission> {
   } finally {
     terminateCurve();
   }
-
   writeCachedProof(cache, submission);
   return submission;
 }
@@ -1217,7 +1051,6 @@ export async function harnessProof(name: FixtureName): Promise<Submission> {
 /**
  * The raw `POST /itinerary-proofs` body actor A's browser sent, which criterion 3 asserts on.
  *
- * @returns The request body as text, whose top-level keys are exactly `proof` and `publicSignals`.
  * @throws Error when no run has recorded it, naming the file.
  */
 export function recordedProofBody(): string {
@@ -1227,18 +1060,16 @@ export function recordedProofBody(): string {
       `${file} is missing: actor A's proof import through the UI records it once per stack`,
     );
   }
-
   const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
   const body = isRecord(parsed) ? text(parsed.body) : null;
   if (body === null) throw new Error(`${file} carries no recorded request body`);
-
   return body;
 }
 
 /*
  * The actors. Criterion 1 needs two accounts with a proof in one city, and only `valid.eml` and
- * `valid-second.eml` are signed bookings whose nullifiers the stack has not spent (AAP 0.5.2), so
- * every web and native suite shares these two and reuses them from the registry (AAP 0.11.2).
+ * `valid-second.eml` are signed bookings whose nullifiers the stack has not spent, so every web and native
+ * suite shares these two and reuses them from the registry (AAP 0.5.2, 0.11.2).
  */
 
 type ActorRole = 'a' | 'b';
@@ -1250,14 +1081,12 @@ function actorEmail(role: ActorRole): string {
   return `e2e-actor-${role}-${digestOf(e2eEnv().testControlToken, 8)}@example.com`;
 }
 
-/** The operator's address. */
 function operatorEmail(): string {
   return `e2e-operator-${digestOf(e2eEnv().testControlToken, 8)}@example.com`;
 }
 
 /** Ensures both actors of criterion 1 exist, with a valid proof each, and that their stays overlap.
  *
- * @returns A promise that settles once both actors are ready.
  * @throws Error when the stack's fixtures, artefacts or stay window cannot support a walk.
  */
 export function ensureActors(): Promise<void> {
@@ -1266,24 +1095,20 @@ export function ensureActors(): Promise<void> {
   return running;
 }
 
-/** Creates or resumes both actors, then checks the window their two bookings share. */
 async function createActors(): Promise<void> {
   const reg = registry();
   const created = reg.actors.a !== null && reg.actors.b !== null;
-
   if (!created && (reg.actors.a !== null || reg.actors.b !== null)) {
     throw new Error(
       'the registry holds one actor but not the other — delete it and restart the stack',
     );
   }
-
   if (created) {
     await hydrateActor('a');
     await hydrateActor('b');
     await requireStayWindow();
     return;
   }
-
   const browser = await chromium.launch();
   try {
     await createActorA(browser);
@@ -1293,7 +1118,6 @@ async function createActors(): Promise<void> {
     await closeIfOpen('b');
     await browser.close();
   }
-
   await requireStayWindow();
 }
 
@@ -1304,14 +1128,12 @@ async function createActorA(browser: Browser): Promise<void> {
     registry().actors.a === null
       ? await openUiSession('a', browser, email)
       : await contextFor(browser, 'a');
-
   // A resumed account may already hold its proof, and a second submission of a spent booking is the
   // one 409 the fixtures cannot survive, so the proof is read back before the UI imports anything.
   if ((await hydrateActor('a')).proof.status !== 'valid') {
     await importFixtureProof(opened.page);
     await hydrateActor('a');
   }
-
   await releaseContext('a', opened.context);
 }
 
@@ -1324,9 +1146,7 @@ async function createActorB(browser: Browser): Promise<void> {
     const opened = await openUiSession('b', browser, actorEmail('b'));
     await releaseContext('b', opened.context);
   }
-
   if ((await hydrateActor('b')).proof.status === 'valid') return;
-
   const proof = await harnessProof('valid-second');
   try {
     await api('b').post('/itinerary-proofs', ProofAccepted, proof);
@@ -1335,26 +1155,22 @@ async function createActorB(browser: Browser): Promise<void> {
     // stored, so the proof is only re-read below and the reset is reported there if it is missing.
     if (!(error instanceof ApiCallError) || error.code !== 'nullifier_used') throw error;
   }
-
   if ((await hydrateActor('b')).proof.status !== 'valid') {
     throw new Error('stack database not reset — run a fresh `pnpm test:e2e`');
   }
 }
 
-/** Opens a page for a role and signs it in, holding the context open for the caller. */
 async function openUiSession(
   role: ActorRole,
   browser: Browser,
   email: string,
 ): Promise<{ context: BrowserContext; page: Page }> {
   if (openContexts.has(role)) throw new Error(`role ${role} already has an open page`);
-
   const context = await browser.newContext({ baseURL: e2eEnv().webUrl });
   const page = await context.newPage();
   const entry: OpenContext = { context, page, bearer: null };
   openContexts.set(role, entry);
   captureBearers(entry);
-
   try {
     await driveSignIn(page, context, email, `actor-${role}`);
   } catch (error) {
@@ -1362,12 +1178,10 @@ async function openUiSession(
     await context.close();
     throw error;
   }
-
   await recordActorSession(role, email, context);
   return { context, page };
 }
 
-/** Persists an actor's address and the refresh token the page it just signed in with holds. */
 async function recordActorSession(
   role: ActorRole,
   email: string,
@@ -1377,11 +1191,9 @@ async function recordActorSession(
   const stored = (await context.storageState()).origins
     .flatMap((origin) => origin.localStorage)
     .find((record) => record.name === refreshKey);
-
   if (refreshKey === null || stored === undefined || stored.value === '') {
     throw new Error(`the ${role} page holds no refresh token under the discovered storage key`);
   }
-
   const reg = registry();
   reg.actors[role] = {
     email,
@@ -1402,44 +1214,35 @@ async function hydrateActor(role: ActorRole): Promise<Me> {
   const reg = registry();
   const actor = reg.actors[role];
   if (actor === null) throw new Error(`actor ${role} has no record to refresh`);
-
   actor.userId = me.id;
   actor.variant = me.variant;
   actor.cityId = me.proof.cityId ?? null;
   actor.arrivalDate = me.proof.arrivalDate ?? null;
   actor.departureDate = me.proof.departureDate ?? null;
   saveRegistry();
-
   return me;
 }
 
-/** Closes a role's page if it is still open, without touching the token it already stored. */
 async function closeIfOpen(role: Role): Promise<void> {
   const entry = openContexts.get(role);
   if (entry === undefined) return;
-
   openContexts.delete(role);
   await entry.context.close();
 }
 
-/** Imports `valid.eml` through the proof screens and records the request that submits it. */
 async function importFixtureProof(page: Page): Promise<void> {
   await visible(page, 'tab-profile').click();
   await awaited(page, ['profile']);
-
   await visible(page, 'profile-verify-stay').click();
   await awaited(page, ['proof-import']);
-
   const chooser = page.waitForEvent('filechooser', { timeout: PAGE_READY_TIMEOUT_MS });
   await visible(page, 'proof-import-pick').click();
-
   const picked = await chooser.catch(() => null);
   if (picked === null) {
     await page.locator('input[type="file"]').setInputFiles(fixturePath('valid'));
   } else {
     await picked.setFiles(fixturePath('valid'));
   }
-
   // The generate screen appears once the bytes are staged; its start control only exists while the
   // attempt can begin, so a configuration refusal surfaces as the error banner instead.
   const ready = await awaited(
@@ -1450,31 +1253,25 @@ async function importFixtureProof(page: Page): Promise<void> {
   if (ready === 'proof-generate-error') {
     throw new Error('the proof screen refused to start: see the message it shows');
   }
-
   const answer = page.waitForResponse(
     (response) =>
       response.url() === `${e2eEnv().apiUrl}/v1/itinerary-proofs` &&
       response.request().method() === 'POST',
     { timeout: UI_STEP_TIMEOUT_MS },
   );
-
   await visible(page, 'proof-generate-start').click();
   const response = await answer;
-
   writeResult(PROOF_REQUEST_KIND, PROOF_REQUEST_NAME, {
     body: response.request().postData() ?? '',
   });
-
   const status = response.status();
   if (status === 409) throw new Error('stack database not reset — run a fresh `pnpm test:e2e`');
   if (status !== 201) throw new Error(`actor a's proof import answered ${String(status)}`);
-
   try {
     ProofAccepted.parse(await response.json());
   } catch {
     throw new Error('the proof the browser submitted was not accepted in the documented shape');
   }
-
   await visible(page, 'proof-accepted').waitFor({ timeout: UI_STEP_TIMEOUT_MS });
 }
 
@@ -1483,11 +1280,9 @@ async function requireStayWindow(): Promise<void> {
   const reg = registry();
   const a = reg.actors.a;
   const b = reg.actors.b;
-
   if (a === null || b === null) {
     throw new Error('both actors must sign in before a meetup day can be chosen');
   }
-
   const fixtures = 'see packages/circuits/scripts/make-test-fixtures.ts';
   if (
     a.cityId === null ||
@@ -1499,13 +1294,11 @@ async function requireStayWindow(): Promise<void> {
   ) {
     throw new Error(`both actors must hold a valid proof — ${fixtures}`);
   }
-
   if (a.cityId !== b.cityId) {
     throw new Error(
       `the two fixture bookings name different cities (${a.cityId}, ${b.cityId}) — ${fixtures}`,
     );
   }
-
   const overlapStart = a.arrivalDate > b.arrivalDate ? a.arrivalDate : b.arrivalDate;
   const overlapEnd = a.departureDate < b.departureDate ? a.departureDate : b.departureDate;
   const overlapDays = daysBetween(overlapStart, overlapEnd);
@@ -1514,13 +1307,11 @@ async function requireStayWindow(): Promise<void> {
       `the two fixture bookings overlap for ${String(overlapDays)} days, fewer than the ten a criterion walk needs — ${fixtures}`,
     );
   }
-
   const timezone = await cityTimezone(a.cityId);
   if (reg.cursor === null) {
     reg.cursor = { overlapStart, overlapEnd, lastLocalDate: addDays(overlapStart, -1), timezone };
     saveRegistry();
   }
-
   // The venue is resolved here because the API's own time — the bound of every clock move — is read
   // off its console route, and because every walk needs the console anyway.
   await partnerVenue(a.cityId);
@@ -1532,31 +1323,25 @@ async function requireStayWindow(): Promise<void> {
   }
 }
 
-/** One configured city's IANA zone, read once per process (AAP 0.5.4). */
 async function cityTimezone(cityId: string): Promise<string> {
   const known = timezoneCache?.get(cityId);
   if (known !== undefined) return known;
-
   const answer = await api('a').get('/cities', CitiesResponse);
   const cache = timezoneCache ?? new Map<string, string>();
   for (const city of answer.items) cache.set(city.id, city.timezone);
   timezoneCache = cache;
-
   const zone = cache.get(cityId);
   if (zone === undefined) {
     throw new Error(`city ${cityId} is not configured — see config/cities.json`);
   }
-
   return zone;
 }
 
 let timezoneCache: Map<string, string> | null = null;
 
-/** One actor's non-secret facts, for a spec that reports or asserts on them. */
 export function actorInfo(role: ActorRole): ActorInfo {
   const actor = registry().actors[role];
   if (actor === null) throw new Error(`actor ${role} has not signed in: call ensureActors() first`);
-
   return {
     email: actor.email,
     userId: actor.userId,
@@ -1577,13 +1362,12 @@ function provedCityId(): string {
 }
 
 /*
- * The operator, which the queues, the registry and the secret issue routes are driven as. The role
- * is granted by a CLI inside the container, which Maestro cannot run (AAP 0.3.3).
+ * The operator, which the queues, the registry and the secret issue routes are driven as. The role is
+ * granted by a CLI inside the container, which Maestro cannot run (AAP 0.3.3).
  */
 
 let operatorPromise: Promise<void> | null = null;
 
-/** Ensures an operator account exists and its session is in the registry. */
 export function ensureOperator(): Promise<void> {
   const running = operatorPromise ?? createOperator();
   operatorPromise = running;
@@ -1593,7 +1377,6 @@ export function ensureOperator(): Promise<void> {
 /** Resumes the operator when its role still holds, and re-grants and re-signs in when it does not. */
 async function createOperator(): Promise<void> {
   const existing = registry().operator;
-
   if (existing !== null && existing.userId !== '') {
     try {
       // The queue read is both a liveness check on the chain and proof that the role is held: any
@@ -1604,12 +1387,9 @@ async function createOperator(): Promise<void> {
       if (!(error instanceof ApiCallError) || error.status !== 403) throw error;
     }
   }
-
   const email = existing?.email ?? operatorEmail();
   if (existing === null) await signInViaApi(email, 'operator');
-
   grantOperator(email);
-
   // A grant revokes every live session of the account, so the role is carried by a new sign-in.
   const session = await signInViaApi(email, 'operator');
   const reg = registry();
@@ -1621,7 +1401,6 @@ async function createOperator(): Promise<void> {
 /**
  * Grants the operator role by running the API image's own CLI (AAP 0.3.3).
  *
- * @param email - The account to promote, which the CLI's output never echoes.
  * @throws Error naming the exit status alone, never a token or an address.
  */
 export function grantOperator(email: string): void {
@@ -1641,27 +1420,19 @@ export function grantOperator(email: string): void {
   }
 }
 
-/*
- * The venue: where a walk meets, and the console secret its rotating code is read with.
- */
-
 /** The first active partner venue of a city, by ascending id, kept in the registry (AAP 0.5.2). */
 export async function partnerVenue(cityId: string): Promise<VenueRecord> {
   const known = registry().venue;
   if (known !== null && known.cityId === cityId && known.id !== '') return known;
-
   // The city reads sit behind the traveler guard — a bearer and the age gate — so they are made as
   // actor a, which is also the account whose proof names the city.
   const answer = await api('a').get(`/cities/${cityId}/venues`, VenuesResponse);
-
   const first = answer.items
     .filter((venue) => venue.isActivePartner)
     .sort((left, right) => (left.id < right.id ? -1 : 1))[0];
-
   if (first === undefined) {
     throw new Error(`city ${cityId} has no active partner venue — reseed the stack`);
   }
-
   const venue: VenueRecord = {
     id: first.id,
     cityId,
@@ -1669,44 +1440,36 @@ export async function partnerVenue(cityId: string): Promise<VenueRecord> {
     lng: first.lng,
     secret: known?.secret ?? '',
   };
-
   registry().venue = venue;
   saveRegistry();
   return venue;
 }
 
-/** The venue's console secret:
+/** The venue's console secret, which is never logged.
  *
- * @param venueId - The venue whose code the console route is read with.
- * @returns The plaintext secret, which is never logged.
  * @throws Error when no source yields a usable secret.
  */
 export async function venueSecret(venueId: string): Promise<string> {
   const known = registry().venue;
   if (known !== null && known.id === venueId && known.secret !== '') return known.secret;
-
   const fromSeed = seedVenueSecret(venueId);
   if (fromSeed !== null && (await isValidSecret(fromSeed))) {
     return storeVenueSecret(venueId, fromSeed);
   }
-
   if (registry().operator === null) {
     throw new Error(
       'no venue secret is available: .local/fixture-secrets.json holds none for this venue and no operator session exists — call ensureOperator() first',
     );
   }
-
   const issued = await operatorApi().post(`/admin/venues/${venueId}/secret`, SecretIssued);
   return storeVenueSecret(venueId, issued.secret);
 }
 
-/** Stores the resolved secret on the registry's venue record and answers it back. */
 function storeVenueSecret(venueId: string, secret: string): string {
   const venue = registry().venue;
   if (venue === null || venue.id !== venueId) {
     throw new Error(`venue ${venueId} is not the resolved partner venue`);
   }
-
   venue.secret = secret;
   saveRegistry();
   return secret;
@@ -1716,20 +1479,16 @@ function storeVenueSecret(venueId: string, secret: string): string {
 function seedVenueSecret(venueId: string): string | null {
   const file = join(repoRoot(), LOCAL_DIR, FIXTURE_SECRETS_FILE);
   if (!existsSync(file)) return null;
-
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, 'utf8')) as unknown;
   } catch {
     return null;
   }
-
   if (!isRecord(raw) || !Array.isArray(raw.venues)) return null;
-
   for (const entry of raw.venues) {
     if (isRecord(entry) && text(entry.id) === venueId) return text(entry.secret);
   }
-
   return null;
 }
 
@@ -1743,7 +1502,6 @@ async function fetchCode(secret: string): Promise<Code> {
   });
 }
 
-/** Whether the console route accepts a secret, rather than answering `401 bad_venue_secret`. */
 async function isValidSecret(secret: string): Promise<boolean> {
   try {
     await fetchCode(secret);
@@ -1754,50 +1512,37 @@ async function isValidSecret(secret: string): Promise<boolean> {
   }
 }
 
-/*
- * Cards and claims.
- */
-
 /**
  * Saves a card for one actor, which every hold needs (AAP 0.3.4).
  *
- * @param role - The actor to set the card up for.
  * @throws Error when the stack runs `STRIPE_MODE=mock`, where no card can be confirmed at all.
  */
 export async function ensureCard(role: ActorRole): Promise<void> {
   if (e2eEnv().stripeMode !== 'test') {
     throw new Error(`a saved card needs a Stripe test-mode stack: ${BLOCKED_REASON}`);
   }
-
   const actor = registry().actors[role];
   if (actor === null) throw new Error(`actor ${role} has not signed in: call ensureActors() first`);
   if (actor.hasCard) return;
-
   const browser = await chromium.launch();
   try {
     const { context, page } = await contextFor(browser, role);
-
     await visible(page, 'tab-profile').click();
     await awaited(page, ['profile']);
-
     await visible(page, 'profile-payment').click();
     await awaited(page, ['payment']);
-
     await visible(page, 'payment-setup').click();
     await fillPaymentElement(page);
-
     await visible(page, 'payment-setup-submit').click();
     const done = await awaited(page, ['payment-saved', 'payment-setup-error']);
     if (done === 'payment-setup-error') {
       throw new Error(`the card was refused for actor ${role}: see the message the screen shows`);
     }
-
     const current = registry().actors[role];
     if (current !== null) {
       current.hasCard = true;
       saveRegistry();
     }
-
     await releaseContext(role, context);
   } finally {
     await closeIfOpen(role);
@@ -1807,54 +1552,44 @@ export async function ensureCard(role: ActorRole): Promise<void> {
 
 /** Fills Stripe's Payment Element with its public test card (AAP 0.11.2).
  *
- * @param page - The page showing the card form.
  * @throws Error when no card field renders inside the deadline.
  */
 export async function fillPaymentElement(page: Page): Promise<void> {
   const frame = await cardFrame(page);
-
   const cardTab = frame.getByRole('tab', { name: /card/i });
   if ((await cardTab.count()) > 0) await cardTab.first().click();
-
   await fillIfPresent(frame, 'number', TEST_CARD.number);
   await fillIfPresent(frame, 'expiry', TEST_CARD.expiry);
   await fillIfPresent(frame, 'cvc', TEST_CARD.cvc);
   await fillIfPresent(frame, 'postalCode', TEST_CARD.postalCode);
-
   const country = frame.locator('select[name="country"]');
   if ((await country.count()) > 0) await country.first().selectOption('US');
 }
 
-/** Fills one form control of Stripe's frame when that control exists. */
 async function fillIfPresent(frame: Frame, name: string, value: string): Promise<void> {
   const field = frame.locator(`input[name="${name}"]`);
   if ((await field.count()) > 0) await field.first().fill(value);
 }
 
-/** The frame holding the card fields, found by the card-number input it renders. */
 async function cardFrame(page: Page): Promise<Frame> {
   const deadline = Date.now() + PAGE_READY_TIMEOUT_MS;
-
   while (Date.now() < deadline) {
     for (const frame of page.frames()) {
       if ((await frame.locator('input[name="number"]').count()) > 0) return frame;
     }
     await page.waitForTimeout(200);
   }
-
   throw new Error('the Payment Element never rendered a card field');
 }
 
 /** Deletes the actor's open lodging claim, so a claim suite starts from no claim (AAP 0.5.3).
  *
- * @param role - The actor whose claim is deleted.
  * @throws Error when the claim is still being called after two minutes.
  */
 export async function ensureNoActiveClaim(role: ActorRole): Promise<void> {
   const client = api(role);
   const claim = (await client.get('/me', MeDto)).activeLodgingClaim;
   if (claim === null) return;
-
   const deadline = Date.now() + 120_000;
   for (;;) {
     try {
@@ -1873,14 +1608,13 @@ export async function ensureNoActiveClaim(role: ActorRole): Promise<void> {
 }
 
 /*
- * Test control. Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set, and both
- * answer `204`.
+ * Test control. Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set, and both answer
+ * `204`.
  */
 
 /** Moves the clock the API was built with, refusing to move it backwards (AAP 0.5.4). */
 export async function setClock(request: TestClockRequest): Promise<void> {
   const body = TestClockRequest.parse(request);
-
   if (body.now !== undefined) {
     // The API's own time is known only to one 60-second step, so the bound is the end of the current
     // step rather than `apiNow()`: a move any earlier could land behind the clock being moved.
@@ -1891,14 +1625,12 @@ export async function setClock(request: TestClockRequest): Promise<void> {
       );
     }
   }
-
   await testControl('/test/clock', body);
 }
 
 /**
  * Settles one meetup, or sweeps, and carries out what the settlement planned (AAP 0.5.1).
  *
- * @param meetupId - The meetup to settle; omitted, the sweeper settles whatever is due.
  */
 export async function runSettlement(meetupId?: string): Promise<void> {
   await testControl('/test/run-settlement', meetupId === undefined ? {} : { meetupId });
@@ -1925,14 +1657,12 @@ async function testControl(path: string, body: unknown): Promise<void> {
 
 /** The API's own time, to one 60-second step:
  *
- * @returns Epoch milliseconds inside the step the clock currently sits in.
  * @throws Error when no venue secret is available, which is also what `ensureActors` resolves.
  */
 export async function apiNow(): Promise<number> {
   return (await clockUpperBound()) - CODE_STEP_MS;
 }
 
-/** The end of the current 60-second step of the API's clock, the bound of every clock move. */
 async function clockUpperBound(): Promise<number> {
   const venue = await partnerVenue(provedCityId());
   return Date.parse((await fetchCode(await venueSecret(venue.id))).expiresAt);
@@ -1940,27 +1670,21 @@ async function clockUpperBound(): Promise<number> {
 
 /** The next city day a criterion walk may take, moving the clock to 09:00 of it (AAP 0.11.2).
  *
- * @returns The local date, the instant to propose for, and the city's zone.
  * @throws Error when the two proofs no longer overlap, or the move would go backwards.
  */
 export async function nextMeetupDay(): Promise<MeetupDay> {
   const cursor = registry().cursor;
   if (cursor === null) throw new Error('no stay window: call ensureActors() first');
-
   const today = localDateOf(await apiNow(), cursor.timezone);
   const floor = today > cursor.lastLocalDate ? today : cursor.lastLocalDate;
   const candidate =
     addDays(floor, 1) > cursor.overlapStart ? addDays(floor, 1) : cursor.overlapStart;
-
   if (candidate > addDays(cursor.overlapEnd, -1)) {
     throw new Error('stay overlap exhausted — reset the stack');
   }
-
   await setClock({ now: zonedTimeToUtc(candidate, '09:00', cursor.timezone).toISOString() });
-
   cursor.lastLocalDate = candidate;
   saveRegistry();
-
   return {
     localDate: candidate,
     startsAt: zonedTimeToUtc(candidate, '12:00', cursor.timezone).toISOString(),
@@ -1969,15 +1693,14 @@ export async function nextMeetupDay(): Promise<MeetupDay> {
 }
 
 /*
- * Pair hygiene: the one open meetup per pair is what lets a second walk propose at all, so every
- * suite clears it before and after its own (AAP 0.5.3).
+ * Pair hygiene: the one open meetup per pair is what lets a second walk propose at all, so every suite
+ * clears it before and after its own (AAP 0.5.3).
  */
 
 /** Removes every open meetup between the two actors, in the way that costs nothing (AAP 0.5.3).
  */
 export async function clearPairMeetups(): Promise<void> {
   const counterpart = actorInfo('b').userId;
-
   for (const status of ['proposed', 'locked']) {
     for (const meetup of await meetupsWith(`status=${status}`)) {
       if (meetup.counterpart.id === counterpart) await clearMeetup(meetup);
@@ -1985,17 +1708,14 @@ export async function clearPairMeetups(): Promise<void> {
   }
 }
 
-/** Every page of the actor's own meetups under one query, following the keyset cursor. */
 async function meetupsWith(query: string): Promise<Meetup[]> {
   const client = api('a');
   const found: Meetup[] = [];
   let cursor: string | null = null;
-
   for (;;) {
     const suffix = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`;
     const page: MeetupPage = await client.get(`/meetups?${query}${suffix}`, MeetupListResponse);
     found.push(...page.items);
-
     cursor = page.nextCursor;
     if (cursor === null) return found;
   }
@@ -2007,23 +1727,19 @@ async function clearMeetup(meetup: Meetup): Promise<void> {
     await cancelMeetup(meetup.id);
     return;
   }
-
   if (meetup.disputeOpen) {
     await resolveOpenDispute(meetup.id);
     return;
   }
-
   // At or before `startsAt − 2 h` a cancel is free, with a minute of slack for the step the API's
   // own time is read to; later than that the meetup is settled rather than forfeited.
   if ((await apiNow()) + CODE_STEP_MS <= Date.parse(meetup.lateCancelFrom)) {
     await cancelMeetup(meetup.id);
     return;
   }
-
   const settledAt = Date.parse(meetup.startsAt) + 46 * CODE_STEP_MS;
   const upper = await clockUpperBound();
   if (settledAt > upper) await setClock({ now: new Date(settledAt).toISOString() });
-
   await runSettlement(meetup.id);
 }
 
@@ -2045,11 +1761,9 @@ async function resolveOpenDispute(meetupId: string): Promise<void> {
   const open = queue.items.find(
     (dispute) => dispute.meetupId === meetupId && dispute.status === 'open',
   );
-
   if (open === undefined) {
     throw new Error(`meetup ${meetupId} reports an open dispute the operator queue does not hold`);
   }
-
   await operatorApi().post(
     `/admin/disputes/${open.id}/resolve`,
     AdminDisputeDto,
@@ -2057,9 +1771,7 @@ async function resolveOpenDispute(meetupId: string): Promise<void> {
   );
 }
 
-/*
- * Dates. `Intl` with an IANA zone is enough; no date library is a dependency of this workspace.
- */
+/* Dates: `Intl` with an IANA zone is enough; no date library is a dependency of this workspace. */
 
 /** The zone's offset from UTC at one instant: the wall clock read there, as UTC, less the instant. */
 function zoneOffsetMs(at: number, timezone: string): number {
@@ -2073,12 +1785,10 @@ function zoneOffsetMs(at: number, timezone: string): number {
     minute: '2-digit',
     second: '2-digit',
   }).formatToParts(new Date(at));
-
   const field = (type: string): number => {
     const part = parts.find((candidate) => candidate.type === type);
     return part === undefined ? Number.NaN : Number(part.value);
   };
-
   return (
     Date.UTC(
       field('year'),
@@ -2095,12 +1805,10 @@ function zoneOffsetMs(at: number, timezone: string): number {
 function zonedTimeToUtc(dateOnly: string, timeOfDay: string, timezone: string): Date {
   const naive = Date.parse(`${dateOnly}T${timeOfDay}:00Z`);
   const firstGuess = naive - zoneOffsetMs(naive, timezone);
-
   // The second pass is what makes a day the zone shifts its clocks on come out right.
   return new Date(naive - zoneOffsetMs(firstGuess, timezone));
 }
 
-/** The calendar date one instant falls on in one zone. */
 function localDateOf(at: number, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -2108,39 +1816,30 @@ function localDateOf(at: number, timezone: string): string {
     month: '2-digit',
     day: '2-digit',
   }).formatToParts(new Date(at));
-
   const field = (type: string): string =>
     parts.find((candidate) => candidate.type === type)?.value ?? '';
-
   return `${field('year')}-${field('month')}-${field('day')}`;
 }
 
-/** A calendar date moved by whole days. */
 function addDays(dateOnly: string, days: number): string {
   return new Date(Date.parse(`${dateOnly}T00:00:00Z`) + days * 86_400_000)
     .toISOString()
     .slice(0, 10);
 }
 
-/** Whole days between two calendar dates. */
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
-/*
- * `prepare-maestro`: what the native flows need and cannot do for themselves (AAP 0.11.2).
- */
+/* `prepare-maestro`: what the native flows need and cannot do for themselves (AAP 0.11.2). */
 
-/** The two flows of criterion 1, each needing an operator of its own on each platform. */
 const MAESTRO_FLOWS = ['criterion1-initiator', 'criterion1-recipient'];
 
-/** The two platforms those flows run on. */
 const MAESTRO_PLATFORMS = ['ios', 'android'];
 
 /** Whether this process was started to prepare Maestro rather than imported by a spec. */
 function cliRequested(): boolean {
   if (process.argv[2] !== 'prepare-maestro') return false;
-
   const script = resolve(process.argv[1] ?? '');
   return (
     script.endsWith(join('support', 'api-actor.ts')) ||
@@ -2163,25 +1862,20 @@ async function runCli(): Promise<void> {
 async function prepareMaestro(): Promise<void> {
   await ensureActors();
   await ensureOperator();
-
   const venue = await partnerVenue(provedCityId());
   await venueSecret(venue.id);
-
   if (e2eEnv().stripeMode === 'test') {
     await ensureCard('a');
     await ensureCard('b');
   }
-
   for (const platform of MAESTRO_PLATFORMS) {
     for (const flow of MAESTRO_FLOWS) await ensureMaestroOperator(`${platform}:${flow}`);
   }
-
   const reg = registry();
   const a = reg.actors.a;
   const b = reg.actors.b;
   if (a === null || b === null)
     throw new Error('both actors must exist before Maestro can be prepared');
-
   const fixture = {
     actors: { a: { email: a.email, userId: a.userId }, b: { email: b.email, userId: b.userId } },
     operators: reg.maestroOperators,
@@ -2196,7 +1890,6 @@ async function prepareMaestro(): Promise<void> {
     stay: { cursor: reg.cursor, overlapEnd: reg.cursor?.overlapEnd ?? null },
     stripeMode: e2eEnv().stripeMode,
   };
-
   writeFixtureProofs(fixture);
 }
 
@@ -2204,11 +1897,9 @@ async function prepareMaestro(): Promise<void> {
 async function ensureMaestroOperator(key: string): Promise<void> {
   const reg = registry();
   if (reg.maestroOperators[key] !== undefined) return;
-
   const email = throwawayEmail(key.replace(/[^a-z0-9]+/gi, '-'));
   await signInViaApi(email, `maestro-${key}`);
   grantOperator(email);
-
   // The grant revoked the session that created the account, which is of no use to Maestro: the
   // device signs in itself with its own magic link and needs the address alone.
   reg.maestroOperators[key] = email;
@@ -2224,7 +1915,6 @@ async function nullifierSalt(): Promise<string> {
 function writeFixtureProofs(data: unknown): void {
   const dir = localPath();
   mkdirSync(dir, { recursive: true });
-
   writeFileSync(join(dir, 'fixture-proofs.json'), `${JSON.stringify(data, null, 2)}\n`);
   writeFileSync(join(dir, 'fixture-proofs.js'), `output.e2e = ${JSON.stringify(data)};\n`);
 }

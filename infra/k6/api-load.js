@@ -93,7 +93,6 @@ function groupBy(list, key) {
 // iterations land on different accounts and no user approaches the 60-per-minute mutating limit.
 const callerFor = (index) => at(USERS, index * CALLER_STRIDE);
 
-/** One meetup of a pool and one of its participants, the side alternating on each pass over it. */
 function meetupFor(index, pool) {
   const meetup = at(pool, index);
   const id = Math.floor(index / pool.length) % 2 === 0 ? meetup.initiatorId : meetup.recipientId;
@@ -368,7 +367,6 @@ function proposalPlan(index, rank) {
   };
 }
 
-/** This VU's per-venue cache of live check-in codes; a code expires with its 60-second step. */
 const codeCache = {};
 
 /**
@@ -453,7 +451,6 @@ export function run(data) {
   record(endpoint, endpoint.run(index, SCHEDULE_RANK[slot], data));
 }
 
-/** The iteration's position in the whole run: `iterationInTest` restarts in each scenario. */
 function globalIndex() {
   return exec.scenario.name === MEASURE
     ? TARGET_RATE * WARMUP_SECONDS + exec.scenario.iterationInTest
@@ -539,7 +536,6 @@ export function handleSummary(data) {
   };
 }
 
-/** The `tablemate` block of the summary: the figures, their thresholds and the per-endpoint counts. */
 function buildReport(data) {
   const endedAt = Date.now();
   const reads = buckets(data, LIMITS[0][0]);
@@ -629,7 +625,6 @@ function verdictOf(result) {
   return result !== null && typeof result === 'object' ? result.ok === true : result !== false;
 }
 
-/** One line per target with its measured value, then the volume and the mix it was measured over. */
 function renderText(report) {
   const checks = [
     ['reads p95', `${report.reads.p95.toFixed(1)} ms <= 300`, report.reads.p95 <= 300],

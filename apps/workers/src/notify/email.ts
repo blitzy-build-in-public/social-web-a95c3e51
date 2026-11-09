@@ -79,10 +79,8 @@ export interface MailerConfig {
 export class MailDeliveryError extends Error {
   /** Nodemailer's error code, or `null` when the failure carried none. */
   readonly code: string | null;
-
   /** The numeric SMTP reply code a rejection carried, or `null` when there was no reply. */
   readonly responseCode: number | null;
-
   constructor(code: string | null, responseCode: number | null) {
     super(`smtp_send_failed code=${code ?? 'none'} responseCode=${responseCode ?? 'none'}`);
     this.name = 'MailDeliveryError';
@@ -94,15 +92,11 @@ export class MailDeliveryError extends Error {
 /**
  * Builds the mailer for the given SMTP endpoint and sender (AAP 0.3.3, AAP 0.3.4).
  *
- * @param config `smtpUrl` (`smtp:` or `smtps:`) and the `From` address every message carries.
- * @returns A {@link Mailer} whose `send` rejects with {@link MailDeliveryError} and whose `close` is
  * idempotent.
- * @throws Error when `smtpUrl` is unparseable or uses another scheme. The message names the variable
  * only, never the URL, which may hold credentials.
  */
 export function createMailer(config: MailerConfig): Mailer {
   assertSmtpUrl(config.smtpUrl);
-
   // `createTransport`'s second argument is message defaults, not transport options, so the three
   // timeouts belong in the options object beside `url` and `from` becomes the default sender of every
   // message. Nodemailer merges options given beside `url`, and the URL's own query values win on a
@@ -116,9 +110,7 @@ export function createMailer(config: MailerConfig): Mailer {
     },
     { from: config.from },
   );
-
   let closed = false;
-
   return {
     async send(msg: MailMessage): Promise<void> {
       try {

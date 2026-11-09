@@ -36,6 +36,7 @@ import {
 } from 'react-native';
 import { borderWidths, colors, fontWeights, radii, spacing, typography } from '@tablemate/shared';
 import type { ColorToken } from '@tablemate/shared';
+import { useAppNoticeMessage } from './app-notice';
 import { Button } from './Button';
 
 /**
@@ -52,6 +53,12 @@ export interface BannerAction {
   label: string;
   /** Runs on press. */
   onPress: () => void;
+  /**
+   * Whether the action's attempt is still in flight: the button then shows a spinner beside its
+   * label and refuses a second press, which is what tells the reader the retry is running rather
+   * than inert. A caller that fires a request from `onPress` passes its own fetching state.
+   */
+  busy?: boolean;
   /** Forwarded to the button, so a test can find it. */
   testID?: string;
 }
@@ -152,8 +159,13 @@ function wrapPlainText(value: ReactNode, color: string): ReactNode {
  * container itself is rendered even when no slot holds text, so a screen keeps one layout and one
  * test identifier as its copy arrives.
  *
+ * One failure reaches the reader once. While the app-level notice is speaking this banner's own
+ * sentence, an `error` banner renders nothing: the notice already carries that failure and its
+ * action, and a second copy of the sentence would offer the reader a second, differently labelled
+ * way to answer it.
+ *
  * @param props - {@link BannerProps}.
- * @returns The notice element.
+ * @returns The notice element, or nothing while the app-level notice speaks its sentence.
  */
 export function Banner({
   tone,
@@ -162,11 +174,16 @@ export function Banner({
   children,
   action,
   testID,
-}: BannerProps): ReactElement {
+}: BannerProps): ReactElement | null {
+  const appNoticeMessage = useAppNoticeMessage();
   const spec = TONES[tone];
   const color = colors[spec.foreground];
   // A title of whitespace alone counts as none, exactly as an empty one does.
   const heading = title !== undefined && title.trim() !== '' ? title : spec.statusWord;
+
+  if (tone === 'error' && appNoticeMessage !== null && message.trim() === appNoticeMessage) {
+    return null;
+  }
 
   return (
     <View style={styles.container} testID={testID}>
@@ -185,6 +202,7 @@ export function Banner({
           label={action.label}
           onPress={action.onPress}
           style={styles.action}
+          {...(action.busy === undefined ? {} : { busy: action.busy })}
           {...(action.testID === undefined ? {} : { testID: action.testID })}
         />
       )}

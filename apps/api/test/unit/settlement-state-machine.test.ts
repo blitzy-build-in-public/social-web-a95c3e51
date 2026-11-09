@@ -1,25 +1,6 @@
 /**
  * The meetup state machine, the deposit lifecycle, the settlement outcome table and the late and
  * orphan authorization rules, as one unit suite (AAP 0.5.3, 0.5.7, 0.7.1, 0.8.1, 0.11.2).
- *
- * Each table is asserted against the AAP rather than against itself. `MEETUP_ARROWS` restates the
- * arrows of AAP 0.5.3, one row reads each arrow back through `nextStatus`, and a fidelity row
- * compares the whole of `MEETUP_TRANSITIONS` with them, so an arrow added or dropped fails twice.
- * The complement of those pairs in the `MeetupStatus` × event-type product is then asserted refused,
- * which is what makes a final meetup final and keeps "never moves a final meetup back to `locked`"
- * true. The deposit table is checked the same way, its forward-only rows and the one orphan-release
- * row included, and each settlement row asserts the plan field by field rather than by spreading it.
- *
- * Everything under test here is pure, so no database, Redis, network or clock is touched: the
- * DB-bound halves of AAP 0.5.3 — `transition`, `applyHoldOutcome` and the `requires_capture`
- * decision itself — belong to `src/modules/meetups/state-machine.ts` and
- * `src/modules/payments/webhook.ts`, and are asserted by the integration suites
- * `payment-operations.test.ts`, `settlement.test.ts` and `webhooks-stripe.test.ts`. Importing the
- * units under test pulls in `@tablemate/db`, whose client connects lazily, so no connection opens.
- *
- * @see AAP 0.5.3 for the meetup, deposit and dispute lifecycles with the late and orphan
- *   authorization rules, 0.5.7 for the settlement outcome table, 0.11.2 for this suite's place in
- *   the `unit` project of `pnpm test`.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -242,7 +223,6 @@ function encodedMeetupArrows(): readonly string[] {
     .flatMap((from) =>
       EVENT_TYPES.flatMap((eventType) => {
         const target = MEETUP_TRANSITIONS[from][eventType];
-
         if (target === undefined) {
           return [];
         }
@@ -266,15 +246,12 @@ describe('AAP 0.5.3 meetup transitions', () => {
   it.each(MEETUP_ROWS)('$name', ({ from, event, to }) => {
     expect(nextStatus(from, event)).toBe(to);
   });
-
   it('AAP 0.5.3 meetup: the table encodes exactly these arrows, no extra and no missing one', () => {
     expect(encodedMeetupArrows()).toEqual(expectedMeetupArrows());
   });
-
   it.each(REFUSED_MEETUP_PAIRS)('$name', ({ from, eventType }) => {
     expect(nextStatus(from, EVENTS[eventType])).toBeNull();
   });
-
   it('AAP 0.5.3 meetup: no arrow targets proposed and proposed is the only source of locked', () => {
     expect(expectedMeetupArrows().some((arrow) => arrow.endsWith('|proposed'))).toBe(false);
     expect(encodedMeetupArrows().some((arrow) => arrow.endsWith('|proposed'))).toBe(false);
@@ -282,35 +259,29 @@ describe('AAP 0.5.3 meetup transitions', () => {
       ...new Set(MEETUP_ARROWS.filter((arrow) => arrow.to === 'locked').map((a) => a.from)),
     ]).toEqual(['proposed']);
   });
-
   it('AAP 0.5.3 meetup: the final statuses are every status but proposed and locked', () => {
     expect([...FINAL_MEETUP_STATUSES].sort()).toEqual(
       MeetupStatus.options.filter((status) => status !== 'proposed' && status !== 'locked').sort(),
     );
   });
-
   it('AAP 0.5.3 meetup: every event type has a factory event, and no other pair is refused', () => {
     expect([...EVENT_TYPES].sort()).toEqual(Object.keys(EVENTS).sort());
   });
-
   it('AAP 0.5.3 meetup: a refused pair is reported with the row, the status and the event', () => {
     const error = new InvalidTransitionError({
       meetupId: MEETUP_ID,
       from: 'locked',
       event: EVENTS.decline,
     });
-
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe('InvalidTransitionError');
     expect(error.meetupId).toBe(MEETUP_ID);
     expect(error.from).toBe('locked');
     expect(error.event).toBe(EVENTS.decline);
   });
-
   it('AAP 0.5.3 meetup: a cancellation is free at startsAt - 2 h and late one second later', () => {
     const startsAt = new Date('2026-11-05T18:00:00.000Z');
     const boundary = new Date(startsAt.getTime() - 2 * HOUR_MS);
-
     expect(isLateCancel(boundary, startsAt)).toBe(false);
     expect(isLateCancel(new Date(boundary.getTime() + 1_000), startsAt)).toBe(true);
     // The table's own answer for the pair: the lateness guard is the transition's, so the pure
@@ -318,7 +289,6 @@ describe('AAP 0.5.3 meetup transitions', () => {
     expect(nextStatus('locked', EVENTS.cancel)).toBe('cancelled');
     expect(nextStatus('locked', EVENTS.deletion)).toBe('cancelled');
   });
-
   it('AAP 0.5.7 settle: each outcome maps to the status its plan records', () => {
     expect(Object.keys(SETTLE_OUTCOME_STATUSES).sort()).toEqual(
       [...SettlementOutcome.options].sort(),
@@ -356,8 +326,6 @@ interface DepositRow extends DepositMove {
  * that arrives for the attempt of a meetup which already reached a final status is released on the
  * spot, and its deposit has to be able to reach `released` from `failed` for the account-deletion
  * `delete_customer` operation to ever run — that one waits until every deposit of the user is final.
- * `held --expired-->` is allowed even while a release of ours is pending: Stripe's own cancellation
- * wins, and its instant is recorded on the deposit.
  */
 const DEPOSIT_MOVES: readonly DepositMove[] = [
   { from: 'pending', to: 'held', note: 'the confirm answered requires_capture' },
@@ -428,15 +396,12 @@ describe('AAP 0.5.3 deposit transitions', () => {
   it.each(DEPOSIT_ROWS)('$name', ({ from, to }) => {
     expect(canTransitionDeposit(from, to)).toBe(true);
   });
-
   it('AAP 0.5.3 deposit: the table encodes exactly these moves and no others', () => {
     expect(encodedDepositMoves()).toEqual(expectedDepositMoves());
   });
-
   it.each(REFUSED_DEPOSIT_PAIRS)('$name', ({ from, to }) => {
     expect(canTransitionDeposit(from, to)).toBe(false);
   });
-
   it('AAP 0.5.3 deposit: a final status never returns to an open one', () => {
     for (const status of FINAL_DEPOSIT_STATUSES) {
       expect(
@@ -450,7 +415,6 @@ describe('AAP 0.5.3 deposit transitions', () => {
     // `captured` is the one final status with a move left: a `no_fault` reversal refunds it.
     expect(DEPOSIT_TRANSITIONS.captured).toEqual(['refunded']);
   });
-
   it('AAP 0.5.3 deposit: exactly the open statuses may be released', () => {
     expect(fromStatusesFor('released')).toEqual(openDepositStatuses());
   });
@@ -588,7 +552,6 @@ const ALL_PLANS: readonly { readonly name: string; readonly plan: SettlementPlan
  */
 function expectPlan(plan: SettlementPlan, expected: PlanExpectation): void {
   const [witness, pairHistory, lodgingActivity] = expected.flags;
-
   expect(plan.outcome).toBe(expected.outcome);
   expect(plan.status).toBe(expected.status);
   expect(plan.captureRole).toBe(expected.captureRole);
@@ -632,22 +595,18 @@ function expectedEventNames(outcome: SettlementOutcome): readonly string[] {
 describe('AAP 0.5.7 settlement outcomes and AAP 0.5.3 late cancellation', () => {
   it.each(PRESENCE_ROWS)('AAP 0.5.7 settle ($name)', (row) => {
     const plan = settlementPlan(row.presence);
-
     expectPlan(plan, row);
     expect(plan.forfeitReason).toBe(expectedForfeitReason(row.outcome));
     expect(plan.initiatorPresent).toBe(row.presence.initiatorPresent);
     expect(plan.recipientPresent).toBe(row.presence.recipientPresent);
   });
-
   it.each(LATE_CANCEL_ROWS)('AAP 0.5.3 late cancel ($name)', (row) => {
     const plan = lateCancelPlan(row.canceller);
-
     expectPlan(plan, row);
     expect(plan.forfeitReason).toBe('late_cancel');
     expect(plan.initiatorPresent).toBe(row.presence.initiatorPresent);
     expect(plan.recipientPresent).toBe(row.presence.recipientPresent);
   });
-
   it('AAP 0.5.7 settle: the table is the plan, one row per presence combination', () => {
     expect(Object.keys(SETTLEMENT_TABLE).sort()).toEqual([
       'both',
@@ -660,30 +619,25 @@ describe('AAP 0.5.7 settlement outcomes and AAP 0.5.3 late cancellation', () => 
     expect(settlementPlan(RECIPIENT_ONLY)).toBe(SETTLEMENT_TABLE.recipient_only);
     expect(settlementPlan(NEITHER_PRESENT)).toBe(SETTLEMENT_TABLE.neither);
   });
-
   it.each(ALL_PLANS)('AAP 0.5.7 $name: no hold left undecided, none decided twice', ({ plan }) => {
     const decided = [
       ...(plan.captureRole === null ? [] : [plan.captureRole]),
       ...plan.releaseRoles,
     ];
-
     expect([...decided].sort()).toEqual(['initiator', 'recipient']);
     expect(plan.releaseRoles).not.toContain(plan.captureRole);
     // Table Credit is granted exactly when a hold is captured, to the counterpart.
     expect(plan.creditRole === null).toBe(plan.captureRole === null);
     expect(plan.creditRole).toBe(plan.captureRole === null ? null : otherRole(plan.captureRole));
   });
-
   it.each(ALL_PLANS)(
     'AAP 0.5.3 $name: the meetup takes the status the plan records',
     ({ plan }) => {
       expect(nextStatus('locked', settleEvent(plan.outcome))).toBe(plan.status);
     },
   );
-
   it.each(ALL_PLANS)('AAP 0.5.7 $name: the settlement writes its own events', ({ plan }) => {
     const names = plan.analytics.map((event) => event.name).sort();
-
     expect(names).toEqual([...expectedEventNames(plan.outcome)].sort());
     for (const event of plan.analytics) {
       expect(['initiator', 'recipient']).toContain(event.actor);
@@ -696,7 +650,6 @@ describe('AAP 0.5.7 settlement outcomes and AAP 0.5.3 late cancellation', () => 
     const absent = plan.initiatorPresent ? 'recipient' : 'initiator';
     expect(plan.analytics.every((event) => event.actor === absent)).toBe(true);
   });
-
   it('AAP 0.5.2: the opposite side of a meetup is the other role', () => {
     expect(otherRole('initiator')).toBe('recipient');
     expect(otherRole('recipient')).toBe('initiator');
@@ -731,16 +684,13 @@ const OPERATION_STATUS_ROWS: readonly OperationStatusRow[] = PaymentOperationSta
 /**
  * The `requires_capture` decision itself is not testable here: `payments/webhook.ts` takes it inside
  * its transaction, through `hasCaptureOrRelease`, `isCurrent` and `applyHoldOutcome`, and exports no
- * pure helper for it — so this suite adds no fake one. The whole path is asserted against the
- * database by `apps/api/test/integration/payment-operations.test.ts` (a late authorization after a
- * decline, a lapse and a cancellation; an event for a superseded attempt; a hold lost while the
- * meetup is `proposed`; a delayed `requires_capture` for a forfeited meetup's absent party, before
- * and after the capture) and by `webhooks-stripe.test.ts`. What is provable without a database are
- * the invariants those rules rest on: a final meetup but `forfeited` takes no event, so an orphan
- * authorization can never move one back to `locked`; a key names its attempt, so a superseded attempt
- * never shares one with the current attempt; the statuses that end an operation's life are the row
- * `hasNoAuthorization` reads before it declares a deposit released; and a hold whose create was handed
- * to the operator is never treated as holding nothing.
+ * pure helper for it — so this suite adds no fake one, and the whole path is asserted against the
+ * database by `apps/api/test/integration/payment-operations.test.ts` and `webhooks-stripe.test.ts`.
+ * What is provable without a database are the invariants those rules rest on: a final meetup but
+ * `forfeited` takes no event, so an orphan authorization can never move one back to `locked`; a key
+ * names its attempt, so a superseded attempt never shares one with the current attempt; the statuses
+ * that end an operation's life are the row `hasNoAuthorization` reads before it declares a deposit
+ * released; and a hold whose create was handed to the operator is never treated as holding nothing.
  */
 describe('AAP 0.5.3 late and orphan authorizations', () => {
   it('AAP 0.5.3: a final meetup takes no event, and forfeited takes only its two', () => {
@@ -748,7 +698,6 @@ describe('AAP 0.5.3 late and orphan authorizations', () => {
       status,
       events: EVENT_TYPES.filter((eventType) => nextStatus(status, EVENTS[eventType]) !== null),
     }));
-
     expect(accepted).toEqual([
       { status: 'declined', events: [] },
       { status: 'lapsed', events: [] },
@@ -760,13 +709,11 @@ describe('AAP 0.5.3 late and orphan authorizations', () => {
       { status: 'no_fault', events: [] },
     ]);
   });
-
   it('AAP 0.3.2: an idempotency key names its attempt', () => {
     expect(holdKey(DEPOSIT_ID, 1)).toBe(`hold:${DEPOSIT_ID}:1`);
     expect(holdKey(DEPOSIT_ID, 1)).not.toBe(holdKey(DEPOSIT_ID, 2));
     expect(holdKey(DEPOSIT_ID, 2)).not.toBe(holdKey(MEETUP_ID, 2));
   });
-
   it.each([
     { label: 'a hold with the twelve-hour marker', kind: 'hold', lastError: 'unresolved_12h' },
     {
@@ -777,7 +724,6 @@ describe('AAP 0.5.3 late and orphan authorizations', () => {
   ] as const)('AAP 0.3.2 $label was handed to the operator', ({ kind, lastError }) => {
     expect(isHandedOffHold({ kind, lastError })).toBe(true);
   });
-
   it.each([
     { label: 'a hold with no marker', kind: 'hold', lastError: null },
     { label: 'a hold that failed for another reason', kind: 'hold', lastError: 'card_declined' },
@@ -785,7 +731,6 @@ describe('AAP 0.5.3 late and orphan authorizations', () => {
   ] as const)('AAP 0.3.2 $label was not handed to the operator', ({ kind, lastError }) => {
     expect(isHandedOffHold({ kind, lastError })).toBe(false);
   });
-
   it.each(OPERATION_STATUS_ROWS)(
     'AAP 0.3.2: $status is terminal: $terminal',
     ({ status, terminal }) => {

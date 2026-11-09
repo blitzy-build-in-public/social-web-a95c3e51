@@ -293,7 +293,6 @@ function handleFrame(frame: ServerFrame): void {
  * which `../api/ws` performs and owns, so frames arriving after a dropped connection still refresh
  * what is on screen.
  *
- * @returns The function that removes this binding; safe to call more than once.
  */
 export function bindRealtimeInvalidation(): () => void {
   const installed = unbindRealtime;

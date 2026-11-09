@@ -1,49 +1,39 @@
 /**
- * Authentication for the API: the access token, the route-group guards, the Redis session cache
- * and the account-deletion write fence (AAP 0.3.2, 0.3.3, 0.5.1, 0.5.3, 0.5.4, 0.8.1).
+ * Authentication for the API: the access token, the route-group guards, the Redis session cache and the
+ * account-deletion write fence (AAP 0.3.2, 0.3.3, 0.5.1, 0.5.3, 0.5.4).
  *
- * Five things live here, and each is the only place its rule is applied.
- *
- *  - **The access token.** {@link signAccessToken} and {@link verifyAccessToken} are the one pair
- *    that writes and reads the 15-minute HS256 JWT of AAP 0.3.3, whose claims are exactly `sub`,
- *    `role`, `sid` (plus `iat` and `exp`). No email address, handle or other profile field ever
- *    enters a token, and verification reads the injected clock, so a test that advances the clock
- *    past 15 minutes expires a token the way real time would.
+ *  - **The access token.** {@link signAccessToken} and {@link verifyAccessToken} are the one pair that writes and
+ *    reads the 15-minute HS256 JWT of AAP 0.3.3, whose claims are exactly `sub`, `role`, `sid` (plus `iat` and
+ *    `exp`). No email address, handle or other profile field enters a token, and verification reads the injected
+ *    clock, so a test that advances the clock past 15 minutes expires a token the way real time would.
  *  - **The guards.** {@link requireBearer}, {@link requireTraveler}, {@link requireOperator} and
- *    {@link requireWebSocketBearer} are plain exported hooks, deliberately not a global `onRequest`
- *    hook: a route group installs the one it needs with `app.addHook('onRequest', requireTraveler)`,
- *    which is what keeps the age gate on the traveler feature routes and off `GET /me`,
- *    `POST /me/consents`, `POST /auth/logout` and `DELETE /me` (bearer only), the public routes, the
- *    provider webhooks (`/webhooks/*`), the console routes, `/admin/*` (role-guarded) and the
- *    test-control routes (AAP 0.5.4). A route outside those groups cannot inherit the gate by
- *    accident, because nothing is registered globally.
- *  - **The session cache.** `auth:session:<sid>` in Redis for 30 seconds (AAP 0.5.3), holding the
- *    three facts a request needs — user id, role, age gate — and never an email address or a token.
- *    It serves read-only authentication. A miss, an error and a slow reply are one thing here: all
- *    three fall through to PostgreSQL, so a Redis outage slows authentication without failing it,
- *    and a cached entry can never authorise a write, because every write runs behind the fence.
- *  - **The fence.** {@link assertWritable} takes `SELECT ... FOR SHARE` on the acting user's row
- *    inside the caller's transaction and refuses with `401 token_invalid` once
- *    `deletion_requested_at` or `deleted_at` is set (AAP 0.5.3). {@link isWritable} is the same
- *    statement as a predicate, for the one mutating path whose refusal must not be visible to its
- *    caller: `POST /auth/magic-link` answers `202` for every address it accepts, so it drops the
- *    write instead (AAP 0.5.4). `DELETE /me` takes `FOR UPDATE` on the same row, so a mutation
- *    already in flight commits before the deletion and every mutation starting later is refused —
- *    nothing the erased account wrote can be recreated afterwards. Both read PostgreSQL, never the
- *    cache.
+ *    {@link requireWebSocketBearer} are plain exported hooks, deliberately not a global `onRequest` hook: a route
+ *    group installs the one it needs, which is what keeps the age gate on the traveler feature routes and off
+ *    `GET /me`, `POST /me/consents`, `POST /auth/logout`, `DELETE /me`, the public routes, the provider webhooks,
+ *    the console routes, `/admin/*` and the test-control routes. Nothing is registered globally, so a route
+ *    outside those groups cannot inherit the gate by accident (AAP 0.5.4).
+ *  - **The session cache.** `auth:session:<sid>` in Redis for 30 seconds, holding the three facts a request needs
+ *    — user id, role, age gate — and never an email address or a token. It serves read-only authentication: a
+ *    miss, an error and a slow reply all fall through to PostgreSQL, so a Redis outage slows authentication
+ *    without failing it, and a cached entry can never authorise a write, because every write runs behind the
+ *    fence.
+ *  - **The fence.** {@link assertWritable} takes `SELECT ... FOR SHARE` on the acting user's row inside the
+ *    caller's transaction and refuses with `401 token_invalid` once `deletion_requested_at` or `deleted_at` is
+ *    set (AAP 0.5.3). {@link isWritable} is the same statement as a predicate, for the one mutating path whose
+ *    refusal must not be visible to its caller: `POST /auth/magic-link` answers `202` for every address it
+ *    accepts, so it drops the write instead (AAP 0.5.4). `DELETE /me` takes `FOR UPDATE` on the same row, so a
+ *    mutation already in flight commits before the deletion and every mutation starting later is refused. Both
+ *    read PostgreSQL, never the cache.
  *  - **The invalidation.** {@link dropCachedSessions}, {@link invalidateSession} and
- *    {@link invalidateUserSessions} are what make the two writes above visible at once: the first
- *    drops cache entries after a logout, a refresh-reuse revocation, a consent change or a role
- *    change; the second also publishes the `{ type: 'invalidate' }` control frame naming the one
- *    session that ended, so every API instance closes the sockets that session was admitted with;
- *    and the third publishes it for an account that ended, so every socket of that user is closed
- *    (AAP 0.3.2, 0.5.3). All three are called after the revoking transaction commits.
+ *    {@link invalidateUserSessions} are what make the two writes above visible at once: the last two also
+ *    publish the `{ type: 'invalidate' }` control frame naming the session or account that ended, so every API
+ *    instance closes the sockets it was admitted with (AAP 0.3.2, 0.5.3). All three are called after the
+ *    revoking transaction commits.
  *
  * Nothing in this module logs a token, an email address, an `Authorization` header or a
- * `Sec-WebSocket-Protocol` header: a refusal writes one `auth_rejected` line carrying its reason
- * under `guardReason` and nothing else, and a success writes nothing per request (AAP 0.11.1).
+ * `Sec-WebSocket-Protocol` header: a refusal writes one `auth_rejected` line carrying its reason under
+ * `guardReason` and nothing else (AAP 0.11.1).
  */
-
 import { SignJWT, jwtVerify } from 'jose';
 
 import {
@@ -61,10 +51,6 @@ import { AppError, isAppError } from './errors.ts';
 import { bearerTokenFromProtocolHeader } from './websocket.ts';
 
 import type { FastifyRequest } from 'fastify';
-
-// ---------------------------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------------------------
 
 /** Set on every request by whichever guard admitted it, and `null` until then (AAP 0.3.3). */
 declare module 'fastify' {
@@ -201,10 +187,6 @@ interface CachedSession {
   readonly ageConfirmed: boolean;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------------------------
-
 /** The session cache key. The `:` separator is the convention for Redis keys (AAP 0.3.2). */
 const SESSION_CACHE_KEY_PREFIX = 'auth:session:';
 
@@ -238,10 +220,6 @@ const BEARER_HEADER_RE = /^Bearer ([A-Za-z0-9._-]+)$/i;
  */
 const COMPACT_JWS_RE = /^[A-Za-z0-9._-]+$/;
 
-// ---------------------------------------------------------------------------------------------
-// Access tokens (AAP 0.3.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * The HMAC keys already derived, by secret. The secret is fixed for the life of a process, so this
  * holds one entry in the API, the workers and a script, and at most a handful in a test process that
@@ -253,7 +231,6 @@ const hmacKeys = new Map<string, Uint8Array>();
 function hmacKey(secret: string): Uint8Array {
   const cached = hmacKeys.get(secret);
   if (cached !== undefined) return cached;
-
   const key = new TextEncoder().encode(secret);
   hmacKeys.set(secret, key);
   return key;
@@ -267,18 +244,12 @@ function hmacKey(secret: string): Uint8Array {
  *
  * `sessions.ts` calls this for `POST /auth/verify` and `POST /auth/refresh`, and the test factories
  * and benchmark scripts call it to act as a signed-in traveler.
- *
- * @param services - The signing secret and the clock.
- * @param claims - The subject, role and session the token names.
- * @returns The compact JWS.
- * @see AAP 0.3.3.
  */
 export async function signAccessToken(
   services: TokenServices,
   claims: AccessTokenClaims,
 ): Promise<string> {
   const issuedAt = Math.floor(services.clock.nowMs() / 1000);
-
   return new SignJWT({ role: claims.role, sid: claims.sid })
     .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
     .setSubject(claims.sub)
@@ -295,13 +266,6 @@ export async function signAccessToken(
  * (AAP 0.11.1). Every failure — a bad signature, an expired token, a wrong algorithm, a malformed
  * payload, a claim of the wrong shape — is the same `401 token_invalid` to the caller, so a probe
  * cannot learn which part of a token was wrong.
- *
- * @param services - The signing secret and the clock.
- * @param token - The compact JWS taken from the request.
- * @returns The parsed claims, carrying exactly `sub`, `role` and `sid`.
- * @throws AppError `token_invalid` for anything that is not a token this process signed and that has
- *   not expired.
- * @see AAP 0.3.3, 0.5.4.
  */
 export async function verifyAccessToken(
   services: TokenServices,
@@ -310,7 +274,6 @@ export async function verifyAccessToken(
   if (token.length > MAX_TOKEN_CHARS || !COMPACT_JWS_RE.test(token)) {
     throw new AppError('token_invalid');
   }
-
   let payload: unknown;
   try {
     const { payload: verified } = await jwtVerify(token, hmacKey(services.env.JWT_SECRET), {
@@ -323,18 +286,12 @@ export async function verifyAccessToken(
     // which check failed, and the envelope answers every failure the same way.
     throw new AppError('token_invalid');
   }
-
   const claims = AccessTokenClaims.safeParse(payload);
   if (!claims.success) {
     throw new AppError('token_invalid');
   }
-
   return claims.data;
 }
-
-// ---------------------------------------------------------------------------------------------
-// The session cache and its invalidation (AAP 0.3.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /** The cache key for one session. */
 function sessionCacheKey(sessionId: string): string {
@@ -354,7 +311,6 @@ function withTimeout<T>(work: Promise<T>, milliseconds: number): Promise<T> {
     const timer = setTimeout(() => {
       reject(new Error('cache_command_timed_out'));
     }, milliseconds);
-
     work.then(
       (value) => {
         clearTimeout(timer);
@@ -375,7 +331,6 @@ function withTimeout<T>(work: Promise<T>, milliseconds: number): Promise<T> {
  */
 function parseCachedSession(raw: string | null): CachedSession | null {
   if (raw === null) return null;
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -383,13 +338,10 @@ function parseCachedSession(raw: string | null): CachedSession | null {
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-
   const { userId, role, ageConfirmed } = parsed as Record<string, unknown>;
   if (typeof userId !== 'string' || typeof ageConfirmed !== 'boolean') return null;
-
   const parsedRole = UserRole.safeParse(role);
   if (!parsedRole.success) return null;
-
   return { userId, role: parsedRole.data, ageConfirmed };
 }
 
@@ -425,7 +377,6 @@ function writeCachedSession(
 ): void {
   const key = sessionCacheKey(sessionId);
   const payload = JSON.stringify(session);
-
   void withTimeout(
     services.redis.client.set(key, payload, 'PX', SESSION_CACHE_SECONDS * 1000),
     CACHE_COMMAND_TIMEOUT_MS,
@@ -443,9 +394,6 @@ function writeCachedSession(
  * the same four checks the cache entry was built from, which is why a cached hit needs only the
  * ownership test. `role` and `ageConfirmed` come from the row, so a promotion that revoked sessions
  * and a consent that was recorded are both seen at once.
- *
- * @throws AppError `token_invalid` for every refusal. A database failure is not one of them: it is
- *   rethrown, so an outage answers `500` rather than telling a signed-in caller their token is bad.
  */
 async function resolveSession(
   services: AuthServices,
@@ -460,7 +408,6 @@ async function resolveSession(
       ageConfirmed: cached.ageConfirmed,
     };
   }
-
   const row = await services.db.session.findUnique({
     where: { id: claims.sid },
     select: {
@@ -478,7 +425,6 @@ async function resolveSession(
       },
     },
   });
-
   const now = services.clock.now();
   if (
     row === null ||
@@ -490,7 +436,6 @@ async function resolveSession(
   ) {
     throw new AppError('token_invalid');
   }
-
   const context: AuthContext = {
     userId: row.userId,
     role: row.user.role,
@@ -502,7 +447,6 @@ async function resolveSession(
     role: context.role,
     ageConfirmed: context.ageConfirmed,
   });
-
   return context;
 }
 
@@ -515,17 +459,12 @@ async function resolveSession(
  * revocation, `me/consents.ts` once consents are recorded (so the age gate opens at once),
  * `scripts/grant-operator.ts`, and `messaging/pubsub.ts` when another instance publishes an
  * invalidation.
- *
- * @param services - The Redis connection and the logger.
- * @param sessionIds - The sessions to forget; an empty list is a no-op, which keeps the command
- *   valid (`DEL` needs at least one key).
  */
 export async function dropCachedSessions(
   services: Pick<AuthServices, 'redis' | 'logger'>,
   sessionIds: readonly string[],
 ): Promise<void> {
   if (sessionIds.length === 0) return;
-
   try {
     await withTimeout(
       services.redis.client.del(...sessionIds.map(sessionCacheKey)),
@@ -550,11 +489,6 @@ export async function dropCachedSessions(
  * hold the user's cache entries, and a failure to publish is logged and swallowed for the same reason
  * a failed drop is: it costs at most {@link SESSION_CACHE_SECONDS} of read-only staleness, and it can
  * never let a write through.
- *
- * @param services - The Redis connection, the logger and the pub/sub publisher.
- * @param userId - The account whose sessions ended; the frame is published on its own channel.
- * @param sessionIds - The revoked sessions whose cache entries are dropped first.
- * @see AAP 0.3.2 for the invalidation frame, 0.5.3 for the write fence that makes it sufficient.
  */
 export async function invalidateUserSessions(
   services: Pick<AuthServices, 'redis' | 'logger' | 'pubsub'>,
@@ -562,7 +496,6 @@ export async function invalidateUserSessions(
   sessionIds: readonly string[],
 ): Promise<void> {
   await dropCachedSessions(services, sessionIds);
-
   try {
     await withTimeout(
       services.pubsub.publishUser(userId, SESSION_INVALIDATION_FRAME),
@@ -590,11 +523,6 @@ export async function invalidateUserSessions(
  * logged and swallowed for the same reason as in {@link invalidateUserSessions}: it costs at most
  * {@link SESSION_CACHE_SECONDS} of read-only staleness, and a write can never ride a cached session,
  * because every write re-reads its own session behind the fence.
- *
- * @param services - The Redis connection, the logger and the pub/sub publisher.
- * @param userId - The account whose channel carries the frame.
- * @param sessionId - The session that ended, and the only sockets the frame closes.
- * @see AAP 0.5.3 for the invalidation and the cache's read-only role, 0.5.4 for the logout route.
  */
 export async function invalidateSession(
   services: Pick<AuthServices, 'redis' | 'logger' | 'pubsub'>,
@@ -602,7 +530,6 @@ export async function invalidateSession(
   sessionId: string,
 ): Promise<void> {
   await dropCachedSessions(services, [sessionId]);
-
   try {
     await withTimeout(
       services.pubsub.publishUser(userId, { type: 'invalidate', sessionIds: [sessionId] }),
@@ -615,10 +542,6 @@ export async function invalidateSession(
     );
   }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Registration and the guards (AAP 0.3.2, 0.5.4)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Registers the request decorator the guards write to and nothing else.
@@ -666,7 +589,6 @@ function refuse(request: FastifyRequest, reason: AuthRejectionReason, code: Erro
  */
 function bearerFromAuthorization(header: string | undefined): string | null {
   if (header === undefined) return null;
-
   const match = BEARER_HEADER_RE.exec(header.trim());
   return match?.[1] ?? null;
 }
@@ -682,7 +604,6 @@ function bearerFromAuthorization(header: string | undefined): string | null {
 function bearerFromSubprotocolHeader(request: FastifyRequest): string | null {
   const header: string | string[] | undefined = request.headers['sec-websocket-protocol'];
   const offered = Array.isArray(header) ? header.join(', ') : header;
-
   return bearerTokenFromProtocolHeader(offered);
 }
 
@@ -700,9 +621,7 @@ async function authenticate(request: FastifyRequest, token: string | null): Prom
   if (token === null) {
     refuse(request, 'missing', 'token_invalid');
   }
-
   const services = authServicesOf(request);
-
   let claims: AccessTokenClaims;
   try {
     claims = await verifyAccessToken(services, token);
@@ -712,7 +631,6 @@ async function authenticate(request: FastifyRequest, token: string | null): Prom
     }
     throw error;
   }
-
   let context: AuthContext;
   try {
     context = await resolveSession(services, claims);
@@ -722,7 +640,6 @@ async function authenticate(request: FastifyRequest, token: string | null): Prom
     }
     throw error;
   }
-
   request.auth = context;
   return context;
 }
@@ -732,9 +649,6 @@ async function authenticate(request: FastifyRequest, token: string | null): Prom
  *
  * For the four bearer routes a new account needs before the gate can open: `GET /me`,
  * `POST /me/consents`, `POST /auth/logout` and `DELETE /me`. `request.auth` is set for the handler.
- *
- * @throws AppError `token_invalid` (401) when the token is missing, invalid or its session is gone.
- * @see AAP 0.5.4.
  */
 export async function requireBearer(request: FastifyRequest): Promise<void> {
   await authenticate(request, bearerFromAuthorization(request.headers.authorization));
@@ -742,18 +656,12 @@ export async function requireBearer(request: FastifyRequest): Promise<void> {
 
 /**
  * Admits a caller who has passed the age gate, for every traveler feature route.
- *
- * @throws AppError `token_invalid` (401) as {@link requireBearer} does, and `age_gate_required`
- *   (403) once the session is valid but the 18+ confirmation and the terms version are not both
- *   recorded. The client routes to the age gate on that code.
- * @see AAP 0.3.2, 0.5.4, 0.5.8.
  */
 export async function requireTraveler(request: FastifyRequest): Promise<void> {
   const context = await authenticate(
     request,
     bearerFromAuthorization(request.headers.authorization),
   );
-
   if (!context.ageConfirmed) {
     refuse(request, 'age_gate', 'age_gate_required');
   }
@@ -764,17 +672,12 @@ export async function requireTraveler(request: FastifyRequest): Promise<void> {
  *
  * No age gate: an operator is an internal account, and the role is read from the user row rather
  * than from the token's claim, so revoking the sessions of a demoted operator takes effect at once.
- *
- * @throws AppError `token_invalid` (401) as {@link requireBearer} does, and `operator_only` (403)
- *   for a valid session whose account is a traveler.
- * @see AAP 0.3.3, 0.5.4.
  */
 export async function requireOperator(request: FastifyRequest): Promise<void> {
   const context = await authenticate(
     request,
     bearerFromAuthorization(request.headers.authorization),
   );
-
   if (context.role !== 'operator') {
     refuse(request, 'role', 'operator_only');
   }
@@ -787,21 +690,13 @@ export async function requireOperator(request: FastifyRequest): Promise<void> {
  * `@fastify/websocket` hijacks the connection: a refusal is therefore answered as plain HTTP 401
  * through the error handler, on a connection that is never upgraded. The age gate applies here as it
  * does on the traveler REST routes.
- *
- * @throws AppError `token_invalid` (401) and `age_gate_required` (403), as {@link requireTraveler}.
- * @see AAP 0.3.3, 0.5.4.
  */
 export async function requireWebSocketBearer(request: FastifyRequest): Promise<void> {
   const context = await authenticate(request, bearerFromSubprotocolHeader(request));
-
   if (!context.ageConfirmed) {
     refuse(request, 'age_gate', 'age_gate_required');
   }
 }
-
-// ---------------------------------------------------------------------------------------------
-// The account-deletion write fence (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Refuses a write by an account that has requested deletion or has been deleted.
@@ -819,12 +714,6 @@ export async function requireWebSocketBearer(request: FastifyRequest): Promise<v
  * {@link SESSION_CACHE_SECONDS}, which is tolerable for a read and not for a write. The statement is
  * {@link isWritable}'s, spelled as raw SQL there because the row lock has no Prisma client
  * equivalent, with `"user"` quoted because it is a reserved word.
- *
- * @param tx - The caller's open transaction.
- * @param userId - The acting user, whose row is locked for the rest of the transaction.
- * @throws AppError `token_invalid` (401) when no such user row exists — an id nothing holds, or a
- *   tombstone the financial purge has removed — and when either deletion column is set.
- * @see AAP 0.5.2 for what erasure removes, 0.11.2 for the parameterized-SQL rule.
  */
 export async function assertWritable(tx: DbTx, userId: string): Promise<void> {
   if (!(await isWritable(tx, userId))) throw new AppError('token_invalid');
@@ -843,13 +732,6 @@ export async function assertWritable(tx: DbTx, userId: string): Promise<void> {
  * cases apart. The `SELECT ... FOR SHARE` it takes is the lock ordering AAP 0.5.3 states, and it is
  * the same statement `DELETE /me` orders against with its `FOR UPDATE` on that row: a write already
  * in flight commits before the deletion, one starting later reads the flag and writes nothing.
- *
- * @param tx - The caller's open transaction, in which the share lock is held.
- * @param userId - The account whose row is locked for the rest of the caller's transaction.
- * @returns True when the row exists and neither deletion column is set; false when it is missing —
- *   an id nothing holds, or a tombstone the financial purge has removed — or either column is set.
- * @see AAP 0.5.2 for what erasure removes, 0.5.3 for the fence and its lock ordering, 0.5.4 for the
- *   route that drops its write instead of refusing, 0.11.2 for the parameterized-SQL rule.
  */
 export async function isWritable(tx: DbTx, userId: string): Promise<boolean> {
   const rows = await tx.$queryRaw<
@@ -860,7 +742,6 @@ export async function isWritable(tx: DbTx, userId: string): Promise<boolean> {
      WHERE "id" = ${userId}::uuid
        FOR SHARE
   `);
-
   const row = rows[0];
   return row !== undefined && row.deletion_requested_at === null && row.deleted_at === null;
 }
@@ -880,14 +761,6 @@ export async function isWritable(tx: DbTx, userId: string): Promise<boolean> {
  * up to {@link SESSION_CACHE_SECONDS}, which is tolerable for a read and never for a write. The row
  * is not locked: {@link assertWritable} already orders this write against `DELETE /me`, and the
  * commit of the transaction that revoked the session is what this read sees.
- *
- * @param services - The injected clock, which decides expiry as it does for every other check.
- * @param tx - The caller's open transaction, so the check and the write it guards commit together.
- * @param session - The acting user and the session the write was authenticated with, taken from
- *   `request.auth` at the upgrade and carried by the socket.
- * @throws AppError `token_invalid` (401) when the row is absent, belongs to another account, is
- *   revoked or has expired by the injected clock.
- * @see AAP 0.5.3 for the cache's read-only role and the write fence, 0.5.4 for the logout route.
  */
 export async function assertLiveSession(
   services: Pick<AuthServices, 'clock'>,
@@ -898,7 +771,6 @@ export async function assertLiveSession(
     where: { id: session.sessionId },
     select: { userId: true, revokedAt: true, expiresAt: true },
   });
-
   const now = services.clock.now();
   if (
     row === null ||

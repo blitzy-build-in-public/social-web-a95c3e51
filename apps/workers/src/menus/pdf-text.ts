@@ -95,7 +95,6 @@ export type PdfTextReason = 'invalid_pdf' | 'encrypted' | 'rasterize_failed' | '
 export class PdfTextError extends Error {
   /** Which failure this is; always equal to {@link Error.message}. */
   readonly reason: PdfTextReason;
-
   constructor(reason: PdfTextReason) {
     super(reason);
     this.name = 'PdfTextError';
@@ -115,9 +114,6 @@ export class PdfTextError extends Error {
  * came back, which is the signal to rasterize and OCR the file instead. A PDF with no pages
  * extracts to empty text and reports false.
  *
- * @param bytes - The PDF's bytes, as `./safe-fetch.ts` returned them.
- * @param opts - `maxPages` overrides {@link PDF_MAX_PAGES}.
- * @throws PdfTextError - `encrypted` when the document needs a password, `invalid_pdf` for anything
  * else that stops it from being read.
  */
 export async function extractPdfText(
@@ -137,12 +133,10 @@ export async function extractPdfText(
     useSystemFonts: false,
     verbosity: 0,
   });
-
   try {
     const doc = await loadingTask.promise;
     const pages = doc.numPages;
     const perPage: string[] = [];
-
     for (let number = 1; number <= Math.min(pages, maxPages); number += 1) {
       const page = await doc.getPage(number);
       try {
@@ -151,7 +145,6 @@ export async function extractPdfText(
         page.cleanup();
       }
     }
-
     const text = perPage.join('\n\n');
     return { text, pages, hasTextLayer: nonWhitespaceChars(text) >= MIN_TEXT_LAYER_CHARS };
   } catch (error) {
@@ -175,10 +168,7 @@ export async function extractPdfText(
  * ever interpreted — and the temporary directory is removed in a `finally`, including when the call
  * times out or `pdftoppm` is missing.
  *
- * @param bytes - The PDF's bytes, as `./safe-fetch.ts` returned them.
- * @param opts - `maxPages` overrides {@link PDF_MAX_PAGES}; `timeoutMs` overrides the
  * {@link RASTERIZE_TIMEOUT_MS} after which `pdftoppm` is killed with `SIGKILL`.
- * @throws PdfTextError - `rasterize_timeout` when `pdftoppm` was killed at its deadline,
  * `rasterize_failed` for any other failure, an unreadable PDF included.
  */
 export async function rasterizePdf(
@@ -188,11 +178,9 @@ export async function rasterizePdf(
   const maxPages = opts.maxPages ?? PDF_MAX_PAGES;
   const timeoutMs = opts.timeoutMs ?? RASTERIZE_TIMEOUT_MS;
   const directory = await mkdtemp(join(tmpdir(), 'tablemate-pdf-'));
-
   try {
     const input = join(directory, 'input.pdf');
     await writeFile(input, bytes);
-
     await execFileAsync(
       'pdftoppm',
       [
@@ -208,10 +196,8 @@ export async function rasterizePdf(
       ],
       { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: RASTERIZE_MAX_OUTPUT_BYTES },
     );
-
     const names = (await readdir(directory)).filter((name) => PAGE_FILE.test(name));
     names.sort((left, right) => pageNumberOf(left) - pageNumberOf(right));
-
     const pages: Buffer[] = [];
     for (const name of names) {
       pages.push(await readFile(join(directory, name)));

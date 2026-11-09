@@ -1,31 +1,15 @@
 /**
- * Criterion 3 for the itinerary proof, and the public `GET /v1/zk/config` (AAP 0.12.1 criterion 3,
- * AAP 0.5.4, AAP 0.5.5).
+ * Criterion 3 for the itinerary proof, and the public `GET /v1/zk/config`.
  *
- * Every case proves a committed `.eml` fixture the way a phone proves one — `../support/proofs.ts`
- * builds the circuit inputs, generates the witness and proves with the artefacts `pnpm circuits:build`
- * wrote — and submits only `{ proof, publicSignals }`, the sole thing the server ever receives about a
- * booking confirmation. The suite holds the two halves of criterion 3 to each other: a genuine proof
- * is accepted once and stored as the stay it proves, the same booking cannot be proved again, and every
- * way of departing from the contract is refused with the code the contract names. A tampered email is
- * shown to be unprovable rather than merely unaccepted: the input generator refuses it before a witness
- * exists.
+ * Every case proves a committed `.eml` fixture the way a phone proves one and submits only
+ * `{ proof, publicSignals }`, the sole thing the server ever receives about a booking confirmation: a
+ * genuine proof is accepted once and stored as the stay it proves, the same booking cannot be proved
+ * again, and every way of departing from the contract is refused with the code the contract names. A
+ * tampered email is unprovable rather than merely unaccepted, because the input generator refuses it
+ * before a witness exists.
  *
- * It does not skip: `fixtureProof` names `pnpm circuits:build` when the artefacts are missing and that
- * failure is propagated, because a proof suite that passed without a proof would assert nothing. It
- * does not prove on the server either — the harness is in the client's role, `apps/api/src/**` holds no
- * proving call and no private input, and the stored rows are audited by column, which is how the API is
- * shown to keep the public outputs and nothing private (AAP 0.5.5, AAP 0.12.2).
- *
- * The second half covers `GET /v1/zk/config` without a bearer token, which is how a device fetches it:
- * the supported issuers' key records and templates, the issuers still awaiting real confirmation
- * emails, the registry whose root a proof must name — the test registry under `ZK_ALLOW_TEST_ISSUER`,
- * the production one without it — the published nullifier salt, and the artefact URLs, sizes and
- * digests a client checks its download against.
- *
- * @see AAP 0.12.1 criterion 3 for what the cases assert, 0.5.5 for the check order the rejections are
- *   ordered by, 0.5.4 for both routes and their errors, 0.5.2 for the two tables the storage cases
- *   audit, 0.11.2 for the harness and the proof cache, and 0.8.1 for this file's inventory row.
+ * It does not skip — a missing artefact fails by naming `pnpm circuits:build` — and it does not prove
+ * on the server: the harness is in the client's role, and the stored rows are audited by column.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -62,37 +46,26 @@ import type { CityConfig, ErrorCode, ErrorEnvelope, ProofSubmission } from '@tab
 import type { FactoryContext, RouteResponse, UserFixture } from '../support/factories.ts';
 import type { FixtureStay } from '../support/proofs.ts';
 
-/* The two routes under test (AAP 0.5.4). */
-
-/** `POST /itinerary-proofs`: the one route that ever receives a proof. */
 const PROOF_ROUTE = '/v1/itinerary-proofs';
 
-/** `GET /zk/config`: public, because a device fetches it before it holds any proof. */
 const ZK_CONFIG_ROUTE = '/v1/zk/config';
 
-/* The configuration every expectation is anchored to (AAP 0.5.5). */
-
 /**
- * The salt the foreign-salt case proves the `valid` booking under: a short decimal field element that is
- * not the published {@link TEST_NULLIFIER_SALT}. The proof is genuine for the salt it names, so Groth16
- * verification succeeds and the verifier's own salt check is what refuses it — the order AAP 0.5.5
- * fixes for its checks 1 and 2.
+ * The salt the foreign-salt case proves the `valid` booking under: a short decimal field element
+ * that is not the published {@link TEST_NULLIFIER_SALT}. The proof is genuine for the salt it names,
+ * so Groth16 verification succeeds and the verifier's own salt check is what refuses it.
  *
- * Fixed rather than randomised, so the proof it names stays in `.local/test-proofs/` between runs;
- * a fresh salt every run would re-prove the booking each time for the same assertion.
+ * Fixed rather than randomised, so the proof it names stays in `.local/test-proofs/` between runs.
  */
 const FOREIGN_NULLIFIER_SALT = '7777777777777777';
 
-/** The issuer records the published configuration must still list as awaiting samples (AAP 0.5.8). */
 const UNSUPPORTED_ISSUER_FILES = [
   'config/issuers/booking-com.json',
   'config/issuers/airbnb.json',
 ] as const;
 
-/** The synthetic test issuer's record: the key that signed the fixture emails (AAP 0.5.5). */
 const TEST_ISSUER_FILE = 'config/issuers/tablemate-test.json';
 
-/** The two committed registries, keyed as the response names them (AAP 0.5.5). */
 const REGISTRY_FILES = {
   production: 'config/registry/production.json',
   test: 'config/registry/test.json',
@@ -102,9 +75,8 @@ const REGISTRY_FILES = {
 const MANIFEST_FILE = 'packages/circuits/build/artifacts.manifest.json';
 
 /**
- * Every column `itinerary_proof` may hold: the proof's public outputs, the ids and the stored validity
- * window. No column can carry a booking confirmation's text, a guest name, a booking reference or a
- * private circuit input, and the audit fails on any column this list does not name (AAP 0.5.2, 0.12.2).
+ * Every column `itinerary_proof` may hold: the proof's public outputs, the ids and the stored
+ * validity window. The audit fails on any column this list does not name.
  */
 const ITINERARY_PROOF_COLUMNS: readonly string[] = [
   'arrival_date',
@@ -122,22 +94,20 @@ const ITINERARY_PROOF_COLUMNS: readonly string[] = [
 
 /**
  * Every column `spent_nullifier` may hold: the key and when it was spent, and no user column at all —
- * the table outlives account erasure, so a deleted account cannot free a booking for reuse (AAP 0.5.2).
+ * the table outlives account erasure, so a deleted account cannot free a booking for reuse.
  */
 const SPENT_NULLIFIER_COLUMNS: readonly string[] = ['nullifier', 'spent_at'];
 
-/** One way of departing from `ProofSubmission`, and the case title it is reported under. */
 interface MalformedRow {
   readonly name: string;
-  /** The body, built from a valid submission so only the described fault differs. */
   readonly body: (proof: ProofSubmission) => object;
 }
 
 /**
- * The bodies that are not the contract's `ProofSubmission`, one per case (AAP 0.5.4, AAP 0.12.2): the
- * strictness of both object levels, the fixed signal count of seven, the proof's protocol, and the
- * field-element shape of a signal. The empty body is the smallest such submission — Fastify parses it
- * and the schema rejects it — which is why it is a `proof_malformed` row rather than a parser failure.
+ * The bodies that are not the contract's `ProofSubmission`, one per case: the strictness of both
+ * object levels, the fixed signal count of seven, the proof's protocol, and the field-element shape
+ * of a signal. The empty body is the smallest such submission — Fastify parses it and the schema
+ * rejects it — which is why it is a `proof_malformed` row rather than a parser failure.
  */
 const MALFORMED_SUBMISSIONS: readonly MalformedRow[] = [
   {
@@ -188,12 +158,10 @@ const MALFORMED_SUBMISSIONS: readonly MalformedRow[] = [
 const SIGNAL_POSITIONS: readonly { readonly name: string; readonly index: number }[] =
   PUBLIC_SIGNAL_NAMES.map((name, index) => ({ name, index }));
 
-/* Reading the configuration and the database. */
-
 /**
- * Read one committed JSON configuration file and parse it with its own schema (AAP 0.5.5), so every
- * expectation below is the configured value — an issuer id, a display name, a registry root — rather
- * than one written into this file.
+ * Read one committed JSON configuration file and parse it with its own schema, so every expectation
+ * below is the configured value — an issuer id, a display name, a registry root — rather than one
+ * written into this file.
  */
 async function readConfig<T>(relative: string, schema: { parse(value: unknown): T }): Promise<T> {
   const text = await readFile(join(findRepoRoot(), relative), 'utf8');
@@ -201,21 +169,20 @@ async function readConfig<T>(relative: string, schema: { parse(value: unknown): 
 }
 
 /**
- * The columns one table actually holds, read from the catalog and sorted. This is what makes the
- * storage cases evidence rather than restatement: a column the migration adds shows up here.
+ * The columns one table actually holds, from the catalog. This is what makes the storage cases
+ * evidence rather than restatement: a column the migration adds shows up here.
  */
 async function tableColumns(db: DbClient, table: string): Promise<string[]> {
   const held = await db.$queryRaw<{ column_name: string }[]>`
     SELECT column_name FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = ${table}
   `;
-
   return held.map((row) => row.column_name).sort();
 }
 
 /**
  * The launch city a proof's `cityId` signal names, resolved through the committed configuration the
- * registry was built from: the slug the response must carry and the zone its window is judged in.
+ * registry was built from.
  */
 function configuredCity(stay: FixtureStay): CityConfig {
   const city = cityByCircuitId(stay.circuitCityId);
@@ -225,17 +192,14 @@ function configuredCity(stay: FixtureStay): CityConfig {
   return city;
 }
 
-/** The submission as the request body: the two keys the contract accepts, and nothing else. */
 function submissionBody(submission: ProofSubmission): object {
   return { proof: submission.proof, publicSignals: [...submission.publicSignals] };
 }
 
-/** Submit `body` as `user` through the injected route — no socket is opened (AAP 0.11.2). */
 function submit(target: TestApp, user: UserFixture, body: object): Promise<RouteResponse> {
   return callRoute(target.app, { method: 'POST', url: PROOF_ROUTE, as: user, body });
 }
 
-/** Submit a proof as `user`. */
 function submitProof(
   target: TestApp,
   user: UserFixture,
@@ -247,10 +211,9 @@ function submitProof(
 /**
  * Assert an answer is the error envelope with `code`, at `status`, and return the envelope.
  *
- * The status and the envelope's shape are the harness's `expectError`; the code is compared here,
- * because that function does not compare the code it is given — the refusal the case names would
- * otherwise be asserted by its HTTP status alone, and a route answering another refusal's code with
- * the same status would pass.
+ * The code is compared here as well as through the harness, so the refusal a case names cannot be
+ * asserted by its HTTP status alone: a route answering another refusal's code with the same status
+ * would otherwise pass.
  */
 function expectCode(response: RouteResponse, status: number, code: ErrorCode): ErrorEnvelope {
   const envelope = expectError(response, status, code);
@@ -258,13 +221,11 @@ function expectCode(response: RouteResponse, status: number, code: ErrorCode): E
   return envelope;
 }
 
-/* The suite's fixtures. */
-
 /**
- * The five proofs the cases submit: the `valid` booking at the published salt, the same booking proved
- * again (a different `pi_a`, the same nullifier), the second distinct booking, the `other-issuer`
- * fixture proved against a root this API does not publish, and the `valid` booking under
- * {@link FOREIGN_NULLIFIER_SALT}.
+ * The five proofs the cases submit: the `valid` booking at the published salt, the same booking
+ * proved again (a different `pi_a`, the same nullifier), the second distinct booking, the
+ * `other-issuer` fixture proved against a root this API does not publish, and the `valid` booking
+ * under {@link FOREIGN_NULLIFIER_SALT}.
  */
 interface FixtureSubmissions {
   readonly valid: ProofSubmission;
@@ -274,16 +235,12 @@ interface FixtureSubmissions {
   readonly foreignSalt: ProofSubmission;
 }
 
-/** The app every case drives; assigned in `beforeAll`. */
 let app: TestApp;
 
-/** The context the fixture builders write through: the app's own container. */
 let ctx: FactoryContext;
 
-/** The proofs, assigned in `beforeAll` after the app exists. */
 let submissions: FixtureSubmissions;
 
-/** The committed test registry and the issuer whose key signed the fixtures, read once (AAP 0.5.5). */
 let published: { registry: RegistryFile; issuer: IssuerConfig };
 
 /**
@@ -331,16 +288,13 @@ describe('POST /v1/itinerary-proofs (AAP 0.12.1 criterion 3)', () => {
   it('accepts a genuine booking confirmation and stores the stay it proves', async () => {
     const user = await makeUser(ctx, {});
     const response = await submitProof(app, user, submissions.valid);
-
     expect(response.status).toBe(201);
     const accepted = ProofAccepted.parse(response.json());
     const stay = fixtureStay(submissions.valid);
     const city = configuredCity(stay);
-
     expect(accepted.cityId).toBe(city.id);
     expect(accepted.arrivalDate).toBe(stay.arrivalDate);
     expect(accepted.departureDate).toBe(stay.departureDate);
-
     const row = await app.services.db.itineraryProof.findFirstOrThrow();
     expect(row.userId).toBe(user.id);
     expect(row.cityId).toBe(city.id);
@@ -349,7 +303,6 @@ describe('POST /v1/itinerary-proofs (AAP 0.12.1 criterion 3)', () => {
     expect(row.issuerId).toBe(BigInt(published.issuer.issuerId));
     expect(BigInt(row.nullifier)).toBe(BigInt(stay.nullifier));
     expect(BigInt(row.registryRoot)).toBe(BigInt(published.registry.root));
-
     // The window is the city's own days, not UTC midnights: `validFrom` is two local days before the
     // arrival, so a traveler can prove shortly before getting there, and `validTo` is the end of the
     // departure day in the city's zone — stored rather than re-derived on every read (AAP 0.5.7).
@@ -358,27 +311,22 @@ describe('POST /v1/itinerary-proofs (AAP 0.12.1 criterion 3)', () => {
     );
     expect(row.validTo).toEqual(endOfLocalDay(city.timezone, stay.departureDate));
   });
-
   it('stores only the public outputs, the ids and the window, and the key to no account', async () => {
     await submitProof(app, await makeUser(ctx, {}), submissions.valid);
-
     expect(await tableColumns(app.services.db, 'itinerary_proof')).toEqual([
       ...ITINERARY_PROOF_COLUMNS,
     ]);
     expect(await tableColumns(app.services.db, 'spent_nullifier')).toEqual([
       ...SPENT_NULLIFIER_COLUMNS,
     ]);
-
     const spent = await app.services.db.spentNullifier.findMany();
     expect(spent.map((entry) => BigInt(entry.nullifier))).toEqual([
       BigInt(fixtureStay(submissions.valid).nullifier),
     ]);
   });
-
   it('accepts a second, distinct booking from another account', async () => {
     expect((await submitProof(app, await makeUser(ctx, {}), submissions.valid)).status).toBe(201);
     const response = await submitProof(app, await makeUser(ctx, {}), submissions.validSecond);
-
     expect(response.status).toBe(201);
     const stay = fixtureStay(submissions.validSecond);
     expect(ProofAccepted.parse(response.json()).arrivalDate).toBe(stay.arrivalDate);
@@ -390,42 +338,33 @@ describe('POST /v1/itinerary-proofs (AAP 0.12.1 criterion 3)', () => {
 describe('POST /v1/itinerary-proofs refusals', () => {
   it.each(rows(MALFORMED_SUBMISSIONS))('answers 400 proof_malformed for $name', async (row) => {
     const response = await submit(app, await makeUser(ctx, {}), row.body(submissions.valid));
-
     expectCode(response, 400, 'proof_malformed');
     expect(await app.services.db.itineraryProof.count()).toBe(0);
   });
-
   it.each(rows(SIGNAL_POSITIONS))(
     'answers 422 proof_invalid when the $name signal is altered',
     async (row) => {
       const user = await makeUser(ctx, {});
       const response = await submitProof(app, user, alterSignal(submissions.valid, row.index));
-
       expectCode(response, 422, 'proof_invalid');
       expect(await app.services.db.itineraryProof.count()).toBe(0);
     },
   );
-
   it('answers 422 proof_invalid for a proof taken under another salt', async () => {
     const user = await makeUser(ctx, {});
-
     // Groth16 verifies — the proof is genuine for the salt it names — so the published salt is what
     // refuses it, which is why this case and the table above pin the verifier's check order.
     expectCode(await submitProof(app, user, submissions.foreignSalt), 422, 'proof_invalid');
   });
-
   it('answers 422 issuer_not_allowlisted for a key outside the published registry', async () => {
     const response = await submitProof(app, await makeUser(ctx, {}), submissions.otherIssuer);
-
     expectCode(response, 422, 'issuer_not_allowlisted');
     expect(await app.services.db.itineraryProof.count()).toBe(0);
   });
-
   it('answers 409 nullifier_used when the same booking is proved again', async () => {
     const first = await makeUser(ctx, {});
     const second = await makeUser(ctx, {});
     expect((await submitProof(app, first, submissions.valid)).status).toBe(201);
-
     // A second proof of the same booking, from a second account: re-proving re-randomises the proof,
     // never the nullifier, and the spent-nullifier key is what refuses both attempts.
     expect(fixtureStay(submissions.validAgain).nullifier).toBe(
@@ -433,32 +372,26 @@ describe('POST /v1/itinerary-proofs refusals', () => {
     );
     expectCode(await submitProof(app, second, submissions.validAgain), 409, 'nullifier_used');
     expectCode(await submitProof(app, first, submissions.valid), 409, 'nullifier_used');
-
     // One booking, spent once and stored once: both refusals rolled back with their transactions.
     expect(await app.services.db.spentNullifier.count()).toBe(1);
     expect(await app.services.db.itineraryProof.count()).toBe(1);
   });
-
   it('cannot be proved at all from a tampered email', async () => {
     const rejection = await fixtureProof('tampered').then(
       () => null,
       (error: unknown) => error,
     );
-
     // The evidence is the refusal itself: the body no longer hashes to the `bh=` its signature commits
     // to, so no witness exists and no proof of the tampered email can be produced.
     expect(rejection).toBeInstanceOf(CircuitInputError);
     expect(rejection).toMatchObject({ code: 'body_hash_mismatch' });
   });
-
   it('refuses an account that has not passed the age gate', async () => {
     const user = await makeUser(ctx, { consents: false });
     const response = await submitProof(app, user, submissions.valid);
-
     expectCode(response, 403, 'age_gate_required');
     expect(await app.services.db.itineraryProof.count()).toBe(0);
   });
-
   // `422 stay_out_of_range` is unreachable from these fixtures: both bookings are inside
   // `STAY_MIN_DAYS` to `STAY_MAX_DAYS`, and the signing key was discarded once the fixtures were
   // written, so no other stay can be put into a signed body. The rule is covered against injected
@@ -472,18 +405,15 @@ describe('GET /v1/zk/config (AAP 0.5.4)', () => {
     expect(response.status).toBe(200);
     return ZkConfig.parse(response.json());
   }
-
   it('answers everything a device proves with, and nothing of the server key', async () => {
     const config = await fetchZkConfig(app);
     const base = app.env.ARTIFACTS_BASE_URL;
-
     // The test issuer is published, and the registry is the one whose root its proofs prove against.
     expect(config.issuers.map((issuer) => issuer.issuerId)).toContain(published.issuer.issuerId);
     expect(config.registry.name).toBe('test');
     expect(config.registry.root).toBe(published.registry.root);
     expect(config.nullifierSalt).toBe(TEST_NULLIFIER_SALT);
     expect(config.nullifierSalt).toBe(app.env.NULLIFIER_SALT);
-
     // The issuers still awaiting real confirmation emails, named as their own records name them.
     const awaiting = await Promise.all(
       UNSUPPORTED_ISSUER_FILES.map(
@@ -491,7 +421,6 @@ describe('GET /v1/zk/config (AAP 0.5.4)', () => {
       ),
     );
     expect(config.unsupportedIssuers).toEqual(expect.arrayContaining(awaiting));
-
     // The artefacts a client downloads, checked against the manifest `pnpm circuits:build` wrote.
     const manifest = await readConfig(MANIFEST_FILE, ArtifactsManifest);
     for (const [link, file] of [
@@ -506,14 +435,11 @@ describe('GET /v1/zk/config (AAP 0.5.4)', () => {
     expect(config.manifestUrl.startsWith(base)).toBe(true);
     expect(config.manifestUrl.endsWith('artifacts.manifest.json')).toBe(true);
   });
-
   it('publishes the production registry, and no test issuer, outside the test-only switch', async () => {
     const production = await createTestApp({ env: { ZK_ALLOW_TEST_ISSUER: 'false' } });
-
     try {
       const config = await fetchZkConfig(production);
       const productionRegistry = await readConfig(REGISTRY_FILES.production, RegistryFile);
-
       expect(config.registry.name).toBe('production');
       expect(config.registry.root).toBe(productionRegistry.root);
       expect(config.issuers.map((issuer) => issuer.issuerId)).not.toContain(

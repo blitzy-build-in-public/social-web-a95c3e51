@@ -1,20 +1,14 @@
 /**
  * The web client's per-route title and description table.
  *
- * Expo Router mounts its navigation container with `documentTitle: { enabled: false }`, so the
- * `title` a screen passes to `<Stack.Screen>` never reaches the document, and the web export is a
- * single `index.html` whose only title is the app's name. A browser tab, a shared link's preview
- * and a crawler would each have nothing route-specific to read. The title and the description have
- * to come from the current pathname instead, and that is what this table is: `routeMeta` maps a
- * pathname to the pair its web head half renders.
+ * Expo Router mounts its navigation container with `documentTitle: { enabled: false }`, so the `title` a screen passes to
+ * `<Stack.Screen>` never reaches the document, and the web export is a single `index.html` whose only title is the app's
+ * name — leaving a browser tab, a shared link's preview and a crawler nothing route-specific to read. The title and the
+ * description therefore come from the current pathname, which is what this table maps.
  *
- * Every title below mirrors the wording the route's own header already shows -- the `title` its
- * screen passes to `<Stack.Screen>`, or the label `app/(tabs)/_layout.tsx` gives its tab -- so the
- * tab, the page header and a link preview never disagree about what a screen is called. A dynamic
- * route takes the wording its screen falls back to before the record it names has loaded.
- *
- * Pure by design: no React, no platform module and no I/O, so the table is testable on its own and
- * the web bundle carries nothing else.
+ * Every title below mirrors the wording the route's own header already shows, so the tab, the page header and a link
+ * preview never disagree about what a screen is called; a dynamic route takes the wording its screen falls back to before
+ * the record it names has loaded. Pure by design: no React, no platform module and no I/O.
  */
 
 /** The app's name: the title of a pathname the table does not match, and the brand it belongs to. */
@@ -26,7 +20,6 @@ export const APP_NAME = 'Tablemate';
 export interface RouteMeta {
   /** The document title. It mirrors the wording of the route's own on-screen header. */
   readonly title: string;
-
   /** One sentence on what the screen holds, for a link preview and for a search result. */
   readonly description: string;
 }
@@ -249,9 +242,7 @@ function matchesPattern(pattern: readonly string[], pathname: readonly string[])
  * order. A pathname that matches neither -- a stale link, a path the app does not serve -- gets
  * {@link FALLBACK} rather than an empty title.
  *
- * @param pathname - The current pathname, as `usePathname()` reports it: with or without a query,
  * a fragment or a trailing slash.
- * @returns The route's {@link RouteMeta}.
  */
 export function routeMeta(pathname: string): RouteMeta {
   const path = withoutQueryOrTrailingSlash(pathname);

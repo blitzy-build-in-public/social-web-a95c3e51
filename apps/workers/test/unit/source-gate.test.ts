@@ -4,14 +4,6 @@
  * source text as a whitespace-normalized string and `./price-parse.ts` parses that same substring to
  * one positive amount. Everything else is dropped and counted, so criterion 11's "100% of extracted
  * price strings found in the source text" holds by construction.
- *
- * The source text below stands in for the local fixture site the ingestion suite serves: a Lisbon
- * menu whose printed separators — a no-break space, a line break, a tab — are exactly what
- * `normalizeWhitespace` has to absorb, beside a price the page prints plainly, a range, a free item
- * and an item with no price at all. Every expected amount comes from `parsePrice` rather than a
- * literal, so this suite also fails when the gate and the parser disagree about the same substring.
- *
- * Pure and in-process: no fixture file, container, clock or logger (AAP 0.11.2 unit suite).
  */
 
 import type { ExtractedMenuItem } from '@tablemate/shared';
@@ -20,7 +12,6 @@ import { describe, expect, it } from 'vitest';
 import { parsePrice } from '../../src/menus/price-parse.ts';
 import { gateItems, normalizeWhitespace } from '../../src/menus/source-gate.ts';
 
-/** The city's ISO 4217 code, as `gateItems` receives it (AAP 0.5.2: Lisbon is priced in EUR). */
 const CURRENCY = 'EUR';
 
 /**
@@ -41,7 +32,6 @@ const SOURCE_TEXT = [
 /** A second page that prints a negative amount, which is not a price either. */
 const NEGATIVE_SOURCE_TEXT = 'Couvert -5,00 €';
 
-/** How the gate disposed of one item: kept, dropped as absent from the source, or unparseable. */
 type GateVerdict = 'kept' | 'not_in_source' | 'unparseable';
 
 /** One gate row: the case's name, the extractor's price string, and the verdict it must earn. */
@@ -64,7 +54,6 @@ const GATE_CASES: readonly GateCase[] = [
   ['a free item the page prints as 0,00', '0,00 €', 'unparseable'],
 ];
 
-/** Builds one contract-valid extracted item (AAP 0.5.6) carrying the row's price string. */
 function item(priceText: string, overrides: Partial<ExtractedMenuItem> = {}): ExtractedMenuItem {
   return {
     name: 'Arroz de pato',
@@ -81,7 +70,6 @@ function item(priceText: string, overrides: Partial<ExtractedMenuItem> = {}): Ex
 describe('gateItems', () => {
   it.each(GATE_CASES)('%s -> %s', (_label, priceText, verdict) => {
     const { kept, drops } = gateItems([item(priceText)], SOURCE_TEXT, CURRENCY);
-
     if (verdict === 'kept') {
       // The row's string is already whitespace-normalized, so normalizing it is a no-op and the
       // stored text is the substring the source was found to contain, unchanged.
@@ -91,7 +79,6 @@ describe('gateItems', () => {
       expect(drops).toEqual({ not_in_source: 0, unparseable: 0 });
       return;
     }
-
     expect(kept).toEqual([]);
     expect(drops).toEqual({
       not_in_source: verdict === 'not_in_source' ? 1 : 0,
@@ -119,8 +106,6 @@ describe('gateItems', () => {
       item('12–15 €', { name: 'Polvo' }),
     ];
     const { kept, drops } = gateItems(items, SOURCE_TEXT, CURRENCY);
-
-    // Criterion 11's check, asserted over the output: every stored price string occurs in the source.
     for (const keptItem of kept) {
       expect(normalizeWhitespace(SOURCE_TEXT)).toContain(keptItem.priceText);
     }

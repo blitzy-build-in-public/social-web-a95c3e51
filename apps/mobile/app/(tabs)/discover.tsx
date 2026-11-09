@@ -1,10 +1,16 @@
 /**
- * The Discover tab: traveler discovery for the city a valid proof names, and the city picker that
- * works with or without one (AAP 0.5.8, AAP 0.7.1 row 3).
+ * The Discover tab: traveler discovery for a city the caller holds a valid proof for, and the city
+ * picker that works with or without one (AAP 0.5.8, AAP 0.7.1 row 3).
+ *
+ * Which city the list is for follows the caller's entitlement rather than the single stay
+ * `MeDto.proof` reports: a traveler may hold valid proofs for several cities, so the screen lists the
+ * city the route asked for when the caller's `validCityIds` holds it, else the city of the current
+ * proof, else the first entitled city. It asks for no city outside that set, which is what keeps the
+ * traveler route's `403 no_valid_proof` from ever answering here (AAP 0.5.7, 0.5.8).
  */
 import { useEffect, type ReactElement } from 'react';
 import { FlatList, StyleSheet, Text, View, type TextProps } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
 import { colors, fontWeights, spacing, typography } from '@tablemate/shared';
@@ -13,7 +19,8 @@ import type { CityDto, Tier0Profile } from '@tablemate/shared';
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import type { ClientErrorCode } from '../../src/api/errors';
-import { DISCOVERY_EMPTY, IMPORT_BANNER, formatCalendarDate } from '../../src/copy/strings';
+import { bootstrap } from '../../src/auth/session';
+import { DISCOVERY_EMPTY, IMPORT_BANNER, travelerSubtitle } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
 import { useSession } from '../../src/state/session-store';
 import { Avatar, Banner, Button, ListItem, Screen, announce } from '../../src/ui';
@@ -34,19 +41,22 @@ const LOAD_MORE = { variant: 'secondary' as const, label: 'Show more travelers' 
 function errorCodeOf(error: unknown): ClientErrorCode {
   return isApiError(error) ? error.code : 'invalid_response';
 }
-function witnessedMeetupsText(count: number): string {
-  return count === 1 ? '1 witnessed meetup' : `${count} witnessed meetups`;
-}
-function travelerSubtitle(profile: Tier0Profile): string {
-  const parts = [witnessedMeetupsText(profile.reputation.witnessedMeetups)];
-  const tags = profile.interestTags.map((tag) => tag.replace(/_/g, ' '));
-  if (tags.length > 0) parts.push(tags.join(', '));
-  const { proofDates } = profile;
-  if (proofDates !== null) {
-    const { arrivalDate, departureDate } = proofDates;
-    parts.push(`${formatCalendarDate(arrivalDate)} – ${formatCalendarDate(departureDate)}`);
-  }
-  return parts.join(' · ');
+/**
+ * The city whose travelers this screen lists (AAP 0.5.7, 0.5.8): the requested one when the caller
+ * holds a proof for it, else the city of the caller's current proof, else the first entitled city —
+ * `validCityIds` arrives ascending, so that default is the same on every read of one state.
+ *
+ * `undefined` when the caller's entitlement is empty, which is the unverified state: the import
+ * banner replaces the list and no traveler request is made.
+ */
+function listedCityId(
+  entitledCityIds: readonly string[],
+  requestedCityId: string,
+  proofCityId: string | undefined,
+): string | undefined {
+  if (entitledCityIds.includes(requestedCityId)) return requestedCityId;
+  if (proofCityId !== undefined && entitledCityIds.includes(proofCityId)) return proofCityId;
+  return entitledCityIds[0];
 }
 function travelerRow(profile: Tier0Profile) {
   return {
@@ -69,59 +79,83 @@ function cityRow(city: CityDto) {
 }
 export default function DiscoverScreen(): ReactElement {
   const me = useMe();
-  const signedIn = useSession().status === 'signed_in';
+  const session = useSession();
+  const signedIn = session.status === 'signed_in';
+  // The age gate precedes every traveler feature route, so a signed-in account that has not
+  // recorded consents has this read refused with `403 age_gate_required` (AAP 0.5.4): one console
+  // error, and this screen's announcement while the age gate is the screen showing.
+  const consented = signedIn && session.consented === true;
+  // The city a deep link asked for, as `cities/[cityId].tsx` and a proposal name it.
+  const params = useLocalSearchParams<{ cityId?: string | string[] }>();
+  const requestedCityId = Array.isArray(params.cityId)
+    ? (params.cityId[0] ?? NO_CITY)
+    : (params.cityId ?? NO_CITY);
   const cities = useQuery({
     queryKey: queryKeys.cities,
     queryFn: () => apiClient.listCities(),
-    // Enabled only for a signed-in session: with no access token the read is refused, and the
-    // recovery that follows would end the sign-in a deep link is still completing (AAP 0.3.3).
-    enabled: signedIn,
+    // Enabled only for a consented session: with no access token the read is refused as well, so
+    // the recovery that follows would end the sign-in a deep link is still completing (AAP 0.3.3).
+    enabled: consented,
   });
+  // The caller's entitlement — every city a proof of theirs is valid for now (AAP 0.5.7, 0.5.8) —
+  // absent from a payload cached before the field existed, where an empty set keeps the unverified
+  // state rather than naming a city the caller cannot ask about.
+  const entitledCityIds = me.data?.validCityIds ?? [];
   const proof = me.data?.proof;
   const proofCityId = proof !== undefined && proof.status === 'valid' ? proof.cityId : undefined;
+  const listCityId = listedCityId(entitledCityIds, requestedCityId, proofCityId);
   const travelers = useInfiniteQuery({
-    queryKey: queryKeys.travelers(proofCityId ?? NO_CITY),
+    queryKey: queryKeys.travelers(listCityId ?? NO_CITY),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => {
-      if (proofCityId === undefined) return Promise.reject(new Error('no valid proof city'));
-      return apiClient.listTravelers(proofCityId, pageParam);
+      if (listCityId === undefined) return Promise.reject(new Error('no valid proof city'));
+      return apiClient.listTravelers(listCityId, pageParam);
     },
     getNextPageParam: (last) => last.nextCursor ?? undefined,
-    enabled: proofCityId !== undefined,
+    enabled: listCityId !== undefined,
   });
   const meMessage = me.error === null ? undefined : userMessageFor(errorCodeOf(me.error));
   const cityNote = cities.error === null ? undefined : userMessageFor(errorCodeOf(cities.error));
   const travelersCode = travelers.error === null ? undefined : errorCodeOf(travelers.error);
   const travelersMessage = travelersCode === undefined ? undefined : userMessageFor(travelersCode);
+  // A restore that ran, failed and proved nothing leaves the own-profile read unissued — it is
+  // enabled only for a signed-in session — so this screen has no error of its own to show. The
+  // failure's own sentence is shown in its place, with the restore itself to retry: the store's
+  // `loading` alone cannot tell this state from a restore that is still running.
+  const restoreCode = session.status === 'loading' ? session.restoreFailureCode : undefined;
+  const restoreMessage = restoreCode === undefined ? undefined : userMessageFor(restoreCode);
+  const loadMessage = meMessage ?? restoreMessage;
   const retryMe = { label: 'Try again', onPress: () => void me.refetch() };
+  const retryRestore = { label: 'Try again', onPress: () => void bootstrap() };
+  const retryLoad = meMessage === undefined ? retryRestore : retryMe;
   const loadMore = () => void travelers.fetchNextPage();
   useEffect(() => {
     if (travelersCode === 'no_valid_proof')
       void queryClient.invalidateQueries({ queryKey: queryKeys.me });
   }, [travelersCode]);
-  const announcement = meMessage ?? cityNote ?? travelersMessage;
+  const announcement = meMessage ?? restoreMessage ?? cityNote ?? travelersMessage;
   useEffect(() => {
     if (announcement !== undefined) announce(announcement);
   }, [announcement]);
   if (meMessage !== undefined || me.data === undefined)
     return (
       <Screen edges={SCREEN_EDGES}>
-        {meMessage === undefined ? (
+        {loadMessage === undefined ? (
           <Text style={styles.body}>{LOADING}</Text>
         ) : (
-          <Banner tone="error" message={meMessage} action={retryMe} />
+          <Banner tone="error" message={loadMessage} action={retryLoad} />
         )}
       </Screen>
     );
   const travelersHeading = { ...SECTION_HEADING, style: styles.heading } as const;
-  const cityName = (cities.data?.items ?? []).find((city) => city.id === proofCityId)?.name;
-  const cityLabel = proofCityId === undefined ? undefined : (cityName ?? proofCityId);
+  const cityName = (cities.data?.items ?? []).find((city) => city.id === listCityId)?.name;
+  const cityLabel = listCityId === undefined ? undefined : (cityName ?? listCityId);
   const retryTravelers = { label: 'Try again', onPress: () => void travelers.refetch() };
   const retryCities = { label: 'Try again', onPress: () => void cities.refetch() };
   const rows = travelers.data?.pages.flatMap((page) => page.items) ?? [];
   const citiesItems = cities.data?.items ?? [];
   const venuesLabel = `See partner venues in ${cityLabel ?? NO_CITY}`;
-  const openVenues = () => router.push(`/cities/${proofCityId ?? NO_CITY}`);
+  const openVenues = () => router.push(`/cities/${listCityId ?? NO_CITY}`);
   // The city picker's own section, rendered once whichever of the two blocks above it applies: it
   // starts one `lg` step below whatever precedes it — a row of travelers, the load-more control or the
   // empty state — while the list body spaces its own cells by `sm`.

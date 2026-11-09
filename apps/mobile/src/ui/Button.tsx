@@ -1,23 +1,21 @@
 /**
- * The one action-button primitive every Tablemate screen places (AAP 0.5.8): a screen's primary
- * action, a secondary action beside it, or a destructive one.
+ * The one action-button primitive every Tablemate screen places (AAP 0.5.8): a screen's primary action, a secondary
+ * action beside it, or a destructive one.
  *
  * Its accessible name is always the visible label: `role` and `aria-label` reach
- * `accessibilityRole`/`accessibilityLabel`/`accessibilityState` on iOS and Android (React Native
- * 0.76) and ARIA in the DOM on web (react-native-web 0.19), and a `busy` button keeps its label
- * while reporting itself as both busy and disabled.
+ * `accessibilityRole`/`accessibilityLabel`/`accessibilityState` on iOS and Android and ARIA in the DOM on web, and a
+ * `busy` button keeps its label while reporting itself as both busy and disabled. Six states are painted — default,
+ * hovered, focused, pressed, disabled and busy/loading — and a disabled or busy control can hold neither hover nor
+ * focus, so it paints neither.
  *
- * Six states are painted: default, hovered, focused, pressed, disabled and busy/loading.
- *
- * Every value comes from `@tablemate/shared`, and each pair used here is recorded in its
- * `CONTRAST_PAIRS` or `NON_TEXT_CONTRAST_PAIRS` (WCAG 2.1 AA for sign-in, proposal, lock and
- * check-in). The border is painted in every state, so the keyboard focus ring cannot shift the
- * layout (WCAG 2.4.7); on web that band is the whole focus indicator, because `webFocusRingReset`
- * suppresses the user-agent outline the browser would paint over it. The target stays at least
- * `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44) with no fixed height and `allowFontScaling` on, so the
+ * Every value comes from `@tablemate/shared`, and each pair used here is recorded in its `CONTRAST_PAIRS` or
+ * `NON_TEXT_CONTRAST_PAIRS` (WCAG 2.1 AA for sign-in, proposal, lock and check-in). The border is painted in every
+ * state, so the keyboard focus ring cannot shift the layout (WCAG 2.4.7), and on web that band is the whole focus
+ * indicator, because `webFocusRingReset` suppresses the user-agent outline the browser would paint over it. The
+ * target stays at least `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44) with no fixed height and `allowFontScaling` on, so the
  * label follows the system font size (WCAG 1.4.4).
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text } from 'react-native';
 import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 import {
@@ -175,13 +173,25 @@ export function Button({
   // what a state only a pointer can reach should do.
   const handleHoverIn = useCallback(() => setHovered(true), []);
   const handleHoverOut = useCallback(() => setHovered(false), []);
-
   const variantSpec = VARIANTS[variant];
   // A busy button refuses presses exactly as a disabled one does, while keeping the variant's
   // colours so the action still reads as running rather than as unavailable.
   const inactive = disabled || busy;
+  // An inactive control is unfocusable, and web takes focus off it without firing a blur event, so
+  // the flags above would otherwise stay set: a ring or a hover fill painted on a control nothing is
+  // pointing at, and painted again the moment an edit re-enables the button. The clear rides a 0 ms
+  // timer because `react-hooks/set-state-in-effect` refuses a synchronous state update in an effect
+  // body; the cancellable timer is this codebase's answer to that rule (`app/meetups/propose.tsx`),
+  // and a button that re-activates before the tick keeps the state it has.
+  useEffect(() => {
+    if (!inactive) return undefined;
+    const clear = setTimeout(() => {
+      setFocused(false);
+      setHovered(false);
+    }, 0);
+    return () => clearTimeout(clear);
+  }, [inactive]);
   const spinnerColor = disabled ? colors.textMuted : colors[variantSpec.labelToken];
-
   return (
     <Pressable
       role="button"
@@ -204,7 +214,7 @@ export function Button({
         hovered && !inactive && variantSpec.hovered,
         disabled && styles.disabled,
         pressed && variantSpec.pressed,
-        focused && styles.focused,
+        focused && !inactive && styles.focused,
         webFocusRingReset,
         style,
       ]}

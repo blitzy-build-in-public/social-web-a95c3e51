@@ -5,16 +5,20 @@
  * without a provider: `app/_layout.tsx` chooses between the splash, the sign-in route, the age gate
  * and the tabs from this one value.
  *
- * It holds nothing but the status and, while signed in, the caller's id, role and consent flag. It
- * never holds an access or refresh token — the access token lives in memory inside
- * `src/auth/session.ts` and the refresh token in `src/auth/storage.*` — and never an email address,
- * handle, avatar seed, experiment variant or any other profile field, which come from the React
- * Query cache (`queryKeys.me`). Nothing here is persisted and nothing is logged, so reading the
- * session cannot leak one.
+ * It holds nothing but the status, the code of a restore that failed and proved nothing, and, while
+ * signed in, the caller's id, role and consent flag. It never holds an access or refresh token — the
+ * access token lives in memory inside `src/auth/session.ts` and the refresh token in
+ * `src/auth/storage.*` — and never an email address, handle, avatar seed, experiment variant or any
+ * other profile field, which come from the React Query cache (`queryKeys.me`). Nothing here is
+ * persisted and nothing is logged, so reading the session cannot leak one.
  */
 import { useSyncExternalStore } from 'react';
 
 import type { MeDto, UserRole } from '@tablemate/shared';
+
+// Type-only, so the store keeps no runtime dependency on the API layer (AAP 0.5.1): the code is
+// carried to a screen, which is where `userMessageFor` turns it into a sentence.
+import type { ClientErrorCode } from '../api/errors';
 
 /**
  * Where the session stands: `loading` until bootstrap has restored a session or failed to, then
@@ -42,6 +46,19 @@ export interface SessionSnapshot {
 
   /** Whether the age gate has been passed and `POST /v1/me/consents` has succeeded. */
   readonly consented?: boolean;
+
+  /**
+   * The code of the restore attempt that ran, failed and proved nothing — a `network_error`, a
+   * `service_unavailable`, a `rate_limited` — present only in that state. It is what tells a screen
+   * "unknown after a failure" apart from "still loading": the status stays `loading` because an
+   * offline start must not erase a session, and this says the restore is not still running, so a
+   * screen whose own read never ran has something to show and to retry.
+   *
+   * {@link setSignedIn} and {@link setSignedOut} both publish a snapshot without it, and only
+   * `src/auth/session.ts` writes it, from the line that records the failure its own requests are
+   * refused with.
+   */
+  readonly restoreFailureCode?: ClientErrorCode;
 }
 
 /**
@@ -63,18 +80,20 @@ interface SnapshotDraft {
   userId?: string;
   role?: UserRole;
   consented?: boolean;
+  restoreFailureCode?: ClientErrorCode;
 }
 
 let snapshot: SessionSnapshot = INITIAL_SNAPSHOT;
 const listeners = new Set<() => void>();
 
-/** Compares the four fields, so republishing an unchanged session notifies no subscriber. */
+/** Compares the five fields, so republishing an unchanged session notifies no subscriber. */
 function isSameSnapshot(a: SessionSnapshot, b: SessionSnapshot): boolean {
   return (
     a.status === b.status &&
     a.userId === b.userId &&
     a.role === b.role &&
-    a.consented === b.consented
+    a.consented === b.consented &&
+    a.restoreFailureCode === b.restoreFailureCode
   );
 }
 
@@ -82,14 +101,23 @@ function isSameSnapshot(a: SessionSnapshot, b: SessionSnapshot): boolean {
  * The single write path. It builds a draft field by field — never spreading a caller-supplied
  * object — so no key outside the snapshot's fields can enter one, freezes what it stores, and
  * notifies every subscriber.
+ *
+ * A field the caller leaves out is absent from the draft, never present as `undefined`, which is
+ * also what clears it: `setSignedIn` and `setSignedOut` publish no failure code, so a session that
+ * was restored or that is gone carries none.
  */
-function publish(status: SessionStatus, identity?: SessionIdentity): void {
+function publish(
+  status: SessionStatus,
+  identity?: SessionIdentity,
+  restoreFailureCode?: ClientErrorCode,
+): void {
   const draft: SnapshotDraft = { status };
   if (identity !== undefined) {
     draft.userId = identity.userId;
     draft.role = identity.role;
     draft.consented = identity.consented;
   }
+  if (restoreFailureCode !== undefined) draft.restoreFailureCode = restoreFailureCode;
 
   const next = Object.freeze(draft);
   if (isSameSnapshot(snapshot, next)) return;
@@ -128,7 +156,8 @@ export function useSession(): SessionSnapshot {
  * {@link sessionFromMe} built once `POST /v1/auth/verify` or `GET /v1/me` has answered.
  *
  * Exactly the three identity fields are copied, so a wider object — a `MeDto` straight from the API
- * included — cannot put an email, a variant or another profile field in the store.
+ * included — cannot put an email, a variant or another profile field in the store. A session that
+ * was restored is not an unknown one, so this clears `restoreFailureCode` as it publishes.
  */
 export function setSignedIn(identity: SessionIdentity): void {
   publish('signed_in', {
@@ -138,9 +167,29 @@ export function setSignedIn(identity: SessionIdentity): void {
   });
 }
 
-/** Records that no session is held. `signOut()` and a bootstrap that fails both call it. */
+/**
+ * Records that no session is held. `signOut()` and a bootstrap that fails both call it, and both
+ * answer what the restore was asking, so this clears `restoreFailureCode` too: a screen at the
+ * sign-in route has nothing left to explain.
+ */
 export function setSignedOut(): void {
   publish('signed_out');
+}
+
+/**
+ * Records, or clears, the failure the last restore attempt ended with: the code when the attempt
+ * proved nothing, and null once one has answered otherwise.
+ *
+ * Called only by `recordRestoreFailure()` in `src/auth/session.ts`, from the same line that records
+ * the failure `./client` refuses a request with, so both readers of one failure see the same
+ * attempt.
+ */
+export function setRestoreFailure(code: ClientErrorCode | null): void {
+  // A restore failure only ever describes an unknown session. A snapshot that already answered
+  // `signed_in` or `signed_out` was not left unknown by this attempt, so it keeps what it published
+  // rather than gaining a failure a screen would show over a session it holds.
+  if (snapshot.status !== 'loading') return;
+  publish('loading', undefined, code === null ? undefined : code);
 }
 
 /**

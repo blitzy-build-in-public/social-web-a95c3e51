@@ -2,19 +2,14 @@ import { z } from 'zod';
 
 /**
  * Every error code the API can return in the error envelope
- * `{ error: { code: string, message: string } }` (AAP 0.5.4).
- *
- * Values are `snake_case` (AAP 0.11.1) and are listed in the group order of the HTTP status
- * that {@link ERROR_STATUS} maps them to. `not_found` is the generic 404, used where no more
- * specific code applies (operator reads of a venue or lodging, and the `/v1/test/*` routes
- * when `APP_ENV` is not `test`). `internal_error` is the mapping for an unexpected error,
- * which the errors plugin answers with a request id and no stack trace in the body (AAP
- * 0.11.1). `service_unavailable` is the rate limiter's Redis outage: every rate-limited route
- * answers it instead of running, because the limiter keeps `skipOnError: false` (AAP 0.3.2). It is
- * also the refusal `POST /admin/language-model/re-enable` answers when the language-model suspension
- * flag's store cannot be reached (AAP 0.5.6).
- * `suggestions_unavailable` is a failure confined to the suggestions route (AAP 0.3.2).
- * `fx_rate_unavailable` is a price conversion whose currency has no rate for the capture day
+ * `{ error: { code: string, message: string } }` (AAP 0.5.4), `snake_case` (AAP 0.11.1) and listed in
+ * the group order of the HTTP status {@link ERROR_STATUS} maps them to. A few carry a rule of their
+ * own: `not_found` is the generic 404, used where no more specific code applies; `internal_error` is
+ * the mapping for an unexpected error, which the errors plugin answers with a request id and no stack
+ * trace in the body (AAP 0.11.1); `service_unavailable` is the rate limiter's Redis outage, which
+ * every rate-limited route answers instead of running because the limiter keeps `skipOnError: false`
+ * (AAP 0.3.2); `suggestions_unavailable` is a failure confined to the suggestions route (AAP 0.3.2);
+ * and `fx_rate_unavailable` is a price conversion whose currency has no rate for the capture day
  * (AAP 0.5.6), confined to the operator price-entry route.
  */
 export const ErrorCode = z.enum([
@@ -85,12 +80,10 @@ export const ErrorCode = z.enum([
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
 /**
- * The HTTP status each error code is answered with (AAP 0.5.4).
- *
- * Entries are grouped in the same order as {@link ErrorCode}, and no code has more than one
- * status. The `satisfies` clause makes exhaustiveness compiler-enforced: a missing code or an
- * unknown key fails typecheck, so `apps/api/src/plugins/errors.ts` can resolve the status of an
- * `AppError` thrown by code alone.
+ * The HTTP status each error code is answered with (AAP 0.5.4), grouped in the same order as
+ * {@link ErrorCode}, and no code has more than one status. The `satisfies` clause makes
+ * exhaustiveness compiler-enforced, so the errors plugin can resolve an `AppError`'s status by code
+ * alone.
  */
 export const ERROR_STATUS = {
   invalid_email: 400,
@@ -158,20 +151,14 @@ export const ERROR_STATUS = {
 } as const satisfies Record<ErrorCode, number>;
 
 /**
- * Codes the pilot adds to routes the request's contract already defines, each marked as an
- * addition in `docs/api/README.md` (AAP 0.5.4).
+ * Codes the pilot adds to routes the request's contract already defines, each marked as an addition
+ * in `docs/api/README.md` (AAP 0.5.4).
  *
  * `payment_unavailable` and `hold_pending` carry the lost-response recovery for a card hold
  * (AAP 0.3.2): the deposit stays `pending`, no second authorization is created and the client
- * recovers through `GET /meetups`. `self_proposal` rejects a proposal whose recipient is its
- * caller, before any meetup or hold exists. `service_unavailable` reports the rate limiter's
- * Redis outage, which every rate-limited route answers instead of running, and the language-model
- * suspension flag's store being unreachable when an operator re-enables use (AAP 0.3.2, 0.5.6).
- * `token_invalid` is original on `POST /auth/verify` and an addition on every other route,
- * which returns it for a write attempted after account deletion (AAP 0.5.3). `fx_rate_unavailable`
- * is the operator price-entry route's own dependency error: a supplied currency has no `FxRate`
- * row at or before the capture day (AAP 0.5.6), which the `fx-refresh` job writes (AAP 0.5.6), so
- * the entry is refused as temporarily unavailable rather than mistaken for a lifecycle refusal.
+ * recovers through `GET /meetups`. `self_proposal` rejects a proposal whose recipient is its caller.
+ * `token_invalid` is original on `POST /auth/verify` and an addition on every other route, which
+ * returns it for a write attempted after account deletion (AAP 0.5.3).
  */
 export const ADDED_ERROR_CODES = [
   'payment_unavailable',
@@ -183,14 +170,11 @@ export const ADDED_ERROR_CODES = [
 ] as const satisfies readonly ErrorCode[];
 
 /**
- * The error envelope every failing route answers with, verbatim from the request: one `error`
- * key holding a `code` from {@link ErrorCode} and a human-readable `message` (AAP 0.5.4). No
- * other field is added — no request id, no stack trace (AAP 0.11.1) — and the response schema
- * is the schema of `apps/api/src/plugins/errors.ts`.
- *
- * It is a strip-mode `z.object` with no transforms: unknown keys on a serialized response are
- * dropped rather than rejected, and `@fastify/swagger` can emit the schema into
- * `docs/api/openapi.json`.
+ * The error envelope every failing route answers with, verbatim from the request: one `error` key
+ * holding a `code` from {@link ErrorCode} and a human-readable `message` (AAP 0.5.4). No other field
+ * is added — no request id, no stack trace (AAP 0.11.1). It is a strip-mode `z.object` with no
+ * transforms, so unknown keys on a serialized response are dropped rather than rejected and
+ * `@fastify/swagger` can emit the schema into `docs/api/openapi.json`.
  */
 export const ErrorEnvelope = z.object({
   error: z.object({

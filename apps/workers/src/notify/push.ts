@@ -96,7 +96,6 @@ export class PushDeliveryError extends Error {
    * such as `InvalidCredentials`. Never a token.
    */
   readonly codes: readonly string[];
-
   constructor(codes: readonly string[]) {
     super(`Expo push delivery failed for every message: ${codes.join(', ')}`);
     this.name = 'PushDeliveryError';
@@ -107,9 +106,6 @@ export class PushDeliveryError extends Error {
 /**
  * Builds the push sender for `accessToken`, or `null` when the token is absent or blank and push
  * is therefore disabled (AAP 0.3.3).
- *
- * @param accessToken - `EXPO_ACCESS_TOKEN`, optional in the `workers` environment.
- * @param deps - Test seam: `client` replaces the Expo client, whose live one is built here.
  */
 export function createPushSender(
   accessToken: string | undefined,
@@ -118,15 +114,12 @@ export function createPushSender(
   if (accessToken === undefined || accessToken.trim().length === 0) {
     return null;
   }
-
   const client = deps?.client ?? new Expo({ accessToken });
-
   return {
     async send(tokens: readonly string[], message: PushMessage): Promise<PushSendResult> {
       const invalidTokens: string[] = [];
       const codes: string[] = [];
       const validTokens: string[] = [];
-
       // One token is one recipient: a repeat in the input would otherwise push twice to a device.
       const seen = new Set<string>();
       for (const token of tokens) {
@@ -134,19 +127,15 @@ export function createPushSender(
           continue;
         }
         seen.add(token);
-
         // A token Expo cannot address is retired by the caller and never sent: it would fail its
         // whole chunk, taking every well-formed token in that chunk down with it.
         if (!Expo.isExpoPushToken(token)) {
           invalidTokens.push(token);
           continue;
         }
-
         validTokens.push(token);
       }
-
       let sent = 0;
-
       if (validTokens.length > 0) {
         // One message per token, so the ticket at index n answers for the token at index n.
         const messages: ExpoPushMessage[] = validTokens.map((token) => {
@@ -157,23 +146,18 @@ export function createPushSender(
             sound: 'default',
             priority: 'high',
           };
-
           if (message.data !== undefined) {
             push.data = message.data;
           }
-
           return push;
         });
-
         const chunks = client.chunkPushNotifications(messages);
         let firstToken = 0;
-
         // Chunks go one after another: Expo rate-limits concurrent requests against one access
         // token, and a rejected chunk leaves the chunks after it unaffected.
         for (const chunk of chunks) {
           const chunkFirstToken = firstToken;
           firstToken += chunk.length;
-
           let tickets: ExpoPushTicket[];
           try {
             tickets = await sendChunkWithinTimeout(client, chunk);
@@ -184,20 +168,16 @@ export function createPushSender(
             recordCode(codes, REQUEST_FAILED_CODE);
             continue;
           }
-
           for (let offset = 0; offset < chunk.length; offset += 1) {
             const ticket = tickets[offset];
-
             if (ticket === undefined) {
               recordCode(codes, MISSING_TICKET_CODE);
               continue;
             }
-
             if (ticket.status === 'ok') {
               sent += 1;
               continue;
             }
-
             if (ticket.details?.error === DEVICE_NOT_REGISTERED) {
               const token = validTokens[chunkFirstToken + offset];
               if (token !== undefined) {
@@ -205,18 +185,15 @@ export function createPushSender(
               }
               continue;
             }
-
             recordCode(codes, ticket.details?.error ?? UNKNOWN_ERROR_CODE);
           }
         }
       }
-
       // Nothing was accepted, so the notification is still owed: throwing lets the job retry
       // without duplicating a push, which a partial send could not do — see `PushSender.send`.
       if (sent === 0 && codes.length > 0) {
         throw new PushDeliveryError(codes);
       }
-
       return { invalidTokens, sent };
     },
   };
@@ -236,13 +213,11 @@ async function sendChunkWithinTimeout(
   chunk: ExpoPushMessage[],
 ): Promise<ExpoPushTicket[]> {
   let timer: NodeJS.Timeout | undefined;
-
   const bound = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       reject(new PushDeliveryError([REQUEST_FAILED_CODE]));
     }, SEND_TIMEOUT_MS);
   });
-
   try {
     return await Promise.race([client.sendPushNotificationsAsync(chunk), bound]);
   } finally {

@@ -1,35 +1,3 @@
-/**
- * Integration tests for the safety routes of `apps/api/src/modules/users` (AAP 0.5.1, 0.5.3, 0.5.4,
- * 0.5.7, 0.7.3, 0.8.1).
- *
- * `POST /users/:id/block` and `POST /users/:id/report` are the product's safety basics, and the three
- * rules behind them are what this suite fixes against a real PostgreSQL, a real Redis and the run's
- * Stripe topology:
- *
- *   1. `204` from either route, a repeated block that stays one `Block` row, the same `404
- *      user_not_found` an unknown, self or deleted target gets on both, the `400 invalid_field`
- *      `ReportRequest` refuses, and the `404` both sides of a blocked pair read each other with.
- *   2. A block keeps every open meetup of the pair from happening — `proposed` and `locked` alike,
- *      inside the late-cancellation window included — by cancelling it through the state machine:
- *      `cancelled`, `cancelReason = block`, `finalAt` written, every non-final attempt released, an
- *      open dispute resolved `no_fault` with the note `cancelled_by_block`, and no capture, no
- *      settlement and no Table Credit anywhere. A meetup that already reached a final status is left
- *      exactly as it stands (AAP 0.5.3, 0.7.3).
- *   3. What a block leaves alone: the reputation counters of both parties and the report row, whose
- *      `meetupId` names the pair's most recent shared meetup (AAP 0.5.2, 0.5.7).
- *
- * A title carries `stripeModeLabel()`, because a run's results are recorded as mock evidence or as
- * test-mode evidence (AAP 0.11.2, 0.12.1). Only the provider reads — the cancelled authorization and
- * its reason — sit behind `t.stripe.proxy`, which exists in `mock` alone; every database assertion
- * runs in both topologies. Time comes from the injected clock: the late-window case proposes a meetup
- * an hour out, so the clock stands at `startsAt - 1 h` at once, and one `settleNow` pass runs the
- * releases a block planned.
- *
- * @see AAP 0.5.3 for the transition, the `no_fault` resolution and the late-cancel rule a block is
- *   exempt from, 0.5.4 for the two routes and their errors, 0.5.7 for the counters a block never
- *   changes, 0.7.3 for the decision that safety outranks the money rules, and 0.11.2 for the harness.
- */
-
 import { randomUUID } from 'node:crypto';
 
 import { JOB, QUEUE, remindJobId, settleJobId } from '@tablemate/server-core';
@@ -59,17 +27,14 @@ import {
 import type { TestApp } from '../support/app.ts';
 import type { ActorRef, RouteResponse } from '../support/factories.ts';
 
-/** The launch city every fixture here stands in: Lisbon, whose zone the proof windows are read in. */
 const CITY = 'lisbon';
 
-/** One refusal case: which route, which target, and the one code both of them answer (AAP 0.5.4). */
 interface RefusalCase {
   readonly name: string;
   readonly route: 'block' | 'report';
   readonly target: 'unknown' | 'self' | 'deleted';
 }
 
-/** The three targets neither route may act on, each answering the same `404 user_not_found`. */
 const REFUSALS: readonly RefusalCase[] = [
   { name: 'block refuses an unknown account', route: 'block', target: 'unknown' },
   { name: 'block refuses the calling account itself', route: 'block', target: 'self' },
@@ -79,7 +44,6 @@ const REFUSALS: readonly RefusalCase[] = [
   { name: 'report refuses a deleted account', route: 'report', target: 'deleted' },
 ];
 
-/** One report body `ReportRequest` must refuse, and what is wrong with it (AAP 0.5.4). */
 interface BadReportBody {
   readonly name: string;
   readonly body: Record<string, unknown>;
@@ -99,7 +63,6 @@ const BAD_REPORT_BODIES: readonly BadReportBody[] = [
   },
 ];
 
-/** Which participant drives the block in the late-cancellation window (AAP 0.5.3, 0.7.3). */
 interface BlockerCase {
   readonly name: string;
   readonly blocker: 'initiator' | 'recipient';
@@ -128,7 +91,6 @@ beforeEach(async () => {
   await t.seedCities();
 });
 
-/** `POST /users/:id/block` as `actor` (AAP 0.5.4). */
 async function blockAs(actor: ActorRef, targetId: string): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'POST',
@@ -137,7 +99,6 @@ async function blockAs(actor: ActorRef, targetId: string): Promise<RouteResponse
   });
 }
 
-/** `POST /users/:id/report` as `actor`, with the body given (AAP 0.5.4). */
 async function reportAs(
   actor: ActorRef,
   targetId: string,
@@ -151,7 +112,6 @@ async function reportAs(
   });
 }
 
-/** `GET /users/:id` as `viewer`, which is where a block's `404` shows (AAP 0.5.4, 0.5.7). */
 async function profileAs(viewer: ActorRef, targetId: string): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'GET',
@@ -160,7 +120,6 @@ async function profileAs(viewer: ActorRef, targetId: string): Promise<RouteRespo
   });
 }
 
-/** One actor's own reputation counters, from `GET /me` (AAP 0.5.7). */
 async function reputationOf(actor: ActorRef) {
   const response = await callRoute(t.app, {
     method: 'GET',
@@ -171,7 +130,6 @@ async function reputationOf(actor: ActorRef) {
   return MeDto.parse(response.json()).reputation;
 }
 
-/** The meetup columns the cancel and untouched cases assert on (AAP 0.5.2, 0.5.3). */
 function lifecycleOf(meetupId: string) {
   return t.services.db.meetup.findUniqueOrThrow({
     where: { id: meetupId },
@@ -179,7 +137,6 @@ function lifecycleOf(meetupId: string) {
   });
 }
 
-/** Every deposit of a meetup, with the fields the release cases read (AAP 0.5.3). */
 function depositRows(meetupId: string) {
   return t.services.db.deposit.findMany({
     where: { meetupId },
@@ -187,7 +144,6 @@ function depositRows(meetupId: string) {
   });
 }
 
-/** `cancelled` by a block with `finalAt` written, and no forfeit: every cancel case asserts it. */
 async function expectCancelledWithoutForfeit(meetupId: string): Promise<void> {
   const cancelled = await lifecycleOf(meetupId);
   expect(cancelled.status).toBe('cancelled');
@@ -196,20 +152,11 @@ async function expectCancelledWithoutForfeit(meetupId: string): Promise<void> {
   expect(cancelled.finalAt).not.toBeNull();
 }
 
-/**
- * The money a block did not move (AAP 0.5.3, 0.5.7): one `settleNow` pass later every deposit is
- * `released`, every release operation `succeeded`, and no capture, no `MeetupSettlement` and no
- * `TableCreditEntry` exists for the meetup.
- *
- * @returns The meetup's deposits, so a case can still assert how many sides held one.
- */
 async function expectNoMoneyMoved(meetupId: string) {
   await settleNow(t.services);
-
   const deposits = await depositRows(meetupId);
   expect(deposits).not.toHaveLength(0);
   expect(deposits.every((deposit) => deposit.status === 'released')).toBe(true);
-
   const ids = deposits.map((deposit) => deposit.id);
   const [releases, captures] = await Promise.all([
     t.services.db.paymentOperation.findMany({
@@ -223,7 +170,6 @@ async function expectNoMoneyMoved(meetupId: string) {
   expect(captures).toBe(0);
   expect(await t.services.db.meetupSettlement.count({ where: { meetupId } })).toBe(0);
   expect(await t.services.db.tableCreditEntry.count({ where: { meetupId } })).toBe(0);
-
   return deposits;
 }
 
@@ -239,7 +185,6 @@ async function expectHoldsCancelledByUs(meetupId: string): Promise<void> {
   if (proxy === null) {
     return;
   }
-
   for (const deposit of await depositRows(meetupId)) {
     const intents = await proxy.paymentIntents({ metadata: { depositId: deposit.id } });
     expect(intents).toHaveLength(1);
@@ -248,7 +193,6 @@ async function expectHoldsCancelledByUs(meetupId: string): Promise<void> {
   }
 }
 
-/** The `notification` payload of an outbox row, as the ids a worker resolves addresses from. */
 function notificationOf(payload: unknown): { kind: string | null; userId: string | null } {
   if (typeof payload !== 'object' || payload === null) {
     return { kind: null, userId: null };
@@ -271,30 +215,23 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
           : entry.target === 'self'
             ? caller.id
             : deleted.id;
-
       const response =
         entry.route === 'block'
           ? await blockAs(caller, targetId)
           : await reportAs(caller, targetId, { reason: 'Fixture complaint' });
-
       expectError(response, 404, 'user_not_found');
-      // The refusal writes nothing: neither a `Block` nor a `Report` row exists afterwards.
       expect(await t.services.db.block.count()).toBe(0);
       expect(await t.services.db.report.count()).toBe(0);
     });
-
     it.each(rows(BAD_REPORT_BODIES))('report refuses $name', async (entry) => {
       const reporter = await makeUser(t, { card: 'none' });
       const reported = await makeUser(t, { card: 'none' });
-
       expectError(await reportAs(reporter, reported.id, entry.body), 400, 'invalid_field');
       expect(await t.services.db.report.count()).toBe(0);
     });
-
     it('answers 204 and keeps one Block row for a repeated block', async () => {
       const blocker = await makeUser(t, { card: 'none' });
       const blocked = await makeUser(t, { card: 'none' });
-
       expect((await blockAs(blocker, blocked.id)).status).toBe(204);
       expect((await blockAs(blocker, blocked.id)).status).toBe(204);
       expect(
@@ -303,38 +240,29 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
         }),
       ).toBe(1);
     });
-
     it('serves no profile to either side of a block', async () => {
       const blocker = await makeUser(t, { card: 'none' });
       const blocked = await makeUser(t, { card: 'none' });
-
       // Tier 0 is what a stranger reads before the block, so the `404` afterwards is the block's.
       expect((await profileAs(blocker, blocked.id)).status).toBe(200);
       expect((await blockAs(blocker, blocked.id)).status).toBe(204);
-
       expectError(await profileAs(blocker, blocked.id), 404, 'user_not_found');
       expectError(await profileAs(blocked, blocker.id), 404, 'user_not_found');
     });
   });
-
   describe('a block cancels an open meetup without moving money', () => {
     it(`${stripeModeLabel()} cancels a visible proposal, releases the initiator's hold and notifies both`, async () => {
       const initiator = await makeUser(t, { card: 'visa' });
       const recipient = await makeUser(t, { card: 'visa' });
       const venue = await makeVenue(t, { cityId: CITY });
       const meetup = await makeMeetup(t, { status: 'proposed', initiator, recipient, venue });
-
       // The recipient blocks the initiator, the side able to see the proposal at all (AAP 0.5.3).
       expect((await blockAs(recipient, initiator.id)).status).toBe(204);
       await expectCancelledWithoutForfeit(meetup.id);
-
-      // A `proposed` meetup holds the initiator's deposit alone, and the block releases it.
       expect((await expectNoMoneyMoved(meetup.id)).map((deposit) => deposit.ownerId)).toEqual([
         initiator.id,
       ]);
       await expectHoldsCancelledByUs(meetup.id);
-
-      // Both parties are told the meetup is off, in the one kind AAP 0.5.3 names for it.
       const notifications = await t.services.db.outboxMessage.findMany({
         where: { kind: 'notification' },
         select: { payload: true },
@@ -347,7 +275,6 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
         true,
       );
     });
-
     it.each(rows(LATE_WINDOW_BLOCKERS))(
       `${stripeModeLabel()} $name at one hour before the start`,
       async (entry) => {
@@ -356,39 +283,31 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
         const venue = await makeVenue(t, { cityId: CITY });
         const startsAt = new Date(t.services.clock.nowMs() + HOUR_MS);
         const { meetupId } = await proposeAndLock(t, { initiator, recipient, venue, startsAt });
-
         // The lock scheduled both locked timers, which a cancelled meetup must not keep (AAP 0.5.6).
         const queue = t.services.queues.get(QUEUE.settlement);
         expect((await queue.getJob(settleJobId(meetupId)))?.name).toBe(JOB.settlement.settle);
         expect((await queue.getJob(remindJobId(meetupId)))?.name).toBe(JOB.settlement.remind);
-
         // The clock stands at `startsAt - 1 h`, where the cancel route would forfeit (AAP 0.5.3).
         expect(startsAt.getTime() - t.time.now().getTime()).toBe(HOUR_MS);
-
         const blocker = entry.blocker === 'initiator' ? initiator : recipient;
         const blocked = entry.blocker === 'initiator' ? recipient : initiator;
         expect((await blockAs(blocker, blocked.id)).status).toBe(204);
         await expectCancelledWithoutForfeit(meetupId);
-
         // Safety outranks the money rules: both holds are released, neither captured, and no
         // settlement, credit or no-show is recorded (AAP 0.5.3, 0.5.7, 0.7.3).
         expect(await expectNoMoneyMoved(meetupId)).toHaveLength(2);
         await expectHoldsCancelledByUs(meetupId);
-
         expect(await queue.getJob(settleJobId(meetupId))).toBeUndefined();
         expect(await queue.getJob(remindJobId(meetupId))).toBeUndefined();
       },
     );
-
     it('resolves an open dispute no_fault with the note a block earns', async () => {
       const initiator = await makeUser(t, { card: 'visa' });
       const recipient = await makeUser(t, { card: 'visa' });
       const venue = await makeVenue(t, { cityId: CITY });
       const meetup = await makeMeetup(t, { status: 'locked', initiator, recipient, venue });
       const dispute = await makeDispute(t, meetup, initiator, { kind: 'venue_unavailable' });
-
       expect((await blockAs(recipient, initiator.id)).status).toBe(204);
-
       const resolved = await t.services.db.dispute.findUniqueOrThrow({
         where: { id: dispute.id },
         select: { status: true, outcome: true, resolutionNote: true, resolvedAt: true },
@@ -399,7 +318,6 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
       expect(resolved.resolvedAt).not.toBeNull();
       expect((await lifecycleOf(meetup.id)).status).toBe('cancelled');
     });
-
     it('leaves a settled meetup and its money exactly as they stand', async () => {
       const initiator = await makeUser(t, { card: 'none' });
       const recipient = await makeUser(t, { card: 'none' });
@@ -407,9 +325,7 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
       const meetup = await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
       const before = await lifecycleOf(meetup.id);
       expect(before.status).toBe('completed');
-
       expect((await blockAs(recipient, initiator.id)).status).toBe(204);
-
       expect(await lifecycleOf(meetup.id)).toEqual(before);
       expect(
         await t.services.db.meetupSettlement.findUniqueOrThrow({
@@ -422,14 +338,12 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
       );
     });
   });
-
   describe('what a block leaves alone', () => {
     it("changes neither party's reputation counters", async () => {
       const initiator = await makeUser(t, { card: 'none' });
       const recipient = await makeUser(t, { card: 'none' });
       const venue = await makeVenue(t, { cityId: CITY });
       await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
-
       const before = {
         initiator: await reputationOf(initiator),
         recipient: await reputationOf(recipient),
@@ -437,27 +351,22 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
       // A completed meetup is what the counters count, so this is not a comparison of two zeros.
       expect(before.initiator.witnessedMeetups).toBe(1);
       expect(before.recipient.distinctCounterparts).toBe(1);
-
       expect((await blockAs(recipient, initiator.id)).status).toBe(204);
-
       expect(await reputationOf(initiator)).toEqual(before.initiator);
       expect(await reputationOf(recipient)).toEqual(before.recipient);
     });
-
     it("names the pair's most recent shared meetup on a report, and none when they have none", async () => {
       const initiator = await makeUser(t, { card: 'none' });
       const recipient = await makeUser(t, { card: 'none' });
       const stranger = await makeUser(t, { card: 'none' });
       const venue = await makeVenue(t, { cityId: CITY });
       const meetup = await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
-
       expect(
         (await reportAs(initiator, recipient.id, { reason: 'Fixture complaint' })).status,
       ).toBe(204);
       expect((await reportAs(initiator, stranger.id, { reason: 'Fixture complaint' })).status).toBe(
         204,
       );
-
       const pair = await t.services.db.report.findFirstOrThrow({
         where: { reporterId: initiator.id, reportedId: recipient.id },
         select: { reporterId: true, reportedId: true, reason: true, meetupId: true },
@@ -468,7 +377,6 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
         reason: 'Fixture complaint',
         meetupId: meetup.id,
       });
-
       const unrelated = await t.services.db.report.findFirstOrThrow({
         where: { reporterId: initiator.id, reportedId: stranger.id },
         select: { meetupId: true },

@@ -25,9 +25,6 @@
  * outside any transaction (AAP 0.2.2) and passes the elements, the injected clock's instant and the
  * process's `APP_ENV` in. This module writes no log line and returns counts instead, so no phone
  * number, address or coordinate can reach a log through it (AAP 0.11.1).
- *
- * @see AAP 0.5.2 for the `Lodging` model and the fixture policy, 0.5.6 for the ingestion rules,
- *   0.3.2 for idempotency and the unique key, and 0.8.1 for this file.
  */
 
 import { fixturePredicate, readPoints, setPoint, type DbTx, type Prisma } from '@tablemate/db';
@@ -53,16 +50,12 @@ export const LODGING_KIND_BY_TOURISM = {
  * The table is read through a widened record because the tag value is free text: `as const` keeps
  * {@link LODGING_KIND_BY_TOURISM}'s literals, and this view makes an unrecognized tag yield `null`
  * instead of a value TypeScript only believes exists.
- *
- * @param tags - The element's tags, absent on an element Overpass answered without them.
- * @returns The kind, or `null` for a missing or unrecognized `tourism` tag.
  */
 export function lodgingKindOf(
   tags: Readonly<Record<string, string>> | undefined,
 ): LodgingKind | null {
   const tourism = tags?.['tourism']?.trim() ?? '';
   const kindByTourism: Readonly<Record<string, LodgingKind | undefined>> = LODGING_KIND_BY_TOURISM;
-
   return kindByTourism[tourism] ?? null;
 }
 
@@ -144,22 +137,16 @@ export type LodgingUpsertResult = {
  * missing coordinate could not be searched or called, so any of the three drops the element; every
  * other tag stands on its own, because a lodging with no phone is still listed and can still be
  * claimed.
- *
- * @param element - One element of an Overpass answer.
- * @returns The fields, or `null` for an element without a name, a kind or a usable point.
  */
 function lodgingFields(element: OverpassElement): LodgingFields | null {
   const { tags } = element;
   const name = tags?.['name']?.trim() ?? '';
   const kind = lodgingKindOf(tags);
   const point = elementPoint(element);
-
   if (name === '' || kind === null || point === null) {
     return null;
   }
-
   const { osmType, osmId } = osmKeyOf(element);
-
   return {
     key: osmKeyString(osmType, osmId),
     osmType,
@@ -191,9 +178,6 @@ function samePoint(a: LatLng, b: LatLng): boolean {
  * bounds — once per chunk. The three branches cover every non-NULL `osmType` between them, so they
  * return the rows the `osmId`-only filter returned (AAP 0.5.2, 0.5.6).
  *
- * @param tx - The caller's transaction.
- * @param ids - The element ids to look for; deduplicated and chunked at {@link ID_CHUNK}.
- * @returns A map from `<osmType>/<osmId>` to the row, holding only the rows found. A row whose
  * `osmType` is NULL cannot be keyed and is left out, as is a fixture row outside `test` and `demo`,
  * which the client's fixture guard filters from the read (AAP 0.5.2).
  */
@@ -203,7 +187,6 @@ async function findExisting(
 ): Promise<Map<string, ExistingLodging>> {
   const found = new Map<string, ExistingLodging>();
   const wanted = [...new Set(ids)];
-
   for (let start = 0; start < wanted.length; start += ID_CHUNK) {
     const chunk = wanted.slice(start, start + ID_CHUNK);
     // One branch per osm_type: the unique key's leading column has to be constrained for the index
@@ -223,16 +206,13 @@ async function findExisting(
         osmMissingAt: true,
       },
     });
-
     for (const row of rows) {
       if (row.osmType === null || row.osmId === null) {
         continue;
       }
-
       found.set(osmKeyString(row.osmType, row.osmId), row);
     }
   }
-
   return found;
 }
 
@@ -257,7 +237,6 @@ async function insertLodging(tx: DbTx, cityId: string, fields: LodgingFields): P
     isFixture: false,
   };
   const row = await tx.lodging.create({ data, select: { id: true } });
-
   await setPoint(tx, 'lodging', row.id, fields.point);
 }
 
@@ -285,28 +264,22 @@ async function refreshLodging(
     row.kind === fields.kind &&
     row.address === fields.address &&
     row.phone === phone;
-
   if (!returned && !moved && same) {
     return false;
   }
-
   const data: Prisma.LodgingUncheckedUpdateInput = {
     name: fields.name,
     kind: fields.kind,
     address: fields.address,
     phone,
   };
-
   if (returned) {
     data.osmMissingAt = null;
   }
-
   await tx.lodging.update({ where: { id: row.id }, data });
-
   if (moved) {
     await setPoint(tx, 'lodging', row.id, fields.point);
   }
-
   return true;
 }
 
@@ -324,13 +297,7 @@ async function refreshLodging(
  * NOT NULL conditions keep a row the concatenation could never match — and which `NOT (NULL)` would
  * therefore never update — out of the statement's way.
  *
- * @param tx - The caller's transaction.
- * @param cityId - The city whose rows are considered; another city's rows are untouched.
- * @param seenKeys - Every `<osmType>/<osmId>` this refresh kept. Never empty: the caller skips this
  * statement when nothing survived mapping, because an empty list would mark the whole city missing.
- * @param now - The instant to record, from the caller's injected clock.
- * @param appEnv - The process's `APP_ENV`, which decides whether fixture rows are visible.
- * @returns The number of rows marked.
  */
 async function markMissing(
   tx: DbTx,
@@ -359,14 +326,8 @@ async function markMissing(
  * (`osmType`, `osmId`) index, which fails the transaction and lets BullMQ retry the job rather than
  * leaving a partial write (AAP 0.3.2, 0.5.6).
  *
- * @param tx - The transaction `place-refresh` opened. Give it room: Lisbon's bbox holds more than a
  * thousand lodgings, and the writes cost up to two round trips per element (`{ timeout: 120_000 }`).
- * @param cityId - The city the elements were fetched for. Every new row belongs to it, and its rows
  * are the only candidates for `osmMissingAt`.
- * @param elements - The lodgings `runOverpass` returned, fetched before the transaction began.
- * @param now - The instant to record on a disappearing row, from the caller's injected clock.
- * @param appEnv - The process's `APP_ENV`; only `test` and `demo` may see fixture rows.
- * @returns The counts of {@link LodgingUpsertResult}, for the job's log line.
  */
 export async function upsertLodgings(
   tx: DbTx,
@@ -384,15 +345,12 @@ export async function upsertLodgings(
     skipped: 0,
   };
   const byKey = new Map<string, LodgingFields>();
-
   for (const element of elements) {
     const fields = lodgingFields(element);
-
     if (fields === null) {
       result.skipped += 1;
       continue;
     }
-
     // The first occurrence wins, so a duplicated element is refreshed once. It is not counted as
     // skipped: nothing is dropped that a caller would have missed, and `runOverpass` already
     // deduplicates an answer by key.
@@ -400,7 +358,6 @@ export async function upsertLodgings(
       byKey.set(fields.key, fields);
     }
   }
-
   const wanted = [...byKey.values()];
   const existing = await findExisting(
     tx,
@@ -412,21 +369,16 @@ export async function upsertLodgings(
     [...existing.values()].map((row) => row.id),
     appEnv,
   );
-
   for (const fields of wanted) {
     const row = existing.get(fields.key);
-
     if (row === undefined) {
       await insertLodging(tx, cityId, fields);
       result.inserted += 1;
       continue;
     }
-
     const wasMissing = row.osmMissingAt !== null;
-
     if (await refreshLodging(tx, row, fields, points)) {
       result.updated += 1;
-
       if (wasMissing) {
         result.returned += 1;
       }
@@ -434,10 +386,8 @@ export async function upsertLodgings(
       result.unchanged += 1;
     }
   }
-
   if (wanted.length > 0) {
     result.missing = await markMissing(tx, cityId, [...byKey.keys()], now, appEnv);
   }
-
   return result;
 }

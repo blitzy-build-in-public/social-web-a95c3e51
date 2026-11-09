@@ -1,53 +1,33 @@
 /**
- * The meetup routes (AAP 0.5.1, 0.5.3, 0.5.4, 0.8.1): the proposal, the acceptance and the
- * commitment lock, the retry of the initiator's hold, cancellation, check-in, dispute filing, and
- * the caller's own two meetup reads.
+ * The meetup routes (AAP 0.5.1, 0.5.3, 0.5.4, 0.8.1): the proposal, the acceptance and the commitment lock, the
+ * retry of the initiator's hold, cancellation, check-in, dispute filing, and the caller's own two meetup reads.
  *
- * Nine operations are registered here, and none of them holds a business rule: each one reads its
- * request, takes the caller through the guard this plugin installs, and hands the work to the module
- * that owns it — `propose.ts` the proposal and the initiator's hold, `accept.ts` acceptance, decline
- * and the hold retry, `cancel.ts` cancellation, `check-in.ts` the witnessed check-in, `dispute.ts`
- * filing, `queries.ts` the list and the `MeetupDto` builder, and `state-machine.ts` the meetup row
- * lock and the recorded first view. What this file fixes is the contract of AAP 0.5.4 for those
- * operations: the path, the schema each one validates and serializes with, and the set of statuses
- * it may answer.
+ * Nine operations are registered here and none of them holds a business rule: each reads its request, takes the
+ * caller through the guard this plugin installs, and hands the work to the module that owns it. What this file
+ * fixes is the contract of AAP 0.5.4 for those operations: the path, the schema each one validates and serializes
+ * with, and the set of statuses it may answer.
  *
  * Four rules of that contract are applied here rather than in a handler:
  *
- *  - **The guard is route-group level, never global.** `requireTraveler` is added to this
- *    encapsulated context alone, so the age gate covers exactly these nine traveler features while
- *    `GET /me`, `POST /me/consents`, `POST /auth/logout`, `DELETE /me`, the public routes, the
- *    provider webhooks, the console routes, `/admin/*` and the test-control routes keep the scope
- *    AAP 0.5.4 gives them. An unverified traveler still reaches their own meetups: only proposing
- *    needs a valid proof, and `propose.ts` is what asks for it.
- *  - **Every POST, and the one read that writes, carries the mutating counters.** `mutatingLimits`
- *    spreads the per-IP and per-user allowances of AAP 0.5.4 into a route's options; the plain list
- *    read carries none, because it neither mutates nor writes a stored value.
- *  - **`GET /meetups/:id` is one of the two state-writing reads.** A recipient's first read of a
- *    visible proposal records `recipientViewedAt` and emits `proposal_viewed`, the funnel step, in a
- *    transaction behind the account-deletion write fence — never on cached authentication alone —
- *    and the row is then read back, so the answer reports what was committed.
- *  - **Every route declares `schema.response`.** The composition root refuses to start with a
- *    non-WebSocket route that does not. The declared statuses are the ones AAP 0.5.4 lists for the
- *    route, plus `400 invalid_field` for a request its own schema rejects, `401 token_invalid` from
- *    the guard, `429 rate_limited` / `503 service_unavailable` where the counters of AAP 0.5.4
- *    apply, and `404 meetup_not_found` where a handler hides a meetup an id alone does not reveal
- *    (a meetup read by id, cancellation, acceptance, decline, the hold retry, check-in and dispute).
+ *  - **The guard is route-group level, never global.** `requireTraveler` is added to this encapsulated context
+ *    alone, so the age gate covers exactly these nine traveler features and an unverified traveler still reaches
+ *    their own meetups: only proposing needs a valid proof, and `propose.ts` asks for it.
+ *  - **Every POST, and the one read that writes, carries the mutating counters.** `mutatingLimits` spreads the
+ *    per-IP and per-user allowances of AAP 0.5.4; the plain list read carries none.
+ *  - **`GET /meetups/:id` is one of the two state-writing reads.** A recipient's first read of a visible proposal
+ *    records `recipientViewedAt` and emits `proposal_viewed` in a transaction behind the account-deletion write
+ *    fence — never on cached authentication alone — and the row is read back, so the answer reports what committed.
+ *  - **Every route declares `schema.response`.** The composition root refuses to start with a non-WebSocket route
+ *    that does not. The declared statuses are the ones AAP 0.5.4 lists, plus `400 invalid_field`, `401
+ *    token_invalid`, `429 rate_limited` / `503 service_unavailable`, and `404 meetup_not_found` where a handler
+ *    hides a meetup an id alone does not reveal.
  *
- * Two routes under this prefix deliberately live elsewhere: `GET /meetups/:id/messages`, registered
- * by `../messaging/routes.ts`, and `GET /meetups/:id/suggestions`, registered by
- * `../suggestions/routes.ts`. Each belongs to the module that owns its rules (AAP 0.5.1), and
- * registering either here would be a duplicate route.
+ * Two routes under this prefix deliberately live elsewhere: `GET /meetups/:id/messages` in
+ * `../messaging/routes.ts` and `GET /meetups/:id/suggestions` in `../suggestions/routes.ts`, each with the module
+ * that owns its rules.
  *
- * No handler logs anything: a check-in carries device coordinates and a dispute carries free text,
- * and neither ever reaches a log line (AAP 0.11.1, 0.12.2). The one instant a request is judged at is
- * read once, from `request.receivedAt`, so no two window checks of one handler can straddle a
- * boundary (AAP 0.11.1).
- *
- * @see AAP 0.5.4 for the nine operations, their schemas, their error lists and their order, 0.5.3
- *   for the row lock, the deletion write fence and the transition table every handler applies, 0.5.1
- *   for this module among the API's components, 0.11.1 for the injected clock and the logging rules,
- *   and 0.8.1 for the file itself.
+ * No handler logs anything: a check-in carries device coordinates and a dispute free text (AAP 0.11.1, 0.12.2). The
+ * one instant a request is judged at is read once, from `request.receivedAt`, so no two window checks straddle it.
  */
 
 import {
@@ -81,9 +61,9 @@ import { listMeetups, loadForParticipant, toMeetupDto } from './queries.ts';
 import { proposeMeetup } from './propose.ts';
 import { lockMeetup, markRecipientViewed } from './state-machine.ts';
 
-// Type-only, as in every sibling route module: `App` is the plan's one declaration of the app's
-// type, it is erased at compile time, and nothing of `app.ts` is read here at runtime — which is
-// also why this module holds no run-time edge back to the composition root that registers it.
+// Type-only, as in every other route module: `App` is the one declaration of the app's type, it is
+// erased at compile time, and nothing of `app.ts` is read here at runtime — which is also why this
+// module holds no run-time edge back to the composition root that registers it.
 import type { FastifyRequest } from 'fastify';
 import type { App } from '../../app.ts';
 
@@ -91,45 +71,25 @@ import type { App } from '../../app.ts';
 const MEETUPS_TAG = 'meetups' satisfies OpenApiTag;
 
 /**
- * The authenticated caller's context, or a refusal.
- *
- * The guard above admitted this request, so `request.auth` is set — but that is a property of the
- * registration, not of a handler: a hook that were moved, removed or shadowed would otherwise leave
- * a `TypeError` to be answered as `500 internal_error` where the contract requires
- * `401 token_invalid`, and no compiler check would catch it (the same read `cities/routes.ts` and
- * `suggestions/routes.ts` make of their own contexts).
- *
- * @param request - The request the traveler guard admitted.
- * @returns The acting account's context.
- * @throws AppError `token_invalid` (401) when no context is present.
+ * The authenticated caller's context, or a refusal. The guard admitted this request, so `request.auth` is set — but
+ * that is a property of the registration, not of a handler: a hook moved, removed or shadowed would otherwise leave
+ * a `TypeError` to be answered as `500 internal_error` where the contract requires `401 token_invalid`. Throws
+ * {@link AppError} `token_invalid` (401) when no context is present.
  */
 function authContext(request: FastifyRequest): AuthContext {
   if (request.auth === null) {
     throw new AppError('token_invalid');
   }
-
   return request.auth;
 }
 
 /**
- * Registers the nine meetup routes on the context `app.ts` mounts under `/v1` (AAP 0.5.1, 0.5.4).
- *
- * Registration is synchronous, as in every other plugin the composition root installs — `clock.ts`,
- * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts`, `websocket.ts` and the
- * sibling route modules all return an already-resolved promise — and the returned promise is what
- * Fastify's plugin type expects. Every handler passes `request.receivedAt` as its `now`, the instant
- * the root clock hook stamped for this request (AAP 0.11.1).
- *
- * @param app - The route instance; its `services` carry the guarded database client, the injected
- *   clock, the logger, the payment gateway the holds go through, the queues the meetup timers are
- *   scheduled on and the outbox every state change commits through.
- * @see AAP 0.5.4 for the routes, their schemas and their error order, and `./propose.ts`,
- *   `./accept.ts`, `./cancel.ts`, `./check-in.ts`, `./dispute.ts`, `./queries.ts` and
- *   `./state-machine.ts` for the rules each handler and each transition applies.
+ * Registers the nine meetup routes on the context `app.ts` mounts under `/v1` (AAP 0.5.1, 0.5.4): registration is
+ * synchronous, as in every other plugin the composition root installs, and every handler passes
+ * `request.receivedAt` as its `now` (AAP 0.11.1).
  */
 export default function meetupsRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
-
   app.get(
     '/meetups',
     {
@@ -152,7 +112,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
     async (request) =>
       listMeetups(app.services, authContext(request).userId, request.query, request.receivedAt),
   );
-
   app.get(
     '/meetups/:id',
     {
@@ -179,15 +138,12 @@ export default function meetupsRoutes(app: App): Promise<void> {
       const userId = authContext(request).userId;
       const { id } = request.params;
       const now = request.receivedAt;
-
       // The caller's own meetup, or the refusals `loadForParticipant` owns, in their order: `404
       // meetup_not_found` for an unknown id, `403 not_participant` for a caller who is not on the
       // meetup, and `404 meetup_not_found` again for a recipient whose proposal is not visible yet,
       // so the route cannot be used to probe whether a proposal exists (AAP 0.5.3, 0.5.4).
       const loaded = await loadForParticipant(app.services.db, id, userId);
-
       let row = loaded.meetup;
-
       // The state-writing half: the recipient's first read of a visible proposal records
       // `recipientViewedAt` and emits the funnel's `proposal_viewed`. The mark is made under the
       // meetup row lock and behind the deletion write fence, so it can neither race a second read
@@ -200,23 +156,19 @@ export default function meetupsRoutes(app: App): Promise<void> {
           app.services,
           async (tx) => {
             const locked = await lockMeetup(tx, id);
-
             if (locked !== null) {
               await markRecipientViewed(tx, app.services, locked, userId, now);
             }
           },
           { fenceUserId: userId },
         );
-
         // Read back after the commit, so the DTO answers from the row this request left behind.
         row = (await loadForParticipant(app.services.db, id, userId)).meetup;
       }
-
       // Field by field through the serializer, which carries no client secret (AAP 0.5.4).
       return toMeetupDto(app.services, row, userId, now);
     },
   );
-
   app.post(
     '/meetups',
     {
@@ -249,12 +201,10 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       );
-
       reply.code(201);
       return proposal;
     },
   );
-
   app.post(
     '/meetups/:id/accept',
     {
@@ -287,7 +237,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/meetups/:id/decline',
     {
@@ -318,7 +267,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/meetups/:id/hold',
     {
@@ -350,7 +298,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/meetups/:id/cancel',
     {
@@ -381,7 +328,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/meetups/:id/check-in',
     {
@@ -417,7 +363,6 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.receivedAt,
       ),
   );
-
   app.post(
     '/meetups/:id/dispute',
     {
@@ -450,11 +395,9 @@ export default function meetupsRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       );
-
       reply.code(201);
       return dispute;
     },
   );
-
   return Promise.resolve();
 }

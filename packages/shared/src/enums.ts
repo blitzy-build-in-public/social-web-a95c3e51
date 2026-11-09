@@ -1,26 +1,13 @@
 /**
  * The Tablemate domain enums — one Zod enum per value set, shared by every workspace.
- *
- * `packages/db/prisma/schema.prisma` declares each Prisma enum with exactly these members and
- * these string values, so a value stored in PostgreSQL always parses against the matching enum
- * here. Nothing outside this module hard-codes these strings: the API, the workers, the consoles
- * and the mobile client import the enum (or a schema built from it) instead, which keeps a value
- * change to one edit and keeps a comparison honest.
- *
- * Every enum follows the same shape — `export const Name = z.enum([...])` with
- * `export type Name = z.infer<typeof Name>` — so one name serves as runtime validator and type.
- * `zod` is the only import, which keeps the module safe for the Expo client and the web Worker,
- * where Node built-ins are unavailable.
- *
- * @see AAP 0.5.2 for the data model, 0.5.3 for the meetup, deposit, dispute and call lifecycles,
- * 0.5.4 for the DTO fields that carry these values and 0.5.6/0.5.7 for the rules that read them.
+ * `packages/db/prisma/schema.prisma` declares each Prisma enum with exactly these members and these
+ * string values, so a value stored in PostgreSQL always parses against the matching enum here, and
+ * nothing outside this module hard-codes these strings, which keeps a value change to one edit.
+ * Every enum is `export const Name = z.enum([...])` with `export type Name = z.infer<typeof Name>`,
+ * and `zod` is the only import.
  */
 
 import { z } from 'zod';
-
-// ---------------------------------------------------------------------------------------------
-// Roles, meetups and the experiment (AAP 0.5.2, 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /** A traveller account or a platform operator; `operator` unlocks the `/admin` routes (AAP 0.5.2). */
 export const UserRole = z.enum(['traveler', 'operator']);
@@ -43,9 +30,7 @@ export type MeetupStatus = z.infer<typeof MeetupStatus>;
 
 /**
  * The final meetup statuses: every `MeetupStatus` except `proposed` and `locked`, which is the
- * point the retention clock and the account-deletion rules read (AAP 0.5.3). An open dispute is
- * not a status — it is an open `Dispute` row that gates settlement while the meetup stays
- * `locked`, so both attendees can still check in inside the window (AAP 0.5.3).
+ * point the retention clock and the account-deletion rules read (AAP 0.5.3).
  */
 export const FINAL_MEETUP_STATUSES = [
   'declined',
@@ -83,10 +68,6 @@ export type Variant = z.infer<typeof Variant>;
 export const VariantPairing = z.enum(['social', 'punitive', 'mixed']);
 export type VariantPairing = z.infer<typeof VariantPairing>;
 
-// ---------------------------------------------------------------------------------------------
-// Deposits, payments, outbox and check-in (AAP 0.5.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /** One side's card-authorization hold; transitions are forward-only (AAP 0.5.3). */
 export const DepositStatus = z.enum([
   'pending',
@@ -102,7 +83,7 @@ export type DepositStatus = z.infer<typeof DepositStatus>;
 
 /**
  * The deposit statuses that end a hold's life; the account-deletion `delete_customer` operation
- * runs only once every deposit of the user is one of these (AAP 0.5.3).
+ * runs only once every deposit of a user is one of these (AAP 0.5.3).
  */
 export const FINAL_DEPOSIT_STATUSES = [
   'released',
@@ -112,9 +93,8 @@ export const FINAL_DEPOSIT_STATUSES = [
 ] as const satisfies readonly DepositStatus[];
 
 /**
- * The caller-visible hold state of `MeetupDto.initiatorHold` and `.recipientHold`: `none` when
- * that side has no current attempt, otherwise the current attempt's `DepositStatus` (AAP 0.5.4).
- * Spelled out rather than spread, which preserves the literal union type.
+ * The caller-visible hold state of `MeetupDto.initiatorHold` and `.recipientHold`: `none` when that
+ * side has no current attempt, otherwise its `DepositStatus` (AAP 0.5.4).
  */
 export const HoldView = z.enum([
   'none',
@@ -171,10 +151,6 @@ export type CheckInResult = z.infer<typeof CheckInResult>;
 export const DistanceBucket = z.enum(['lt_50', 'm50_150']);
 export type DistanceBucket = z.infer<typeof DistanceBucket>;
 
-// ---------------------------------------------------------------------------------------------
-// Settlement, disputes and Table Credit (AAP 0.5.2, 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
 /** A meetup's settlement outcome, recorded once in `MeetupSettlement` (AAP 0.5.7). */
 export const SettlementOutcome = z.enum(['completed', 'no_show', 'late_cancel', 'unattended']);
 export type SettlementOutcome = z.infer<typeof SettlementOutcome>;
@@ -203,10 +179,6 @@ export type DisputeResolutionNote = z.infer<typeof DisputeResolutionNote>;
 export const CreditKind = z.enum(['grant', 'void']);
 export type CreditKind = z.infer<typeof CreditKind>;
 
-// ---------------------------------------------------------------------------------------------
-// Places, prices and crawl policy (AAP 0.5.2, 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
 /** The place categories a suggestion may draw from (AAP 0.5.2). */
 export const PlaceCategory = z.enum(['restaurant', 'cafe', 'bar', 'activity']);
 export type PlaceCategory = z.infer<typeof PlaceCategory>;
@@ -220,8 +192,8 @@ export const TicketType = z.enum(['standard', 'concession', 'group']);
 export type TicketType = z.infer<typeof TicketType>;
 
 /**
- * Where a price came from. When one item has several equally recent current records, the
- * estimate keeps `operator_entry` over `phone_quote` over `online_menu` (AAP 0.5.7).
+ * Where a price came from; when one item has several equally recent records the estimate keeps
+ * `operator_entry` over `phone_quote` over `online_menu` (AAP 0.5.7).
  */
 export const PriceSource = z.enum(['online_menu', 'phone_quote', 'operator_entry']);
 export type PriceSource = z.infer<typeof PriceSource>;
@@ -233,10 +205,6 @@ export type ReviewStatus = z.infer<typeof ReviewStatus>;
 /** The operator's site-terms decision; a domain that is not `allowed` is never crawled (AAP 0.5.6). */
 export const CrawlDecision = z.enum(['allowed', 'prohibited', 'uncertain']);
 export type CrawlDecision = z.infer<typeof CrawlDecision>;
-
-// ---------------------------------------------------------------------------------------------
-// Automated calls (AAP 0.5.2, 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /** The dialogue a call task runs: collect menu prices, or verify a guest's stay (AAP 0.5.6). */
 export const CallTaskKind = z.enum(['menu_prices', 'lodging_stay_verification']);
@@ -299,16 +267,15 @@ export type Confidence = z.infer<typeof Confidence>;
 
 /**
  * The speech pairing a ConversationRelay call opens in, and the name of each template file under
- * `apps/api/src/modules/voice-agent/i18n/`. Mexico City and Medellín use the Latin American
- * `es-US` pairing (AAP 0.2.4).
+ * `apps/api/src/modules/voice-agent/i18n/`; Mexico City and Medellin use `es-US` (AAP 0.2.4).
  */
 export const CallLanguage = z.enum(['en-US', 'pt-PT', 'es-US', 'th-TH', 'id-ID']);
 export type CallLanguage = z.infer<typeof CallLanguage>;
 
 /**
- * The outcomes an operator may record on a `menu_prices` call task. The API validates
- * `ResolveCallTask.outcome` against this and answers `422 invalid_outcome` for anything else,
- * including any outcome on a lodging-verification task (AAP 0.5.3, 0.5.4).
+ * The outcomes an operator may record on a `menu_prices` call task; the API answers `422
+ * invalid_outcome` for anything else, and for any outcome on a lodging-verification task (AAP
+ * 0.5.3, 0.5.4).
  */
 export const OperatorCallTaskOutcome = z.enum([
   'completed',
@@ -317,10 +284,6 @@ export const OperatorCallTaskOutcome = z.enum([
   'unreachable',
 ]);
 export type OperatorCallTaskOutcome = z.infer<typeof OperatorCallTaskOutcome>;
-
-// ---------------------------------------------------------------------------------------------
-// Lodgings (AAP 0.5.2, 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /** The lodging kinds ingested from OpenStreetMap's `tourism` tags (AAP 0.5.6). */
 export const LodgingKind = z.enum(['hostel', 'hotel', 'guesthouse']);
@@ -341,16 +304,11 @@ export const LodgingClaimStatus = z.enum([
 export type LodgingClaimStatus = z.infer<typeof LodgingClaimStatus>;
 
 /**
- * The outcomes an operator may record on a lodging claim, and only while the claim is
- * `pending_call` or `calling`; `ResolveLodgingClaim.outcome` is validated against this and
- * answers `422 invalid_outcome` otherwise (AAP 0.5.3, 0.5.4).
+ * The outcomes an operator may record on a lodging claim, and only while it is `pending_call` or
+ * `calling`; anything else answers `422 invalid_outcome` (AAP 0.5.3, 0.5.4).
  */
 export const OperatorClaimOutcome = z.enum(['verified', 'rejected', 'unreachable']);
 export type OperatorClaimOutcome = z.infer<typeof OperatorClaimOutcome>;
-
-// ---------------------------------------------------------------------------------------------
-// Deployment, notifications and client-facing values (AAP 0.1.1, 0.5.2, 0.5.4, 0.5.5)
-// ---------------------------------------------------------------------------------------------
 
 /** The device platform a push token belongs to (AAP 0.5.2). */
 export const PushPlatform = z.enum(['ios', 'android']);
@@ -361,7 +319,7 @@ export const OperatorAccessPurpose = z.enum(['manual_verification_call']);
 export type OperatorAccessPurpose = z.infer<typeof OperatorAccessPurpose>;
 
 /**
- * The deployment mode `APP_ENV` selects. Fixtures are seeded only in `test` and `demo`, and the
+ * The deployment mode `APP_ENV` selects; fixtures are seeded only in `test` and `demo`, and the
  * test-only clock route exists only in `test` (AAP 0.5.2, 0.6.2).
  */
 export const AppEnv = z.enum(['test', 'demo', 'staging', 'production']);
@@ -389,7 +347,7 @@ export type ProofStatus = z.infer<typeof ProofStatus>;
 
 /**
  * The kinds an outbox `notification` row may carry, rendered by
- * `apps/workers/src/notify/templates.ts`. A kind that concerns the deposit is rendered in the
+ * `apps/workers/src/notify/templates.ts`; a kind that concerns the deposit is rendered in the
  * recipient's framing variant (AAP 0.1.1).
  */
 export const NotificationKind = z.enum([

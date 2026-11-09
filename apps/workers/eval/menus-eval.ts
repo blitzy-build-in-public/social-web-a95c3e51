@@ -1,53 +1,6 @@
 /**
  * Criterion 11 menu-extraction evaluation: the labeled fixture set read end to end through the real
  * menu pipeline (AAP 0.8.1, 0.11.2, 0.12.1).
- *
- * `pnpm --filter @tablemate/workers eval:menus` reads the 20 labeled fixture menus — six HTML pages
- * served over loopback, seven PDFs and seven images read from disk — with the code the `menu-ingest`
- * job runs: `createSafeFetch` for the pages, `extractPdfText`/`rasterizePdf` and `ocrImage` for the
- * documents, `extractMenuItems` for the metered extraction, `gateItems` for the no-invention gate and
- * `normalizeItemName` for the label key. None of the pipeline is re-implemented here; this file is the
- * manifest, the local server, the in-memory counters, the scoring and the report.
- *
- * Two thresholds are measured over the whole set (AAP 0.12.1 criterion 11), and the run fails on
- * either: **at least 90% of labeled priced items match** on normalized name and exact amount, each
- * extracted item consuming at most one label; and **100% of the stored price strings occur in the
- * source text**, checked with `normalizeWhitespace` and requiring at least one stored item, because no
- * stored item is no evidence.
- *
- * A third check, recorded in `docs/menu-extraction.md` and this file's own addition, is the **token
- * evidence of the spend cap** (AAP 0.5.6). The recording adapter captures, for every request the meter
- * counts, the input tokens the provider counted for the payload it was sent and what its response
- * reported, plus whether the two payloads were byte-identical. The configured model meets the accepted
- * request profile only when every reported input equals the counted one; a mismatch fails the run,
- * because it would suspend language-model use in every city and invalidate the bound the cap rests on.
- *
- * Without provider credentials the run marks the measurement **pending** ("Evaluation pending provider
- * credentials", AAP 0.12.3), keeps the fixture-set-only status line and exits 0, never overwriting a
- * recorded measurement. With credentials it writes the results between `<!-- BEGIN menus-eval -->` and
- * `<!-- END menus-eval -->`.
- *
- * Prerequisites: a generated Prisma client (`pnpm db:generate`), because `./src/jobs/menu-ingest.ts`
- * is imported for its `normalizeItemName` and that module loads `@tablemate/db`'s graph without ever
- * connecting; Chromium for `playwright`; Tesseract 5 with the `tessdata_best` `eng`, `por`, `spa`,
- * `tha` and `ind` models; and `poppler-utils` `pdftoppm`, all on `PATH`. The `workers` runtime image
- * ships the tools but neither `eval/` nor `tsx`, so this runs where the repository and the dev
- * dependencies are both present.
- *
- * Two deviations from the crawl's production wiring are deliberate and safe here. The fixture host is
- * the loopback address, so the run passes `appEnv: 'test'` and `allowPrivateHosts: ['127.0.0.1']`
- * directly instead of reading `APP_ENV` and `CRAWL_ALLOW_PRIVATE_HOSTS` — the exemption AAP 0.5.6
- * grants a test environment, scoped to this process and one host. The per-domain throttle is a no-op,
- * because every request goes to that host, served by a process in this container: no third party sees
- * a request at all. The blocklist, the site-terms decision, the address check, `robots.txt` and the
- * byte and request budgets all run unchanged.
- *
- * Exit codes: 0 when both thresholds and the token evidence pass, or when the run is pending; 1 on a
- * failed threshold, a token-count mismatch, a malformed manifest or fixture, a configuration error or
- * a failed preflight. A configuration or preflight failure never touches the document.
- *
- * @see AAP 0.12.1 for criterion 11, 0.5.6 for the pipeline, the crawl rules and the spend cap, 0.11.2
- *   for this command's test-layer row, 0.12.3 for the pending markings, and 0.8.1 for this file.
  */
 
 import { execFile } from 'node:child_process';
@@ -104,9 +57,6 @@ import type { GatedMenuItem } from '../src/menus/source-gate.ts';
 // be generated before this file loads; nothing here opens a database connection.
 import { normalizeItemName } from '../src/jobs/menu-ingest.ts';
 
-// --- Paths and constants (AAP 0.6.1, 0.8.1) ----------------------------------------------------
-
-/** The repository root (where `config/` and `docs/` live), this file's directory, and the fixtures. */
 const REPO_ROOT = findRepoRoot();
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const MENUS_DIR = join(EVAL_DIR, 'fixtures', 'menus');
@@ -121,11 +71,9 @@ const RESULT_MARKER = '<!-- menus-eval:result -->';
 const PENDING_MARKER = '<!-- menus-eval:pending -->';
 const DOC_HEADING = '# Menu extraction';
 
-/** The one host this run reaches — loopback, served by this process — and the crawler identity. */
 const FIXTURE_HOST = '127.0.0.1';
 const FIXTURE_CONTACT_URL = 'http://127.0.0.1/menus-eval';
 
-/** The label set's own shape: 20 menus, four per language, six HTML, seven PDF, seven images. */
 const LANGUAGES = ['en', 'pt', 'es', 'th', 'id'] as const;
 const FORMATS = ['html', 'pdf', 'image'] as const;
 const OCR_LANGUAGES = ['eng', 'por', 'spa', 'tha', 'ind'] as const satisfies readonly OcrLanguage[];
@@ -158,18 +106,14 @@ const MENU_FILE_PATTERN = new RegExp(
     .join('|')})$`,
 );
 
-/** The city the whole run is metered against, the default cap, and the provider it evaluates. */
 const CITY_ID = 'eval';
 const DEFAULT_CAP_USD = 25;
 const EVALUATED_PROVIDER = 'openai';
 
-/** The shared-match threshold of criterion 11 (AAP 0.12.1), and the preflight command deadline. */
 const MATCHED_THRESHOLD = 0.9;
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 
 const execFileAsync = promisify(execFile);
-
-// --- The labeled manifest (AAP 0.8.1, 0.12.1) --------------------------------------------------
 
 /**
  * One expected priced item: the label the extraction is scored against. `normalizedName` is
@@ -186,7 +130,6 @@ const ManifestItem = z.strictObject({
 });
 type ManifestItem = z.infer<typeof ManifestItem>;
 
-/** One labeled menu: its fixture file, how it is read, and the items it is expected to yield. */
 const ManifestMenu = z.strictObject({
   file: z
     .string()
@@ -212,12 +155,10 @@ interface LabelRef {
   readonly priceText: string;
 }
 
-/** The message of an unknown thrown value, for a report that names a file and nothing it holds. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A loggable code from a caught value — an `Error`'s `code`, else its name (AAP 0.11.1). */
 function errorCode(error: unknown): string {
   const code: unknown = (error as { code?: unknown }).code;
 
@@ -241,7 +182,6 @@ function failureCode(error: unknown): string {
  * Load the labeled set and check it against the shape criterion 11 is measured on (AAP 0.12.1). Every
  * problem is collected and reported together, because a run that stopped at the first one would hide
  * the rest of a broken fixture set. A message names a file, an item index and a field, never menu text.
- *
  * @returns The menus and every problem found; an empty `errors` means the set may be measured.
  */
 function loadManifest(): { menus: ManifestMenu[]; errors: string[] } {
@@ -263,10 +203,8 @@ function loadManifest(): { menus: ManifestMenu[]; errors: string[] } {
   if (!parsed.success) {
     const errors = parsed.error.issues.map((issue) => {
       const where = issue.path.map((segment) => String(segment)).join('.');
-
       return where === '' ? `manifest: ${issue.message}` : `manifest.${where}: ${issue.message}`;
     });
-
     return { menus: [], errors };
   }
 
@@ -289,7 +227,6 @@ function checkManifest(menus: readonly ManifestMenu[]): string[] {
     seen.add(menu.file);
     perLanguage.set(menu.language, (perLanguage.get(menu.language) ?? 0) + 1);
     perFormat.set(menu.format, (perFormat.get(menu.format) ?? 0) + 1);
-
     if (!menu.file.startsWith(`${menu.language}/${menu.language}-`)) {
       errors.push(`${menu.file}: the path must start with "${menu.language}/${menu.language}-"`);
     }
@@ -331,13 +268,11 @@ function checkManifest(menus: readonly ManifestMenu[]): string[] {
   return errors;
 }
 
-/** One menu's labels, checked against the pipeline's own normalization and price parsing. */
 function checkItems(menu: ManifestMenu, errors: string[]): void {
   const seen = new Set<string>();
 
   menu.items.forEach((item, index) => {
     const where = `${menu.file} item ${index + 1}`;
-
     if (item.normalizedName !== normalizeItemName(item.name)) {
       errors.push(`${where}: normalizedName is not normalizeItemName(name)`);
     }
@@ -347,23 +282,18 @@ function checkItems(menu: ManifestMenu, errors: string[]): void {
     if (parsePrice(item.priceText, item.currency) !== item.amountMinor) {
       errors.push(`${where}: priceText does not parse to amountMinor`);
     }
-
     const key = `${item.normalizedName}|${item.amountMinor}`;
     if (seen.has(key)) errors.push(`${where}: the label appears twice`);
     seen.add(key);
   });
 }
 
-// --- Mode and configuration (AAP 0.5.6, 0.12.3) -----------------------------------------------
-
-/** One variable's value, with an empty string read as absent: compose passes unset ones as `""`. */
 function readEnv(name: string): string | null {
   const value = process.env[name];
 
   return value === undefined || value.trim() === '' ? null : value.trim();
 }
 
-/** What the configured key and model are, once the environment has been checked (run mode only). */
 interface RunConfig {
   readonly apiKey: string;
   readonly model: string;
@@ -371,7 +301,6 @@ interface RunConfig {
   readonly capMicros: number;
 }
 
-/** What the environment asks this run to do. */
 type Mode =
   | { readonly kind: 'pending' }
   | { readonly kind: 'error'; readonly message: string }
@@ -379,13 +308,6 @@ type Mode =
 
 /**
  * Decide between a measured run, a pending run and a configuration error (AAP 0.5.6, 0.12.3).
- *
- * A missing or `fake` provider, or a missing key, model or price, is **pending**: the manifest is
- * still validated and the document is marked, but nothing is sent and no result is claimed. A
- * provider other than `fake`/`openai`, a `LLM_MODEL` outside `SUPPORTED_MODELS`, a price
- * `parseUsdPerMTok` rejects and a `CAP_LLM_USD_PER_CITY_DAY` that is not a positive whole number are
- * **errors**, because measuring with them would either send outside the accepted request profile or
- * meter the run against a cap that does not hold. Messages name the variable, never its value.
  */
 function resolveMode(): Mode {
   const provider = readEnv('LLM_PROVIDER');
@@ -439,8 +361,6 @@ function resolveMode(): Mode {
   };
 }
 
-// --- Preflight of the tools the pipeline needs (AAP 0.4.2, 0.5.6) -------------------------------
-
 /** What the preflight found: the Tesseract banner line, and every reason the run cannot start. */
 interface Preflight {
   readonly tesseract: string;
@@ -492,8 +412,6 @@ async function preflightTools(): Promise<Preflight> {
   return { tesseract, problems };
 }
 
-// --- In-memory counters for the spend cap (AAP 0.5.6) ------------------------------------------
-
 /**
  * The day counter `createLlmSpend` reserves against, held in memory: the SQL store's own predicate —
  * `spent + reserved + micros <= capMicros` — over a map keyed by city and local day, so the whole
@@ -507,7 +425,6 @@ function createMemorySpendStore(): SpendStore & { spentMicros: () => number } {
     if (existing !== undefined) return existing;
     const created = { spent: 0, reserved: 0 };
     days.set(key, created);
-
     return created;
   };
 
@@ -516,20 +433,17 @@ function createMemorySpendStore(): SpendStore & { spentMicros: () => number } {
       const day = dayOf(cityId, localDate);
       if (day.spent + day.reserved + micros > capMicros) return Promise.resolve(false);
       day.reserved += micros;
-
       return Promise.resolve(true);
     },
     charge: (reservation: LlmReservation, chargedMicros: number) => {
       const day = dayOf(reservation.cityId, reservation.localDate);
       day.spent += chargedMicros;
       day.reserved = Math.max(0, day.reserved - Math.min(chargedMicros, reservation.micros));
-
       return Promise.resolve();
     },
     release: (reservation: LlmReservation, micros: number) => {
       const day = dayOf(reservation.cityId, reservation.localDate);
       day.reserved = Math.max(0, day.reserved - micros);
-
       return Promise.resolve();
     },
     spentMicros: () => [...days.values()].reduce((total, day) => total + day.spent, 0),
@@ -550,21 +464,16 @@ function createMemorySuspensionStore(): SuspensionStore {
     suspend: () => {
       suspended = true;
       mismatches += 1;
-
       return Promise.resolve();
     },
     clear: () => {
       suspended = false;
-
       return Promise.resolve();
     },
     mismatchCount: () => Promise.resolve(mismatches),
   };
 }
 
-// --- The recording adapter: the token evidence of the spend cap (AAP 0.5.6) ---------------------
-
-/** One request's token evidence: what was counted, what came back, and over which payload. */
 interface TokenRecord {
   readonly menu: string;
   readonly chunk: number;
@@ -588,11 +497,6 @@ function evidenceHolds(record: TokenRecord): boolean {
 
 /**
  * Wrap the provider so every request's count and reply are recorded (AAP 0.5.6).
- *
- * `runMetered` counts a request and then sends the same object, so the two are paired by request
- * identity in a `WeakMap`, with the last opened record as the fallback. The payload string captured at
- * count time is what makes `samePayload` exact rather than structural. Nothing here logs or stores a
- * prompt, a payload or a model answer: a record holds numbers, a boolean and an error code.
  */
 function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: string): LlmAdapter {
   const opened = new WeakMap<object, TokenRecord>();
@@ -602,7 +506,6 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
   return {
     provider: inner.provider,
     model: inner.model,
-
     async countInputTokens(request, options) {
       chunk += 1;
       const record: TokenRecord = {
@@ -618,11 +521,9 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
       records.push(record);
       opened.set(request, record);
       lastOpened = record;
-
       try {
         record.counted = await inner.countInputTokens(request, options);
         record.countedPayload = JSON.stringify(request);
-
         return record.counted;
       } catch (error) {
         // The request is not sent after a failed count, so this record is its whole evidence.
@@ -630,10 +531,8 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
         throw error;
       }
     },
-
     async complete(request, options) {
       const record = opened.get(request) ?? lastOpened;
-
       try {
         const result = await inner.complete(request, options);
         if (record !== null) {
@@ -642,7 +541,6 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
           record.samePayload =
             record.countedPayload !== null && JSON.stringify(request) === record.countedPayload;
         }
-
         return result;
       } catch (error) {
         if (record !== null) record.error = errorCode(error);
@@ -651,8 +549,6 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
     },
   };
 }
-
-// --- The crawl policy and the local fixture server (AAP 0.5.6) ---------------------------------
 
 /**
  * This run's site-terms decisions, in memory: the fixture host is `allowed`, mirroring the
@@ -675,7 +571,6 @@ function createFixturePolicyStore(): CrawlPolicyStore {
   };
 }
 
-/** The fixture origin and the way to stop it: one listening server for the whole run. */
 interface FixtureServer {
   readonly origin: string;
   readonly stop: () => Promise<void>;
@@ -691,14 +586,11 @@ async function startFixtureServer(menus: readonly ManifestMenu[]): Promise<Fixtu
   const files = new Set(menus.filter((menu) => menu.format === 'html').map((menu) => menu.file));
   const server: Server = createServer((request, response) => {
     const path = new URL(request.url ?? '/', `http://${FIXTURE_HOST}`).pathname.replace(/^\//u, '');
-
     if (!files.has(path)) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
       response.end('not found');
-
       return;
     }
-
     const body = readFileSync(join(MENUS_DIR, path));
     response.writeHead(200, {
       'content-type': 'text/html; charset=utf-8',
@@ -724,9 +616,6 @@ async function startFixtureServer(menus: readonly ManifestMenu[]): Promise<Fixtu
   };
 }
 
-// --- One menu, read through the pipeline (AAP 0.5.6, 0.12.1) -----------------------------------
-
-/** Everything one measured run holds: the wiring, read and written as the menus are read. */
 interface EvalRun {
   readonly origin: string;
   readonly browser: Pick<BrowserProvider, 'get'>;
@@ -739,7 +628,6 @@ interface EvalRun {
   readonly suspension: SuspensionStore;
 }
 
-/** What one menu's run produced: the counts the report is built from, and its unmatched labels. */
 interface MenuRun {
   readonly menu: ManifestMenu;
   error: string | null;
@@ -756,7 +644,6 @@ interface MenuRun {
   durationMs: number;
 }
 
-/** Every label of a menu, for a menu whose items could not be read at all. */
 function allLabels(menu: ManifestMenu): LabelRef[] {
   return menu.items.map((item) => ({
     normalizedName: item.normalizedName,
@@ -764,7 +651,6 @@ function allLabels(menu: ManifestMenu): LabelRef[] {
   }));
 }
 
-/** The identity an extracted item and a label share when they are the same priced dish (AAP 0.5.6). */
 function matchKey(normalizedName: string, amountMinor: number, currency: string): string {
   return `${normalizedName}|${amountMinor}|${currency.toUpperCase()}`;
 }
@@ -772,7 +658,6 @@ function matchKey(normalizedName: string, amountMinor: number, currency: string)
 /**
  * Score the kept items against the labels (AAP 0.12.1): a multiset match, so each kept item consumes at
  * most one label and a menu printing one dish twice cannot satisfy two labels with one price.
- *
  * @param labels - The menu's expected items.
  * @param kept - The items that survived the source gate.
  * @returns How many labels matched, and those that did not, in manifest order.
@@ -826,30 +711,25 @@ async function readSource(menu: ManifestMenu, run: EvalRun): Promise<SourceOutco
         logger: run.logger,
       });
       if (rendered.kind === 'ok') return { kind: 'text', text: rendered.text };
-
       return {
         kind: 'error',
         code: rendered.kind === 'failed' ? `render_${rendered.reason}` : 'render_login_wall',
       };
     }
-
     const bytes = await readFile(join(MENUS_DIR, menu.file));
     if (menu.format === 'image') {
       return { kind: 'text', text: await ocrImage(bytes, { language: menu.ocrLanguage }) };
     }
-
     const extracted = await extractPdfText(bytes, { maxPages: PDF_MAX_PAGES });
     if (extracted.hasTextLayer !== menu.textLayer) {
       return { kind: 'error', code: 'text_layer_mismatch' };
     }
     if (extracted.hasTextLayer) return { kind: 'text', text: extracted.text };
-
     const pages = await rasterizePdf(bytes, { maxPages: PDF_MAX_PAGES });
     const perPage: string[] = [];
     for (const page of pages) {
       perPage.push(await ocrImage(page, { language: menu.ocrLanguage }));
     }
-
     return { kind: 'text', text: perPage.join('\n') };
   } catch (error) {
     return { kind: 'error', code: failureCode(error) };
@@ -861,11 +741,6 @@ async function readSource(menu: ManifestMenu, run: EvalRun): Promise<SourceOutco
  * `extractMenuItems` counts, reserves and sends through the shared spend meter, and the recording
  * adapter captures each request's evidence — then the source gate, the multiset score and the
  * source-text share of what was stored.
- *
- * A menu that cannot be read is recorded with its code and every one of its labels unmatched, which is
- * what makes a broken document show up in the headline share instead of disappearing from it. A
- * mismatch that suspended the meter is cleared once noted, so the menus behind it are still measured;
- * the evidence for the failing request is already in the records.
  */
 async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
   const startedMs = systemClock.nowMs();
@@ -903,7 +778,6 @@ async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
         normalized.includes(normalizeWhitespace(priceText));
       const gated = gateItems(extraction.items, text, menu.currency);
       const scored = scoreLabels(menu.items, gated.kept);
-
       result.modelItems = extraction.items.length;
       result.modelInSource = extraction.items.filter((item) => inSource(item.priceText)).length;
       result.extractionDrops = extraction.drops;
@@ -929,9 +803,6 @@ async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
   return result;
 }
 
-// --- The report and the document (AAP 0.12.1, 0.12.3) ------------------------------------------
-
-/** A share as the report writes it: one decimal place, `0.0%` when nothing was measured. */
 function shareOf(part: number, whole: number): string {
   return whole === 0 ? '0.0%' : `${((100 * part) / whole).toFixed(1)}%`;
 }
@@ -941,7 +812,6 @@ function verdict(passed: boolean): string {
   return passed ? 'pass' : 'fail';
 }
 
-/** The sum of one count over a set of runs. */
 function sum(runs: readonly MenuRun[], pick: (run: MenuRun) => number): number {
   return runs.reduce((total, run) => total + pick(run), 0);
 }
@@ -965,7 +835,6 @@ function markdownTable(headers: readonly string[], rows: readonly (readonly stri
   );
 }
 
-/** The counts the two thresholds are computed from, with the verdicts they produced. */
 interface Counts {
   readonly labeled: number;
   readonly matched: number;
@@ -982,7 +851,6 @@ interface Counts {
   readonly evidencePass: boolean;
 }
 
-/** Everything the report is written from. */
 interface Summary {
   readonly runs: readonly MenuRun[];
   readonly fixtureErrors: readonly string[];
@@ -996,12 +864,6 @@ interface Summary {
 
 /**
  * Compute the two thresholds and the token evidence (AAP 0.12.1, 0.5.6).
- *
- * The stored-price share passes only at exactly 100% *and* with at least one stored item: the source
- * gate makes the share true by construction, so a run that stored nothing has proved nothing and fails
- * rather than passing vacuously. The token evidence passes only when every request's reported input
- * equals the count it was reserved for, over an identical payload — the record AAP 0.5.6 asks for — and
- * only when at least one request was made.
  */
 function countOf(summary: Summary): Counts {
   const { runs, records } = summary;
@@ -1038,7 +900,6 @@ function groupedRows(
     const group = runs.filter((run) => keyOf(run) === key);
     const labeled = sum(group, (run) => run.labeled);
     const matched = sum(group, (run) => run.matched);
-
     return [
       key,
       String(group.length),
@@ -1050,7 +911,6 @@ function groupedRows(
   });
 }
 
-/** The rows of the token-evidence table, one per request the meter counted. */
 function evidenceRows(records: readonly TokenRecord[]): string[][] {
   return records.map((record, index) => [
     String(index + 1),
@@ -1145,12 +1005,10 @@ Counted-against-reported token evidence for the spend cap (AAP 0.5.6): pending.
 Set \`LLM_PROVIDER=openai\` with a supported \`LLM_MODEL\`, \`LLM_API_KEY\` and both \`LLM_PRICE_*_USD_PER_MTOK\` prices to record the measurement.`;
 }
 
-/** The document as it stands, or a fresh one holding its heading (AAP 0.12.3). */
 function readDoc(): string {
   return existsSync(DOC_FILE) ? readFileSync(DOC_FILE, 'utf8') : `${DOC_HEADING}\n`;
 }
 
-/** Replace the generated block between its markers, or append it when the document has none. */
 function replaceBlock(doc: string, body: string): string {
   const begin = doc.indexOf(BEGIN_MARKER);
   const end = doc.indexOf(END_MARKER);
@@ -1180,9 +1038,6 @@ function saveDoc(doc: string): boolean {
   return true;
 }
 
-// --- Entry points (AAP 0.11.2) -----------------------------------------------------------------
-
-/** One line to stdout or stderr, newline included; no line carries a secret or a menu. */
 function say(stream: 'out' | 'err', line: string): void {
   const message = `${line}\n`;
   if (stream === 'out') process.stdout.write(message);
@@ -1196,7 +1051,6 @@ async function shortCommit(): Promise<string> {
       timeout: PREFLIGHT_TIMEOUT_MS,
       cwd: REPO_ROOT,
     });
-
     return result.stdout.trim() || 'unknown';
   } catch {
     return 'unknown';
@@ -1222,7 +1076,6 @@ function pendingRun(menus: readonly ManifestMenu[]): number {
   return 0;
 }
 
-/** Read every menu through the pipeline and record the measurement (AAP 0.11.2, 0.12.1). */
 async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): Promise<number> {
   const preflight = await preflightTools();
   for (const problem of preflight.problems) say('err', `menus-eval: ${problem}`);
@@ -1237,14 +1090,12 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
       `menus-eval: Chromium could not be launched (${messageOf(error)}); run \`pnpm --filter @tablemate/workers exec playwright install chromium\`.`,
     );
     await browser.close();
-
     return 1;
   }
 
   let server: FixtureServer | null = null;
   try {
     server = await startFixtureServer(menus);
-
     const logger = createLogger({ name: 'menus-eval', level: 'warn', appEnv: 'test' });
     const store = createMemorySpendStore();
     const suspension = createMemorySuspensionStore();
@@ -1290,7 +1141,6 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
       records: [],
       suspension,
     };
-
     const runs: MenuRun[] = [];
     const fixtureErrors: string[] = [];
     for (const menu of menus) {
@@ -1300,7 +1150,6 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
       }
       runs.push(result);
     }
-
     const summary: Summary = {
       runs,
       fixtureErrors,
@@ -1319,7 +1168,6 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
       counts.matchedPass && counts.sourcePass && counts.evidencePass && fixtureErrors.length === 0
         ? 0
         : 1;
-
     say(
       'out',
       [
@@ -1329,11 +1177,9 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
         written ? `written to ${DOC_FILE}` : 'document unchanged',
       ].join(', '),
     );
-
     return code;
   } catch (error) {
     say('err', `menus-eval: the run failed: ${messageOf(error)}`);
-
     return 1;
   } finally {
     if (server !== null) await server.stop();
@@ -1343,10 +1189,6 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
 
 /**
  * The evaluator: validate the labeled set, then measure it or mark it pending (AAP 0.12.1, 0.12.3).
- *
- * The manifest is validated before anything else, so a broken fixture set is reported as such instead
- * of being measured and blamed on the model. A configuration error and a failed preflight both leave
- * the document untouched.
  */
 async function main(): Promise<number> {
   const manifest = loadManifest();
@@ -1354,12 +1196,10 @@ async function main(): Promise<number> {
 
   if (mode.kind === 'error') {
     say('err', `menus-eval: ${mode.message}`);
-
     return 1;
   }
   if (manifest.errors.length > 0) {
     for (const error of manifest.errors) say('err', `menus-eval: fixture set: ${error}`);
-
     return 1;
   }
 

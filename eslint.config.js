@@ -28,7 +28,6 @@ const CLIENT_SAFE =
   'Client-safe code runs under Hermes and in browsers; use Uint8Array, @noble/hashes or poseidon-lite.';
 const CLOCK = 'Use the injected clock (packages/server-core/src/clock.ts).';
 
-/* Ships inside the client bundle, so it runs where Node's modules do not exist. */
 const NODE_BUILT_INS = [
   'buffer',
   'child_process',
@@ -133,7 +132,6 @@ export default tseslint.config(
     ],
   },
 
-  /* TypeScript, type-aware. `projectService` maps each file to its workspace project. */
   {
     files: ['**/*.{ts,tsx}'],
     extends: [...tseslint.configs.recommendedTypeChecked],
@@ -150,7 +148,6 @@ export default tseslint.config(
     },
   },
 
-  /* Test code: only Vitest's `expect(instance.method)` idiom needs relaxing. */
   {
     files: ['**/test/**/*.{ts,tsx}', '**/*.test.{ts,tsx}', '**/e2e/**/*.{ts,tsx}'],
     rules: { '@typescript-eslint/unbound-method': 'off' },
@@ -165,7 +162,6 @@ export default tseslint.config(
     plugins: { '@typescript-eslint': tseslint.plugin },
   },
 
-  /* Expo's Babel and Metro configs are CommonJS inside an ESM package. */
   {
     files: ['apps/mobile/*.config.{js,cjs}'],
     languageOptions: {
@@ -179,7 +175,6 @@ export default tseslint.config(
     },
   },
 
-  /* k6 scripts are ES modules run by the k6 runtime, not by Node. */
   {
     files: ['infra/k6/**/*.js'],
     languageOptions: {
@@ -188,7 +183,6 @@ export default tseslint.config(
     },
   },
 
-  /* Maestro's JavaScript steps run in its own sandbox with these four objects in scope. */
   {
     files: ['apps/mobile/e2e/maestro/scripts/**/*.js'],
     languageOptions: {
@@ -197,10 +191,8 @@ export default tseslint.config(
     },
   },
 
-  /* Rules of React for the traveler app, its operator screens and the venue console. */
   { ...reactHooks.configs.flat.recommended, files: REACT_FILES },
 
-  /* Stripe and Twilio are reached through one seam each, so a provider stays swappable. */
   {
     files: SERVER_FILES,
     rules: { 'no-restricted-imports': ['error', { paths: [STRIPE_SEAM, TWILIO_SEAM] }] },
@@ -248,7 +240,6 @@ export default tseslint.config(
     },
   },
 
-  /* The two seams, and the one file whose job is to read the wall clock. */
   {
     files: ['apps/api/src/modules/payments/stripe-gateway.ts'],
     rules: { 'no-restricted-imports': ['error', { paths: [TWILIO_SEAM] }] },

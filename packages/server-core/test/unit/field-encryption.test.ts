@@ -1,16 +1,3 @@
-/**
- * Field-encryption round-trip suite (AAP 0.8.1): the one AES-256-GCM format every protected column
- * of AAP 0.5.2 is stored in — the account and magic-link email addresses, the magic link's delivery
- * token, the lodging booking name and reference, the tier-3 full name and contact handle, and the
- * venue and lodging console secrets (AAP 0.3.2).
- *
- * Credential-free and container-free by design: every key is generated at runtime, so no key
- * material reaches the repository, and nothing here opens a socket. What the suite pins down is the
- * envelope itself, `<keyId>.<base64url(iv, tag, ciphertext)>`, because a silent change to it breaks
- * every stored value at once, plus the two failures a round trip alone cannot see: a reused IV and a
- * decryption that skipped GCM authentication.
- */
-
 import { randomBytes } from 'node:crypto';
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -27,46 +14,36 @@ import {
 } from '../../src/crypto/field-encryption.ts';
 import type { FieldKeyring } from '../../src/crypto/field-encryption.ts';
 
-/** A fresh AES-256-GCM key in the one encoding `FIELD_ENCRYPTION_KEY` accepts. */
 const key = (): string => randomBytes(32).toString('base64');
 
-/** The envelope every stored value carries. */
 const VALUE_PATTERN = /^[A-Za-z0-9_-]{1,16}\.[A-Za-z0-9_-]+$/;
 
 const IV_BYTES = 12;
-/** IV plus tag: the payload of an empty plaintext, and the shortest payload `decryptField` accepts. */
 const MIN_PAYLOAD_BYTES = IV_BYTES + 16;
 
-/** Splits a stored value into its key id and its decoded payload. */
 function b64url(value: string): [keyId: string, body: Buffer] {
   const separator = value.indexOf('.');
   return [value.slice(0, separator), Buffer.from(value.slice(separator + 1), 'base64url')];
 }
 
-/** The inverse of {@link b64url}, for the tampered values below. */
 function join(keyId: string, body: Buffer): string {
   return `${keyId}.${body.toString('base64url')}`;
 }
 
-/** The decoded payload of a stored value. */
 const payloadOf = (value: string): Buffer => b64url(value)[1];
 
-/** The first 12 payload bytes, the IV, as hex: two encryptions of one plaintext must differ here. */
 const ivOf = (value: string): string => payloadOf(value).subarray(0, IV_BYTES).toString('hex');
 
-/** Re-encodes a stored value with a different payload, keeping its key id unless one is named. */
 function withPayload(value: string, body: Buffer, keyId = b64url(value)[0]): string {
   return join(keyId, body);
 }
 
-/** Flips bit 0 of payload byte `index`, leaving the envelope and the payload length intact. */
 function flipPayloadBit(value: string, index: number): string {
   const [keyId, body] = b64url(value);
   body.writeUInt8(body.readUInt8(index) ^ 1, index);
   return join(keyId, body);
 }
 
-/** Runs a call expected to fail and returns the typed failure; the assertion names the class. */
 function failureOf<Thrown extends Error>(
   run: () => unknown,
   expected: new (...args: never) => Thrown,
@@ -85,11 +62,9 @@ function failureOf<Thrown extends Error>(
 
 describe('encryptField and decryptField', () => {
   let ring: FieldKeyring;
-
   beforeEach(() => {
     ring = createFieldKeyring({ currentKeyId: 'k1', keys: { k1: key() } });
   });
-
   it.each([
     ['a short plaintext', 'hello world'],
     ['an email address', 'traveler@example.com'],
@@ -99,31 +74,25 @@ describe('encryptField and decryptField', () => {
     ['a long plaintext', 'x'.repeat(4096)],
   ])('round-trips %s inside the documented envelope', (_label, plaintext) => {
     const stored = encryptField(ring, plaintext);
-
     expect(stored).toMatch(VALUE_PATTERN);
     expect(stored.startsWith('k1.')).toBe(true);
     expect(decryptField(ring, stored)).toBe(plaintext);
   });
-
   it('writes the key id the environment names', () => {
     const fromEnv = keyringFromEnv({
       FIELD_ENCRYPTION_KEY: key(),
       FIELD_ENCRYPTION_KEY_ID: 'env1',
     });
     const stored = encryptField(fromEnv, 'traveler@example.com');
-
     expect(stored.startsWith('env1.')).toBe(true);
     expect(decryptField(fromEnv, stored)).toBe('traveler@example.com');
   });
-
   it('stores an empty plaintext as exactly an IV and a tag', () => {
     expect(payloadOf(encryptField(ring, ''))).toHaveLength(MIN_PAYLOAD_BYTES);
   });
-
   it('draws a fresh IV for equal plaintexts', () => {
     const first = encryptField(ring, 'Fixture Guest');
     const second = encryptField(ring, 'Fixture Guest');
-
     expect(first).not.toBe(second);
     expect(ivOf(first)).not.toBe(ivOf(second));
     expect(decryptField(ring, first)).toBe('Fixture Guest');
@@ -136,14 +105,12 @@ describe('decryptField refuses a tampered value', () => {
   let k1Key: string;
   let twoKeyRing: FieldKeyring;
   let stored: string;
-
   beforeEach(() => {
     k1Key = key();
     const ring = createFieldKeyring({ currentKeyId: 'k1', keys: { k1: k1Key } });
     twoKeyRing = createFieldKeyring({ currentKeyId: 'k1', keys: { k1: k1Key, k2: key() } });
     stored = encryptField(ring, PLAINTEXT);
   });
-
   /** One mutation per row, applied to a value the ring wrote: label, corruption, expected reason. */
   const flipIv = (value: string): string => flipPayloadBit(value, 0);
   const flipTag = (value: string): string => flipPayloadBit(value, IV_BYTES);
@@ -155,7 +122,6 @@ describe('decryptField refuses a tampered value', () => {
   const dropSeparator = (value: string): string => value.replace('.', '');
   const breakPayload = (): string => 'k1.@@@@';
   const foreignKeyId = (value: string): string => withPayload(value, payloadOf(value), 'k2');
-
   it.each<[string, (value: string) => string, string]>([
     ['a flipped bit in the IV', flipIv, 'authentication_failed'],
     ['a flipped bit in the auth tag', flipTag, 'authentication_failed'],
@@ -167,13 +133,11 @@ describe('decryptField refuses a tampered value', () => {
     ['a prefix naming a key that did not write it', foreignKeyId, 'authentication_failed'],
   ])('rejects %s', (_label, corrupt, reason) => {
     const error = failureOf(() => decryptField(twoKeyRing, corrupt(stored)), FieldDecryptionError);
-
     expect(error.reason).toBe(reason);
     expect(error.message).not.toContain(PLAINTEXT);
     expect(error.message).not.toContain(k1Key);
     expect(error.message).not.toContain(stored.slice(stored.indexOf('.') + 1));
   });
-
   it('reports an unknown key id, and a wrong key under a known one, as different reasons', () => {
     const unknownId = failureOf(
       () => decryptField(twoKeyRing, withPayload(stored, payloadOf(stored), 'zz')),
@@ -183,7 +147,6 @@ describe('decryptField refuses a tampered value', () => {
       () => decryptField(createFieldKeyring({ currentKeyId: 'k1', keys: { k1: key() } }), stored),
       FieldDecryptionError,
     );
-
     expect(unknownId.reason).toBe('unknown_key_id');
     expect(unknownId.message).toContain('zz');
     expect(otherKey.reason).toBe('authentication_failed');
@@ -196,9 +159,7 @@ describe('keyring rotation', () => {
     const before = createFieldKeyring({ currentKeyId: 'k1', keys: { k1 } });
     const after = createFieldKeyring({ currentKeyId: 'k2', keys: { k1, k2: key() } });
     const stored = encryptField(before, 'traveler@example.com');
-
     expect(decryptField(after, stored)).toBe('traveler@example.com');
-
     const rewritten = encryptField(after, 'traveler@example.com');
     expect(rewritten.startsWith('k2.')).toBe(true);
     expect(failureOf(() => decryptField(before, rewritten), FieldDecryptionError).reason).toBe(
@@ -217,11 +178,9 @@ describe('createFieldKeyring rejects unusable material', () => {
       () => createFieldKeyring({ currentKeyId: 'k1', keys: { k1: badKey } }),
       FieldKeyringError,
     );
-
     expect(error.message).toContain('k1');
     expect(error.message).not.toContain(badKey);
   });
-
   it.each([
     ['a dot', 'a.b'],
     ['an empty id', ''],
@@ -232,16 +191,13 @@ describe('createFieldKeyring rejects unusable material', () => {
       FieldKeyringError,
     );
   });
-
   it('rejects a current key id no key is supplied for', () => {
     const error = failureOf(
       () => createFieldKeyring({ currentKeyId: 'k9', keys: { k1: key() } }),
       FieldKeyringError,
     );
-
     expect(error.message).toContain('k9');
   });
-
   it.each([
     ['the canonical base64 of 32 bytes', true, key()],
     ['the base64 of 31 bytes', false, randomBytes(31).toString('base64')],
@@ -251,7 +207,6 @@ describe('createFieldKeyring rejects unusable material', () => {
   ])('answers %s for %s', (_label, expected, candidate) => {
     expect(isValidFieldKey(candidate)).toBe(expected);
   });
-
   it.each([
     ['k1', true],
     ['a'.repeat(16), true],

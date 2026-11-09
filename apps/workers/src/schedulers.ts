@@ -28,9 +28,6 @@
  * Registering is idempotent and safe to repeat, and it is not transactional: a failure part way
  * through throws to `main.ts`, which fails the start, and the next start upserts what is already
  * there and completes the rest.
- *
- * @see AAP 0.5.1 for the worker runtime, 0.5.3 for the timers, 0.5.6 for the job table and its
- *   cadences, 0.6.2 for `TELEPHONY_MODE`, 0.8.1 for this file's inventory row.
  */
 
 import type { JobSchedulerTemplateOptions, RepeatOptions } from 'bullmq';
@@ -56,14 +53,10 @@ import {
 // would close the cycle `queues.ts` -> `jobs/*` -> ... -> `schedulers.ts` -> `queues.ts`.
 import type { WorkerContext } from './queues.ts';
 
-/*
- * The cadences (AAP 0.5.3, 0.5.6)
- */
-
 /**
  * The zone a cadence is written in: `city` for a run anchored to a city's local clock, which reads
  * the zone the caller passes, and `UTC` — spelled as IANA and BullMQ both understand it — for the
- * runs the plan fixes in UTC.
+ * runs fixed in UTC.
  */
 const CITY_ZONE = 'city';
 const UTC_ZONE = 'UTC';
@@ -71,12 +64,11 @@ const UTC_ZONE = 'UTC';
 /**
  * Every cadence this process registers, keyed by the run it describes (AAP 0.5.3, 0.5.6).
  *
- * Every cadence below is the plan's (AAP 0.5.3, 0.5.6), and so are four of the instants: 00:05 local
- * for the stay expiry, 00:30 UTC for the FX table, 03:00 UTC for the financial-retention step, and
- * every two minutes for the call dispatch. The clock times that remain are chosen here, off-peak,
- * because the plan states those cadences without an hour: the weekly place refresh runs Monday 04:00
- * local, price freshness daily at 04:30 local, and the account-erasure sweep — which enforces the
- * 30 days of AAP 0.5.2 — daily at 03:15 UTC, after the retention step.
+ * Four instants are AAP 0.5.3/0.5.6's own — 00:05 local for the stay expiry, 00:30 UTC for the FX
+ * table, 03:00 UTC for the financial-retention step and every two minutes for the call dispatch. The
+ * rest are chosen here, off-peak, because those cadences are stated without an hour: the weekly place
+ * refresh runs Monday 04:00 local, price freshness daily at 04:30 local, and the account-erasure
+ * sweep — which enforces the 30 days of AAP 0.5.2 — daily at 03:15 UTC, after the retention step.
  *
  * A cadence is data, not a closure: the id, the queue and the job name beside it come from
  * server-core, and `registerSchedulers` pairs the two.
@@ -103,17 +95,9 @@ export const SCHEDULE = {
 /** One entry of {@link SCHEDULE}, read by {@link repeatOptions}. */
 type ScheduleEntry = (typeof SCHEDULE)[keyof typeof SCHEDULE];
 
-/*
- * Helpers
- */
-
 /**
  * The repeat options BullMQ is handed for one cadence: an interval for an `every` entry, otherwise
- * the cron pattern in the zone its entry names.
- *
- * @param cadence - the {@link SCHEDULE} entry being registered.
- * @param timezone - the city's IANA zone, read only by a `city`-zoned entry.
- * @returns the repeat options, without the `key` BullMQ sets itself.
+ * the cron pattern in the zone its entry names, `timezone` being read only by a `city`-zoned entry.
  */
 function repeatOptions(cadence: ScheduleEntry, timezone: string): Omit<RepeatOptions, 'key'> {
   return 'every' in cadence
@@ -130,32 +114,19 @@ const SCHEDULER_OWNED_KEYS = ['jobId', 'delay', 'repeat', 'deduplication'] as co
  * owns. BullMQ refuses `jobId`, `repeat` and `delay` in a template and sets deduplication itself, so
  * those are dropped rather than passed, and the policy the caller takes is a copy of a frozen table,
  * so deleting here never writes through to the shared defaults.
- *
- * @param queue - the queue whose policy the template carries.
- * @returns the template options for `queue`.
  */
 function templateOptions(queue: QueueName): JobSchedulerTemplateOptions {
   const options: Record<string, unknown> = { ...jobOptionsFor(queue) };
-
   for (const key of SCHEDULER_OWNED_KEYS) {
     delete options[key];
   }
-
   return options;
 }
 
 /**
- * Register one scheduler, or update the one already under `id`, and return that id.
- *
- * @param ctx - the process context: the producer registry and, through it, the queue's policy.
- * @param id - the scheduler id, from a server-core builder or constant.
- * @param queue - the queue the scheduler enqueues into.
- * @param name - the job name, one `queue` accepts, whose schema `templateData` was parsed against.
- * @param templateData - the parsed data of every job the scheduler creates.
- * @param repeat - {@link repeatOptions} for this cadence.
- * @returns `id`, so the caller collects just the ids it registered.
- * @throws Whatever `upsertJobScheduler` throws, an unreachable Redis included: this is a start path,
- *   and a process whose schedulers are not registered is not ready.
+ * Register one scheduler, or update the one already under `id`, and return that id. Whatever
+ * `upsertJobScheduler` throws, an unreachable Redis included, fails the start: a process whose
+ * schedulers are not registered is not ready.
  */
 async function upsert(
   ctx: WorkerContext,
@@ -168,21 +139,16 @@ async function upsert(
   await ctx.queues
     .get(queue)
     .upsertJobScheduler(id, repeat, { name, data: templateData, opts: templateOptions(queue) });
-
   return id;
 }
-
-/*
- * Registration (AAP 0.5.1, 0.5.6)
- */
 
 /**
  * Register every recurring scheduler this deployment runs, and unregister the one a mode switches
  * off (AAP 0.5.1, 0.5.6).
  *
  * The cities come from the seeded `City` rows, in id order so the log's counts and a test's list are
- * reproducible; a deployment whose seed has not run yet registers the four global schedulers and no
- * per-city ones, which is the right outcome for a stack with no city to refresh. Every per-city job
+ * reproducible; a deployment whose seed has not run yet registers the four global schedulers and none
+ * per city, which is the right outcome for a stack with no city to refresh. Every per-city job
  * carries its `cityId`, which is what lets one job know which local day and which zone it works in.
  *
  * Call dispatch is registered per city only while `TELEPHONY_MODE` is `simulator` or `twilio`. With
@@ -190,13 +156,9 @@ async function upsert(
  * `removed` only when a scheduler really went — so switching a running stack to `off` stops the
  * dialling, and the tasks themselves wait in `queued` until telephony returns (AAP 0.6.2).
  *
- * @param ctx - the process context: the database read for the cities, the producer registry and the
- *   validated environment's telephony mode.
- * @returns the scheduler ids registered and the ones removed, both in the order they were handled.
- * @throws Error from the city read, `QueuePayloadError` from a template that no longer matches its
- *   job's schema, and whatever Redis or BullMQ throws. Each fails the start deliberately: a template
- *   that drifted is a code defect, not something a retry repairs, and a process with no schedulers
- *   would silently stop refreshing places, prices, stays and retention.
+ * A template that no longer matches its job's schema, or an unreachable Redis, fails the start
+ * deliberately: a template that drifted is a code defect, not something a retry repairs, and a
+ * process with no schedulers would silently stop refreshing places, prices, stays and retention.
  */
 export async function registerSchedulers(
   ctx: WorkerContext,
@@ -204,12 +166,10 @@ export async function registerSchedulers(
   const registered: string[] = [];
   const removed: string[] = [];
   const { mode } = ctx.env.telephony;
-
   const cities = await ctx.db.city.findMany({
     select: { id: true, timezone: true },
     orderBy: { id: 'asc' },
   });
-
   for (const city of cities) {
     registered.push(
       await upsert(
@@ -237,9 +197,7 @@ export async function registerSchedulers(
         repeatOptions(SCHEDULE.stayExpiry, city.timezone),
       ),
     );
-
     const dispatchId = callDispatchSchedulerId(city.id);
-
     if (mode === 'off') {
       if (await ctx.queues.get(QUEUE.callDispatch).removeJobScheduler(dispatchId)) {
         removed.push(dispatchId);
@@ -259,7 +217,6 @@ export async function registerSchedulers(
       );
     }
   }
-
   // The four global runs, once per process rather than once per city.
   registered.push(
     await upsert(
@@ -300,7 +257,6 @@ export async function registerSchedulers(
       repeatOptions(SCHEDULE.accountErasureSweep, UTC_ZONE),
     ),
   );
-
   // Counts and ids only: a scheduler's data is an id at most, and it belongs in neither a log line
   // nor an operator's clipboard (AAP 0.11.1).
   ctx.logger.info({
@@ -309,44 +265,28 @@ export async function registerSchedulers(
     removed: removed.length,
     telephonyMode: mode,
   });
-
   return { registered, removed };
 }
-
-/*
- * The first FX table (AAP 0.5.6)
- */
 
 /**
  * Enqueue the one-off `fx-refresh` run that fills an FX table no run has written yet, and report
  * whether it was added (AAP 0.5.6).
  *
  * AAP 0.5.6 fixes a price's conversion on the capture day's `FxRate`, and the delivered `fx-refresh`
- * job is the only writer of that table, on a schedule whose first run is 00:30 UTC. A stack younger
- * than that run therefore holds no rate at all, and the operator's price entry — the one path that
- * converts a price outside the menu pipeline — has nothing to convert a non-USD price with. Priming
- * runs the delivered job once at startup instead of inventing a rate or converting at another day's
- * rate: the job reads the provider's own table and stores what it publishes, so the conversion stays
- * the capture day's, and a provider that is unreachable or answers without a currency fails the run
- * on the queue's own policy — five tries, backoff from 10 minutes (AAP 0.5.6) — leaving the table as
- * it was.
+ * job is its only writer, on a schedule whose first run is 00:30 UTC, so a stack younger than that
+ * run holds no rate and the operator's price entry — the one path that converts a price outside the
+ * menu pipeline — would have nothing to convert a non-USD price with. Priming runs the delivered job
+ * once at startup instead of inventing a rate or converting at another day's rate, so the conversion
+ * stays the capture day's; a provider that is unreachable fails the run on the queue's own policy —
+ * five tries, backoff from 10 minutes (AAP 0.5.6) — leaving the table as it was.
  *
- * A row of any date at all answers the count, because the read is `usdRateFor`'s own: it takes the
- * latest rate at or before the capture day, so an existing table serves every day this stack can
- * capture on and there is nothing left to prime.
- *
- * @param ctx - The process context: the database read that answers whether any rate exists, and the
- *   producer registry the run is added through.
- * @returns `true` when the run was enqueued, `false` when the table already holds a row.
- * @throws Whatever the count, the enqueue or Redis throws. Like the schedulers above, this is a
- *   start path: `main.ts` records the failure and fails the start rather than letting a stack come
- *   up with a price entry that cannot convert.
+ * A row of any date answers the count, because the read is `usdRateFor`'s own: it takes the latest
+ * rate at or before the capture day, so an existing table serves every day this stack can capture on.
  */
 export async function primeFxTable(ctx: WorkerContext): Promise<boolean> {
   if ((await ctx.db.fxRate.count()) > 0) {
     return false;
   }
-
   await ctx.queues
     .get(QUEUE.fxRefresh)
     .add(
@@ -354,6 +294,5 @@ export async function primeFxTable(ctx: WorkerContext): Promise<boolean> {
       parseJobData(QUEUE.fxRefresh, JOB[QUEUE.fxRefresh].refresh, {}),
       jobOptionsFor(QUEUE.fxRefresh, { jobId: FX_REFRESH_PRIME_JOB_ID }),
     );
-
   return true;
 }

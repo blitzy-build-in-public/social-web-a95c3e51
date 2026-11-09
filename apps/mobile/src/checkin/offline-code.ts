@@ -1,18 +1,15 @@
 /**
  * Offline retention of an entered venue check-in code (AAP 0.5.1, 0.5.7, 0.5.8).
  *
- * A check-in code rotates every 60 s, and the server accepts the current step and one either side
- * of it, so a code typed just before connectivity drops is still worth submitting when it comes
- * back. This module holds one such code in memory for at most `OFFLINE_CODE_RETENTION_MS`, submits
- * it on the next online signal, and otherwise drops it so the screen can ask for a fresh one.
+ * A check-in code rotates every 60 s and the server accepts the current step and one either side of it, so a code typed
+ * just before connectivity drops is still worth submitting when it comes back. This module holds one such code in
+ * memory for at most `OFFLINE_CODE_RETENTION_MS`, submits it on the next online signal, and otherwise drops it so the
+ * screen can ask for a fresh one.
  *
- * The code is never persisted and never logged: it lives in the single active hold below and
- * nowhere else, and it is released the moment that hold settles. Coordinates are not held here
- * either -- the caller's `submit` reads them when it runs, so no position is retained offline.
- *
- * Client-only and Hermes-safe: no React, no sibling module of `src/`, no Node built-in. One file
- * serves iOS, Android and web, because NetInfo's web build runs on `navigator.onLine` and the
- * `online` and `offline` events.
+ * The code is never persisted and never logged: it lives in the single active hold below and nowhere else, and is
+ * released the moment that hold settles. Coordinates are not held either — the caller's `submit` reads them when it
+ * runs. Client-only and Hermes-safe: one file serves iOS, Android and web, because NetInfo's web build runs on
+ * `navigator.onLine`.
  */
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 
@@ -22,28 +19,25 @@ import { CODE_DIGITS, OFFLINE_CODE_RETENTION_MS } from '@tablemate/shared';
 const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
 
 /**
- * Reads one NetInfo state as a plain answer. `isInternetReachable` is `null` until reachability is
- * known -- at start-up, and on web -- so only an explicit `false` counts against the connection.
+ * `isInternetReachable` is `null` until reachability is known — at start-up, and on web — so only an
+ * explicit `false` counts against the connection.
  */
 function isOnlineState(state: NetInfoState): boolean {
   return state.isConnected === true && state.isInternetReachable !== false;
 }
 
 /**
- * Whether the device is online right now. The check-in screen calls this to submit straight away
- * when it can, and to hold the code through {@link holdCode} when it cannot.
+ * Whether the device is online right now; the screen calls this to submit straight away, and holds
+ * the code through {@link holdCode} when it cannot.
  */
 export async function isOnline(): Promise<boolean> {
   return isOnlineState(await NetInfo.fetch());
 }
 
 /**
- * How a held code ended: `submitted` (it reached the API), `expired` (the window passed first) or
- * `cancelled` (the caller withdrew it).
- *
- * `cancelled` is kept apart from `expired` because the screen says different things about them: an
- * expired code needs a fresh one read from the venue console, while a cancelled hold submitted
- * nothing and would only mislead the user if it asked for one.
+ * How a held code ended. `cancelled` is kept apart from `expired` because the screen says different
+ * things about them: an expired code needs a fresh one read from the venue console, while a cancelled
+ * hold submitted nothing and would only mislead the user if it asked for one.
  */
 export type HoldOutcome = 'submitted' | 'expired' | 'cancelled';
 
@@ -53,16 +47,13 @@ export type HoldOutcome = 'submitted' | 'expired' | 'cancelled';
  */
 export interface HeldCode {
   /**
-   * Ends the hold as `cancelled` and releases the code at once. A submission already in flight is
-   * not reported afterwards and keeps its own outcome, though the request it sent may still
-   * complete on the server.
+   * Ends the hold as `cancelled` and releases the code at once. A submission already in flight keeps
+   * its own outcome, though the request it sent may still complete on the server.
    */
   cancel(): void;
-
   /**
-   * The outcome of the hold. It rejects with the error `submit` threw when
-   * {@link HoldOptions.isNetworkError} does not call that error a connectivity failure -- an
-   * `invalid_code` or `outside_window`, for the screen to announce.
+   * Rejects with the error `submit` threw when {@link HoldOptions.isNetworkError} does not call that
+   * error a connectivity failure — an `invalid_code` or `outside_window`, for the screen to announce.
    */
   readonly result: Promise<HoldOutcome>;
 }
@@ -70,18 +61,16 @@ export interface HeldCode {
 /** How {@link holdCode} tells a retryable connectivity failure from a final one. */
 export interface HoldOptions {
   /**
-   * Classifies an error from `submit` as a connectivity failure, which keeps the hold waiting for
-   * the next online signal instead of ending it. Anything else ends the hold with that error.
+   * Classifies an error from `submit` as a connectivity failure, which keeps the hold waiting for the
+   * next online signal instead of ending it. Anything else ends the hold with that error.
    */
   isNetworkError?: (error: unknown) => boolean;
 }
 
 /**
  * The clock the retention window is measured on, monotonic where the platform offers one so that a
- * device clock change cannot stretch a hold. `Date.now()` is the fallback for a runtime without
- * `performance`.
- *
- * This is client code, so the server's injected-clock rule does not apply (AAP 0.11.1).
+ * device clock change cannot stretch a hold; `Date.now()` is the fallback for a runtime without
+ * `performance`. This is client code, so the server's injected-clock rule does not apply (AAP 0.11.1).
  */
 function now(): number {
   const perf = globalThis.performance;
@@ -98,19 +87,14 @@ let active: HeldCode | null = null;
  * Holds `code` until the device is online, submitting it at most once and only within
  * `OFFLINE_CODE_RETENTION_MS` of this call (AAP 0.5.7).
  *
- * `submit` runs with the code when connectivity returns, or on this call when the device is
- * already online. The hold ends as `submitted`; as `expired` once the window has passed, when the
- * screen asks for a fresh code from the venue console (which imposes no hard time limit); or as
- * `cancelled` from {@link HeldCode.cancel}, which the screen must call on unmount. `result`
- * rejects when `submit` fails in a way {@link HoldOptions.isNetworkError} does not call a
- * connectivity failure.
+ * `submit` runs with the code when connectivity returns, or on this call when the device is already
+ * online. The hold ends as `submitted`, as `expired` once the window has passed — when the screen
+ * asks for a fresh code from the venue console, which imposes no hard time limit — or as `cancelled`
+ * from {@link HeldCode.cancel}, which the screen must call on unmount. The code is kept in memory
+ * alone, for no longer than the window, and never logged.
  *
- * Only one hold exists at a time: calling this supersedes an earlier hold, which ends as
- * `cancelled`. The code is kept in memory alone, for no longer than the window, and never logged.
+ * Only one hold exists at a time: calling this supersedes an earlier hold, which ends as `cancelled`.
  *
- * @param code The six digits read from the venue console.
- * @param submit Sends the code to the API; it reads the device's coordinates when it runs.
- * @param options How to recognise a connectivity failure, so the hold waits rather than fails.
  * @throws A `TypeError` when `code` is not exactly `CODE_DIGITS` digits. It names no code itself.
  */
 export function holdCode(
@@ -121,17 +105,13 @@ export function holdCode(
   if (!CODE_PATTERN.test(code)) {
     throw new TypeError(`holdCode expects ${CODE_DIGITS} digits`);
   }
-
   active?.cancel();
-
   const deadline = now() + OFFLINE_CODE_RETENTION_MS;
-
   let held: string | null = code;
   let settled = false;
   let submitting = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let unsubscribe: (() => void) | null = null;
-
   // `new Promise` runs its executor synchronously, so both resolvers are assigned before anything
   // below can reach them and the definite-assignment assertions hold.
   let resolveResult!: (outcome: HoldOutcome) => void;
@@ -140,7 +120,6 @@ export function holdCode(
     resolveResult = resolve;
     rejectResult = reject;
   });
-
   /** Releases everything the hold is holding: the timer, the listener and the code itself. */
   function cleanup(): void {
     if (timer !== null) {
@@ -154,7 +133,6 @@ export function holdCode(
     held = null;
     if (active === handle) active = null;
   }
-
   /** Ends the hold with `outcome`, once: every later call is a no-op. */
   function finish(outcome: HoldOutcome): void {
     if (settled) return;
@@ -162,7 +140,6 @@ export function holdCode(
     cleanup();
     resolveResult(outcome);
   }
-
   /** Ends the hold with the error `submit` threw, once, releasing the code as it goes. */
   function fail(error: unknown): void {
     if (settled) return;
@@ -170,21 +147,17 @@ export function holdCode(
     cleanup();
     rejectResult(error);
   }
-
   /** Submits the held code once, or ends the hold when the window has already passed. */
   async function attempt(): Promise<void> {
     if (settled || submitting) return;
-
     // The timer can fire late after the app was backgrounded, so this wall-clock check at
     // reconnect -- not the timer -- is what enforces the window.
     if (now() > deadline) {
       finish('expired');
       return;
     }
-
     const pending = held;
     if (pending === null) return;
-
     submitting = true;
     try {
       await submit(pending);
@@ -199,11 +172,9 @@ export function holdCode(
       fail(error);
     }
   }
-
   // `cancel` only calls `finish` after `holdCode` has returned, so both helpers are defined by the
   // time the handle can be used.
   const handle: HeldCode = { cancel: () => finish('cancelled'), result };
-
   timer = setTimeout(() => finish('expired'), OFFLINE_CODE_RETENTION_MS);
   // The platform's own signal rather than a poll: NetInfo calls back when connectivity changes.
   unsubscribe = NetInfo.addEventListener((state) => {
@@ -219,7 +190,6 @@ export function holdCode(
       // A probe that fails leaves the hold waiting on the timer and the listener above.
     },
   );
-
   active = handle;
   return handle;
 }

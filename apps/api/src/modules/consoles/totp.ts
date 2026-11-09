@@ -1,18 +1,17 @@
 /**
  * The venue check-in code: derivation, tolerance and verification (AAP 0.5.1, 0.5.7).
  *
- * A partner venue's console displays a code that rotates every 60 seconds and an attendee submits
- * it with their coordinates. The code is `HOTP(K, floor(t / 60))` truncated to six digits
- * (RFC 4226), where `K` is HKDF-SHA256 over the venue's issued secret and `t` is the server clock.
+ * A partner venue's console displays a code that rotates every 60 seconds and an attendee submits it with their
+ * coordinates. The code is `HOTP(K, floor(t / 60))` truncated to six digits (RFC 4226), where `K` is HKDF-SHA256 over
+ * the venue's issued secret and `t` is the server clock.
  *
- * The server clock is the only clock: every `at` comes from the injected clock
- * (`services.clock.now()`, or `request.receivedAt` from `plugins/clock.ts`), and the console
- * renders the `{ code, expiresAt }` its caller returns instead of deriving a code itself. Device
- * clock skew of two minutes or more therefore changes what a skewed device displays and nothing
- * else (AAP 0.5.7, 0.7.3, 0.12.2) — no function here accepts a device-supplied instant.
+ * The server clock is the only clock: every `at` comes from the injected clock (`services.clock.now()`, or
+ * `request.receivedAt` from `plugins/clock.ts`), and the console renders the `{ code, expiresAt }` its caller returns
+ * instead of deriving a code itself. Device clock skew of two minutes or more therefore changes what a skewed device
+ * displays and nothing else (AAP 0.5.7, 0.7.3, 0.12.2) — no function here accepts a device-supplied instant.
  *
- * A leaf module: Node's crypto and the shared constants only. The secret, the derived key and any
- * candidate code stay inside; a thrown error carries no key material and nothing here logs.
+ * A leaf module: Node's crypto and the shared constants only. The secret, the derived key and any candidate code stay
+ * inside; a thrown error carries no key material and nothing here logs.
  */
 
 import { createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
@@ -20,11 +19,9 @@ import { createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
 import { CODE_DIGITS, CODE_STEP_SECONDS, CODE_TOLERANCE_STEPS } from '@tablemate/shared';
 
 /**
- * HKDF `info` string of the check-in key (AAP 0.5.7).
- *
- * It domain-separates the derivation, so the same secret would yield another key for any other
- * purpose. Changing it invalidates every code ever displayed, so it is a constant, never a
- * parameter.
+ * HKDF `info` string of the check-in key (AAP 0.5.7). It domain-separates the derivation, so the same secret would
+ * yield another key for any other purpose. Changing it invalidates every code ever displayed, so it is a constant,
+ * never a parameter.
  */
 export const CHECKIN_HKDF_INFO = 'tablemate-checkin-v1';
 
@@ -33,14 +30,12 @@ const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
 
 /**
  * The 32-byte HMAC key of one venue's rotating code (AAP 0.5.7): HKDF-SHA256 with an empty salt and
- * {@link CHECKIN_HKDF_INFO}, per `key = HKDF-SHA256(secret, info "tablemate-checkin-v1")`.
+ * {@link CHECKIN_HKDF_INFO}.
  *
- * The input keying material is the UTF-8 bytes of the secret string exactly as issued — the
- * base64url text `randomSecret(32)` produces, not its decoded bytes. The seed and the operator
- * onboarding route store that same string encrypted and `secrets.ts` decrypts it back, so seed,
- * issue and API all derive the identical key; decoding here would break every secret already issued.
- *
- * @param secret - The venue's secret, exactly as issued and decrypted.
+ * The input keying material is the UTF-8 bytes of the secret string exactly as issued — the base64url text
+ * `randomSecret(32)` produces, not its decoded bytes. The seed and the operator onboarding route store that same
+ * string encrypted and `secrets.ts` decrypts it back, so seed, issue and API all derive the identical key; decoding
+ * here would break every secret already issued.
  */
 export function deriveKey(secret: string): Buffer {
   return Buffer.from(
@@ -49,17 +44,12 @@ export function deriveKey(secret: string): Buffer {
 }
 
 /**
- * One HOTP value (RFC 4226, AAP 0.5.7): the six-digit truncation of `HMAC-SHA-1(K, counter)`.
+ * One HOTP value (RFC 4226, AAP 0.5.7): the six-digit truncation of `HMAC-SHA-1(K, counter)`. RFC 4226 specifies
+ * HMAC-SHA-1 for the code itself; the HKDF-SHA256 of {@link deriveKey} is only the key derivation and does not
+ * replace it.
  *
- * RFC 4226 specifies HMAC-SHA-1 for the code itself; the HKDF-SHA256 of {@link deriveKey} is only
- * the key derivation and does not replace it.
- *
- * @param key - The key from {@link deriveKey}.
- * @param counter - The counter to truncate.
- * @param digits - Width of the zero-padded result, {@link CODE_DIGITS} in production; exposed so the
- * RFC 4226 vectors can be checked with their own digits.
- * @throws RangeError - When `counter` or `digits` falls outside its domain; the message names the
- * parameter alone, never the key or a code.
+ * @throws RangeError - When `counter` or `digits` falls outside its domain; the message names the parameter alone,
+ *   never the key or a code.
  */
 export function hotp(key: Uint8Array, counter: number, digits: number = CODE_DIGITS): string {
   if (!Number.isSafeInteger(counter) || counter < 0) {
@@ -71,21 +61,16 @@ export function hotp(key: Uint8Array, counter: number, digits: number = CODE_DIG
   if (!Number.isInteger(digits) || digits < 1 || digits > 10) {
     throw new RangeError('digits must be an integer between 1 and 10');
   }
-
   const block = Buffer.alloc(8);
   block.writeBigUInt64BE(BigInt(counter));
-
   const mac = createHmac('sha1', key).update(block).digest();
   const offset = mac.readUInt8(19) & 0x0f;
   const truncated = mac.readUInt32BE(offset) & 0x7fffffff;
-
   return String(truncated % 10 ** digits).padStart(digits, '0');
 }
 
 /**
  * The step counter of one server instant (AAP 0.5.7): `T = floor(t / 60)`, `t` in epoch seconds.
- *
- * @param at - The server instant, from the injected clock.
  */
 export function counterAt(at: Date): number {
   return Math.floor(at.getTime() / (CODE_STEP_SECONDS * 1000));
@@ -94,12 +79,9 @@ export function counterAt(at: Date): number {
 /**
  * The code a venue displays at one server instant, and when it stops being current (AAP 0.5.7).
  *
- * `GET /venue/check-in-code` answers with exactly this pair, `expiresAt` serialized by
- * `toISOString()`. The boundary is the first millisecond of the next step, because the console
- * polls at `expiresAt` and asks for the next code only once the server has reached the new step.
- *
- * @param secret - The venue's secret, exactly as issued.
- * @param at - The server instant, from the injected clock.
+ * `GET /venue/check-in-code` answers with exactly this pair, `expiresAt` serialized by `toISOString()`. The boundary
+ * is the first millisecond of the next step, because the console polls at `expiresAt` and asks for the next code only
+ * once the server has reached the new step.
  */
 export function codeFor(secret: string, at: Date): { code: string; expiresAt: Date } {
   const counter = counterAt(at);
@@ -112,27 +94,20 @@ export function codeFor(secret: string, at: Date): { code: string; expiresAt: Da
 /**
  * Whether a submitted code is one a venue displayed within one step of `at` (AAP 0.5.7).
  *
- * Accepted counters are `T-1`, `T` and `T+1` ({@link CODE_TOLERANCE_STEPS} either side), which
- * absorbs the round trip between a console showing a code and an attendee submitting it; `T-2` or
- * older, and `T+2` or newer, are refused and the caller answers `422 invalid_code`.
+ * Accepted counters are `T-1`, `T` and `T+1` ({@link CODE_TOLERANCE_STEPS} either side), which absorbs the round trip
+ * between a console showing a code and an attendee submitting it; `T-2` or older, and `T+2` or newer, are refused and
+ * the caller answers `422 invalid_code`.
  *
- * Every candidate is compared and none short-circuits — the loop assigns rather than returns — so
- * the time taken does not reveal which step matched, and each comparison is `timingSafeEqual` on
- * two equal-length ASCII digit strings.
- *
- * @param secret - The venue's secret, exactly as issued.
- * @param code - The submitted code, as typed by the attendee.
- * @param at - The server instant, from the injected clock.
+ * Every candidate is compared and none short-circuits — the loop assigns rather than returns — so the time taken does
+ * not reveal which step matched, and each comparison is `timingSafeEqual` on two equal-length ASCII digit strings.
  */
 export function verifyCode(secret: string, code: string, at: Date): boolean {
   if (!CODE_PATTERN.test(code)) {
     return false;
   }
-
   const key = deriveKey(secret);
   const submitted = Buffer.from(code, 'utf8');
   const counter = counterAt(at);
-
   let matched = false;
   for (let step = -CODE_TOLERANCE_STEPS; step <= CODE_TOLERANCE_STEPS; step += 1) {
     const candidateCounter = counter + step;
@@ -142,6 +117,5 @@ export function verifyCode(secret: string, code: string, at: Date): boolean {
     const candidate = Buffer.from(hotp(key, candidateCounter), 'utf8');
     matched = timingSafeEqual(candidate, submitted) || matched;
   }
-
   return matched;
 }

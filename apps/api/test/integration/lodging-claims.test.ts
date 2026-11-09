@@ -1,31 +1,11 @@
 /**
- * Integration tests for the three lodging-claim routes of AAP 0.5.4 — `POST /me/lodging-claims`,
- * `GET` and `DELETE /me/lodging-claims/:id` — and for the consequences AAP 0.5.3 gives a claim's
- * outcomes (AAP 0.8.1 lists this file; criterion 14's "a claim without consent returns `400`").
- * The suite drives the real app built by `createTestApp` against a real PostgreSQL 16 with PostGIS
- * 3.4 (AAP 0.11.2), so what it proves is what the routes write: the claim's encrypted booking
- * fields, the `create_call_task` outbox row `apps/workers` turns into a verification call, the
- * `lodging_claim_submitted` event, the refusal while a call may genuinely be live, and the deletion
- * that takes the booking ciphertext and the claim's outstanding work with it. The four groups below
- * follow the order AAP 0.5.4 lists the creation errors in, so a request breaking two rules is
- * answered with the earlier one.
+ * Integration tests for the three lodging-claim routes and the consequences a claim's outcomes
+ * have: the encrypted booking fields, the `create_call_task` outbox row the workers turn into a
+ * verification call, the `409 call_in_progress` refusal and the deletion.
  *
- * **The 72-hour expiry itself does not run here.** `claim-expire` lives in
- * `apps/workers/src/jobs/lodging-claims.ts`, and `@tablemate/api` cannot import it without a
- * dependency cycle; the job is covered by that package's own suites and by
- * `tests/system/lodging-verification.test.ts`. The last group therefore writes the state the job
- * produces — a claim `unreachable` with its resolution instant, and its task `cancelled` — and
- * asserts only what the API does with it: the status read, the operator's `422 invalid_outcome` on
- * a terminal claim, the deletion, and the claim that may be filed afterwards.
- *
- * Time comes from the injected test clock throughout (AAP 0.11.1): a claim's consent instant and its
- * resolution instant are asserted against it, and the 72-hour jump is made with it. Every booking
- * name and reference is generated at run time and never logged.
- *
- * @see AAP 0.5.4 for the routes, their errors and their order, 0.5.3 for the claim lifecycle, the
- *   `409 call_in_progress` rule and the deletion semantics, 0.5.7 for the claim rules, 0.5.2 for the
- *   encryption, the advisory lock and the retention of the booking fields, and 0.11.2 for the
- *   harness.
+ * The 72-hour expiry itself does not run here: `claim-expire` lives in `apps/workers/src/jobs/` and
+ * `@tablemate/api` cannot import it without a dependency cycle, so the last group writes the state
+ * that job produces and asserts only what the API does with it.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -62,18 +42,13 @@ import type {
 } from '../support/factories.ts';
 import type { TestApp } from '../support/app.ts';
 
-/* The fixtures every case builds on (AAP 0.5.2, 0.11.2) */
-
-/** The city the caller's proof is for, and the one the claimable lodging stands in. */
 const LISBON = 'lisbon';
-/** A second launch city, whose lodging exists only to reach `422 lodging_other_city`. */
 const MEXICO_CITY = 'mexico-city';
 const CLAIMS_URL = '/v1/me/lodging-claims';
 const claimUrl = (id: string): string => `${CLAIMS_URL}/${id}`;
 /** The operator's resolution route, which a claim that has left `pending_call` refuses (AAP 0.5.4). */
 const resolveUrl = (id: string): string => `/v1/admin/lodging-claims/${id}/resolve`;
 
-/** The one app this file drives; built once and reset between cases by `resetState`. */
 let t: TestApp;
 let user: UserFixture;
 let proof: ProofFixture;
@@ -94,7 +69,6 @@ afterAll(async () => {
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
-
   user = await makeUser(t);
   // Default proof dates: arrival yesterday and departure five days out, in Lisbon's own time, so
   // the proof is valid now and its window is wide enough for every stay these cases file.
@@ -103,8 +77,6 @@ beforeEach(async () => {
   otherCity = await makeLodging(t, { cityId: MEXICO_CITY });
   operator = await makeUser(t, { role: 'operator' });
 });
-
-/* Helpers (AAP 0.11.1 density: one builder per shape, reused by every case) */
 
 /**
  * Who a request is made as: a fixture account, or a token signed for one. A case that moves the
@@ -117,7 +89,6 @@ function guestName(): string {
   return `Guest ${randomUUID().slice(0, 8)}`;
 }
 
-/** The body of a claim for the base lodging, whose stay fits inside the base proof's dates. */
 function claimBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     lodgingId: lodging.id,
@@ -129,12 +100,10 @@ function claimBody(overrides: Record<string, unknown> = {}): Record<string, unkn
   };
 }
 
-/** Seed one claim for the base user directly, in the status a case needs (AAP 0.5.2). */
 async function seedClaim(status: LodgingClaimStatus = 'pending_call'): Promise<void> {
   await makeClaim(t, user, lodging, { status });
 }
 
-/* One route call each, named for what it does rather than for its verb. */
 function postClaim(body: Record<string, unknown>, as: Actor = user): Promise<RouteResponse> {
   return callRoute(t.app, { method: 'POST', url: CLAIMS_URL, as, body });
 }
@@ -147,21 +116,18 @@ function removeClaim(claimId: string, as: Actor = user): Promise<RouteResponse> 
   return callRoute(t.app, { method: 'DELETE', url: claimUrl(claimId), as });
 }
 
-/** File one claim through the route and answer its id, asserting the `201` on the way. */
 async function fileClaim(body: Record<string, unknown> = claimBody()): Promise<string> {
   const created = await postClaim(body);
   expect(created.status, created.body).toBe(201);
   return LodgingClaimCreated.parse(created.json()).claimId;
 }
 
-/** The status one claim reports to its owner, asserting the `200` and the DTO's shape on the way. */
 async function statusOf(claimId: string, as: Actor = user): Promise<LodgingClaimStatus> {
   const read = await readClaim(claimId, as);
   expect(read.status, read.body).toBe(200);
   return LodgingClaimStatusDto.parse(read.json()).status;
 }
 
-/** The stored claim row, as the assertions read it: no coordinate, no plaintext booking field. */
 function claimRow(claimId: string) {
   return t.services.db.lodgingClaim.findUnique({
     where: { id: claimId },
@@ -177,7 +143,7 @@ function claimRow(claimId: string) {
 
 /**
  * Give a claim the verification task `apps/workers` would have created for it, and one attempt in
- * the state the case is about. The task id is answered, because the assertion after a deletion reads
+ * the state the case is about. The task id is answered because the assertion after a deletion reads
  * the task by its own id: the deletion nulls the claim link a lookup would use.
  */
 async function seedVerification(
@@ -194,15 +160,12 @@ async function seedVerification(
   return task.id;
 }
 
-/** One call task as the assertions read it, by the id `seedVerification` answered. */
 function taskRow(taskId: string) {
   return t.services.db.callTask.findUnique({
     where: { id: taskId },
     select: { status: true, lodgingClaimId: true },
   });
 }
-
-/* Group 1 — the creation refusals, in the contract's order (AAP 0.5.4) */
 
 /**
  * One creation-failure case. The body, the actor and the seeded state are built inside the case
@@ -212,11 +175,8 @@ interface CreationRow {
   readonly name: string;
   readonly status: number;
   readonly code: ErrorCode;
-  /** The request body; `claimBody`'s default when absent. */
   readonly body?: () => Record<string, unknown>;
-  /** The caller; the base user when absent. */
   readonly actor?: () => Promise<UserFixture>;
-  /** Rows seeded before the request, such as the claim that already exists. */
   readonly prepare?: () => Promise<void>;
 }
 
@@ -326,15 +286,12 @@ describe('POST /me/lodging-claims refusals (AAP 0.5.4)', () => {
     }
     const actor = row.actor === undefined ? user : await row.actor();
     expectError(await postClaim(row.body?.() ?? claimBody(), actor), row.status, row.code);
-
     // Every refusal happens before the insert, so the caller holds exactly the claim a case seeded
     // and nothing was written for the refused request.
     const claims = await t.services.db.lodgingClaim.count({ where: { userId: actor.id } });
     expect(claims).toBe(row.code === 'active_claim_exists' ? 1 : 0);
   });
 });
-
-/* Group 2 — a claim that is filed (AAP 0.5.4, 0.5.2, 0.3.2) */
 
 describe('a claim that is filed (AAP 0.5.4)', () => {
   it('answers 201, encrypts the booking details and queues the verification task', async () => {
@@ -343,16 +300,13 @@ describe('a claim that is filed (AAP 0.5.4)', () => {
     const response = await postClaim(
       claimBody({ bookingName: `  ${name}  `, bookingReference: `  ${reference}  ` }),
     );
-
     expect(response.status, response.body).toBe(201);
     const created = LodgingClaimCreated.parse(response.json());
     expect(created.status).toBe('pending_call');
-
     const row = await claimRow(created.claimId);
     expect(row?.status).toBe('pending_call');
     expect(row?.callConsentAt.toISOString()).toBe(t.clock.now().toISOString());
     expect(row?.detailsErasedAt).toBeNull();
-
     // The booking fields are the AES-256-GCM ciphertext of AAP 0.5.2, and the trimmed value the
     // caller typed is what comes back out of it.
     const storedName = row?.bookingNameCiphertext ?? '';
@@ -363,7 +317,6 @@ describe('a claim that is filed (AAP 0.5.4)', () => {
     expect(storedReference).not.toBe('');
     expect(storedReference).not.toContain(reference);
     expect(decryptField(t.services.keyring, storedReference)).toBe(reference);
-
     // One outbox row, carrying the claim's id alone: the workers' instruction to verify this claim
     // by phone. The commit kicked the dispatcher (AAP 0.3.2), and whether that pass finished before
     // this read is a race, so the case drains one pass first and asserts the delivery the product
@@ -375,7 +328,6 @@ describe('a claim that is filed (AAP 0.5.4)', () => {
     expect(outbox.map((message) => message.kind)).toEqual(['create_call_task']);
     expect(outbox[0]?.payload).toEqual({ lodgingClaimId: created.claimId });
     expect(outbox[0]?.dispatchedAt).not.toBeNull();
-
     // One `lodging_claim_submitted` event, the claim measures' only source (AAP 0.5.7), attributed
     // to a salted hash rather than to an account.
     const events = await t.services.db.analyticsEvent.findMany({
@@ -383,58 +335,47 @@ describe('a claim that is filed (AAP 0.5.4)', () => {
     });
     expect(events.map((event) => event.name)).toEqual(['lodging_claim_submitted']);
     expect(events[0]?.cityId).toBe(LISBON);
-
     // Nothing written for this claim carries a booking field or the caller's identity.
     const written = JSON.stringify({ outbox, events });
     expect(written).not.toContain(name);
     expect(written).not.toContain(reference);
     expect(written).not.toContain(user.id);
   });
-
   it('accepts a new claim once an earlier verified stay has ended', async () => {
     await makeClaim(t, user, lodging, {
       status: 'verified',
       stayFrom: addLocalDays(proof.arrivalDate, -10),
       stayTo: addLocalDays(proof.arrivalDate, -3),
     });
-
     const created = await postClaim(claimBody());
     expect(created.status, created.body).toBe(201);
     expect(LodgingClaimCreated.parse(created.json()).status).toBe('pending_call');
   });
-
   it('answers one caller racing itself with one claim and one 409', async () => {
     const body = claimBody();
     const [first, second] = await Promise.all([postClaim(body), postClaim(body)]);
-
     const answers = [first, second].sort((left, right) => left.status - right.status);
     expect(answers.map((answer) => answer.status)).toEqual([201, 409]);
     expectError(first.status === 409 ? first : second, 409, 'active_claim_exists');
-
     // The per-user advisory lock of AAP 0.5.2 is what makes the loser see the winner's row.
     expect(await t.services.db.lodgingClaim.count({ where: { userId: user.id } })).toBe(1);
   });
 });
 
-/* Group 3 — reading and deleting a claim (AAP 0.5.3, 0.5.4) */
-
 describe('reading and deleting a claim (AAP 0.5.4)', () => {
   it('reads the caller their own claim and hides it from everyone else', async () => {
     const claimId = await fileClaim();
     const stranger = await makeUser(t);
-
     const own = await readClaim(claimId);
     expect(own.status, own.body).toBe(200);
     // The status and, once resolved, the instant: no booking field is in the shape (AAP 0.5.2).
     expect(Object.keys(own.json<object>()).sort()).toEqual(['status']);
     expect(await statusOf(claimId)).toBe('pending_call');
-
     expectError(await readClaim(claimId, stranger), 404, 'claim_not_found');
     expectError(await removeClaim(claimId, stranger), 404, 'claim_not_found');
     expectError(await readClaim(randomUUID()), 404, 'claim_not_found');
     expect(await statusOf(claimId)).toBe('pending_call');
   });
-
   /** The four states in which a call may genuinely be live (AAP 0.3.2, 0.5.3). */
   const liveRows = rows<{ readonly state: CallAttemptState }>([
     { state: 'dispatching' },
@@ -442,23 +383,18 @@ describe('reading and deleting a claim (AAP 0.5.4)', () => {
     { state: 'dialing' },
     { state: 'in_progress' },
   ]);
-
   it.each(liveRows)('refuses a delete while an attempt is $state', async (row) => {
     const claim = await makeClaim(t, user, lodging);
     await seedVerification(claim.id, { task: 'in_progress', attempt: row.state });
-
     expectError(await removeClaim(claim.id), 409, 'call_in_progress');
     expect(await claimRow(claim.id)).not.toBeNull();
   });
-
-  /** One non-live outcome: the seeded state, and the task status the deletion leaves behind. */
   interface OutcomeRow {
     readonly name: string;
     readonly task: CallTaskStatus;
     readonly attempt: CallAttemptState;
     readonly expectedTask: CallTaskStatus;
   }
-
   /**
    * Deletion succeeds after each non-live outcome of AAP 0.5.3: an ended call leaves the task queued
    * for its second attempt, a task in the operator queue and an unreachable one are cancelled with
@@ -497,15 +433,12 @@ describe('reading and deleting a claim (AAP 0.5.4)', () => {
       expectedTask: 'cancelled',
     },
   ]);
-
   it.each(outcomeRows)('deletes a claim after $name', async (row) => {
     const claim = await makeClaim(t, user, lodging);
     const taskId = await seedVerification(claim.id, { task: row.task, attempt: row.attempt });
     await makeVisibility(t, user, claim, true);
-
     const deleted = await removeClaim(claim.id);
     expect(deleted.status, deleted.body).toBe(204);
-
     // The claim row goes with its booking ciphertext, the visibility toggle cascades, and the task
     // stays behind with no link to the claim that is gone (AAP 0.5.2, 0.5.3).
     const surviving = await t.services.db.lodgingClaim.findMany({
@@ -513,20 +446,16 @@ describe('reading and deleting a claim (AAP 0.5.4)', () => {
     });
     expect(surviving).toEqual([]);
     expect(await t.services.db.lodgingVisibility.count({ where: { userId: user.id } })).toBe(0);
-
     const task = await taskRow(taskId);
     expect(task?.status).toBe(row.expectedTask);
     expect(task?.lodgingClaimId).toBeNull();
   });
 });
 
-/* Group 4 — the 72-hour expiry's consequences (AAP 0.5.3) */
-
 describe('a claim that waited 72 hours in the operator queue (AAP 0.5.3)', () => {
   it('is unreachable, cannot be resolved by hand, is deleted, and does not block a claim', async () => {
     const claimId = await fileClaim();
     const taskId = await seedVerification(claimId, { task: 'needs_review', attempt: 'ended' });
-
     // The expiry itself is the workers' `claim-expire` job, which this package cannot import (see
     // this file's header): the state that job produces is written here, and the API's answer to it
     // is what the case asserts.
@@ -537,12 +466,10 @@ describe('a claim that waited 72 hours in the operator queue (AAP 0.5.3)', () =>
       data: { status: 'unreachable', resolvedAt: expiredAt },
     });
     await t.services.db.callTask.update({ where: { id: taskId }, data: { status: 'cancelled' } });
-
     // An access token lives 15 minutes of the test clock (AAP 0.11.1), so every request after the
     // three-day jump is made as a freshly signed token.
     const callerToken = await t.tokenFor(user);
     const operatorToken = await t.tokenFor(operator);
-
     const read = await readClaim(claimId, callerToken);
     expect(read.status, read.body).toBe(200);
     expect(Object.keys(read.json<object>()).sort()).toEqual(['resolvedAt', 'status']);
@@ -550,7 +477,6 @@ describe('a claim that waited 72 hours in the operator queue (AAP 0.5.3)', () =>
       status: 'unreachable',
       resolvedAt: expiredAt.toISOString(),
     });
-
     // A terminal claim accepts no operator outcome: only `pending_call` and `calling` may be
     // resolved, which is what makes the expiry, a second click and a late call result harmless.
     const resolution = await callRoute(t.app, {
@@ -560,9 +486,7 @@ describe('a claim that waited 72 hours in the operator queue (AAP 0.5.3)', () =>
       body: { outcome: 'verified' },
     });
     expectError(resolution, 422, 'invalid_outcome');
-
     expect((await removeClaim(claimId, callerToken)).status).toBe(204);
-
     // The expired claim no longer blocks the caller, whose proof is still valid three days on.
     const later = await postClaim(
       claimBody({

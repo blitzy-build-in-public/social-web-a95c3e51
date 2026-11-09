@@ -1,7 +1,7 @@
 /** Edit profile (`/profile/edit`): the traveler's own pseudonymous profile, one group of fields per disclosure tier (AAP 0.5.8, AAP 0.7.1 row 8). */
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import type { TextInputProps, TextProps, ViewStyle } from 'react-native';
+import type { TextInputProps, TextProps, ViewProps, ViewStyle } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack } from 'expo-router';
 import { useMutation } from '@tanstack/react-query';
@@ -19,6 +19,7 @@ import {
   ProfileUpdate,
   borderWidths,
   colors,
+  componentSizes,
   fontWeights,
   interactionOpacity,
   radii,
@@ -29,7 +30,10 @@ import type { InterestTag, MeDto } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
+import { bootstrap } from '../../src/auth/session';
+import { remainingCharsText } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
+import { useSession } from '../../src/state/session-store';
 import { Avatar, Banner, Button, Screen, TextField, announce } from '../../src/ui';
 
 const COPY = {
@@ -55,7 +59,7 @@ const COPY = {
   tier3Note: "Shown only to travelers you've completed two meetups with",
 } as const;
 const SCREEN_EDGES = ['left', 'right'] as const;
-const PHOTO_SIZE = 96;
+const PHOTO_SIZE = componentSizes.avatarLarge;
 const COUNTRY_CODE_LENGTH = 2;
 const INTERESTS_SECTION = 'Interests';
 const PHOTO_SECTION = 'Photo';
@@ -120,11 +124,60 @@ const SECTION_HEADING: TextProps & { 'aria-level': number } = { role: 'heading',
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 type Pressed = Readonly<{ 'aria-pressed': boolean }>;
 const pressedAttributes = (selected: boolean): Pressed => ({ 'aria-pressed': selected });
+
+/**
+ * The web key-event fields the toolbar reads. react-native-web forwards the browser's own event,
+ * while React Native declares no key events at all, so the shape is named here.
+ */
+type WebKeyEvent = Readonly<{
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  key?: string;
+  metaKey?: boolean;
+  preventDefault?: () => void;
+}>;
+
+/**
+ * `aria-orientation` tells assistive technology which way a toolbar's arrow keys move, and React
+ * Native declares it on no prop. Naming the container's own type keeps the attribute explicit
+ * instead of an untyped literal, the way `SECTION_HEADING` names the level a heading renders at.
+ */
+type ToolbarAttributes = ViewProps & Readonly<{ 'aria-orientation': 'horizontal' }>;
+const TOOLBAR_ATTRIBUTES: ToolbarAttributes = { 'aria-orientation': 'horizontal' };
+
+/**
+ * How each arrow key steps through the chips. The chips are one row at every width, so Up and Down
+ * move along that row exactly as Left and Right do.
+ */
+const ARROW_STEP: Readonly<Record<string, 1 | -1>> = {
+  ArrowLeft: -1,
+  ArrowUp: -1,
+  ArrowRight: 1,
+  ArrowDown: 1,
+};
 function sortTags(tags: readonly InterestTag[]): InterestTag[] {
   return INTEREST_TAGS.filter((tag) => tags.includes(tag));
 }
 function toggled(tags: readonly InterestTag[], tag: InterestTag): InterestTag[] {
   return tags.includes(tag) ? tags.filter((chosen) => chosen !== tag) : sortTags([...tags, tag]);
+}
+/**
+ * The next enabled chip from `from`, stepping by `step` and wrapping at either end of the vocabulary.
+ * `from` itself comes back when no other chip is enabled, which leaves focus where it is.
+ */
+function enabledNeighbour(
+  from: InterestTag,
+  step: 1 | -1,
+  disabled: (tag: InterestTag) => boolean,
+): InterestTag {
+  const count = INTEREST_TAGS.length;
+  let index = INTEREST_TAGS.indexOf(from);
+  for (let visited = 0; visited < count; visited += 1) {
+    index = (index + step + count) % count;
+    const tag = INTEREST_TAGS[index];
+    if (tag !== undefined && !disabled(tag)) return tag;
+  }
+  return from;
 }
 function formFrom(profile: MeDto): FormState {
   const form = {} as Record<TextFieldKey, string>;
@@ -139,7 +192,7 @@ function countryCodeError(value: string): string | null {
 }
 function hintFor(key: TextFieldKey, spec: FieldSpec, value: string): string | undefined {
   const counted = COUNTED_FIELDS.includes(key);
-  return counted ? `${spec.maxLength - value.length} characters left` : spec.hint;
+  return counted ? remainingCharsText(value, spec.maxLength) : spec.hint;
 }
 function decodedByteLength(base64: string): number {
   const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
@@ -167,22 +220,44 @@ interface ChipProps {
   readonly tag: InterestTag;
   readonly selected: boolean;
   readonly disabled: boolean;
+  /**
+   * The chip's place in the toolbar's tab order: `0` for the current chip and `-1` for every other,
+   * and nothing off web, where no platform uses a tab order and each chip keeps the focusability it
+   * had.
+   */
+  readonly tabIndex?: 0 | -1 | undefined;
   readonly onPress: () => void;
+  /** Called when the chip takes focus, so the toolbar remembers it as the current one. */
+  readonly onFocused: () => void;
+  /** Called with the chip's element on mount and with `null` on unmount. */
+  readonly registerRef: (tag: InterestTag, node: View | null) => void;
 }
-function InterestChip({ tag, selected, disabled, onPress }: ChipProps): ReactElement {
+function InterestChip({
+  tag,
+  selected,
+  disabled,
+  tabIndex,
+  onPress,
+  onFocused,
+  registerRef,
+}: ChipProps): ReactElement {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   const label = tag.replace(/_/g, ' ');
   return (
     <Pressable
       {...pressedAttributes(selected)}
+      ref={(node) => registerRef(tag, node)}
       role="button"
       aria-label={label}
       aria-disabled={disabled}
       accessibilityState={{ selected, disabled }}
       disabled={disabled}
       onPress={onPress}
-      onFocus={() => setFocused(true)}
+      onFocus={() => {
+        setFocused(true);
+        onFocused();
+      }}
       onBlur={() => setFocused(false)}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
@@ -195,6 +270,7 @@ function InterestChip({ tag, selected, disabled, onPress }: ChipProps): ReactEle
         focused && styles.chipFocused,
         webFocusRingReset,
       ]}
+      tabIndex={tabIndex}
       testID={`profile-edit-tag-${tag}`}
     >
       <Text
@@ -207,6 +283,102 @@ function InterestChip({ tag, selected, disabled, onPress }: ChipProps): ReactEle
         {label}
       </Text>
     </Pressable>
+  );
+}
+
+/** Props of the interests toolbar: the tags chosen, whether the tag limit is reached, and the toggle. */
+interface InterestToolbarProps {
+  readonly chosen: readonly InterestTag[];
+  readonly atLimit: boolean;
+  readonly onToggle: (tag: InterestTag) => void;
+}
+
+/**
+ * The interest chips as one toolbar of toggle buttons (AAP 0.5.8, WCAG 2.4.1): a single tab stop for
+ * the whole row with the arrow keys moving between the chips, which is the WAI-ARIA pattern for a
+ * row of buttons. Tabbed chip by chip the row costs 31 presses — more than the rest of the screen
+ * put together — for a keyboard user who may only want the field below it.
+ *
+ * Exactly one chip is in the tab order: the chip the keyboard last moved to, or the first enabled
+ * chip until then. A chip the three-tag limit disabled is never that chip and never takes focus,
+ * because the arrows, Home and End all step over it. Everything else about a chip is unchanged: its
+ * `role`, `aria-pressed`, `testID`, styling, disabled logic and press behaviour, and the counter
+ * below the row still announces the number chosen.
+ */
+function InterestToolbar({ chosen, atLimit, onToggle }: InterestToolbarProps): ReactElement {
+  // Each chip's element, which the arrow keys call `focus()` on. react-native-web gives a
+  // `Pressable`'s ref the browser element itself, and React Native's own `View` type carries
+  // `focus()`, so the chip's handle is the same `View` type on both platforms.
+  const handles = useRef(new Map<InterestTag, View>());
+  const [focusedTag, setFocusedTag] = useState<InterestTag | null>(null);
+  const isDisabled = (tag: InterestTag): boolean => !chosen.includes(tag) && atLimit;
+  const enabled = INTEREST_TAGS.filter((tag) => !isDisabled(tag));
+  // The tab stop falls back to the first enabled chip when the remembered one stops being usable,
+  // which is what reaching the tag limit while an unselected chip is current would do.
+  const current =
+    focusedTag !== null && !isDisabled(focusedTag) ? focusedTag : (enabled[0] ?? null);
+  const rememberHandle = useCallback((tag: InterestTag, node: View | null): void => {
+    if (node === null) handles.current.delete(tag);
+    else handles.current.set(tag, node);
+  }, []);
+  const focusTag = useCallback((tag: InterestTag): void => {
+    setFocusedTag(tag);
+    handles.current.get(tag)?.focus();
+  }, []);
+  const onKeyDown = (event: WebKeyEvent): void => {
+    // Alt, Ctrl and Meta belong to the browser's own shortcuts — Alt+Left is Back — so the chips
+    // answer to the four arrows, Home and End alone and let every other key through untouched.
+    if (event.altKey === true || event.ctrlKey === true || event.metaKey === true) return;
+    if (current === null) return;
+    const step = event.key === undefined ? undefined : ARROW_STEP[event.key];
+    if (step !== undefined) {
+      // The arrows and Home/End scroll the page when the browser acts on them itself, so a key this
+      // handler acts on is taken from the browser here.
+      event.preventDefault?.();
+      focusTag(enabledNeighbour(current, step, isDisabled));
+      return;
+    }
+    if (event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault?.();
+    const edge = event.key === 'Home' ? enabled[0] : enabled[enabled.length - 1];
+    if (edge !== undefined) focusTag(edge);
+  };
+  // React Native has no key events, so the handler reaches the container on web only.
+  const toolbarKeys: { onKeyDown?: (event: WebKeyEvent) => void } =
+    Platform.OS === 'web' ? { onKeyDown } : {};
+  return (
+    <View
+      {...TOOLBAR_ATTRIBUTES}
+      {...toolbarKeys}
+      role="toolbar"
+      aria-label={INTERESTS_SECTION}
+      style={styles.tags}
+    >
+      {INTEREST_TAGS.map((tag) => {
+        const selected = chosen.includes(tag);
+        return (
+          <InterestChip
+            key={tag}
+            tag={tag}
+            selected={selected}
+            disabled={!selected && atLimit}
+            tabIndex={Platform.OS === 'web' ? (tag === current ? 0 : -1) : undefined}
+            onPress={() => {
+              onToggle(tag);
+              // The toggled chip keeps focus, which is what the pattern this row implements expects
+              // (WAI-ARIA toolbar: the arrow keys continue from the button just pressed). The app
+              // lets go of the control a press arrived on, so that a navigation is not started from
+              // inside a screen that is being hidden (`app/_layout.tsx`), and a chip presses no
+              // route — so the press asks for the chip's own focus back, and the reader's place in
+              // the row is not lost to the page body.
+              focusTag(tag);
+            }}
+            onFocused={() => setFocusedTag(tag)}
+            registerRef={rememberHandle}
+          />
+        );
+      })}
+    </View>
   );
 }
 function ProfileForm({ profile }: { readonly profile: MeDto }): ReactElement {
@@ -257,10 +429,6 @@ function ProfileForm({ profile }: { readonly profile: MeDto }): ReactElement {
     setForm((previous) => ({ ...previous, interestTags: toggled(previous.interestTags, tag) }));
     edited();
   }
-  const chipFor = (tag: InterestTag) => {
-    const chosen = form.interestTags.includes(tag);
-    return { selected: chosen, disabled: !chosen && tagsAtLimit, onPress: () => toggleTag(tag) };
-  };
   function removePhoto(): void {
     setPhoto({ kind: 'removed' });
     edited();
@@ -311,11 +479,11 @@ function ProfileForm({ profile }: { readonly profile: MeDto }): ReactElement {
           {section.note === undefined ? null : <Text style={styles.note}>{section.note}</Text>}
           {section.title === INTERESTS_SECTION ? (
             <>
-              <View aria-label={INTERESTS_SECTION} role="group" style={styles.tags}>
-                {INTEREST_TAGS.map((tag) => (
-                  <InterestChip key={tag} tag={tag} {...chipFor(tag)} />
-                ))}
-              </View>
+              <InterestToolbar
+                chosen={form.interestTags}
+                atLimit={tagsAtLimit}
+                onToggle={toggleTag}
+              />
               <Text aria-live="polite" accessibilityLiveRegion="polite" style={styles.hint}>
                 {`${form.interestTags.length} of ${INTEREST_TAGS_MAX} chosen`}
               </Text>
@@ -367,24 +535,37 @@ function ProfileForm({ profile }: { readonly profile: MeDto }): ReactElement {
 }
 export default function EditProfileScreen(): ReactElement {
   const me = useMe();
+  const session = useSession();
   const errorCode = me.isError ? (isApiError(me.error) ? me.error.code : 'invalid_response') : null;
+  // A restore that ran, failed and proved nothing leaves the own-profile read unissued — it is
+  // enabled only for a signed-in session — so this screen has no error of its own to show. The
+  // failure's own code is shown and retried in its place: the store's `loading` alone cannot tell
+  // this state from a restore that is still running.
+  const restoreCode = session.status === 'loading' ? session.restoreFailureCode : undefined;
+  const loadCode = errorCode ?? restoreCode ?? null;
+  const loadMessage = loadCode === null ? null : userMessageFor(loadCode);
   const announced = useRef<string | null>(null);
   const profile = me.data;
-  const reload = (): void => void me.refetch();
+  // A read that failed on its own is retried by refetching it. A read that was never issued is not:
+  // what has to run again is the restore, and the read follows the session it installs.
+  const reload = (): void => {
+    if (restoreCode === undefined) void me.refetch();
+    else void bootstrap();
+  };
   const retry = { label: COPY.retry, onPress: reload, testID: 'profile-edit-retry' };
   useEffect(() => {
-    if (errorCode === null) announced.current = null;
-    else if (announced.current !== errorCode) {
-      announced.current = errorCode;
-      announce(userMessageFor(errorCode));
+    if (loadCode === null) announced.current = null;
+    else if (announced.current !== loadCode) {
+      announced.current = loadCode;
+      announce(userMessageFor(loadCode));
     }
-  }, [errorCode]);
+  }, [loadCode]);
   const loading = (
     <Screen edges={SCREEN_EDGES} testID="profile-edit">
-      {errorCode === null ? (
+      {loadMessage === null ? (
         <Text style={styles.body}>{COPY.loading}</Text>
       ) : (
-        <Banner {...LOAD_FAILED} message={userMessageFor(errorCode)} action={retry} />
+        <Banner {...LOAD_FAILED} message={loadMessage} action={retry} />
       )}
     </Screen>
   );
@@ -405,7 +586,13 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   body: { ...typography.body, color: colors.text },
   chip: { ...CHIP_CENTER, ...CHIP_EDGE, ...CHIP_FILL, minHeight: MIN_TOUCH_TARGET, ...CHIP_PAD },
-  chipDisabled: { backgroundColor: colors.surface, borderColor: colors.border },
+  // Faded as well as recoloured: the muted surface and label alone differ from an enabled chip by one
+  // step of fill, which a reader cannot tell from a chip they can still press (AAP 0.5.8).
+  chipDisabled: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    opacity: interactionOpacity.disabled,
+  },
   chipFocused: { borderColor: colors.focusRing },
   chipLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
   chipLabelDisabled: { color: colors.textMuted },

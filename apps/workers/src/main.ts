@@ -21,10 +21,6 @@
  * Never a variable's value, a connection string (which may carry a password) or a job payload
  * (AAP 0.11.1). A refused environment is written to stderr before any logger exists, because
  * `LOG_LEVEL` itself may be one of the values that was refused.
- *
- * @see AAP 0.3.2 for the process split and the graceful-shutdown rules, 0.5.1 and 0.5.6 for the
- *   worker runtime and the jobs it runs, 0.6.2 for the entry point and its scoped environment, and
- *   0.8.1 for this file's inventory row.
  */
 
 import process from 'node:process';
@@ -42,10 +38,6 @@ import { primeFxTable, registerSchedulers } from './schedulers.ts';
 
 import type { Logger, WorkersEnv } from '@tablemate/server-core';
 import type { WorkerContext } from './queues.ts';
-
-/*
- * Constants
- */
 
 /** The one log event name per line this file writes (AAP 0.11.1). */
 const ENV_INVALID = 'env_invalid';
@@ -65,10 +57,6 @@ const STARTUP_FAILURE = 'startup_failure';
 /** How long a shutdown may take before the process exits 1 regardless (ten seconds). */
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-/*
- * State
- */
-
 /** The process logger: null until the environment validated and `main` built it. */
 let logger: Logger | null = null;
 
@@ -81,10 +69,6 @@ let running: { readonly ctx: WorkerContext; readonly stop?: () => Promise<void> 
 
 /** Whether a shutdown is under way, which is what makes a second signal an escalation. */
 let stopping = false;
-
-/*
- * Start
- */
 
 /**
  * Bring the process up (AAP 0.5.6): load and validate the configuration, build the context, start
@@ -99,23 +83,18 @@ async function main(): Promise<void> {
   const env = loadEnvironment();
   const activeLogger = createLogger({ name: 'workers', level: env.LOG_LEVEL, appEnv: env.APP_ENV });
   logger = activeLogger;
-
   try {
     const ctx = await createWorkerContext(env, { logger: activeLogger });
     running = { ctx };
-
     // The `client` connection is fail-fast: a command issued before its first `ready` rejects
     // rather than waiting, so a Redis that is still starting would fail the first job to reach for a
     // cache. Waiting here turns that into a moment of startup delay.
     await waitForRedisReady(ctx.redis);
-
     running = { ctx, stop: startWorkers(ctx) };
     await registerSchedulers(ctx);
-
     // A stack younger than its first 00:30 UTC holds no `FxRate` row, so every non-USD price entry
     // would be refused until that run: the delivered job is enqueued once here (AAP 0.5.6).
     await primeFxTable(ctx);
-
     // Mode names, queue names and a boolean: no URL, key or job payload is ever logged (AAP 0.11.1).
     activeLogger.info(
       {
@@ -136,10 +115,6 @@ async function main(): Promise<void> {
     await shutdown(STARTUP_FAILURE, 1);
   }
 }
-
-/*
- * Stop
- */
 
 /**
  * Handle the two signals a container sends (AAP 0.11.2): `SIGTERM` from an orchestrator draining the
@@ -172,7 +147,6 @@ function installFailureHandlers(): void {
     );
     void shutdown(UNHANDLED_REJECTION, 1);
   });
-
   process.on('uncaughtException', (error: unknown) => {
     logger?.error(
       { event: UNCAUGHT_EXCEPTION, error: sanitizeLogMessage(errorMessage(error)) },
@@ -188,16 +162,12 @@ function installFailureHandlers(): void {
  * Idempotent by the `stopping` flag: a second signal, or a failure arriving while the first shutdown
  * is still draining, ends the process at once with status 1 rather than starting a second close.
  * `process.exit` is the last statement of every path, so this promise never settles.
- *
- * @param cause - the signal that asked for the stop, or the event that ended the start.
- * @param exitCode - 0 for a signal-requested stop, 1 for a failure.
  */
 async function shutdown(cause: string, exitCode: number): Promise<void> {
   if (stopping) {
     process.exit(1);
   }
   stopping = true;
-
   // The first shutdown is draining and the `once` listener that started it is spent, so a further
   // signal only escalates. Re-arming both is what answers it; the container's own stop timeout is
   // the backstop behind this.
@@ -206,19 +176,15 @@ async function shutdown(cause: string, exitCode: number): Promise<void> {
       process.exit(1);
     });
   }
-
   const active = running;
   running = null;
-
   logger?.info({ event: WORKERS_STOPPING, signal: cause }, WORKERS_STOPPING);
-
   // A close that refuses to finish must not hold a container open: the same backstop the API process
   // uses, and `unref`ed so an orderly close leaves no timer behind.
   const timer = setTimeout(() => {
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
   timer.unref();
-
   if (active !== null) {
     // The workers drain first, because BullMQ's `close` waits for the job each one is running; the
     // context then closes the browser, the producers, the mailer, Redis and PostgreSQL. Each step
@@ -227,14 +193,9 @@ async function shutdown(cause: string, exitCode: number): Promise<void> {
     await active.stop?.();
     await closeWorkerContext(active.ctx);
   }
-
   logger?.info({ event: WORKERS_STOPPED, signal: cause }, WORKERS_STOPPED);
   process.exit(exitCode);
 }
-
-/*
- * Helpers
- */
 
 /**
  * Load the `workers` environment, or end the process with the loader's own findings (AAP 0.6.2).
@@ -242,10 +203,6 @@ async function shutdown(cause: string, exitCode: number): Promise<void> {
  * They are written to stderr as one JSON line rather than through the logger, whose level is one of
  * the values that may have been refused. Each finding is a variable's name and a fixed reason: the
  * loader never quotes a value (AAP 0.12.2).
- *
- * @returns the validated configuration.
- * @throws the original error when it is not an {@link EnvValidationError}, because a defect in the
- *   loader is not a configuration problem.
  */
 function loadEnvironment(): WorkersEnv {
   try {
@@ -268,10 +225,6 @@ function loadEnvironment(): WorkersEnv {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : typeof error;
 }
-
-/*
- * Run (AAP 0.6.2)
- */
 
 // Handlers first, so a stop signal that arrives during the start is answered rather than killing a
 // process part way through opening its connections.

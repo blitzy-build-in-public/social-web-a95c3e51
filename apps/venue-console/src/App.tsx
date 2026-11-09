@@ -1,14 +1,12 @@
 /**
- * The partner console's shell: which of its two screens a URL opens, and the gate holding the
- * operator-issued secret in front of both (AAP 0.5.1, 0.5.4, 0.8.1).
+ * The partner console's shell: which of its two screens a URL opens, and the gate holding the operator-issued secret in
+ * front of both (AAP 0.5.1, 0.5.4, 0.8.1).
  *
- * The console holds no secret of its own (AAP 0.3.2): the operator types one in here, `api.ts` keeps
- * it in `sessionStorage` for the life of the tab, and it reaches only the two console routes' secret
- * header -- never a message, a log line or a URL. A route answering `401`, the secret already dropped
- * by `api.ts`, returns this page to its secret form. There is no router -- `nginx` answers
- * `index.html` for both paths (AAP 0.6.2) -- so the path is read from `window.location` and
- * navigation is plain anchors. Exactly one `<h1>` is on every page: the header carries it while the
- * form is shown, the open screen carries it once a secret is held (AAP 0.5.8).
+ * The console holds no secret of its own (AAP 0.3.2): the operator types one in here, `api.ts` keeps it in `sessionStorage`
+ * for the life of the tab, and it reaches only the two console routes' secret header — never a message, a log line or a
+ * URL; a route answering `401`, with the secret already dropped by `api.ts`, returns this page to its secret form. There
+ * is no router — `nginx` answers `index.html` for both paths (AAP 0.6.2) — so the path is read from `window.location`;
+ * exactly one `<h1>` is on every page (AAP 0.5.8).
  */
 import { useCallback, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
@@ -74,11 +72,8 @@ function currentPath(): string {
   return stripped.length === 0 ? '/' : stripped;
 }
 
-/**
- * The console at whichever of its two paths the browser opened (AAP 0.5.8). Exported as a named
- * export, and mounted that way by `main.tsx`: one mount contract for the one entry point that renders
- * it.
- */
+/** The console at whichever of its two paths the browser opened (AAP 0.5.8), exported as the named
+ * export `main.tsx` mounts. */
 export function App(): JSX.Element {
   const path = currentPath();
   if (path === VENUE_PATH) {
@@ -121,7 +116,6 @@ function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
   const [rejected, setRejected] = useState(false);
   const [draft, setDraft] = useState('');
   const [fieldError, setFieldError] = useState<string | null>(null);
-
   // Stable across renders, so the open screen's polling or stats request is not restarted by a new
   // callback identity on every render of the gate.
   const handleUnauthorized = useCallback((): void => {
@@ -130,24 +124,20 @@ function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
     setSecret(null);
     setRejected(true);
   }, [kind]);
-
   function handleForget(): void {
     clearSecret(kind);
     setSecret(null);
     setRejected(false);
   }
-
   function handleDraftChange(event: ChangeEvent<HTMLInputElement>): void {
     setDraft(event.target.value);
     setFieldError(null);
   }
-
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     const value = draft.trim();
     if (value.length === 0) {
-      // An empty field and a value of spaces alone both land here: the trimmed value is what says
-      // whether a secret was entered.
+      // An empty field and spaces alone both land here: the trimmed value decides.
       setFieldError(EMPTY_SECRET_MESSAGE);
       return;
     }
@@ -156,7 +146,6 @@ function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
     setDraft('');
     setRejected(false);
   }
-
   return (
     <main>
       <header>
@@ -167,17 +156,14 @@ function ConsoleGate({ kind }: { kind: ConsoleKind }): JSX.Element {
           </button>
         )}
       </header>
-
       {rejected ? (
         <p role="alert" className="notice notice-error">
           {REJECTED_MESSAGE}
         </p>
       ) : null}
-
       {secret === null ? (
-        // Constraint validation stays off although the field is `required`: leaving it on would stop
-        // an empty submission before `handleSubmit` runs, replacing this screen's announced message
-        // with the browser's own bubble -- not a live region, and in the browser's locale.
+        // Constraint validation stays off although the field is `required`: leaving it on would replace
+        // this screen's announced message with the browser's own bubble, which is no live region.
         <form onSubmit={handleSubmit} noValidate>
           <label htmlFor={form.fieldId}>{form.label}</label>
           <input

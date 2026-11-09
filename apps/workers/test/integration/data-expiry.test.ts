@@ -1,31 +1,6 @@
 /**
  * Integration tests for the retention rules `apps/workers/src/jobs/data-expiry.ts` enforces
  * (AAP 0.5.2, 0.5.6, 0.12.2).
- *
- * AAP 0.5.2 gives every record a retention window, names `data-expiry` as the job that enforces it
- * and names this suite for the two things it has to show: the hourly rules, each reaching the record
- * it is due to reach while leaving its neighbour inside the window alone; and the daily financial
- * purge, run with the clock past `FINANCIAL_RETENTION_DAYS`, which must leave a live account's
- * reputation counters where they were (criterion 10). AAP 0.12.2 fixes the shape the lodging-call
- * strip has to leave behind, field by field, so the assertions below compare the whole task and
- * attempt rows rather than only the fields that changed.
- *
- * The suite drives the real job against the PostgreSQL 16 with PostGIS and the Redis the integration
- * project's `globalSetup` starts, through the same harness the folder's other suites use: the app's
- * own `TestClock` is handed to the worker context, so every boundary is crossed by moving one clock
- * (AAP 0.11.1) and nothing waits for real time. Each hourly case seeds the record a rule is due to
- * reach beside one just inside its window, runs the step, and requires a second run at the same
- * instant to report zeros and to change nothing — every rule is a delete-or-update-where whose own
- * predicate takes the rows it just touched out of its selection (AAP 0.3.2).
- *
- * `FINANCIAL_RETENTION_DAYS` is read from the loaded `workers` environment rather than written as a
- * number here: the period is configuration (AAP 0.5.2, 0.6.2), so a suite that hard-coded it would
- * assert the wrong boundary the moment an operator changed it.
- *
- * @see AAP 0.5.2 for each rule and its window, 0.5.6 for the job's cadence, 0.12.2 for the stripped
- *   lodging-call shape, 0.5.3 for the claim and call-task states it reads, 0.3.2 for the idempotence
- *   every rule keeps, 0.11.1 for the injected clock, 0.11.2 for the integration topology, and 0.8.1
- *   for this file.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -56,9 +31,6 @@ import {
 } from '../../src/jobs/data-expiry.ts';
 import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
-/* The fixtures every case shares (AAP 0.11.2) */
-
-/** The launch city every venue, lodging and place of this suite stands in. */
 const CITY = 'lisbon';
 
 /** The minutes one day holds, so the two 24-hour boundaries below are written as the rules state them. */
@@ -109,14 +81,10 @@ const env = loadWorkersEnv(testWorkersEnv());
 let testApp: TestApp;
 let ctx: WorkerContext;
 
-/* The clock's boundaries (AAP 0.11.1, 0.5.2) */
-
-/** `now` shifted by `minutes` (negative for the past): a 24-hour rule's own boundary. */
 function minutesFromNow(minutes: number): Date {
   return new Date(testApp.time.now().getTime() + minutes * MINUTE_MS);
 }
 
-/** `now` shifted by `days` (negative for the past): a coarse instant for an age check. */
 function daysFromNow(days: number): Date {
   return new Date(testApp.time.now().getTime() + days * DAY_MS);
 }
@@ -124,17 +92,11 @@ function daysFromNow(days: number): Date {
 /**
  * `now` shifted by `days` and then by `minutes`, negative for the past: the instant one minute either
  * side of a day-count rule's window.
- *
- * Every age predicate is an inclusive comparison against a cut-off computed from the same clock, so a
- * row placed a whole unit from the edge sits exactly on it and a window moved by that unit would not
- * move the count. A minute places the row off the edge, which is what makes a moved window change
- * what the rule reports.
  */
 function atAge(days: number, minutes: number): Date {
   return new Date(testApp.time.now().getTime() + (days * DAY_MINUTES + minutes) * MINUTE_MS);
 }
 
-/** The counts a pass reported that were not zero: an empty list is a pass that changed nothing. */
 function residual(counts: Record<string, number>): readonly (readonly [string, number])[] {
   return Object.entries(counts).filter(([, count]) => count !== 0);
 }
@@ -142,11 +104,6 @@ function residual(counts: Record<string, number>): readonly (readonly [string, n
 /**
  * Run the hourly step once, then once more, and require the first pass to report `expected`, the
  * second to report zeros, and `read` to be unchanged across it (AAP 0.3.2).
- *
- * The counts are asserted rather than ignored because they are the rule's own answer: a retention
- * window moved by one unit of its rule changes which rows are selected, so the counts move with it
- * and this suite fails with the rule that changed.
- *
  * @param read - The rows this case asserts on, read afresh before and after the second pass.
  * @param expected - What the first pass must report, as the rule's own count keys.
  * @returns The rows as they stand once the first pass has run.
@@ -186,9 +143,6 @@ beforeEach(async () => {
   await testApp.seedCities();
 });
 
-/* One row per hourly rule (AAP 0.5.2, 0.11.1) */
-
-/** One hourly retention case: its name, and the body that seeds, runs and asserts it. */
 interface HourlyCase {
   readonly name: string;
   readonly check: () => Promise<void>;
@@ -217,7 +171,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       // The claim resolved a minute before the run. The rule keys off the status rather than the
       // instant, which is what keeps it well inside the 24-hour limit criterion 14 measures.
       const erasedAt = testApp.time.advance({ minutes: 1 });
-
       const read = () =>
         Promise.all([
           db.lodgingClaim.findUniqueOrThrow({ where: { id: resolved.id } }),
@@ -225,7 +178,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         ]);
       const [resolvedBefore, liveBefore] = await read();
       const [after, live] = await hourlyPass(read, { bookingDetailsErased: 1 });
-
       expect(resolvedBefore.bookingNameCiphertext).not.toBeNull();
       expect(after).toEqual({
         ...resolvedBefore,
@@ -233,7 +185,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         bookingReferenceCiphertext: null,
         detailsErasedAt: erasedAt,
       });
-      // A claim still `calling` may have a live call, and its details are what a manual check reads.
       expect(liveBefore.bookingReferenceCiphertext).not.toBeNull();
       expect(live).toEqual(liveBefore);
     },
@@ -248,7 +199,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       const calling = await makeClaim(testApp, guest, lodging, { status: 'calling' });
       const deleted = await makeClaim(testApp, guest, lodging, { status: 'rejected' });
       const outcomeAt = testApp.time.now();
-
       const taskOf = (lodgingClaimId: string | null) =>
         makeCallTask(testApp, {
           kind: 'lodging_stay_verification',
@@ -261,13 +211,11 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       const stripped = await taskOf(resolved.id);
       const live = await taskOf(calling.id);
       const orphaned = await taskOf(deleted.id);
-      // Deleting the claim is what nulls the task's link, through the foreign key's own SET NULL.
       await db.lodgingClaim.delete({ where: { id: deleted.id } });
       await db.callTask.updateMany({
         where: { id: { in: [stripped.id, live.id, orphaned.id] } },
         data: { resolvedBy: 'agent' },
       });
-
       const strippedAttempt = await makeCallAttempt(testApp, stripped, {
         ...LODGING_CALL_CONTENT,
         twilioCallSid: STRIPPED_CALL_SID,
@@ -302,7 +250,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
           },
         ],
       });
-
       const read = async () => ({
         strippedTask: await db.callTask.findUniqueOrThrow({ where: { id: stripped.id } }),
         liveTask: await db.callTask.findUniqueOrThrow({ where: { id: live.id } }),
@@ -323,23 +270,15 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         lodgingCallAttemptsStripped: 2,
         lodgingCallTasksStripped: 2,
       });
-
-      // The task keeps its identity, its target, its status, its attempt count, its outcome stamp,
-      // its blocked reason and its resolver, and loses only its claim link and gains the run's stamp.
       expect(after.strippedTask).toEqual({
         ...before.strippedTask,
         lodgingClaimId: null,
         updatedAt: outcomeAt,
       });
-      // The attempt keeps its identity and its outcome and loses every field that described the guest
-      // or the conversation (AAP 0.12.2).
       expect(after.strippedAttempt).toEqual({ ...before.strippedAttempt, ...STRIPPED_ATTEMPT });
-      // A callback that arrives later matches no row, so it is acknowledged without effect.
       expect(after.callbacks.map((callback) => callback.callSid)).toEqual([LIVE_CALL_SID]);
-      // A claim whose call may still be running is left in every field.
       expect(after.liveTask).toEqual(before.liveTask);
       expect(after.liveAttempt).toEqual(before.liveAttempt);
-      // A task whose claim row is gone is stripped by the same rule, with its link already null.
       expect(after.orphanedTask).toEqual({
         ...before.orphanedTask,
         lodgingClaimId: null,
@@ -371,7 +310,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const inside = await makeCallAttempt(testApp, task, { outcome: 'completed' });
       const undated = await makeCallAttempt(testApp, task, { outcome: 'completed' });
-
       await db.callAttempt.update({
         where: { id: due.id },
         data: { transcript: 'Fixture transcript', transcriptDeleteAt: minutesFromNow(-1) },
@@ -381,8 +319,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         data: { transcript: 'Fixture transcript', transcriptDeleteAt: minutesFromNow(60) },
       });
       const dated = await makeCallAttempt(testApp, task, { outcome: 'completed' });
-      // A transcript whose deadline was never written goes on the data's own age instead, with the
-      // rows a minute either side of the thirty-day window.
       await db.callAttempt.update({
         where: { id: undated.id },
         data: { transcript: 'Fixture transcript', startedAt: atAge(-30, -1) },
@@ -391,7 +327,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         where: { id: dated.id },
         data: { transcript: 'Fixture transcript', startedAt: atAge(-30, 1) },
       });
-
       const read = async () => ({
         due: await db.callAttempt.findUniqueOrThrow({ where: { id: due.id } }),
         inside: await db.callAttempt.findUniqueOrThrow({ where: { id: inside.id } }),
@@ -400,8 +335,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { menuTranscriptsDeleted: 2 });
-
-      // Only the transcript goes: the call's own outcome, summary and extracted fields stand.
       expect(after.due).toEqual({ ...before.due, transcript: null, transcriptDeleteAt: null });
       expect(after.inside).toEqual(before.inside);
       expect(after.undated).toEqual({
@@ -431,7 +364,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       const beyondGrace = await tokenOf('beyond-grace', minutesFromNow(-DAY_MINUTES - 1));
       const withinGrace = await tokenOf('within-grace', minutesFromNow(-DAY_MINUTES + 1));
       const fresh = await tokenOf('fresh', minutesFromNow(5));
-
       const read = async () => ({
         expired: await db.magicLinkToken.findUniqueOrThrow({ where: { id: expired.id } }),
         beyondGrace: await db.magicLinkToken.findUnique({ where: { id: beyondGrace.id } }),
@@ -439,14 +371,10 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         fresh: await db.magicLinkToken.findUniqueOrThrow({ where: { id: fresh.id } }),
       });
       const before = await read();
-      // Three of the four are disarmed: the token past its grace loses its ciphertext in this same
-      // pass, before the row itself is purged.
       const after = await hourlyPass(read, {
         magicLinkTokensDisarmed: 3,
         magicLinkTokensPurged: 1,
       });
-
-      // An expired token loses its ciphertext, and the row goes only once the grace has run out.
       expect(before.expired.deliveryTokenCiphertext).not.toBeNull();
       expect(after.expired).toEqual({
         ...before.expired,
@@ -476,14 +404,12 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         });
       const beyondGrace = await sessionOf('beyond-grace', minutesFromNow(-DAY_MINUTES - 1));
       const withinGrace = await sessionOf('within-grace', minutesFromNow(-DAY_MINUTES + 1));
-
       const read = async () => ({
         beyondGrace: await db.session.findUnique({ where: { id: beyondGrace.id } }),
         withinGrace: await db.session.findUniqueOrThrow({ where: { id: withinGrace.id } }),
       });
       const before = await read();
       const after = await hourlyPass(read, { sessionsPurged: 1 });
-
       expect(before.beyondGrace).not.toBeNull();
       expect(after.beyondGrace).toBeNull();
       expect(after.withinGrace).toEqual(before.withinGrace);
@@ -512,7 +438,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         db.callAttempt.update({ where: { id }, data: { startedAt: at, endedAt: at } });
       await ageAttempt(staleAttempt.id, atAge(-365, -1));
       await ageAttempt(currentAttempt.id, atAge(-365, 1));
-
       const read = async () => ({
         staleTask: await db.callTask.findUnique({ where: { id: stale.id } }),
         staleAttempt: await db.callAttempt.findUnique({ where: { id: staleAttempt.id } }),
@@ -523,7 +448,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { callAttemptsPurged: 1, callTasksPurged: 1 });
-
       expect(before.staleTask).not.toBeNull();
       expect(after.staleTask).toBeNull();
       expect(after.staleAttempt).toBeNull();
@@ -558,7 +482,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         });
       await strip(staleAttempt.id, atAge(-365, -1));
       await strip(currentAttempt.id, atAge(-365, 1));
-
       const read = async () => ({
         staleTask: await db.callTask.findUnique({ where: { id: stale.id } }),
         staleAttempt: await db.callAttempt.findUnique({ where: { id: staleAttempt.id } }),
@@ -569,7 +492,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { callAttemptsPurged: 1, callTasksPurged: 1 });
-
       expect(before.staleTask).not.toBeNull();
       expect(after.staleTask).toBeNull();
       expect(after.staleAttempt).toBeNull();
@@ -596,7 +518,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         });
       const due = await reportOf('due', atAge(-180, -1));
       const inside = await reportOf('inside', atAge(-180, 1));
-
       const older = await makeMeetup(testApp, {
         status: 'completed',
         initiator: reporter,
@@ -618,7 +539,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         outcome: 'settle_by_checkins',
       });
       const open = await makeDispute(testApp, older, reporter, { openedAt: daysFromNow(-200) });
-      // A dispute's clock runs from its resolution, so both resolved rows date their text from there.
       await db.dispute.update({
         where: { id: resolvedDue.id },
         data: { resolvedAt: atAge(-180, -1) },
@@ -627,7 +547,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         where: { id: resolvedInside.id },
         data: { resolvedAt: atAge(-180, 1) },
       });
-
       const read = async () => ({
         reportDue: await db.report.findUniqueOrThrow({ where: { id: due.id } }),
         reportInside: await db.report.findUniqueOrThrow({ where: { id: inside.id } }),
@@ -637,7 +556,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { reportReasonsCleared: 1, disputeReasonsCleared: 1 });
-
       // The row stays and only its text goes. Both columns are NOT NULL, so a cleared reason is the
       // empty string rather than null.
       expect(before.reportDue.reason).toBe('Fixture report due');
@@ -645,7 +563,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       expect(after.reportInside).toEqual(before.reportInside);
       expect(after.disputeDue).toEqual({ ...before.disputeDue, reason: '' });
       expect(after.disputeInside).toEqual(before.disputeInside);
-      // An open dispute keeps its text whatever its age: the operator resolving it reads it.
       expect(after.disputeOpen).toEqual(before.disputeOpen);
     },
   },
@@ -669,14 +586,12 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         });
       const stale = await logOf('stale', atAge(-365, -1));
       const current = await logOf('current', atAge(-365, 1));
-
       const read = async () => ({
         stale: await db.operatorAccessLog.findUnique({ where: { id: stale.id } }),
         current: await db.operatorAccessLog.findUniqueOrThrow({ where: { id: current.id } }),
       });
       const before = await read();
       const after = await hourlyPass(read, { operatorAccessLogsPurged: 1 });
-
       expect(before.stale).not.toBeNull();
       expect(after.stale).toBeNull();
       expect(after.current).toEqual(before.current);
@@ -694,7 +609,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         { pair: [left, right], completedAt: atAge(-120, -1) },
         { pair: [left, right], completedAt: atAge(-120, 1) },
       ]);
-
       const read = async () => ({
         stale: await db.lodgingActivityFact.findFirst({
           where: { lodgingId: lodging.id, completedAt: atAge(-120, -1) },
@@ -705,7 +619,6 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { lodgingActivityFactsPurged: 1 });
-
       expect(before.stale).not.toBeNull();
       expect(after.stale).toBeNull();
       expect(after.current).toEqual(before.current);
@@ -718,8 +631,6 @@ describe('the hourly retention step (AAP 0.5.2)', () => {
     await hourlyCase.check();
   });
 });
-
-/* The queue processor (AAP 0.5.6) */
 
 describe('the data-expiry queue processor (AAP 0.5.6)', () => {
   it('refuses a job name the queue does not accept, and data that contradicts its name', async () => {
@@ -742,19 +653,14 @@ describe('the data-expiry queue processor (AAP 0.5.6)', () => {
       recipient,
       venue,
     });
-
-    // Finalised long before the cut-off, so only the daily step may take it.
     testApp.time.advance({ days: env.FINANCIAL_RETENTION_DAYS + 1 });
-
     const hourly = await runDataExpiry(
       { name: JOB[QUEUE.dataExpiry].hourly, data: { step: 'hourly' } },
       ctx,
     );
-    // The hourly step carries no financial rule at all: none of the daily step's keys are in it.
     expect(hourly).not.toHaveProperty('meetupsPurged');
     expect(await db.meetup.findUnique({ where: { id: meetup.id } })).not.toBeNull();
     expect(await db.deposit.count({ where: { meetupId: meetup.id } })).toBe(2);
-
     const daily = await runDataExpiry(
       { name: JOB[QUEUE.dataExpiry].daily, data: { step: 'daily' } },
       ctx,
@@ -763,8 +669,6 @@ describe('the data-expiry queue processor (AAP 0.5.6)', () => {
     expect(await db.meetup.findUnique({ where: { id: meetup.id } })).toBeNull();
   });
 });
-
-/* The daily financial purge (AAP 0.5.2, criterion 10) */
 
 describe('the daily financial purge (AAP 0.5.2)', () => {
   it('purges what is past the retention period and leaves a live account’s counters unchanged', async () => {
@@ -775,10 +679,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
     const bea = await makeUser(testApp, { deleted: true });
     const duarte = await makeUser(testApp, { deleted: true });
     const startedAt = testApp.time.now();
-
-    // At the start instant: a completed meetup whose whole family the purge takes, an unattended one,
-    // and one Stripe event. `makeMeetup` stamps each meetup's `finalAt` from the clock, which is the
-    // clock the daily step cuts on.
     const first = await makeMeetup(testApp, {
       status: 'completed',
       initiator: ana,
@@ -791,8 +691,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       recipient: duarte,
       venue,
     });
-    // No fixture status writes a witness event and a credit entry on one meetup, and the purge's
-    // credit delete needs a row to remove.
     await db.tableCreditEntry.create({
       data: { userId: ana.id, meetupId: first.id, kind: 'grant', amountCents: 1_000 },
     });
@@ -824,8 +722,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       },
       select: { id: true },
     });
-    // A finished account-deletion operation, which the same cut-off takes: while it exists its
-    // `user_id` keeps the erased account's tombstone alive.
     await db.paymentOperation.create({
       data: {
         userId: duarte.id,
@@ -841,8 +737,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       data: { id: 'evt_fixture_older', type: 'payment_intent.succeeded', receivedAt: startedAt },
       select: { id: true },
     });
-
-    // Two days later: a meetup that is still inside the period when the purge runs, and a second event.
     testApp.time.at(new Date(startedAt.getTime() + 2 * DAY_MS));
     const second = await makeMeetup(testApp, {
       status: 'completed',
@@ -858,16 +752,11 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       },
       select: { id: true },
     });
-
-    // Onto the day the period has run: the first and third meetups are past the cut-off, the second is
-    // one day inside it. A session minted at the start instant is long expired by now and the auth
-    // plugin refuses one, so the two live accounts are given a session for the instant being read at.
     testApp.time.at(new Date(startedAt.getTime() + (env.FINANCIAL_RETENTION_DAYS + 1) * DAY_MS));
     await db.session.updateMany({
       where: { userId: { in: [ana.id, clara.id] } },
       data: { expiresAt: daysFromNow(1) },
     });
-
     const reputation = async (user: UserFixture) => {
       const answer = await callRoute(testApp.app, {
         method: 'GET',
@@ -878,10 +767,7 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       return MeDto.parse(answer.json()).reputation;
     };
     const countersBefore = { ana: await reputation(ana), clara: await reputation(clara) };
-
     const counts = await runDailyExpiry(ctx);
-
-    // Every rule of the daily step, counted.
     expect(counts).toMatchObject({
       meetupsPurged: 2,
       depositsPurged: 4,
@@ -899,8 +785,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       pairHistoryRowsPurged: 1,
       tombstonesPurged: 1,
     });
-
-    // The meetup past the period and its whole family are gone; the recent one keeps everything.
     expect(await db.meetup.findUnique({ where: { id: first.id } })).toBeNull();
     expect(await db.meetup.findUnique({ where: { id: unattended.id } })).toBeNull();
     expect(await db.deposit.count({ where: { meetupId: first.id } })).toBe(0);
@@ -916,10 +800,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
     expect(await db.witnessEvent.count({ where: { meetupId: second.id } })).toBe(2);
     expect(await db.stripeEvent.findUnique({ where: { id: oldEvent.id } })).toBeNull();
     expect(await db.stripeEvent.findUnique({ where: { id: newEvent.id } })).not.toBeNull();
-
-    // Only the erased account's own witness event goes. The live account's stands, unlinked from the
-    // purged meetup and still naming its counterpart, which is what keeps both the counter and that
-    // counterpart's tombstone alive (AAP 0.5.2). A report keeps its text and loses its meetup link.
     const kept = await db.witnessEvent.findFirstOrThrow({
       where: { userId: ana.id, counterpartId: bea.id },
     });
@@ -933,8 +813,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
     });
     expect(await db.user.findUnique({ where: { id: bea.id } })).not.toBeNull();
     expect(await db.user.findUnique({ where: { id: duarte.id } })).toBeNull();
-
-    // Counters never decay: what the purge removed moved nothing a live account reads.
     const state = async () => ({
       meetups: await db.meetup.count(),
       deposits: await db.deposit.count(),
@@ -950,7 +828,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       clara: await reputation(clara),
     });
     const settled = await state();
-
     expect(settled.ana).toEqual(countersBefore.ana);
     expect(settled.clara).toEqual(countersBefore.clara);
     expect(settled.ana).toMatchObject({
@@ -960,8 +837,6 @@ describe('the daily financial purge (AAP 0.5.2)', () => {
       distinctCities: 1,
       noShows90d: 0,
     });
-
-    // A second run of the same step reports zeros and changes nothing at all.
     const again = residual(await runDailyExpiry(ctx));
     expect(again, 'a second pass of the daily step still changed rows').toEqual([]);
     expect(await state(), 'a second pass of the daily step changed rows').toEqual(settled);

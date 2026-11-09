@@ -1,23 +1,12 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-/** Default byte length of a minted secret or token: 43 base64url characters. */
 const DEFAULT_RANDOM_BYTES = 32;
 
-/** Safety floor, so no caller can mint an accidentally weak secret. */
 const MIN_RANDOM_BYTES = 16;
 
-/**
- * Safety ceiling, so a computed length cannot turn a mint into an allocation: the longest secret
- * anything in the workspace mints is 32 bytes, and 64 already yields 86 base64url characters.
- */
 const MAX_RANDOM_BYTES = 64;
 
-/**
- * HMAC-SHA256 of `data` under `key`, as raw bytes.
- *
- * The experiment module derives a variant bucket from the whole digest
- * (`BigInt('0x' + digest.toString('hex')) % 10000n`), so the digest must never be truncated.
- */
+/** HMAC-SHA256 of `data` under `key`, as raw bytes. */
 export function hmac(key: string | Uint8Array, data: string | Uint8Array): Buffer {
   return createHmac('sha256', key).update(data).digest();
 }
@@ -34,7 +23,7 @@ export function sha256Hex(data: string | Uint8Array): string {
 
 /**
  * Canonical lookup form of an email address: trimmed, NFC-normalized and lowercased with the
- * locale-independent `toLowerCase`. Callers validate the address shape before calling.
+ * locale-independent `toLowerCase`.
  */
 export function normalizeEmail(email: string): string {
   return email.trim().normalize('NFC').toLowerCase();
@@ -48,21 +37,15 @@ export function emailLookupHash(pepper: string, email: string): string {
   return hmacHex(pepper, normalizeEmail(email));
 }
 
-/**
- * `AnalyticsEvent.actorHash`: HMAC-SHA256 of the user id under `ANALYTICS_SALT`. Pseudonymous,
- * not anonymous — the hash still reconnects a user's events until erasure strips it.
- */
+/** `AnalyticsEvent.actorHash`: HMAC-SHA256 of the user id under `ANALYTICS_SALT`. */
 export function actorHash(salt: string, userId: string): string {
   return hmacHex(salt, userId);
 }
 
 /**
  * `LodgingActivityFact.pairKey`: HMAC-SHA256 of the two user ids under `ANALYTICS_SALT`, in an
- * order fixed here so both parties derive the same key and the leaderboard can count the pair
- * once per 30 days.
- *
- * Pair ids are UUIDv7 and contain no `:`, which keeps the `low:high` encoding injective; a
- * malformed id is rejected rather than allowed to collide with another pair's key.
+ * order fixed here so both parties derive the same key and the leaderboard can count the pair once
+ * per 30 days.
  */
 export function pairKey(salt: string, idA: string, idB: string): string {
   assertUsablePairId(idA);
@@ -74,53 +57,35 @@ export function pairKey(salt: string, idA: string, idB: string): string {
 
 /**
  * `Venue.secretLookupHash` and `Lodging.secretLookupHash`: unkeyed SHA-256 of a console secret,
- * looked up on every console request. Unkeyed suffices because the secret is 32 random bytes;
- * the secret itself is kept separately as AES-256-GCM ciphertext, since code generation needs it.
+ * looked up on every console request.
  */
 export function secretLookupHash(secret: string): string {
   return sha256Hex(secret);
 }
 
-/**
- * A fresh console secret: 32 random bytes as 43 base64url characters, shown once at issue. The
- * encoding carries no prefix, so the value matches no credential shape a scanner looks for.
- */
+/** A fresh console secret: 32 random bytes as 43 base64url characters, shown once at issue. */
 export function randomSecret(bytes: number = DEFAULT_RANDOM_BYTES): string {
   return randomBase64Url(bytes);
 }
 
-/**
- * A fresh magic-link or refresh token, encoded like {@link randomSecret}. Only its
- * {@link sha256Hex} digest is stored, so a database leak yields no usable token.
- */
+/** A fresh magic-link or refresh token, encoded like {@link randomSecret}. */
 export function randomToken(bytes: number = DEFAULT_RANDOM_BYTES): string {
   return randomBase64Url(bytes);
 }
 
-/**
- * Constant-time comparison of two strings, for console secrets and stored token digests.
- *
- * Both inputs are hashed first: `timingSafeEqual` throws on buffers of unequal length, and
- * comparing lengths beforehand would leak the secret's length. The two digests are always 32
- * bytes, so the comparison runs over the same length whatever the inputs.
- */
+/** Constant-time comparison of two strings, for console secrets and stored token digests. */
 export function timingSafeEqualString(a: string, b: string): boolean {
   const left = createHash('sha256').update(a).digest();
   const right = createHash('sha256').update(b).digest();
   return timingSafeEqual(left, right);
 }
 
-/** Rejects an id that would make the `low:high` pair encoding ambiguous. */
 function assertUsablePairId(id: string): void {
   if (id.length === 0 || id.includes(':')) {
     throw new RangeError('pair ids must be non-empty and must not contain a colon');
   }
 }
 
-/**
- * Mints `bytes` random bytes as base64url, refusing a length outside the 16-64 byte range so a
- * computed count fails fast instead of reaching `randomBytes` as an allocation.
- */
 function randomBase64Url(bytes: number): string {
   if (!Number.isInteger(bytes) || bytes < MIN_RANDOM_BYTES || bytes > MAX_RANDOM_BYTES) {
     throw new RangeError(

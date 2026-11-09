@@ -1,46 +1,6 @@
 /**
  * The fixture builders, the flows through the real routes, and the route helpers every integration
  * suite of `apps/api` drives (AAP 0.8.1 "factories"; AAP 0.11.1's table-driven density convention).
- *
- * Three layers, and the split is what keeps one file inside its budget:
- *
- *  - **Row builders** (`makeUser` … `makeBlock`) write the rows a case needs with the guarded Prisma
- *    client, in one transaction each, so a fixture is either entirely there or not at all. They are
- *    usable outside Vitest on purpose — `apps/api/scripts/perf-seed.ts` imports this module with no
- *    runner in sight — which is why nothing here imports `vitest` and every assertion is
- *    `node:assert/strict`, which Vitest reports like any other failure.
- *  - **Flows** (`proposeAndLock`, `checkIn`, `signIn`) drive the real routes through `app.inject`, so
- *    a suite that locks a meetup runs the same handlers production runs, Stripe holds included.
- *  - **Route helpers** (`callRoute`, `expectError`, `keysDeep`, `rows`, `stripeModeLabel`) are what a
- *    table-driven suite writes its rows with, and what separates mock evidence from test-mode
- *    evidence in `docs/acceptance.md` (AAP 0.12.1).
- *
- * Four rules the fixtures keep:
- *
- *  - **Time comes from `ctx.services.clock`** (AAP 0.11.1), never `Date.now()`, so a suite that moves
- *    the test clock moves what a fixture wrote.
- *  - **Money is integer USD cents, and a live hold is a real PaymentIntent.** A deposit in `held` or
- *    `requires_action` is created at the provider the context points at — the stateful proxy in
- *    `STRIPE_MODE=mock`, Stripe's own test API otherwise — so settlement's reconciliation, the
- *    webhook handlers and the payment executor read the authorizations they read in production. A
- *    final deposit's PaymentIntent id is synthetic (`pi_fixture_…`) because nothing retrieves it.
- *  - **Every fixture `PaymentOperation` is terminal** (`succeeded`, `failed_terminal` or `fenced`), so
- *    the sweeper finds nothing of a fixture's to resume and a case observes only its own change.
- *  - **Nothing looks like a real person or business**: names start `Fixture`/`Test`, addresses are
- *    fictional, phone numbers come from the reserved `+141555501xx` range of AAP 0.5.2, email
- *    addresses are under `example.test`, and no secret, token, booking field or coordinate is logged.
- *
- * A meetup's deposit statuses follow from its status and its settlement (`STATUS_SHAPES`): a
- * `no_show` forfeit captures the absent side's hold and releases the present one's, a `late_cancel`
- * captures the canceller's and credits the counterpart, and the statuses without an outcome release
- * both. `deposits`, `checkIns` and `settlement` override the table for the cases that need an unusual
- * row — an expired hold, an attempt waiting on 3-D Secure, a check-in that failed on the geofence.
- *
- * @see AAP 0.5.2 for the data model and the fixture rules, 0.5.3 for the meetup, deposit, dispute and
- *   call lifecycles this table mirrors, 0.5.4 for the routes the flows drive and the error envelope
- *   the helpers assert on, 0.3.2 for the payment operations every fixture leaves terminal, 0.11.1 for
- *   the injected clock and the test density rules, 0.12.1 for the results recorded per Stripe mode,
- *   and 0.8.1 for this file's place in the inventory.
  */
 
 import assert from 'node:assert/strict';
@@ -134,17 +94,6 @@ import type { TestCardId } from './stripe-proxy/state.ts';
 import type { App, AppServices } from '../../src/app.ts';
 import type { StripeContext, TestApp } from './app.ts';
 
-/* The context a builder needs (AAP 0.11.2) */
-
-/**
- * What every builder and flow here reads (AAP 0.11.2): the app's container, narrowed to the four
- * members a fixture write needs, and the Stripe topology it may reach the provider through.
- *
- * `TestApp` satisfies it structurally, so a suite passes its app straight in; a script builds one
- * from its own database client and loaded environment, which is why the container is a `Pick` and not
- * the whole `AppServices`. The flow helpers ({@link proposeAndLock}, {@link signIn}) additionally
- * need `app`, and say so in their own signature.
- */
 export interface FactoryContext {
   /** The container a fixture writes through: the guarded client, the environment, the keyring, the clock. */
   readonly services: Pick<AppServices, 'db' | 'env' | 'keyring' | 'clock'>;
@@ -161,8 +110,6 @@ export type { ApiEnv };
 export interface FixtureRef {
   readonly id: string;
 }
-
-/* Fixture identity (AAP 0.5.2) */
 
 /** A per-process counter: unique handles, names and phone numbers within one run, without a query. */
 let fixtureCounter = 0;
@@ -246,8 +193,6 @@ function captureBeforeOf(intent: unknown): Date | null {
   return typeof raw === 'number' ? new Date(raw * 1000) : null;
 }
 
-/* The provider, reached over HTTP (AAP 0.3.3) */
-
 /**
  * The one Stripe origin the `test` and `live` topologies reach; `mock` reaches its proxy instead.
  * Spelled here rather than imported from the SDK, which only `payments/stripe-gateway.ts` may load.
@@ -260,13 +205,6 @@ export type StripeFormValue = string | number | boolean | readonly string[];
 /** The parameters of one Stripe request, in Stripe's own bracket notation. */
 export type StripeFormParams = Readonly<Record<string, StripeFormValue | undefined>>;
 
-/**
- * The two calls the fixtures make at the provider (AAP 0.3.3): a form-encoded `POST` and a `GET`,
- * each with a fresh authorization header and never the SDK — which only `stripe-gateway.ts` imports.
- *
- * A non-2xx answer throws an `Error` naming the method, the path, the status and Stripe's own error
- * `type`/`code`. The API key is never part of the message.
- */
 export interface StripeApi {
   /** POST `path` with Stripe's bracket-encoded `params`, optionally under an idempotency key. */
   post<T = unknown>(path: string, params?: StripeFormParams, idempotencyKey?: string): Promise<T>;
@@ -311,19 +249,8 @@ function stripeTransport(ctx: FactoryContext): { readonly base: string; readonly
   return { base: STRIPE_API_ORIGIN, key: ctx.services.env.stripe.secretKey };
 }
 
-/**
- * The Stripe client of this run (AAP 0.3.3): in `mock` it answers from the stateful proxy, which
- * validates every request against `stripe-mock` first, and in `test` it is Stripe's own API under the
- * operator's `sk_test_` key. Either way it speaks HTTP with `fetch` and form encoding, so no fixture
- * ever loads the Stripe SDK.
- *
- * @param ctx - The context whose topology and environment decide the origin and the key.
- * @returns The two calls.
- * @throws {Error} When `mock` mode holds no proxy address.
- */
 export function stripeApi(ctx: FactoryContext): StripeApi {
   const { base, key } = stripeTransport(ctx);
-
   async function send<T>(
     method: 'GET' | 'POST',
     path: string,
@@ -341,7 +268,6 @@ export function stripeApi(ctx: FactoryContext): StripeApi {
       init.body = formEncode(params ?? {});
       if (idempotencyKey !== undefined) headers['idempotency-key'] = idempotencyKey;
     }
-
     const response = await fetch(url, init);
     const text = await response.text();
     const parsed: unknown = text === '' ? null : (JSON.parse(text) as unknown);
@@ -352,14 +278,11 @@ export function stripeApi(ctx: FactoryContext): StripeApi {
     }
     return parsed as T;
   }
-
   return {
     post: (path, params, idempotencyKey) => send('POST', path, params, idempotencyKey),
     get: (path, query) => send('GET', path, query),
   };
 }
-
-/* Cards (AAP 0.2.4, 0.11.2) */
 
 /** The card outcome a fixture account is given. `none` leaves the account with no customer at all. */
 export type CardFixture = 'visa' | '3ds' | 'declining' | 'none';
@@ -397,12 +320,10 @@ async function createStripeCustomer(
   if (fixture.mock === null && fixture.test === null) {
     return { customerId: null, paymentMethodId: null };
   }
-
   const proxy = ctx.stripe.proxy;
   if (proxy !== null) {
     return proxy.createCustomer({ card: fixture.mock });
   }
-
   const api = stripeApi(ctx);
   const created = await api.post('/v1/customers');
   const customerId = stringField(created, 'id');
@@ -412,7 +333,6 @@ async function createStripeCustomer(
   if (fixture.test === null) {
     return { customerId, paymentMethodId: null };
   }
-
   const cardId = fixture.test;
   const attached = await api.post(`/v1/payment_methods/${encodeURIComponent(cardId)}/attach`, {
     customer: customerId,
@@ -426,8 +346,6 @@ async function createStripeCustomer(
   });
   return { customerId, paymentMethodId };
 }
-
-/* Accounts (AAP 0.5.2, 0.5.7) */
 
 /** What {@link makeUser} may set. Every member has the value a plain traveler fixture needs. */
 export interface UserFixtureOptions {
@@ -466,22 +384,6 @@ export interface UserFixture {
   readonly cardId: string | null;
 }
 
-/**
- * Create one account (AAP 0.5.2): the `User`, its one `ExperimentAssignment`, a live `Session` and an
- * access token signed by the app's own secret.
- *
- * The variant is the rule `experiment/assignment.ts` `assign()` applies — `bucketFor` over
- * `EXPERIMENT_SALT`, then `variantFromBucket` over the configured split, inserted with
- * conflict-skip semantics so it is never recomputed. It is computed here rather than called there
- * because `assign()` takes the whole `AppServices` and this file's context is deliberately narrowed
- * to the four members a fixture write needs (a script builds one from its own client). Passing
- * `variant` inserts that one instead, which is what a case about the framing copy needs.
- *
- * @param ctx - The context whose client, keyring, environment and clock make the rows.
- * @param options - What to replace; every member defaults to a plain verified traveler.
- * @returns The account's ids, its signing handles, and the card a hold is placed against.
- * @throws {Error} When the provider was asked for a customer and answered without one.
- */
 export async function makeUser(
   ctx: FactoryContext,
   options: UserFixtureOptions = {},
@@ -494,11 +396,9 @@ export async function makeUser(
   const role = options.role ?? 'traveler';
   const email = options.email ?? `test-user-${nextFixtureNumber()}-${randomHex(4)}@example.test`;
   const handle = tombstone ? null : `test-user-${nextFixtureNumber()}-${randomHex(4)}`;
-
   const customer = tombstone
     ? { customerId: null, paymentMethodId: null }
     : await createStripeCustomer(ctx, options.card ?? 'visa');
-
   const user = await db.user.create({
     data: {
       emailCiphertext: tombstone ? null : encryptField(ctx.services.keyring, email),
@@ -516,7 +416,6 @@ export async function makeUser(
     },
     select: { id: true },
   });
-
   if (!tombstone) {
     const variant =
       options.variant ??
@@ -533,7 +432,6 @@ export async function makeUser(
       skipDuplicates: true,
     });
   }
-
   const session = await db.session.create({
     data: {
       userId: user.id,
@@ -543,7 +441,6 @@ export async function makeUser(
     },
     select: { id: true },
   });
-
   return {
     id: user.id,
     handle,
@@ -554,8 +451,6 @@ export async function makeUser(
     cardId: customer.paymentMethodId,
   };
 }
-
-/* Proofs (AAP 0.5.2, 0.5.5) */
 
 /** What {@link makeProof} may set. */
 export interface ProofFixtureOptions {
@@ -579,21 +474,6 @@ export interface ProofFixture {
   readonly validTo: Date;
 }
 
-/**
- * Write one `ItineraryProof` and the `SpentNullifier` that backs it (AAP 0.5.2, 0.5.5).
- *
- * Rows only, with no cryptography: a case about check-in, disclosure or discovery needs a valid proof
- * rather than a circuit, and the suites that need a real proof take one from `./proofs.ts`. The
- * validity window comes from `proofValidity`, the registry root and issuer id from the committed
- * `config/registry/test.json` and `config/issuers/tablemate-test.json`, so the row carries what the
- * verifier publishes and `GET /zk/config` answers with.
- *
- * @param ctx - The context whose client and clock write the rows.
- * @param user - The account the stay belongs to.
- * @param options - The city, and optionally the stay and whether it is happening now.
- * @returns The proof's id, its nullifier, its dates and its window.
- * @throws {Error} When the city or the test issuer is not configured.
- */
 export async function makeProof(
   ctx: FactoryContext,
   user: FixtureRef,
@@ -605,14 +485,12 @@ export async function makeProof(
   const arrivalDate = options.arrivalDate ?? addLocalDays(today, validNow ? -1 : -30);
   const departureDate = options.departureDate ?? addLocalDays(today, validNow ? 5 : -20);
   const { validFrom, validTo } = proofValidity(city.timezone, arrivalDate, departureDate);
-
   const issuer = readIssuerConfigs().find((entry) => entry.stem === TEST_ISSUER_STEM);
   if (issuer === undefined) {
     throw new Error('config/issuers/tablemate-test.json is missing');
   }
   const registry = readRegistryFile('test');
   const nullifier = syntheticNullifier();
-
   const proof = await ctx.services.db.$transaction(async (tx) => {
     const row = await tx.itineraryProof.create({
       data: {
@@ -633,11 +511,8 @@ export async function makeProof(
     });
     return row;
   });
-
   return { id: proof.id, nullifier, arrivalDate, departureDate, validFrom, validTo };
 }
-
-/* Venues, lodgings and places (AAP 0.5.2) */
 
 /** What {@link makeVenue} may set. */
 export interface VenueFixtureOptions {
@@ -662,15 +537,6 @@ export interface VenueFixture {
   readonly secret: string | null;
 }
 
-/**
- * Create one partner venue (AAP 0.5.2), with the console secret `issueSecret` mints in the same
- * shape `admin/onboarding.ts` stores — SHA-256 lookup hash plus AES-256-GCM ciphertext — so
- * `GET /venue/check-in-code` and the check-in route both accept the fixture's code.
- *
- * @param ctx - The context whose client, keyring and clock write the row.
- * @param options - The city and, optionally, the location and the secret.
- * @returns The venue's id, its coordinates and its plaintext console secret.
- */
 export async function makeVenue(
   ctx: FactoryContext,
   options: VenueFixtureOptions,
@@ -682,7 +548,6 @@ export async function makeVenue(
   };
   const material = options.withSecret === false ? null : issueSecret(ctx.services);
   const now = ctx.services.clock.now();
-
   const venue = await ctx.services.db.$transaction(async (tx) => {
     const row = await tx.venue.create({
       data: {
@@ -700,7 +565,6 @@ export async function makeVenue(
     await setPoint(tx, 'venue', row.id, point);
     return row;
   });
-
   return {
     id: venue.id,
     cityId: city.id,
@@ -739,15 +603,6 @@ export interface LodgingFixture {
   readonly secret: string | null;
 }
 
-/**
- * Create one lodging (AAP 0.5.2), with an operator-entered phone number from the reserved fictional
- * range — the numbers only the test environment's `CALL_ALLOWLIST` holds and only the simulator
- * answers.
- *
- * @param ctx - The context whose client, keyring and clock write the row.
- * @param options - The city and, optionally, the location, the number and the secret.
- * @returns The lodging's id, its coordinates, its number and its console secret.
- */
 export async function makeLodging(
   ctx: FactoryContext,
   options: LodgingFixtureOptions,
@@ -761,7 +616,6 @@ export async function makeLodging(
   const name = `Fixture Lodging ${nextFixtureNumber()}`;
   const phone = options.phone ?? fixturePhone();
   const now = ctx.services.clock.now();
-
   const lodging = await ctx.services.db.$transaction(async (tx) => {
     const row = await tx.lodging.create({
       data: {
@@ -782,7 +636,6 @@ export async function makeLodging(
     await setPoint(tx, 'lodging', row.id, point);
     return row;
   });
-
   return {
     id: lodging.id,
     cityId: city.id,
@@ -828,14 +681,6 @@ export interface PlaceFixture {
   readonly website: string | null;
 }
 
-/**
- * Create one place the suggestion and price pipelines read (AAP 0.5.2, 0.5.7), placed `distanceM`
- * due north of `near` so the 2 km candidate radius and the ranking's distance tiebreak are exact.
- *
- * @param ctx - The context whose client and clock write the row.
- * @param options - The city, the category and, optionally, where it stands and what it publishes.
- * @returns The place's id, its coordinates and the links a price record's `sourceUrl` cites.
- */
 export async function makePlace(
   ctx: FactoryContext,
   options: PlaceFixtureOptions,
@@ -845,7 +690,6 @@ export async function makePlace(
   const point = offsetNorth(origin, options.distanceM ?? 200);
   const name = `Fixture Place ${nextFixtureNumber()}`;
   const phone = options.phone ?? fixturePhone();
-
   const place = await ctx.services.db.$transaction(async (tx) => {
     const row = await tx.place.create({
       data: {
@@ -864,7 +708,6 @@ export async function makePlace(
     await setPoint(tx, 'place', row.id, point);
     return row;
   });
-
   return {
     id: place.id,
     cityId: city.id,
@@ -876,8 +719,6 @@ export async function makePlace(
     website: options.website ?? null,
   };
 }
-
-/* Prices (AAP 0.5.6, 0.5.7) */
 
 /** One price item of a capture batch, in the shape the estimate reads. */
 export interface PriceItemFixture {
@@ -907,22 +748,6 @@ export interface PriceBatchFixture {
   readonly ids: readonly string[];
 }
 
-/**
- * Write one capture batch of price records (AAP 0.5.6, 0.5.7): one `captureBatchId` per call, the
- * derived fields the seed also writes — the NFKC-normalized name, the `$12.50` price text, the
- * capture's UTC day as `fxDate` — and a `sourceUrl` that cites the phone number for a `phone_quote`,
- * the operator for an `operator_entry` and the place's menu link or site otherwise.
- *
- * The batch is a parameter rather than a constant so a case can add a second capture of the same
- * place: the estimate keeps one record per item across a place's current batches, which is the rule a
- * repeated capture tests.
- *
- * @param ctx - The context whose client and clock write the rows.
- * @param place - The place the items belong to, with the links a `sourceUrl` cites.
- * @param items - The items, one row each.
- * @param options - `batchId` to append to an existing capture; a fresh uuid otherwise.
- * @returns The batch id and the record ids, in the order the items were given.
- */
 export async function makePriceRecords(
   ctx: FactoryContext,
   place: FixtureRef & {
@@ -936,7 +761,6 @@ export async function makePriceRecords(
   const batchId = options.batchId ?? randomUUID();
   const now = ctx.services.clock.now();
   const ids: string[] = [];
-
   for (const item of items) {
     const capturedAt = item.capturedAt ?? now;
     const row = await ctx.services.db.priceRecord.create({
@@ -965,7 +789,6 @@ export async function makePriceRecords(
     });
     ids.push(row.id);
   }
-
   return { batchId, ids };
 }
 
@@ -987,28 +810,11 @@ function priceSourceUrl(
   return place.menuUrl ?? place.website ?? 'https://fixtures.invalid/tablemate-place';
 }
 
-/* Cities (AAP 0.5.2) */
-
-/**
- * Write the configured city a fixture row points at, from `config/cities.json` (AAP 0.5.2): the
- * configuration is the only source of a city's id, its circuit id and its centroid, and every builder
- * that writes a foreign key calls this first, so a case needs no seeding step of its own.
- *
- * The centroid is a `geography` column Prisma cannot write, so `setPoint` writes it beside the row, in
- * the same transaction, exactly as `packages/db/seed` does. Not memoized: `TestApp.resetState` empties
- * the table between cases, and a cache would then leave a builder pointing at a city that is gone.
- *
- * @param ctx - The context whose client writes the row.
- * @param cityId - A slug from `config/cities.json`.
- * @returns The city's configuration, for its timezone and its name.
- * @throws {Error} When the configuration holds no such city.
- */
 async function ensureCity(ctx: FactoryContext, cityId: string) {
   const city = readCitiesConfig().cities.find((entry) => entry.id === cityId);
   if (city === undefined) {
     throw new Error(`config/cities.json holds no city "${cityId}"`);
   }
-
   const fields = {
     circuitCityId: city.circuitCityId,
     name: city.name,
@@ -1018,7 +824,6 @@ async function ensureCity(ctx: FactoryContext, cityId: string) {
     currency: city.currency,
     bbox: city.bbox,
   };
-
   await ctx.services.db.$transaction(async (tx) => {
     await tx.city.upsert({
       where: { id: city.id },
@@ -1027,7 +832,6 @@ async function ensureCity(ctx: FactoryContext, cityId: string) {
     });
     await setPoint(tx, 'city', city.id, city.centroid);
   });
-
   return city;
 }
 
@@ -1040,8 +844,6 @@ function centroidOf(city: { readonly centroid: LatLng }): LatLng {
 function offsetNorth(origin: LatLng, meters: number): LatLng {
   return { lat: origin.lat + meters / 111_320, lng: origin.lng };
 }
-
-/* Meetups, deposits and their settlements (AAP 0.5.3) */
 
 /** Which side of a meetup a settlement fixture concerns: both present, neither, or one of them. */
 export type PartyPresence = 'both' | 'neither' | ParticipantRole;
@@ -1127,15 +929,6 @@ interface StatusShape {
   readonly cancelReason?: CancelReason;
 }
 
-/**
- * The one table that makes a meetup's rows consistent with its status (AAP 0.5.3): the deposit
- * statuses, whether the meetup is open, whether it was locked, and the outcome it settled into.
- *
- * Everything else is derived from these — `lockedAt` and `recipientAcceptedAt` from `locked`,
- * `settledAt` and `finalAt` from the outcome, the witness events and the Table Credit from who was
- * present — so a status added to `MeetupStatus` fails to compile here until it is described, and no
- * case hand-writes a combination the state machine could not reach.
- */
 const STATUS_SHAPES: Readonly<Record<MeetupStatus, StatusShape>> = {
   // The proposal is visible once the initiator's hold is held (AAP 0.5.3); a case that overrides the
   // initiator's deposit to `pending` or `failed` gets the invisible proposal `402 hold_failed` leaves.
@@ -1265,15 +1058,6 @@ function forfeitReasonOf(
   return plan.outcome;
 }
 
-/**
- * The default start of a fixture meetup: two hours out for an open one, three hours back for a final
- * one.
- *
- * The direction matters twice over. An open meetup must start in the future, or the sweeper would
- * settle or lapse it before the case it belongs to ran; a final one must have started in the past, or
- * its `settledAt` — `startsAt + 45 min`, the instant AAP 0.5.3 settles at — would lie in the future
- * and suggestions, metrics and the 24-hour windows would read a meetup that has not happened yet.
- */
 function defaultStartsAt(shape: StatusShape, now: Date): Date {
   return new Date(now.getTime() + (shape.open ? 2 : -3) * HOUR_MS);
 }
@@ -1335,7 +1119,6 @@ async function createLiveHold(
     },
     holdKey(args.depositId, 1),
   );
-
   const paymentIntentId = stringField(created, 'id');
   const status = stringField(created, 'status');
   if (paymentIntentId === null || (status !== 'requires_capture' && status !== 'requires_action')) {
@@ -1344,27 +1127,6 @@ async function createLiveHold(
   return { paymentIntentId, captureBefore: captureBeforeOf(created) };
 }
 
-/**
- * Write one meetup in the state its `status` names (AAP 0.5.3), with every row the state machine
- * would have left behind: the deposits, one terminal `PaymentOperation` per decision, the check-ins,
- * the settlement, the witness events, the pair history and the Table Credit.
- *
- * The deposit statuses, the presence and the credit follow from the status table and the settlement,
- * and `deposits`, `checkIns` and `settlement` override them. A deposit in `held` or `requires_action`
- * is a **real** PaymentIntent placed at the provider the context points at, created after the rows are
- * written (it hangs the attempt's metadata on the deposit row's id, so it cannot be placed before) and
- * recorded on the deposit and on its `hold` operation; every other deposit carries a synthetic id, or
- * none, because nothing retrieves it.
- *
- * The pair may hold one open meetup at a time — the partial unique index of AAP 0.5.2 — so a case that
- * needs two open meetups uses two accounts.
- *
- * @param ctx - The context whose client, clock and provider topology write the rows.
- * @param options - The status, the three rows it hangs off, and whatever the case overrides.
- * @returns The meetup's id, its status and start instant, and each side's deposit.
- * @throws {Error} When a capture settlement names no single present side, when a live hold's owner has
- *   no saved card, or when the provider refuses the hold.
- */
 export async function makeMeetup(
   ctx: FactoryContext,
   options: MeetupFixtureOptions,
@@ -1385,7 +1147,6 @@ export async function makeMeetup(
   const finalAt = shape.open ? null : (settledAt ?? now);
   const bothCheckedInAt =
     checkIns.initiator === 'pass' && checkIns.recipient === 'pass' ? now : null;
-
   // A witness event names the city it happened in, and only the venue knows it (AAP 0.5.2).
   const venue = await db.venue.findUniqueOrThrow({
     where: { id: options.venue.id },
@@ -1404,7 +1165,6 @@ export async function makeMeetup(
     initiator: null,
     recipient: null,
   };
-
   const meetup = await db.$transaction(async (tx) => {
     const row = await tx.meetup.create({
       data: {
@@ -1434,14 +1194,12 @@ export async function makeMeetup(
       },
       select: { id: true },
     });
-
     const writeDeposit = async (
       role: ParticipantRole,
       ownerId: string,
       status: DepositStatus | null,
     ): Promise<void> => {
       if (status === null) return;
-
       const live = isLiveDeposit(status);
       const deposit = await tx.deposit.create({
         data: {
@@ -1460,7 +1218,6 @@ export async function makeMeetup(
         select: { id: true, currentPaymentIntentId: true },
       });
       const paymentIntentId = deposit.currentPaymentIntentId;
-
       const operation = await tx.paymentOperation.create({
         data: {
           userId: ownerId,
@@ -1480,7 +1237,6 @@ export async function makeMeetup(
         },
         select: { id: true },
       });
-
       const followUp = async (
         kind: 'release' | 'capture' | 'refund',
         seq: number,
@@ -1509,7 +1265,6 @@ export async function makeMeetup(
         });
         return created.id;
       };
-
       if (status === 'released') {
         await followUp('release', 2, operation.id);
       } else if (status === 'captured') {
@@ -1518,7 +1273,6 @@ export async function makeMeetup(
         const capture = await followUp('capture', 2, operation.id);
         await followUp('refund', 3, capture);
       }
-
       if (live) {
         liveHolds.push({
           role,
@@ -1530,17 +1284,14 @@ export async function makeMeetup(
       }
       written[role] = { id: deposit.id, ownerId, role, status, paymentIntentId };
     };
-
     await writeDeposit('initiator', options.initiator.id, statuses.initiator);
     if (statuses.recipient !== null) {
       await writeDeposit('recipient', options.recipient.id, statuses.recipient);
     }
-
     const sides: readonly { readonly role: ParticipantRole; readonly userId: string }[] = [
       { role: 'initiator', userId: options.initiator.id },
       { role: 'recipient', userId: options.recipient.id },
     ];
-
     for (const side of sides) {
       const result = checkIns[side.role];
       if (result === null) continue;
@@ -1554,7 +1305,6 @@ export async function makeMeetup(
         },
       });
     }
-
     if (plan !== null && settledAt !== null) {
       const present = (role: ParticipantRole): boolean =>
         plan.present === 'both' || plan.present === role;
@@ -1569,7 +1319,6 @@ export async function makeMeetup(
           completedAt: settledAt,
         },
       });
-
       // Both were there: a witness event each, which is what the reputation counters read, and one
       // pair-history increment. Neither is written for a forfeit or an unattended meetup (AAP 0.5.7).
       if (plan.outcome === 'completed') {
@@ -1603,7 +1352,6 @@ export async function makeMeetup(
           update: { completedCount: { increment: 1 }, lastCompletedAt: settledAt },
         });
       }
-
       // A forfeit credits the party that was there with the absent one's deposit (AAP 0.5.7).
       if (plan.outcome === 'no_show' || plan.outcome === 'late_cancel') {
         const credited = plan.present === 'recipient' ? options.recipient.id : options.initiator.id;
@@ -1612,10 +1360,8 @@ export async function makeMeetup(
         });
       }
     }
-
     return row;
   });
-
   // The live holds, placed once the rows that name them exist. Each is its own attempt at the
   // provider, so the settlement's reconciliation and the webhook handlers read exactly what they read
   // in production; a fixture never invents a PaymentIntent id the provider does not know.
@@ -1627,7 +1373,6 @@ export async function makeMeetup(
     if (owner.stripeCustomerId === null) {
       throw new Error('a live hold needs an account with a saved card; card "none" leaves none');
     }
-
     const placed = await createLiveHold(ctx, {
       meetupId: meetup.id,
       depositId: hold.depositId,
@@ -1635,7 +1380,6 @@ export async function makeMeetup(
       customerId: owner.stripeCustomerId,
     });
     hold.paymentIntentId = placed.paymentIntentId;
-
     await db.$transaction(async (tx) => {
       await tx.deposit.update({
         where: { id: hold.depositId },
@@ -1649,17 +1393,13 @@ export async function makeMeetup(
         data: { paymentIntentId: placed.paymentIntentId },
       });
     });
-
     const previous = written[hold.role];
     if (previous !== null) {
       written[hold.role] = { ...previous, paymentIntentId: placed.paymentIntentId };
     }
   }
-
   return { id: meetup.id, status: options.status, startsAt, deposits: written };
 }
-
-/* Check-ins, disputes, claims, calls and safety (AAP 0.5.2, 0.5.3) */
 
 /** What {@link makeCheckIn} may set. */
 export interface CheckInFixtureOptions {
@@ -1678,17 +1418,6 @@ export interface CheckInFixture {
   readonly result: CheckInResult;
 }
 
-/**
- * Store one check-in, as the route does (AAP 0.5.7), and stamp `bothCheckedInAt` when this is the
- * second pass — the same rule the handler applies in the transaction that stores it, so a case that
- * builds a completed pair by hand reads the same meetup the routes would have left.
- *
- * @param ctx - The context whose client and clock write the rows.
- * @param meetup - The meetup checked in to.
- * @param user - The attendee.
- * @param options - The result, the bucket and the failure code.
- * @returns The row's id, its user and its result.
- */
 export async function makeCheckIn(
   ctx: FactoryContext,
   meetup: FixtureRef,
@@ -1696,7 +1425,6 @@ export async function makeCheckIn(
   options: CheckInFixtureOptions = {},
 ): Promise<CheckInFixture> {
   const result = options.result ?? 'pass';
-
   const row = await ctx.services.db.$transaction(async (tx) => {
     const checkIn = await tx.checkIn.create({
       data: {
@@ -1708,7 +1436,6 @@ export async function makeCheckIn(
       },
       select: { id: true },
     });
-
     if (result === 'pass') {
       const passes = await tx.checkIn.count({ where: { meetupId: meetup.id, result: 'pass' } });
       const target = await tx.meetup.findUniqueOrThrow({
@@ -1722,10 +1449,8 @@ export async function makeCheckIn(
         });
       }
     }
-
     return checkIn;
   });
-
   return { id: row.id, userId: user.id, result };
 }
 
@@ -1753,17 +1478,6 @@ export interface DisputeFixture {
   readonly deadlineAt: Date;
 }
 
-/**
- * File one dispute (AAP 0.5.3): `deadlineAt` is five days after it was opened, and a resolved one
- * records its resolution instant. An open dispute is what postpones settlement while the meetup stays
- * `locked`, so a case about check-in during a dispute needs nothing else.
- *
- * @param ctx - The context whose client and clock write the row.
- * @param meetup - The meetup the dispute concerns.
- * @param filer - The participant who filed it.
- * @param options - The kind, the state and the resolution.
- * @returns The dispute's id, its state, and both of its instants.
- */
 export async function makeDispute(
   ctx: FactoryContext,
   meetup: FixtureRef,
@@ -1773,7 +1487,6 @@ export async function makeDispute(
   const now = ctx.services.clock.now();
   const openedAt = options.openedAt ?? now;
   const status = options.status ?? 'open';
-
   const row = await ctx.services.db.dispute.create({
     data: {
       meetupId: meetup.id,
@@ -1789,7 +1502,6 @@ export async function makeDispute(
     },
     select: { id: true, deadlineAt: true },
   });
-
   return { id: row.id, status, openedAt, deadlineAt: row.deadlineAt };
 }
 
@@ -1817,17 +1529,6 @@ export interface ClaimFixture {
   readonly stayTo: string;
 }
 
-/**
- * Claim one lodging (AAP 0.5.2): the booking name and reference are AES-256-GCM fields, written with
- * the same keyring the voice relay and the audited operator route decrypt them with, and the consent
- * instant is what the `callConsent: true` guard records.
- *
- * @param ctx - The context whose client, keyring and clock write the row.
- * @param user - The guest claiming the stay.
- * @param lodging - The lodging claimed.
- * @param options - The stay, the state and the booking details.
- * @returns The claim's id, its state and its stay.
- */
 export async function makeClaim(
   ctx: FactoryContext,
   user: FixtureRef,
@@ -1840,7 +1541,6 @@ export async function makeClaim(
   const stayTo = options.stayTo ?? addLocalDays(today, 5);
   const status = options.status ?? 'pending_call';
   const terminal = status === 'verified' || status === 'rejected' || status === 'unreachable';
-
   const row = await ctx.services.db.lodgingClaim.create({
     data: {
       userId: user.id,
@@ -1862,18 +1562,9 @@ export async function makeClaim(
     },
     select: { id: true },
   });
-
   return { id: row.id, userId: user.id, lodgingId: lodging.id, status, stayFrom, stayTo };
 }
 
-/**
- * Set one guest's `showStaying` switch, which is off until a verified guest turns it on (AAP 0.5.7).
- *
- * @param ctx - The context whose client writes the row.
- * @param user - The guest.
- * @param claim - The claim the visibility belongs to.
- * @param showStaying - Whether the guest may appear in a lodging's opted-in list.
- */
 export async function makeVisibility(
   ctx: FactoryContext,
   user: FixtureRef,
@@ -1920,15 +1611,6 @@ export interface CallTaskFixture {
   readonly status: CallTaskStatus;
 }
 
-/**
- * Create one call task (AAP 0.5.2, 0.5.3): exactly one target, so the database's
- * `call_task_one_target_chk` holds, and `nextAttemptAt` set, because it is the column every
- * dispatch pass selects on.
- *
- * @param ctx - The context whose client and clock write the row.
- * @param options - The kind, the one target and the dispatch state.
- * @returns The task's id, its kind and its status.
- */
 export async function makeCallTask(
   ctx: FactoryContext,
   options: CallTaskFixtureOptions,
@@ -1951,7 +1633,6 @@ export async function makeCallTask(
     },
     select: { id: true },
   });
-
   return { id: row.id, kind: options.kind, status };
 }
 
@@ -1982,19 +1663,6 @@ export interface CallAttemptFixture {
   readonly outcome: CallAttemptOutcome | null;
 }
 
-/**
- * Create one call attempt on a task (AAP 0.5.2, 0.5.3), with the caller id a fixture and not a real
- * one: the column is unique, and a made-up `CA…` value can never collide with a live call.
- *
- * The transcript is left null on purpose. A menu call may keep one for 30 days and a lodging call
- * never may, so a case that wants one sets it directly rather than through a fixture that could hand
- * a lodging call a transcript by accident.
- *
- * @param ctx - The context whose client and clock write the row.
- * @param task - The task the attempt belongs to.
- * @param options - The state, the outcome and what the dialogue extracted.
- * @returns The attempt's id, its state and its outcome.
- */
 export async function makeCallAttempt(
   ctx: FactoryContext,
   task: FixtureRef,
@@ -2003,7 +1671,6 @@ export async function makeCallAttempt(
   const now = ctx.services.clock.now();
   const state = options.state ?? 'ended';
   const ended = state === 'ended';
-
   const row = await ctx.services.db.callAttempt.create({
     data: {
       callTaskId: task.id,
@@ -2025,7 +1692,6 @@ export async function makeCallAttempt(
     },
     select: { id: true },
   });
-
   return { id: row.id, state, outcome: options.outcome ?? null };
 }
 
@@ -2039,16 +1705,6 @@ export interface ActivityFactFixture {
   readonly meetupId?: string;
 }
 
-/**
- * Write lodging-activity facts (AAP 0.5.7): one per pair, keyed by the pair's HMAC under
- * `ANALYTICS_SALT` and carrying no user id, which is what makes a leaderboard score survive a claim
- * deletion and an account erasure unchanged.
- *
- * @param ctx - The context whose client, environment and clock write the rows.
- * @param lodging - The lodging the facts count for.
- * @param facts - One entry per completed meetup.
- * @returns The ids of the rows written.
- */
 export async function makeActivityFacts(
   ctx: FactoryContext,
   lodging: FixtureRef,
@@ -2056,7 +1712,6 @@ export async function makeActivityFacts(
 ): Promise<readonly string[]> {
   const now = ctx.services.clock.now();
   const ids: string[] = [];
-
   for (const fact of facts) {
     const [left, right] = fact.pair;
     const row = await ctx.services.db.lodgingActivityFact.create({
@@ -2070,18 +1725,9 @@ export async function makeActivityFacts(
     });
     ids.push(row.id);
   }
-
   return ids;
 }
 
-/**
- * Record a block in one direction (AAP 0.5.3), which hides the two accounts from each other's
- * discovery and profile reads and is what a `GET /users/:userId` answers `404` for.
- *
- * @param ctx - The context whose client writes the row.
- * @param blocker - The account that blocked.
- * @param blocked - The account blocked.
- */
 export async function makeBlock(
   ctx: FactoryContext,
   blocker: FixtureRef,
@@ -2091,8 +1737,6 @@ export async function makeBlock(
     data: { blockerId: blocker.id, blockedId: blocked.id, createdAt: ctx.services.clock.now() },
   });
 }
-
-/* Flows through the real routes (AAP 0.5.4, 0.11.2) */
 
 /**
  * A signed-in fixture account: the row's id, and the session a request is made as.
@@ -2131,31 +1775,11 @@ export interface ProposeAndLockResult {
   readonly startsAt: Date;
 }
 
-/**
- * Walk the real proposal flow (AAP 0.5.4): the initiator's `POST /v1/meetups`, the recipient's first
- * read of the proposal — which is what records `recipientViewedAt` and emits `proposal_viewed` — and
- * the recipient's `POST /v1/meetups/:id/accept`.
- *
- * Both holds are real authorizations against the fixture accounts' saved cards, so the meetup ends
- * `locked` with two `held` deposits and the settlement, the messaging gate and the check-in window all
- * see what production would. The acceptance must come back `locked` and never `proposed`: a card that
- * needs 3-D Secure is a different fixture, and a case that wants that step takes it explicitly.
- *
- * Proposing needs a valid proof on both sides (AAP 0.5.4), so a proof is written for either account
- * that does not already hold one for the venue's city — once, never piling one up per call — unless
- * `proofs: false` asks for the refusal itself.
- *
- * @param t - The app under test, whose routes are injected and whose clock dates the tokens.
- * @param options - The two accounts, the venue and what to replace.
- * @returns The meetup's id and its start instant.
- * @throws {AssertionError} When any of the three steps answers outside its success range.
- */
 export async function proposeAndLock(
   t: TestApp,
   options: ProposeAndLockOptions,
 ): Promise<ProposeAndLockResult> {
   const startsAt = options.startsAt ?? new Date(t.services.clock.nowMs() + 2 * HOUR_MS);
-
   if (options.proofs !== false) {
     const venue = await t.services.db.venue.findUniqueOrThrow({
       where: { id: options.venue.id },
@@ -2173,7 +1797,6 @@ export async function proposeAndLock(
       }
     }
   }
-
   const proposed = await callRoute(t.app, {
     method: 'POST',
     url: '/v1/meetups',
@@ -2191,14 +1814,12 @@ export async function proposeAndLock(
     `POST /v1/meetups answered ${proposed.status}: ${proposed.body}`,
   );
   const created = ProposeResponse.parse(proposed.json());
-
   const viewed = await callRoute(t.app, {
     method: 'GET',
     url: `/v1/meetups/${created.meetupId}`,
     as: await t.tokenFor(options.recipient),
   });
   assert.equal(viewed.status, 200, `GET /v1/meetups/:id answered ${viewed.status}: ${viewed.body}`);
-
   const accepted = await callRoute(t.app, {
     method: 'POST',
     url: `/v1/meetups/${created.meetupId}/accept`,
@@ -2215,7 +1836,6 @@ export async function proposeAndLock(
     'locked',
     'the recipient hold did not authorize without customer action',
   );
-
   return { meetupId: created.meetupId, startsAt };
 }
 
@@ -2229,19 +1849,6 @@ export interface CheckInFlowOptions {
   readonly code?: string;
 }
 
-/**
- * Check one attendee in through the real route (AAP 0.5.7): the code is the one
- * `GET /v1/venue/check-in-code` derives from the venue's own secret, and the coordinates are offset
- * from the venue's stored location by `distanceM`, so the geofence and the distance bucket are
- * exact rather than incidental. Neither the code nor the coordinates are logged here.
- *
- * @param t - The app under test, whose console and check-in routes are injected.
- * @param user - The attendee's signed-in account.
- * @param meetup - The meetup, and the venue it happens at.
- * @param options - The venue's secret and, optionally, the distance and the code.
- * @returns The parsed `CheckInResponse`, whose `bothCheckedIn` mirrors `Meetup.bothCheckedInAt`.
- * @throws {AssertionError} When the console or the check-in route answers outside its success range.
- */
 export async function checkIn(
   t: TestApp,
   user: ActorRef,
@@ -2262,12 +1869,10 @@ export async function checkIn(
     );
     code = VenueCodeResponse.parse(displayed.json()).code;
   }
-
   const points = await readPoints(t.services.db, 'venue', [meetup.venueId], t.env.APP_ENV);
   const venue = points.get(meetup.venueId);
   assert.ok(venue !== undefined, 'the venue has no stored location to measure the geofence from');
   const at = offsetNorth(venue, options.distanceM ?? 20);
-
   const response = await callRoute(t.app, {
     method: 'POST',
     url: `/v1/meetups/${meetup.id}/check-in`,
@@ -2297,23 +1902,6 @@ export interface SignInResult {
   readonly user: VerifyResponse['user'];
 }
 
-/**
- * Sign in through the real routes (AAP 0.5.4), without a mail client: `POST /v1/auth/magic-link`,
- * then the newest `MagicLinkToken` for that address, whose `deliveryTokenCiphertext` holds the token
- * the workers' mailer would have sent — the value is decrypted here exactly as the mailer decrypts it
- * — and then `POST /v1/auth/verify`, which creates the account on first use.
- *
- * The consents call follows by default, so the account it returns passes the age gate and every
- * traveler route answers rather than `403 age_gate_required`. A case about the gate itself passes
- * `consent: false`.
- *
- * @param t - The app under test, whose auth routes are injected.
- * @param email - The address to sign in as; a first sign-in creates the account.
- * @param options - Whether to record the consents.
- * @returns The account's ids, its two tokens and the `MeDto` the verify route answered with.
- * @throws {AssertionError} When the link was not queued for delivery, or a route answers outside its
- *   success range.
- */
 export async function signIn(
   t: TestApp,
   email: string,
@@ -2329,7 +1917,6 @@ export async function signIn(
     202,
     `POST /v1/auth/magic-link answered ${requested.status}: ${requested.body}`,
   );
-
   const pending = await t.services.db.magicLinkToken.findFirst({
     where: { emailLookupHash: emailLookupHash(t.env.EMAIL_LOOKUP_PEPPER, email), usedAt: null },
     orderBy: { createdAt: 'desc' },
@@ -2340,7 +1927,6 @@ export async function signIn(
     ciphertext !== null,
     'the magic link holds no delivery token: the link was already sent, or the token expired',
   );
-
   const verified = await callRoute(t.app, {
     method: 'POST',
     url: '/v1/auth/verify',
@@ -2353,7 +1939,6 @@ export async function signIn(
   );
   const session = VerifyResponse.parse(verified.json());
   const claims = await verifyAccessToken(t.services, session.accessToken);
-
   if (options.consent !== false) {
     const consented = await callRoute(t.app, {
       method: 'POST',
@@ -2367,7 +1952,6 @@ export async function signIn(
       `POST /v1/me/consents answered ${consented.status}: ${consented.body}`,
     );
   }
-
   return {
     userId: claims.sub,
     sessionId: claims.sid,
@@ -2376,8 +1960,6 @@ export async function signIn(
     user: session.user,
   };
 }
-
-/* Route helpers (AAP 0.11.1, 0.12.1) */
 
 /** One injected request. */
 export interface RouteRequest {
@@ -2405,35 +1987,23 @@ export interface RouteResponse {
   json<T = unknown>(): T;
 }
 
-/**
- * Inject one request into the app (AAP 0.11.1): no socket is opened, so a suite drives the real
- * routes at its own pace, and the status, the raw body, the headers and the parsed body all come back
- * for the assertion the case makes.
- *
- * @param app - The built app.
- * @param request - The method, the path, and who it is made as.
- * @returns The answer.
- */
 export async function callRoute(app: App, request: RouteRequest): Promise<RouteResponse> {
   const encoded = request.query === undefined ? '' : new URLSearchParams(request.query).toString();
   const url =
     encoded === ''
       ? request.url
       : `${request.url}${request.url.includes('?') ? '&' : '?'}${encoded}`;
-
   const headers: Record<string, string> = { ...request.headers };
   const bearer = typeof request.as === 'string' ? request.as : request.as?.accessToken;
   if (bearer !== undefined) {
     headers.authorization = `Bearer ${bearer}`;
   }
-
   const injected = await app.inject({
     method: request.method,
     url,
     headers,
     ...(request.body === undefined ? {} : { payload: request.body }),
   });
-
   return {
     status: injected.statusCode,
     body: injected.body,
@@ -2442,18 +2012,6 @@ export async function callRoute(app: App, request: RouteRequest): Promise<RouteR
   };
 }
 
-/**
- * Assert that an answer is the error envelope with `code` and `status` (AAP 0.5.4), and return it.
- *
- * The status is checked before the body so a route that answered something else entirely reports what
- * it answered, and the message is required to be non-empty because a client renders it.
- *
- * @param response - The answer to check.
- * @param status - The HTTP status the code maps to.
- * @param code - The error code the envelope must carry.
- * @returns The parsed envelope, for a case that asserts more of the message.
- * @throws {AssertionError} On a different status, a body that is not the envelope, or a wrong code.
- */
 export function expectError(
   response: RouteResponse,
   status: number,
@@ -2464,31 +2022,18 @@ export function expectError(
     status,
     `expected ${status} ${code}, received ${response.status}: ${response.body}`,
   );
-
   const parsed = ErrorEnvelope.safeParse(response.json());
   if (!parsed.success) {
     assert.fail(`the body is not the error envelope: ${response.body}`);
   }
-
   assert.equal(
     parsed.data.error.code,
     code,
     `expected ${code}, received ${parsed.data.error.code}`,
   );
-
   return parsed.data;
 }
 
-/**
- * Every key path a JSON value carries, sorted: `counterpart.reputation.witnessedMeetups` for a nested
- * field, `items[].id` for a list's elements.
- *
- * This is what the disclosure cases compare (criterion 5): two profiles a tier apart must differ in
- * exactly the allowed paths and in no others, which a per-field assertion cannot show.
- *
- * @param value - The parsed body.
- * @returns The sorted paths of every scalar leaf, and of every empty list.
- */
 export function keysDeep(value: unknown): string[] {
   const paths = new Set<string>();
   collectKeys(value, '', paths);
@@ -2518,13 +2063,6 @@ function collectKeys(value: unknown, prefix: string, paths: Set<string>): void {
   }
 }
 
-/**
- * A table for `it.each`, as an array: the typed identity a suite wraps its rows in so the case's own
- * parameters are inferred from them.
- *
- * @param table - The rows, one per case.
- * @returns The same rows.
- */
 export function rows<T>(table: readonly T[]): T[] {
   return [...table];
 }
@@ -2532,14 +2070,6 @@ export function rows<T>(table: readonly T[]): T[] {
 /** The two labels every recorded result is tagged with (AAP 0.12.1). */
 export type StripeModeLabel = '[stripe:mock]' | '[stripe:test]';
 
-/**
- * The tag a case's title carries, so a run's results say which Stripe topology produced them
- * (AAP 0.12.1): `docs/acceptance.md` records mock evidence and test-mode evidence apart, and a title
- * is what a run's output carries into it.
- *
- * @param mode - The topology; the shell's `STRIPE_MODE` unless given.
- * @returns The tag.
- */
 export function stripeModeLabel(
   mode: 'mock' | 'test' = process.env['STRIPE_MODE'] === 'test' ? 'test' : 'mock',
 ): StripeModeLabel {

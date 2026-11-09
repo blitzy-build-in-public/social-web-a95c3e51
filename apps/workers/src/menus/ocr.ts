@@ -61,7 +61,6 @@ export type OcrFailureReason = 'too_large' | 'unsupported_image' | 'timeout' | '
 export class OcrError extends Error {
   /** Which of the bounded ways the attempt failed (AAP 0.5.6). */
   readonly reason: OcrFailureReason;
-
   constructor(reason: OcrFailureReason, message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'OcrError';
@@ -77,14 +76,6 @@ export class OcrError extends Error {
  * reads that PNG from stdin in `opts.language` plus English: the city's language carries the menu's
  * own words, English the loanwords and numerals. `--psm 6`, "a single uniform block of text", is the
  * page-segmentation mode for a menu, and all Thai needs — `tha` takes no extra flag.
- *
- * @param bytes The image's bytes, exactly as fetched.
- * @param opts.language The OCR language for the destination city (see {@link ocrLanguageFor}).
- * @param opts.timeoutMs How long Tesseract may run; {@link OCR_TIMEOUT_MS} by default.
- * @returns The recognized text, newline-normalized, with trailing whitespace removed.
- * @throws {OcrError} `too_large` above {@link MAX_IMAGE_PIXELS}, `unsupported_image` when the bytes
- *   are not a decodable image, `timeout` when Tesseract outlives the timeout, and `tesseract_failed`
- *   when it exits unsuccessfully — a missing binary included.
  */
 export async function ocrImage(
   bytes: Uint8Array,
@@ -92,7 +83,6 @@ export async function ocrImage(
 ): Promise<string> {
   const png = await normalizeToPng(bytes);
   const text = await runTesseract(png, opts.language, opts.timeoutMs ?? OCR_TIMEOUT_MS);
-
   return text.replace(/\r\n/gu, '\n').trimEnd();
 }
 
@@ -110,7 +100,6 @@ async function normalizeToPng(bytes: Uint8Array): Promise<Buffer> {
     if (isPixelLimitError(error)) {
       throw new OcrError('too_large', `image exceeds ${MAX_IMAGE_PIXELS} pixels`, { cause: error });
     }
-
     throw new OcrError('unsupported_image', 'image could not be decoded', { cause: error });
   }
 }
@@ -127,7 +116,6 @@ function isPixelLimitError(error: unknown): boolean {
  */
 function runTesseract(png: Buffer, language: OcrLanguage, timeoutMs: number): Promise<string> {
   const languages = language === 'eng' ? 'eng' : `${language}+eng`;
-
   return new Promise<string>((resolve, reject) => {
     const child = execFile(
       'tesseract',
@@ -138,11 +126,9 @@ function runTesseract(png: Buffer, language: OcrLanguage, timeoutMs: number): Pr
           resolve(stdout);
           return;
         }
-
         reject(toOcrError(error, timeoutMs));
       },
     );
-
     // A child that has already exited — a spawn failure, or the kill on timeout — makes the stdin
     // write raise EPIPE. The callback above carries the real reason, so the stream error is consumed
     // here rather than escaping as an unhandled event.
@@ -155,12 +141,9 @@ function runTesseract(png: Buffer, language: OcrLanguage, timeoutMs: number): Pr
 function toOcrError(error: ExecFileException, timeoutMs: number): OcrError {
   // A stdout `maxBuffer` overflow also leaves `killed` set, and it is a failed run, not a timeout.
   const timedOut = error.killed === true && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-
   if (timedOut) {
     return new OcrError('timeout', `tesseract exceeded ${timeoutMs} ms`, { cause: error });
   }
-
   const status = error.code ?? error.signal ?? 'no exit status';
-
   return new OcrError('tesseract_failed', `tesseract failed (${String(status)})`, { cause: error });
 }

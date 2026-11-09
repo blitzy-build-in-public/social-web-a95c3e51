@@ -1,28 +1,22 @@
 /**
- * The transactional-outbox poller (AAP 0.3.2, 0.5.1, 0.5.6): the one place an `OutboxMessage`
- * reaches BullMQ, and what makes Redis availability "never a condition of outbox durability or of
- * settlement" (AAP 0.3.2).
+ * The transactional-outbox poller (AAP 0.3.2, 0.5.1, 0.5.6): the one place an `OutboxMessage` reaches BullMQ, and
+ * what makes Redis availability "never a condition of outbox durability or of settlement" (AAP 0.3.2).
  *
- * `outbox/write.ts` commits a row inside the same transaction as the domain change it describes and
- * then calls {@link OutboxDispatcher.kick}. This poller takes every row that is still undispatched —
- * including one whose kick was lost to a crash, and one written while Redis was down — enqueues it
- * into its target queue under `jobId = outbox-<id>`, and only then marks it dispatched. A row that
- * could not be enqueued is left exactly as it was and delivered by a later pass, so no funnel event
- * and no safety notification is lost to an outage.
+ * `outbox/write.ts` commits a row inside the same transaction as the domain change it describes and then calls
+ * {@link OutboxDispatcher.kick}. This poller takes every row that is still undispatched — including one whose kick
+ * was lost to a crash, and one written while Redis was down — enqueues it into its target queue under
+ * `jobId = outbox-<id>`, and only then marks it dispatched. A row that could not be enqueued is left exactly as it
+ * was and delivered by a later pass, so no funnel event and no safety notification is lost to an outage.
  *
- * **No cross-instance lock is needed.** Two API instances may enqueue the same row: BullMQ
- * suppresses a duplicate custom `jobId` while the job is retained (`removeOnComplete` keeps 1,000),
- * and every consumer is idempotent on `outboxId`. **Ordering:** rows are enqueued in `created_at`
- * order within one pass; order across queues or passes is not guaranteed, so no consumer may depend
- * on it. **Durability:** a row is durable from its domain commit, and an outage only delays it.
+ * **No cross-instance lock is needed.** Two API instances may enqueue the same row: BullMQ suppresses a duplicate
+ * custom `jobId` while the job is retained (`removeOnComplete` keeps 1,000), and every consumer is idempotent on
+ * `outboxId`. **Ordering:** rows are enqueued in `created_at` order within one pass; order across queues or passes
+ * is not guaranteed, so no consumer may depend on it. **Durability:** a row is durable from its domain commit, and
+ * an outage only delays it.
  *
- * Log lines carry the row's id, its kind, a count and the failure's own code — never the payload,
- * and never an error object, whose message and stack pino writes as strings that key-based
- * redaction cannot rewrite (AAP 0.11.1).
- *
- * @see AAP 0.3.2 for the outbox's routing and idempotency rules, 0.5.1 for this file's place in the
- *   outbox component, 0.5.6 for the poller in the job table (`dispatchPending()` after each commit
- *   and every 2 s), and 0.8.1 for this file.
+ * Log lines carry the row's id, its kind, a count and the failure's own code — never the payload, and never an
+ * error object, whose message and stack pino writes as strings that key-based redaction cannot rewrite
+ * (AAP 0.11.1).
  */
 
 import {
@@ -49,46 +43,40 @@ export type OutboxDispatcherServices = Pick<
 >;
 
 /**
- * The poller `app.ts` holds as `services.outbox` (AAP 0.5.1).
- *
- * `start` drives the two-second pass and hands back the stop function `app.ts` registers on close;
- * `kick` is what `outbox/write.ts` calls after a commit, and `runOnce` is what the test-control
- * routes and `settleNow` call when they have to observe a committed row immediately.
+ * The poller `app.ts` holds as `services.outbox` (AAP 0.5.1). `start` drives the two-second pass and hands back the
+ * stop function `app.ts` registers on close; `kick` is what `outbox/write.ts` calls after a commit, and `runOnce`
+ * is what the test-control routes and `settleNow` call when they have to observe a committed row immediately.
  */
 export interface OutboxDispatcher {
   /**
    * Ask for a pass without waiting for it; called after a commit that wrote outbox rows.
    *
-   * Never throws. Concurrent calls coalesce onto one pass, with at most one further pass queued
-   * behind the one in flight, so ten rapid kicks cost two passes rather than ten. A no-op once the
-   * stop function has run, and it works whether or not `start` was called, so a suite that never
-   * starts background work still delivers after its commits.
+   * Never throws. Concurrent calls coalesce onto one pass, with at most one further pass queued behind the one in
+   * flight, so ten rapid kicks cost two passes rather than ten. A no-op once the stop function has run, and it works
+   * whether or not `start` was called.
    */
   kick(): void;
   /**
-   * Run one pass and resolve with the number of rows it marked dispatched. The pass begins no
-   * earlier than this call, so a caller that has just committed a row sees that row delivered. It
-   * never rejects.
+   * Run one pass and resolve with the number of rows it marked dispatched. The pass begins no earlier than this
+   * call, so a caller that has just committed a row sees that row delivered. It never rejects.
    */
   runOnce(): Promise<number>;
   /**
-   * Start the poller: one immediate pass, for the rows a restart left behind, then one every
-   * `intervalMs`.
+   * Start the poller: one immediate pass, for the rows a restart left behind, then one every `intervalMs`.
    *
-   * @param intervalMs - the polling period. `app.ts` passes 2,000 (AAP 0.5.6).
-   * @returns the stop function: it stops the timer and resolves once the pass in flight and the one
-   * queued behind it have ended, so `app.ts` may await it before it closes Prisma and Redis.
-   * @throws Error when the dispatcher has already been started. Restarting is refused rather than
-   * permitted, because `kick` no-ops after a stop.
+   * @returns the stop function: it stops the timer and resolves once the pass in flight and the one queued behind
+   *   it have ended, so `app.ts` may await it before it closes Prisma and Redis.
+   * @throws Error when the dispatcher has already been started. Restarting is refused rather than permitted, because
+   *   `kick` no-ops after a stop.
    */
   start(intervalMs: number): () => Promise<void>;
 }
 
 /**
- * The failures that mean Redis, not the job, is the problem: the enqueue never reached a server, or
- * the connection is down. One of them ends a pass early, because walking the remaining rows would
- * only repeat the same failure a hundred times while the commit hook that wrote them waits for
- * nothing (AAP 0.3.2). Everything else is that one row's own failure, and the pass continues.
+ * The failures that mean Redis, not the job, is the problem: the enqueue never reached a server, or the connection is
+ * down. One of them ends a pass early, because walking the remaining rows would only repeat the same failure a
+ * hundred times while the commit hook that wrote them waits for nothing (AAP 0.3.2). Everything else is that one
+ * row's own failure, and the pass continues.
  */
 const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
   'ECONNREFUSED',
@@ -99,11 +87,10 @@ const CONNECTION_FAILURE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The messages ioredis gives the failures that mean the connection, not the job, is the problem: a
- * command it gave up on after the fail-fast `producer` connection's own command timeout
- * (`Command timed out`, the same condition as {@link OUTBOX_ENQUEUE_TIMEOUT_MS} firing first), a
- * command issued while the socket is not writable (`enableOfflineQueue: false`, the `producer` role
- * of `queues/connection.ts`), and a command issued on a closed connection.
+ * The messages ioredis gives the failures that mean the connection, not the job, is the problem: a command it gave
+ * up on after the fail-fast `producer` connection's own command timeout (the same condition as
+ * {@link OUTBOX_ENQUEUE_TIMEOUT_MS} firing first), a command issued while the socket is not writable
+ * (`enableOfflineQueue: false`), and a command issued on a closed connection.
  */
 const CONNECTION_FAILURE_MESSAGES: readonly string[] = [
   'Command timed out',
@@ -115,8 +102,8 @@ const CONNECTION_FAILURE_MESSAGES: readonly string[] = [
 const MAX_RETRIES_ERROR_NAME = 'MaxRetriesPerRequestError';
 
 /**
- * An enqueue that outlived {@link OUTBOX_ENQUEUE_TIMEOUT_MS}. A class rather than a bare `Error`,
- * because the pass has to tell its own timeout from a timeout a provider raised.
+ * An enqueue that outlived {@link OUTBOX_ENQUEUE_TIMEOUT_MS}. A class rather than a bare `Error`, because the pass
+ * has to tell its own timeout from a timeout a provider raised.
  */
 class OutboxEnqueueTimeoutError extends Error {
   constructor() {
@@ -126,10 +113,9 @@ class OutboxEnqueueTimeoutError extends Error {
 }
 
 /**
- * The failure's own short code, for the log line: a Node system code (`ECONNREFUSED`) or a driver
- * code (`P1001`). Never the error itself and never its message — pino writes both as strings that
- * key-based redaction cannot rewrite, and an ioredis failure's text carries the host it reached
- * (AAP 0.11.1).
+ * The failure's own short code, for the log line: a Node system code (`ECONNREFUSED`) or a driver code (`P1001`).
+ * Never the error itself and never its message — pino writes both as strings that key-based redaction cannot
+ * rewrite, and an ioredis failure's text carries the host it reached (AAP 0.11.1).
  */
 function failureCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) {
@@ -140,12 +126,11 @@ function failureCode(error: unknown): string | undefined {
 }
 
 /**
- * The one test for "this failure means Redis is unreachable", so a caller never has to decide twice
- * and no future caller can forget a case (AAP 0.3.2).
+ * The one test for "this failure means Redis is unreachable", so a caller never has to decide twice and no future
+ * caller can forget a case (AAP 0.3.2).
  *
- * @param error - the value a failed enqueue rejected with.
- * @param producerStatus - `services.redis.producer.status` as it stands at that moment: anything
- *   other than `ready` means the next row would fail the same way.
+ * @param producerStatus - `services.redis.producer.status` as it stands at that moment: anything other than `ready`
+ *   means the next row would fail the same way.
  */
 function isConnectionFailure(error: unknown, producerStatus: string): boolean {
   if (error instanceof OutboxEnqueueTimeoutError) {
@@ -170,12 +155,10 @@ function isConnectionFailure(error: unknown, producerStatus: string): boolean {
 /**
  * Build the outbox poller over the app's services (AAP 0.3.2, 0.5.1).
  *
- * Every service is read at pass time rather than captured here, because `app.ts` builds its
- * container in steps and `services.outbox` is this dispatcher. At most one pass runs at a time and
- * at most one waits behind it, so two passes can never interleave their batches.
+ * Every service is read at pass time rather than captured here, because `app.ts` builds its container in steps and
+ * `services.outbox` is this dispatcher. At most one pass runs at a time and at most one waits behind it, so two
+ * passes can never interleave their batches.
  *
- * @param services - the database client, the injected clock, the logger, the queue registry and the
- *   Redis connections: `db`, `clock`, `logger`, `queues`, `redis`.
  * @returns the dispatcher `app.ts` stores as `services.outbox`.
  */
 export function createOutboxDispatcher(services: OutboxDispatcherServices): OutboxDispatcher {
@@ -187,20 +170,17 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
   let stopped = false;
   /** Whether `start` has been called, so a second call is refused rather than half-working. */
   let started = false;
-
   /**
    * Schedule a pass behind everything already scheduled, or join the one already waiting.
    *
-   * A call made while a pass is queued joins that pass; a call made while one is *running* queues
-   * one behind it, which reads every row committed before the call. `queued` is cleared as the pass
-   * begins, which is what makes a running pass invisible to this test and gives those two cases one
-   * rule.
+   * A call made while a pass is queued joins that pass; a call made while one is *running* queues one behind it,
+   * which reads every row committed before the call. `queued` is cleared as the pass begins, which is what gives
+   * those two cases one rule.
    */
   function enqueuePass(): Promise<number> {
     if (queued !== null) {
       return queued;
     }
-
     const next = chain.then(async () => {
       queued = null;
       return pass();
@@ -214,14 +194,12 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
     queued = next;
     return next;
   }
-
   function kick(): void {
     if (stopped) {
       return;
     }
     void enqueuePass();
   }
-
   async function pass(): Promise<number> {
     try {
       return await dispatchBatch();
@@ -235,11 +213,9 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
       return 0;
     }
   }
-
   /** One pass: read a batch, enqueue it in order, and mark what was delivered (AAP 0.5.6). */
   async function dispatchBatch(): Promise<number> {
     const { db, clock, logger } = services;
-
     let rows: readonly OutboxMessageRow[];
     try {
       rows = await db.outboxMessage.findMany({
@@ -253,9 +229,7 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
       logger.warn({ event: 'outbox_pass_failed', code: failureCode(error) }, 'outbox_pass_failed');
       return 0;
     }
-
     let dispatched = 0;
-
     for (const row of rows) {
       let job: OutboxJob;
       try {
@@ -275,7 +249,6 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
         );
         continue;
       }
-
       try {
         await enqueue(job);
       } catch (error) {
@@ -294,7 +267,6 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
         }
         continue;
       }
-
       try {
         const marked = await db.outboxMessage.updateMany({
           where: { id: row.id, dispatchedAt: null },
@@ -314,26 +286,23 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
         );
       }
     }
-
     if (dispatched > 0) {
       logger.debug({ event: 'outbox_dispatched', count: dispatched }, 'outbox_dispatched');
     }
     return dispatched;
   }
-
   /**
    * Add one row's job to its queue, giving up on the add after {@link OUTBOX_ENQUEUE_TIMEOUT_MS}.
    *
-   * BullMQ can wait for a connection to become ready, and a pass must never hang on that wait. An
-   * add that times out and finishes afterwards is harmless: the `outbox-<id>` job id deduplicates
-   * it. Its rejection is handled here so the abandoned add cannot surface as an unhandled rejection.
+   * BullMQ can wait for a connection to become ready, and a pass must never hang on that wait. An add that times out
+   * and finishes afterwards is harmless, because the `outbox-<id>` job id deduplicates it. Its rejection is handled
+   * here so the abandoned add cannot surface as an unhandled rejection.
    */
   async function enqueue(job: OutboxJob): Promise<void> {
     const added = services.queues
       .get(job.queue)
       .add(job.name, job.data, jobOptionsFor(job.queue, { jobId: job.jobId }));
     void added.catch(() => undefined);
-
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -349,7 +318,6 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
       clearTimeout(timer);
     }
   }
-
   /** Record one attempt on a row that could not be dispatched. Diagnostic only, never a limit. */
   async function bumpTries(outboxId: string): Promise<void> {
     try {
@@ -364,14 +332,11 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
       );
     }
   }
-
   return {
     kick,
-
     runOnce(): Promise<number> {
       return enqueuePass();
     },
-
     start(intervalMs: number): () => Promise<void> {
       if (started) {
         throw new Error('outbox dispatcher already started');
@@ -384,7 +349,6 @@ export function createOutboxDispatcher(services: OutboxDispatcherServices): Outb
         kick();
       }, intervalMs);
       timer.unref();
-
       return async () => {
         stopped = true;
         clearInterval(timer);

@@ -1,10 +1,10 @@
 /**
  * The venue console's clock arithmetic (AAP 0.5.1, 0.5.7, 0.12.2). A code is accepted on the server
- * clock alone, so the console derives nothing: it renders the server's `{ code, expiresAt }` and
- * reads the gap between the two clocks from each response's `Date` header as `serverNow = deviceNow
- * + offset`, which cancels a device skew of up to two minutes. Every instant here is explicit -- no
- * timers, no `Date.now()`, no DOM -- so both clocks are pinned and the skew is a parameter. The
- * browser-level case is `apps/mobile/e2e/playwright/console-clock.spec.ts`.
+ * clock alone, so the console derives nothing: it renders the server's `{ code, expiresAt }` and reads
+ * the gap between the two clocks from each response's `Date` header as `serverNow = deviceNow +
+ * offset`, which cancels a device skew. Every instant here is explicit -- no timers, no `Date.now()`,
+ * no DOM -- so both clocks are pinned and the skew is a parameter. The browser-level case is
+ * `apps/mobile/e2e/playwright/console-clock.spec.ts`.
  */
 
 import { CODE_STEP_SECONDS, CODE_TOLERANCE_STEPS } from '@tablemate/shared';
@@ -29,11 +29,9 @@ import {
  */
 const TOLERANCE_MS = 60_000;
 
-/**
- * The server instant the sampled response was handled, 700 ms into its second deliberately: a `Date`
+/** The server instant the sampled response was handled, 700 ms into its second deliberately: a `Date`
  * header carries whole seconds, so on an exact second the estimate would inherit the header's own
- * resolution and the countdown below would read 42 instead of 43.
- */
+ * resolution and the countdown below would read 42 instead of 43. */
 const SERVER_HANDLED_MS = Date.UTC(2026, 10, 4, 20, 17, 5, 700);
 
 /** The instant that response's code expires: 42.3 s after it was handled. */
@@ -98,7 +96,6 @@ describe('parseHttpDate', () => {
     // `Date.parse` alone would read this ISO form in the device's own zone.
     ['2026-11-04T20:17:05.700Z', null],
   ];
-
   it.each(CASES)('reads %j as %j', (header, expected) => {
     expect(parseHttpDate(header)).toBe(expected);
   });
@@ -113,11 +110,9 @@ describe('the offset under device skew', () => {
     reference.offsetMs,
   );
   const trueDelayMs = EXPIRES_AT_MS + 250 - (SERVER_HANDLED_MS + ROUND_TRIP_MS / 2);
-
   it.each(SKEWS_MS)('skew %i ms leaves the countdown and the poll delay unchanged', (skewMs) => {
     const clock = skewedClock(skewMs);
     const delayMs = msUntilServerTime(EXPIRES_AT_MS + 250, clock.deviceNowMs, clock.offsetMs);
-
     // The estimate is the round-trip midpoint of the header's second, so it is the skew inverted.
     expect(clock.offsetMs).toBe(-skewMs - ROUND_TRIP_MS);
     expect(Math.abs(clock.offsetMs + skewMs)).toBeLessThanOrEqual(ESTIMATE_ERROR_MS);
@@ -137,7 +132,6 @@ describe('secondsLeft', () => {
     [0, 0],
     [-5_000, 0],
   ];
-
   it.each(CASES)('%i ms left on the server clock reads %i s', (expiresAtMs, expected) => {
     expect(secondsLeft(expiresAtMs, 0)).toBe(expected);
   });
@@ -151,7 +145,6 @@ describe('msUntilServerTime', () => {
     // A device running behind the server: the offset carries the target back into device units.
     [10_000, 12_000, -3_000, 1_000],
   ];
-
   it.each(CASES)('target %i, device %i, offset %i -> %i ms', (target, device, offset, expected) => {
     expect(msUntilServerTime(target, device, offset)).toBe(expected);
   });
@@ -166,7 +159,6 @@ describe('isStale', () => {
     [EXPIRES_AT_MS + TOLERANCE_MS, true],
     [EXPIRES_AT_MS + 2 * TOLERANCE_MS, true],
   ];
-
   it.each(CASES)('server clock at %i -> %s', (serverNow, expected) => {
     expect(isStale(EXPIRES_AT_MS, serverNow)).toBe(expected);
   });

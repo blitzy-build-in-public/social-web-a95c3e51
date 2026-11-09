@@ -50,11 +50,6 @@
  * windows at once (AAP 0.11.1). And both raw reads carry `fixturePredicate` for the `place` and for
  * the `price_record` they scan, because raw SQL bypasses the guarded client's fixture filter
  * (AAP 0.5.2).
- *
- * @see AAP 0.5.6 for the job table (daily per city, "re-queues stale records"), 0.5.7 for the two
- *   freshness windows and the estimate's current-set rule, 0.5.3 for the call-task lifecycle the
- *   outstanding-work exclusion reads, 0.5.2 for the fixture environments, 0.3.2 for the idempotency
- *   rules, 0.11.1 for the clock, and 0.8.1 for this file.
  */
 
 import { Prisma, fixturePredicate } from '@tablemate/db';
@@ -137,12 +132,6 @@ export interface PriceFreshnessResult {
  * whose fallback call is in flight buys nothing — and skipping it is what makes the bounded page
  * advance: with a bare `LIMIT` the same outstanding places would hold the head of every run's page
  * until their calls resolved, and the places behind them would never be reached.
- *
- * @param ctx - The worker context: the guarded client and the `APP_ENV` both predicates read.
- * @param cityId - The city whose places are examined; an unknown slug matches no row and reports
- *   nothing rather than failing, because the scheduler only ever enqueues configured cities.
- * @param onlineCutoff - The freshness floor for an online record, `now - 30 days`.
- * @returns The place ids, deterministic in id order and at most `STALE_PLACE_BATCH` of them.
  */
 async function placesWithStaleOnlinePrices(
   ctx: WorkerContext,
@@ -182,7 +171,6 @@ async function placesWithStaleOnlinePrices(
      ORDER BY "p"."id" ASC
      LIMIT ${STALE_PLACE_BATCH}::int
   `);
-
   return rows.map((row) => row.id);
 }
 
@@ -199,12 +187,6 @@ async function placesWithStaleOnlinePrices(
  * selection is bounded at all: `ensureMenuPricesTask` opens no second task for it — it takes a
  * transaction and a per-place advisory lock only to answer `false` — so a page that kept returning
  * such a place would spend the run on it and never reach the places behind it.
- *
- * @param ctx - The worker context: the guarded client and the `APP_ENV` both predicates read.
- * @param cityId - The city whose places are examined.
- * @param phoneCutoff - The freshness floor for a phone or operator record, `now - 60 days`.
- * @param onlineCutoff - The freshness floor for an online record, `now - 30 days`.
- * @returns The place ids, deterministic in id order and at most `STALE_PLACE_BATCH` of them.
  */
 async function placesWithStalePhonePrices(
   ctx: WorkerContext,
@@ -253,7 +235,6 @@ async function placesWithStalePhonePrices(
      ORDER BY "p"."id" ASC
      LIMIT ${STALE_PLACE_BATCH}::int
   `);
-
   return rows.map((row) => row.id);
 }
 
@@ -279,43 +260,28 @@ async function placesWithStalePhonePrices(
  * place where a `doNotCall` place and a place with a call already open are refused. The two counts
  * this returns are what the producers reported and not what was selected: `menuJobs` repeats on a
  * re-run whose jobs the queue already holds, while `callTasks` counts only the tasks the run opened.
- *
- * @param job - The BullMQ job: its name and unparsed data.
- * @param ctx - The worker context: the clock the windows are measured from, the logger, the guarded
- *   client, and the producers `enqueueMenuIngest` reaches through `ctx.queues`.
- * @returns What the run re-queued, under the fields it logged.
- * @throws QueuePayloadError when the name is not this queue's or the data does not match its
- *   schema, and `Error` from `enqueueMenuIngest` when the `menu-ingest` producer is missing, which
- *   is a configuration fault rather than a property of a city. Every other failure is left to the
- *   queue's five tries (AAP 0.5.6).
  */
 export async function process(
   job: PriceFreshnessJob,
   ctx: WorkerContext,
 ): Promise<PriceFreshnessResult> {
   const queue = QUEUE.priceFreshness;
-
   if (!isJobName(queue, job.name)) {
     // Also the shape of the refusal `queues.ts` raises for an unknown job name, so a job that
     // reaches this processor by a direct test call fails the same way one through the queue does.
     throw new QueuePayloadError(`${queue}/${job.name}`);
   }
-
   const { cityId } = parseJobData(queue, job.name, job.data);
-
   // Both windows are measured from the injected clock and bound as parameters, so a test that moves
   // the clock by 31 or 61 days moves the selection with it (AAP 0.11.1).
   const now = ctx.clock.now();
   const onlineCutoff = new Date(now.getTime() - FRESHNESS_ONLINE_DAYS * DAY_MS);
   const phoneCutoff = new Date(now.getTime() - FRESHNESS_PHONE_OPERATOR_DAYS * DAY_MS);
-
   const menuJobs = await enqueueMenuIngest(
     ctx,
     await placesWithStaleOnlinePrices(ctx, cityId, onlineCutoff),
   );
-
   const stalePhonePlaces = await placesWithStalePhonePrices(ctx, cityId, phoneCutoff, onlineCutoff);
-
   // One at a time: `ensureMenuPricesTask` takes a per-place advisory lock in its own transaction, so
   // a sweep that opened them together would hold as many connections as the city has places.
   let callTasks = 0;
@@ -324,15 +290,12 @@ export async function process(
       callTasks += 1;
     }
   }
-
   const result: PriceFreshnessResult = {
     event: 'price_freshness',
     cityId,
     menuJobs,
     callTasks,
   };
-
   ctx.logger.info(result, 'price_freshness');
-
   return result;
 }

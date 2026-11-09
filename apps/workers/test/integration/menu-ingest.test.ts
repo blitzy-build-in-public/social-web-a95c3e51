@@ -1,37 +1,6 @@
 /**
  * Integration tests for the fetch-to-stored-price pipeline of `apps/workers/src/jobs/menu-ingest.ts`
  * against the local fixture sites in `apps/workers/test/fixtures/sites/` (AAP 0.5.6, 0.11.2).
- *
- * The suite runs inside the integration project of `vitest.config.ts`, so it shares the real
- * PostgreSQL 16 with PostGIS 3.4 and the real Redis its `globalSetup` starts, builds the worker
- * context over them (`createTestApp`, `testWorkersEnv`, `createWorkerContext`) and reads what the job
- * stored through `testApp.services.db` with time from the shared test clock alone (AAP 0.11.2).
- * Nothing reaches the network: the four fixture pages, the `robots.txt` they publish, the menu PDF
- * and the FX table are served by one in-file HTTP server on loopback, and every host name resolves
- * through the injected `lookup`, which answers no other name (AAP 0.5.6).
- *
- * What it proves, in the order the cases run:
- *
- *   1. A priced page is read, extracted and gated into one `PriceRecord` batch: the eight items of
- *      `menu-html` — the no-break space and the split price span included — with the one item the
- *      page never printed dropped by the source gate, which is criterion 11's 100% guarantee
- *      (AAP 0.12.2). The linked PDF of `menu-pdf-link` yields its own ten items beside the page's
- *      two, and `activity-tickets` stores six tickets with their `perPerson` flag and admission type
- *      (AAP 0.5.6).
- *   2. Every way a place can fail to yield five priced items takes the phone fallback instead
- *      (AAP 0.5.6): a path `robots.txt` disallows, a blocklisted domain, a domain an operator
- *      prohibited, one nobody has reviewed, a place with no link, a login wall and a document that
- *      leaves too few items. Each row asserts a recorded zero rather than an assumed one — no request
- *      to the site, no resolver call, no language-model send — and the last row is the control that
- *      the same arrangement does fetch, extract and store when the domain is allowed.
- *   3. One site's requests are spaced at least a second apart, a spent language-model budget defers a
- *      place to 00:05 local the next day under a stable job id, and the city fan-out queues exactly
- *      the places whose online prices are missing or stale (AAP 0.5.6, 0.5.7).
- *
- * @see AAP 0.5.6 for the pipeline, its bounds, the fallback, the ticket fields and the cap, 0.5.7 for
- *   the capture precedence the fan-out reads, 0.11.2 for the integration layer and the fixtures,
- *   0.12.2 for the crawl-rule and source-gate constraints this suite is the check of, and 0.8.1 for
- *   this file's inventory row.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -77,12 +46,9 @@ import { registrableDomain } from '../../src/menus/crawl-policy.ts';
 import type { LookupFn } from '../../src/menus/safe-fetch.ts';
 import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
-/* The city, the instant and the queue vocabulary of one run (AAP 0.5.2, 0.5.6) */
-
 /** The launch city every case works in: configured, so `seedCities` writes its zone and currency. */
 const CITY = 'lisbon';
 
-/** The city's own zone, which its local day and the 00:05 deferral are computed in (AAP 0.11.1). */
 const CITY_TZ = 'Europe/Lisbon';
 
 /**
@@ -92,12 +58,10 @@ const CITY_TZ = 'Europe/Lisbon';
  */
 const NOW = new Date(DEFAULT_TEST_NOW);
 
-/** The two job names of the queue under test and the one of the FX queue (AAP 0.5.6). */
 const INGEST = JOB[QUEUE.menuIngest].ingest;
 const INGEST_CITY = JOB[QUEUE.menuIngest].ingestCity;
 const FX_REFRESH = JOB[QUEUE.fxRefresh].refresh;
 
-/** The one call-task kind this pipeline opens: a menu price read over the phone (AAP 0.5.6). */
 const MENU_PRICES = 'menu_prices';
 
 /** The three fixture host names besides the loopback literal, each a distinct registrable domain. */
@@ -117,8 +81,6 @@ const PRIVATE_HOSTS: readonly string[] = [
   UNCERTAIN_HOST,
 ];
 
-/* The fixture sites, their pages and the two recorded provider answers (AAP 0.5.6) */
-
 const SITES_DIR = fileURLToPath(new URL('../fixtures/sites/', import.meta.url));
 const FX_FIXTURE = fileURLToPath(new URL('../fixtures/fx/usd-latest.json', import.meta.url));
 const PDF_FIXTURE = fileURLToPath(
@@ -128,7 +90,6 @@ const MENU_MANIFEST = fileURLToPath(
   new URL('../../eval/fixtures/menus/manifest.json', import.meta.url),
 );
 
-/** The four fixture pages, read once: each is served at its own `<name>/` path. */
 const SITE_PAGES: ReadonlyMap<string, Buffer> = new Map<string, Buffer>([
   ['/menu-html/', readFileSync(join(SITES_DIR, 'menu-html', 'index.html'))],
   ['/menu-pdf-link/', readFileSync(join(SITES_DIR, 'menu-pdf-link', 'index.html'))],
@@ -136,7 +97,6 @@ const SITE_PAGES: ReadonlyMap<string, Buffer> = new Map<string, Buffer>([
   ['/login-wall/', readFileSync(join(SITES_DIR, 'login-wall', 'index.html'))],
 ]);
 
-/** The menu document the `menu-pdf-link` page links to, and the file its bytes are read from. */
 const PDF_PATH = '/menu-pdf-link/menu.pdf';
 const EN_02_PDF = readFileSync(PDF_FIXTURE);
 
@@ -148,14 +108,11 @@ const ROBOTS_PATH = '/robots.txt';
 const DISALLOWED_PREFIX = '/private/';
 const ROBOTS_BODY = `User-agent: *\nDisallow: ${DISALLOWED_PREFIX}\n`;
 
-/** The FX table the refresh job reads, and the one path it is served at (AAP 0.3.3). */
 const FX_TABLE = readFileSync(FX_FIXTURE, 'utf8');
 const FX_PATH = '/fx/usd-latest.json';
 
-/** The one date a URL's path is matched on: a page is requested with its trailing slash. */
 const SITE_PATH = /^\/[a-z0-9-]+\/$/;
 
-/** The provider's recorded table, and the `@db.Date` day its rates belong to (AAP 0.5.6). */
 interface FxFixture {
   readonly rates: Readonly<Record<string, number>>;
   readonly time_last_update_unix: number;
@@ -164,12 +121,10 @@ interface FxFixture {
 const FX_FIXTURE_JSON = JSON.parse(FX_TABLE) as FxFixture;
 const FX_RATES = FX_FIXTURE_JSON.rates;
 
-/** The day `fx-refresh` keys its rows by: the provider's own update day, at midnight UTC. */
 const FX_DAY = new Date(
   `${new Date(FX_FIXTURE_JSON.time_last_update_unix * 1_000).toISOString().slice(0, 10)}T00:00:00.000Z`,
 );
 
-/** The labeled menu set, whose `en/en-02.pdf` entry is both the PDF fixture and its script (AAP 0.11.2). */
 interface ManifestItem {
   readonly name: string;
   readonly normalizedName: string;
@@ -246,9 +201,6 @@ function expectedCents(localAmountMinor: number, currency: string): number {
   return Math.round(localAmountMinor / perUsd);
 }
 
-/* The scripted extraction answers, one per fixture document (AAP 0.5.6) */
-
-/** One item a scripted answer holds, with the optional fields the ticket rule constrains. */
 interface ScriptedItem {
   readonly name: string;
   readonly category: ItemCategory;
@@ -260,7 +212,6 @@ interface ScriptedItem {
   readonly ticketType?: TicketType;
 }
 
-/** One scripted item in the contract's own shape, every nullable field written out. */
 function scriptItem(item: ScriptedItem, currency = 'EUR'): ExtractedMenuItem {
   return {
     name: item.name,
@@ -273,7 +224,6 @@ function scriptItem(item: ScriptedItem, currency = 'EUR'): ExtractedMenuItem {
   };
 }
 
-/** The items of one scripted answer. */
 function scripted(items: readonly ScriptedItem[], currency = 'EUR'): ExtractedMenuItem[] {
   return items.map((item) => scriptItem(item, currency));
 }
@@ -371,7 +321,6 @@ const PDF_ITEMS: readonly ExtractedMenuItem[] = [
   scriptItem({ name: 'Fish and chips', category: 'main', priceText: '€18.50' }),
 ];
 
-/** One fixture document's script: the text that identifies it, and what the extractor answers for it. */
 interface Script {
   readonly marker: string;
   readonly items: readonly ExtractedMenuItem[];
@@ -383,8 +332,6 @@ const SCRIPTS: readonly Script[] = [
   { marker: 'Fixture Cervejaria', items: PDF_LINK_PAGE_ITEMS },
   { marker: firstItemName(PDF_MENU), items: PDF_ITEMS },
 ];
-
-/* The harness (AAP 0.11.2) */
 
 /** One request the fixture server answered, which every "never fetched" claim is read from. */
 interface Hit {
@@ -400,18 +347,15 @@ let testApp: TestApp;
 let ctx: WorkerContext;
 let fakeLlm: FakeLlmAdapter;
 
-/** The fixture server and the port it bound, whose own URL is composed from the two. */
 let server: Server | undefined;
 let sitePort = 0;
 
-/** Every request the fixture server answered, in arrival order, and every name the resolver saw. */
 const hits: Hit[] = [];
 const lookups: string[] = [];
 
 /** Whether the PDF route answers `404`, which is how the too-few-items row is arranged. */
 let pdfMissing = false;
 
-/** The loopback URL of one fixture page, and the same path under one of the fixture host names. */
 function site(path: string): string {
   return `http://127.0.0.1:${sitePort}${path}`;
 }
@@ -420,12 +364,10 @@ function siteOn(host: string, path: string): string {
   return `http://${host}:${sitePort}${path}`;
 }
 
-/** The guarded client every assertion reads the state the job wrote through (AAP 0.11.2). */
 function db(): DbClient {
   return testApp.services.db;
 }
 
-/** The requests served for one host, matched on the key a crawl decision is taken on (AAP 0.5.6). */
 function hitsOn(host: string): Hit[] {
   const key = domainKey(host);
 
@@ -437,7 +379,6 @@ function lookupsFor(host: string): string[] {
   return lookups.filter((hostname) => hostname === host);
 }
 
-/** Every hit's arrival time on one host, in the order it arrived. */
 function arrivalTimesOn(host: string): bigint[] {
   return hitsOn(host).map((hit) => hit.at);
 }
@@ -447,7 +388,6 @@ function byName<T extends { readonly itemName: string }>(rows: readonly T[]): T[
   return [...rows].sort((left, right) => (left.itemName < right.itemName ? -1 : 1));
 }
 
-/** The columns of one stored price every assertion reads. */
 const PRICE_COLUMNS = {
   itemName: true,
   itemCategory: true,
@@ -468,7 +408,6 @@ const PRICE_COLUMNS = {
   captureBatchId: true,
 } as const;
 
-/** Every price record of one place, read through the guarded client (AAP 0.11.2). */
 async function priceRecords(placeId: string) {
   return await db().priceRecord.findMany({
     where: { placeId },
@@ -477,7 +416,6 @@ async function priceRecords(placeId: string) {
   });
 }
 
-/** Every `menu_prices` task of one place, whatever its status (AAP 0.5.6). */
 async function menuTasks(placeId: string) {
   return await db().callTask.findMany({
     where: { placeId, kind: MENU_PRICES },
@@ -486,7 +424,6 @@ async function menuTasks(placeId: string) {
   });
 }
 
-/** The `menu-ingest` jobs the queue holds in every state a job waits in (AAP 0.3.2, 0.5.6). */
 async function menuIngestJobs() {
   return await ctx.queues.get(QUEUE.menuIngest).getJobs(['waiting', 'prioritized', 'delayed']);
 }
@@ -498,7 +435,6 @@ function gapsMs(times: readonly bigint[]): number[] {
   for (let index = 1; index < times.length; index += 1) {
     const previous = times[index - 1];
     const current = times[index];
-
     if (previous !== undefined && current !== undefined) {
       gaps.push(Number(current - previous) / 1_000_000);
     }
@@ -534,7 +470,6 @@ async function makeIngestPlace(options: {
  * fixture name are approved, and the prohibited name stands for a domain an operator refused. A
  * decision is read for the request host's chain, so the exact-host row of the allowed name is
  * honoured for it; the prohibited row is keyed at the registrable domain its subdomain resolves to.
- * The uncertain row is deliberately absent: the policy records it, and the case asserts it did.
  */
 async function recordPolicies(): Promise<void> {
   const checkedAt = ctx.clock.now();
@@ -549,7 +484,6 @@ async function recordPolicies(): Promise<void> {
   }
 }
 
-/** One answer of the fixture server: its status, its content type and its body. */
 function send(response: ServerResponse, status: number, type: string, body: Buffer | string): void {
   response.writeHead(status, { 'content-type': type, 'content-length': Buffer.byteLength(body) });
   response.end(body);
@@ -557,13 +491,6 @@ function send(response: ServerResponse, status: number, type: string, body: Buff
 
 /**
  * Start the server that plays every fixture site and the FX provider (AAP 0.5.6).
- *
- * It answers the four pages at their own trailing-slash paths, the `menu-html` page under the prefix
- * `robots.txt` disallows, the menu PDF (or a `404` when a row asks for one), `robots.txt` itself and
- * the recorded FX table. Every request and its arrival time are recorded, which is what the suite's
- * "never fetched" and throttle assertions read; an unknown path is a `404`, so a fetch this suite
- * did not plan is visible as a hit rather than as a silent success.
- *
  * @returns the loopback base of the site server, without a trailing slash.
  * @throws Error when the server bound no TCP address.
  */
@@ -575,7 +502,6 @@ async function startSiteServer(): Promise<number> {
       path,
       at: process.hrtime.bigint(),
     });
-
     if (path === ROBOTS_PATH) {
       send(response, 200, 'text/plain; charset=utf-8', ROBOTS_BODY);
       return;
@@ -641,7 +567,6 @@ const lookup: LookupFn = (host) => {
   return Promise.resolve([{ address: '127.0.0.1', family: 4 }]);
 };
 
-/** Every message of one request, joined: what the scripted answer reads for its fixture's marker. */
 function requestText(request: LlmRequest): string {
   return request.messages.map((message) => message.content).join('\n');
 }
@@ -717,9 +642,6 @@ beforeEach(async () => {
   pdfMissing = false;
 });
 
-/* One priced page, and one stored item of it (AAP 0.5.6, 0.5.7) */
-
-/** What one row of the `menu-html` table asserts about the record stored for it. */
 interface StoredItemCase {
   readonly itemName: string;
   readonly itemCategory: ItemCategory;
@@ -810,7 +732,6 @@ const MENU_HTML_CASES: readonly StoredItemCase[] = [
   },
 ];
 
-/** What one row of the ticket table asserts: the two fields the ticket rule constrains included. */
 interface TicketCase {
   readonly itemName: string;
   readonly priceText: string;
@@ -820,7 +741,6 @@ interface TicketCase {
   readonly ticketType: TicketType;
 }
 
-/** The six admission prices of `activity-tickets`, with the flag and the type each carries. */
 const TICKET_CASES: readonly TicketCase[] = [
   {
     itemName: 'Adulto',
@@ -872,9 +792,6 @@ const TICKET_CASES: readonly TicketCase[] = [
   },
 ];
 
-/* The phone fallback, one row per way a place yields too few prices (AAP 0.5.6) */
-
-/** What one fallback row's own assertions read besides the place it built. */
 interface CaseState {
   readonly place: PlaceFixture;
   /** The language-model sends recorded before the run, which a refused wall must not change. */
@@ -897,7 +814,6 @@ interface FallbackCase {
   readonly check: (state: CaseState) => Promise<void> | void;
 }
 
-/** One stored site-terms decision, or `null` when the domain has no row (AAP 0.5.6). */
 async function policyRow(domain: string) {
   return await db().crawlDomainPolicy.findUnique({
     where: { domain },
@@ -980,19 +896,16 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
     build: () => makeIngestPlace({ category: 'restaurant', website: site('/login-wall/') }),
     check: (state) => {
       expect(hitsOn('127.0.0.1').map((hit) => hit.path)).toContain('/login-wall/');
-      // The page was read and refused as a wall, so the extraction never ran on its text.
       expect(fakeLlm.calls.counted).toHaveLength(state.countedBefore);
       expect(fakeLlm.calls.sent).toHaveLength(state.sentBefore);
     },
   },
   {
     name: 'a document that yields fewer than five items',
-    // The page's own two items are stored and still short of the five a place needs (AAP 0.5.6).
     pricedItems: 2,
     queuedCall: true,
     build: async () => {
       pdfMissing = true;
-
       return await makeIngestPlace({ category: 'restaurant', website: site('/menu-pdf-link/') });
     },
     check: async (state) => {
@@ -1010,8 +923,6 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
     build: () =>
       makeIngestPlace({ category: 'restaurant', website: siteOn(ALLOWED_HOST, '/menu-html/') }),
     check: async (state) => {
-      // Every arrangement above is this page under a domain the policy refuses or a path the file
-      // disallows: this row proves the allowed name is fetched, so their zeros are evidence.
       expect(hitsOn(ALLOWED_HOST).length).toBeGreaterThan(0);
       expect(lookupsFor(ALLOWED_HOST).length).toBeGreaterThan(0);
       expect(await priceRecords(state.place.id)).toHaveLength(MENU_HTML_CASES.length);
@@ -1026,12 +937,10 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
 describe('menu-ingest', () => {
   it('stores the eight prices of the page as one batch and drops the item it never printed', async () => {
     const place = await makeIngestPlace({ category: 'restaurant', website: site('/menu-html/') });
-
     await expect(ingestPlace(ctx, place.id)).resolves.toEqual({
       pricedItems: MENU_HTML_CASES.length,
       queuedCall: false,
     });
-
     const stored = await priceRecords(place.id);
     expect(stored).toHaveLength(MENU_HTML_CASES.length);
     expect(new Set(stored.map((row) => row.captureBatchId)).size).toBe(1);
@@ -1046,13 +955,10 @@ describe('menu-ingest', () => {
 
   it.each(MENU_HTML_CASES)('menu-html: stores $itemName at $priceText', async (row) => {
     const place = await makeIngestPlace({ category: 'restaurant', website: site('/menu-html/') });
-
     await ingestPlace(ctx, place.id);
-
     const stored = (await priceRecords(place.id)).filter(
       (record) => record.itemName === row.itemName,
     );
-
     expect(stored).toMatchObject([
       {
         itemName: row.itemName,
@@ -1082,22 +988,15 @@ describe('menu-ingest', () => {
       category: 'restaurant',
       website: site('/menu-pdf-link/'),
     });
-
     await expect(ingestPlace(ctx, place.id)).resolves.toEqual({
       pricedItems: PDF_MENU.items.length + 2,
       queuedCall: false,
     });
-
-    // The PDF was read once, through the page's own menu link, and answered as a document.
     expect(hitsOn('127.0.0.1').filter((hit) => hit.path === PDF_PATH)).toHaveLength(1);
-
     const stored = await priceRecords(place.id);
     expect(stored).toHaveLength(PDF_MENU.items.length + 2);
     expect(new Set(stored.map((row) => row.captureBatchId)).size).toBe(1);
     expect(stored.filter((row) => row.priceText === '€18.50')).toEqual([]);
-
-    // Every item of the labeled set is stored exactly as the document prints it, at the recorded
-    // rate of the capture day, and cites the PDF as its source (AAP 0.5.6, 0.5.7).
     expect(byName(stored.filter((row) => row.sourceUrl === site(PDF_PATH)))).toMatchObject(
       byName(
         PDF_MENU.items.map((item) => ({
@@ -1119,7 +1018,6 @@ describe('menu-ingest', () => {
         })),
       ),
     );
-    // The two items of the page itself cite the page, which is where they were printed.
     expect(
       stored.filter((row) => row.sourceUrl === site('/menu-pdf-link/')).map((row) => row.itemName),
     ).toEqual(['Imperial', 'Prego no pão']);
@@ -1131,12 +1029,10 @@ describe('menu-ingest', () => {
       category: 'activity',
       website: site('/activity-tickets/'),
     });
-
     await expect(ingestPlace(ctx, place.id)).resolves.toEqual({
       pricedItems: TICKET_CASES.length,
       queuedCall: false,
     });
-
     const stored = await priceRecords(place.id);
     expect(byName(stored)).toMatchObject(
       byName(
@@ -1160,7 +1056,6 @@ describe('menu-ingest', () => {
         })),
       ),
     );
-    // The invented ticket is dropped like every other price the page never printed.
     expect(stored.filter((row) => row.priceText === '99,00 €')).toEqual([]);
     expect(await menuTasks(place.id)).toEqual([]);
   });
@@ -1172,21 +1067,15 @@ describe('menu-ingest', () => {
       sentBefore: fakeLlm.calls.sent.length,
       countedBefore: fakeLlm.calls.counted.length,
     };
-
     await expect(ingestPlace(ctx, place.id)).resolves.toEqual({
       pricedItems: row.pricedItems,
       queuedCall: row.queuedCall,
     });
-
     expect(await priceRecords(place.id)).toHaveLength(row.pricedItems);
-    // One `menu_prices` task per place, and only where the run fell back; its priority is the same
-    // call-and-menu number the ingestion job carries (AAP 0.5.6, 0.5.7).
     expect((await menuTasks(place.id)).map((task) => task.status)).toEqual(
       row.queuedCall ? ['queued'] : [],
     );
-
     await row.check(state);
-
     if (row.queuedCall) {
       // A second attempt opens no second task: the fallback is keyed on the place's outstanding
       // call, so the retry leaves exactly the one task it found (AAP 0.5.6).
@@ -1201,13 +1090,10 @@ describe('menu-ingest', () => {
       category: 'activity',
       website: site('/activity-tickets/'),
     });
-
     // Two places of one site at once: the per-domain slot orders them, not the browser nor the job.
     await Promise.all([ingestPlace(ctx, first.id), ingestPlace(ctx, second.id)]);
-
     const times = arrivalTimesOn('127.0.0.1');
     expect(times.length).toBeGreaterThan(2);
-
     // The slot is taken before the request is sent — `SET throttle:<domain> 1 NX PX 1000` — so an
     // arrival lands about a second after the previous one; only the event loop's own jitter is
     // left, which the 950 ms bound tolerates. With no throttle the gap is milliseconds, so this is
@@ -1220,9 +1106,6 @@ describe('menu-ingest', () => {
   it('defers a place to 00:05 local the next day when its city has spent its budget', async () => {
     const place = await makeIngestPlace({ category: 'restaurant', website: site('/menu-html/') });
     const localDay = localDateKey(CITY_TZ, NOW);
-
-    // The local day's cap, committed as the reservations of earlier runs leave it: every further
-    // request of that day is refused before it is sent (AAP 0.5.6).
     await db().callBudgetDay.create({
       data: {
         cityId: CITY,
@@ -1231,25 +1114,19 @@ describe('menu-ingest', () => {
         llmSpendMicros: BigInt(ctx.env.capLlmMicrosPerCityDay),
       },
     });
-
     await expect(ingestPlace(ctx, place.id)).resolves.toEqual({
       pricedItems: 0,
       queuedCall: false,
       deferred: true,
     });
-
-    // Counted once and never sent, so nothing was spent and nothing was written: no record, no
-    // fallback task, and no second attempt against a limit that cannot move (AAP 0.5.6).
     expect(fakeLlm.calls.counted.length).toBeGreaterThan(0);
     expect(fakeLlm.calls.sent).toEqual([]);
     expect(await priceRecords(place.id)).toEqual([]);
     expect(await menuTasks(place.id)).toEqual([]);
-
     const deferUntil = nextLocalDayAt(CITY_TZ, NOW, '00:05');
     const job = await ctx.queues
       .get(QUEUE.menuIngest)
       .getJob(`menu-ingest-${place.id}-${localDateKey(CITY_TZ, deferUntil)}`);
-
     expect(job?.name).toBe(INGEST);
     expect(job?.data as unknown).toEqual({ placeId: place.id });
     // BullMQ's own `timestamp` is wall time, so only the delay the job was added with is comparable.
@@ -1260,17 +1137,12 @@ describe('menu-ingest', () => {
     const stale = await makeIngestPlace({ category: 'restaurant', website: site('/menu-html/') });
     const priced = await makeIngestPlace({ category: 'cafe', website: site('/menu-html/') });
     const unlinked = await makeIngestPlace({ category: 'bar' });
-
-    // A fresh approved online capture is what leaves the second place out of the fan-out, and a
-    // place with no link at all is never queued for one (AAP 0.5.6, 0.5.7).
     await makePriceRecords(testApp, priced, [
       { name: 'Prato do dia', itemCategory: 'main', usdCents: 1_200, source: 'online_menu' },
     ]);
-
     await expect(
       runMenuIngest({ name: INGEST_CITY, data: { cityId: CITY } }, ctx),
     ).resolves.toEqual({ enqueued: 1 });
-
     const jobs = await menuIngestJobs();
     expect(
       jobs.map((job) => ({

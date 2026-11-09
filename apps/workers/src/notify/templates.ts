@@ -66,7 +66,6 @@ export const NOTIFICATION_OUTCOMES = {
 /** One outcome value of any kind. */
 export type NotificationOutcome =
   (typeof NOTIFICATION_OUTCOMES)[keyof typeof NOTIFICATION_OUTCOMES][number];
-
 /** The outcomes one kind allows; every kind not listed reports no outcome (AAP 0.5.3). */
 const OUTCOMES_BY_KIND: Readonly<
   Partial<Record<NotificationKind, readonly NotificationOutcome[]>>
@@ -126,7 +125,6 @@ export interface NotificationRenderData {
 export class NotificationRenderError extends Error {
   readonly kind: NotificationKind;
   readonly field: string;
-
   constructor(kind: NotificationKind, field: string) {
     super(`Cannot render a ${kind} notification without a valid ${field}`);
     this.name = 'NotificationRenderError';
@@ -141,7 +139,6 @@ export class NotificationRenderError extends Error {
  */
 export const TABLE_CREDIT_NOTE =
   'Table Credit is in USD, redeemable at partner venues, and has no cash value.';
-
 /**
  * The sign-in link the `magic_link` email carries (AAP 0.3.2): the route and query parameter
  * `apps/mobile/app/auth/verify.tsx` parses and the end-to-end mail readers follow.
@@ -175,7 +172,6 @@ export function renderNotification(
     paragraphs.push(`Open Tablemate: ${origin}${path}`);
   }
   paragraphs.push(CLOSING_LINE);
-
   return {
     title: copy.title,
     body: framing === undefined ? lead : `${lead} ${framing}`,
@@ -184,10 +180,6 @@ export function renderNotification(
     path,
   };
 }
-
-/*
- * Internals (AAP 0.5.8).
- */
 
 /** The closing line of every email. */
 const CLOSING_LINE = "You're receiving this because you have a Tablemate account.";

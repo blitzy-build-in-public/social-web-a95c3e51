@@ -170,6 +170,9 @@ const CODE_SENTENCES: readonly (readonly [string, string])[] = [
   ],
   ['not_found', 'This item no longer exists.'],
   ['claim_not_found', 'This item no longer exists.'],
+  // The queue decides through one `PATCH` per domain and the API allows 60 of them per minute per
+  // user (AAP 0.5.4), so the one answer an operator meets mid-review says what to do next.
+  ['rate_limited', 'Too many decisions in the last minute. Wait a minute, then continue.'],
 ];
 const sentenceFor = (code: ClientErrorCode): string =>
   CODE_SENTENCES.find(([known]) => known === code)?.[1] ?? userMessageFor(code);
@@ -800,7 +803,15 @@ const ALLOW_DOMAIN: ConfirmSpec = {
 };
 const PROHIBIT_DOMAIN = { label: 'Prohibit', hint: 'Its places then take the phone fallback.' };
 
-function CrawlDomainRow({ entry }: { readonly entry: AdminCrawlDomainDto }): ReactElement {
+interface CrawlDomainRowProps {
+  readonly entry: AdminCrawlDomainDto;
+  /** Whether the row is part of the bulk run's selection. */
+  readonly selected: boolean;
+  /** Adds or removes the row from the bulk selection. */
+  readonly onToggle: () => void;
+}
+
+function CrawlDomainRow({ entry, selected, onToggle }: CrawlDomainRowProps): ReactElement {
   const action = useQueueAction<CrawlDomainDecisionUpdate>({
     run: (body) => apiClient.admin.setCrawlDomainDecision(entry.domain, body),
     keys: [queryKeys.adminCrawlDomains],
@@ -818,6 +829,12 @@ function CrawlDomainRow({ entry }: { readonly entry: AdminCrawlDomainDto }): Rea
   const facts = [headline, `Checked ${formatMoment(entry.checkedAt)}`];
   return (
     <RowView title={entry.domain} facts={facts} error={failureMessage} testID={testID}>
+      <SelectionToggle
+        domain={entry.domain}
+        selected={selected}
+        testID={`${testID}-select`}
+        onToggle={onToggle}
+      />
       {blocklisted ? (
         <Facts>
           On the blocklist: the workers never fetch this domain, whatever is recorded here.
@@ -925,9 +942,7 @@ function callTasksQuery(
  * invalidates — so a new filter starts a fresh page and drops the pages before it. The count line
  * says how many of the tasks the filters match are on screen, and the control below the rows loads
  * the next page while the answer still carries a cursor. The rows themselves, with their resolve
- * controls, are the ones the other queues render, and they are a virtualised list too: the filters and
- * the count sit in its header, the page control in its footer, and its window stays the framework's
- * default for the reason given on {@link QueuePanel}.
+ * controls, are the ones the other queues render.
  */
 function CallTasksPanel(): ReactElement {
   const [search, setSearch] = useState('');
@@ -1001,50 +1016,40 @@ function CallTasksPanel(): ReactElement {
     );
 
   return (
-    <FlatList
-      data={rows}
-      keyExtractor={(task) => task.id}
-      renderItem={({ item }) => (
-        <Card>
-          <CallTaskRow task={item} currency={currencies.get(item.cityId) ?? ''} />
-        </Card>
+    <>
+      <TextField
+        label={CALL_TASKS_SEARCH_LABEL}
+        value={search}
+        onChangeText={changeSearch}
+        testID="ops-call-tasks-search"
+      />
+      <ChoiceGroup
+        groupLabel={CALL_TASKS_STATUS_LABEL}
+        options={CALL_TASKS_STATUS_FILTERS}
+        value={status}
+        testIDPrefix="ops-call-tasks-status"
+        onSelect={setStatus}
+      />
+      <ChoiceGroup
+        groupLabel={CALL_TASKS_KIND_LABEL}
+        options={CALL_TASKS_KIND_FILTERS}
+        value={kind}
+        testIDPrefix="ops-call-tasks-kind"
+        onSelect={setKind}
+      />
+      {countLine}
+      {errorMessage === null ? null : (
+        <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
       )}
-      ListHeaderComponent={
-        <View style={styles.panelHeader}>
-          <TextField
-            label={CALL_TASKS_SEARCH_LABEL}
-            value={search}
-            onChangeText={changeSearch}
-            testID="ops-call-tasks-search"
-          />
-          <ChoiceGroup
-            groupLabel={CALL_TASKS_STATUS_LABEL}
-            options={CALL_TASKS_STATUS_FILTERS}
-            value={status}
-            testIDPrefix="ops-call-tasks-status"
-            onSelect={setStatus}
-          />
-          <ChoiceGroup
-            groupLabel={CALL_TASKS_KIND_LABEL}
-            options={CALL_TASKS_KIND_FILTERS}
-            value={kind}
-            testIDPrefix="ops-call-tasks-kind"
-            onSelect={setKind}
-          />
-          {countLine}
-          {errorMessage === null ? null : (
-            <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
-          )}
-          {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
-          {showEmpty ? <Facts>{CALL_TASKS_EMPTY_TEXT}</Facts> : null}
-        </View>
-      }
-      ListFooterComponent={
-        queue.hasNextPage ? <Button {...more} testID="ops-call-tasks-more" /> : null
-      }
-      contentContainerStyle={styles.listContent}
-      style={styles.fill}
-    />
+      {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
+      {showEmpty ? <Facts>{CALL_TASKS_EMPTY_TEXT}</Facts> : null}
+      {rows.map((task) => (
+        <Card key={task.id}>
+          <CallTaskRow task={task} currency={currencies.get(task.cityId) ?? ''} />
+        </Card>
+      ))}
+      {queue.hasNextPage ? <Button {...more} testID="ops-call-tasks-more" /> : null}
+    </>
   );
 }
 
@@ -1055,13 +1060,424 @@ const LODGING_CLAIMS_QUEUE: QueueSpec<AdminLodgingClaimDto> = {
   emptyText: 'No lodging claims are waiting.',
   renderItem: (claim) => <LodgingClaimRow claim={claim} />,
 };
-const CRAWL_DOMAINS_QUEUE: QueueSpec<AdminCrawlDomainDto> = {
-  queryKey: queryKeys.adminCrawlDomains,
-  queryFn: () => apiClient.admin.listCrawlDomains(),
-  keyOf: (entry) => entry.domain,
-  emptyText: 'No domains are waiting for a site-terms decision.',
-  renderItem: (entry) => <CrawlDomainRow entry={entry} />,
+type SelectionToggleProps = {
+  /** The domain this control selects; it forms the rest of the control's accessible name. */
+  readonly domain: string;
+  /** Whether the row is part of the bulk selection. */
+  readonly selected: boolean;
+  /** Test id of the pressable, so a test can find the row's own selection control. */
+  readonly testID: string;
+  /** Adds or removes the row from the bulk selection. */
+  readonly onToggle: () => void;
 };
+/**
+ * The per-row selection control the bulk decision reads (AAP 0.5.8): a real checkbox, at the 44x44
+ * target `styles.control` carries, named for a screen reader with the domain it selects and showing
+ * its state as text as well as by its border, because status is never colour alone.
+ */
+function SelectionToggle({
+  domain,
+  selected,
+  testID,
+  onToggle,
+}: SelectionToggleProps): ReactElement {
+  const [focused, setFocused] = useState(false);
+  const state = selected ? SELECTED_TOGGLE_TEXT : SELECT_TOGGLE_TEXT;
+  return (
+    <Pressable
+      {...spaceActivates(onToggle)}
+      role="checkbox"
+      aria-checked={selected}
+      aria-label={`${state} ${domain}`}
+      onPress={onToggle}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      testID={testID}
+      style={controlStyle(selected, focused, false, false)}
+    >
+      <Text style={[styles.controlLabel, selected ? styles.controlLabelSelected : null]}>
+        {state}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The Crawl domains tab's own controls and copy (AAP 0.5.4, 0.5.6, 0.5.8), with
+ * `LABELS.crawlDecision` for the filter wording so a decision reads the same here as it does on a row.
+ */
+const CRAWL_DOMAINS_EMPTY_TEXT = 'No domains are waiting for a site-terms decision.';
+const CRAWL_DOMAINS_NO_MATCH_TEXT = 'No domain matches the search and the decision filter.';
+const CRAWL_DOMAINS_SEARCH_LABEL = 'Search by domain';
+const CRAWL_DOMAINS_DECISION_LABEL = 'Decision';
+const CRAWL_DOMAINS_SORT_LABEL = 'Sort';
+/** How long typing pauses before the search term is applied, in milliseconds. */
+const CRAWL_DOMAINS_SEARCH_DEBOUNCE_MS = 300;
+type CrawlDecisionFilter = 'all' | CrawlDecision;
+type CrawlDomainOrder = 'queue' | 'domain';
+const CRAWL_DECISION_FILTERS: readonly {
+  readonly value: CrawlDecisionFilter;
+  readonly label: string;
+}[] = [
+  { value: 'all', label: 'All' },
+  { value: 'uncertain', label: LABELS.crawlDecision.uncertain },
+  { value: 'allowed', label: LABELS.crawlDecision.allowed },
+  { value: 'prohibited', label: LABELS.crawlDecision.prohibited },
+];
+/** The queue's own order first: the domains awaiting review on top, as the route returns them. */
+const CRAWL_DOMAIN_ORDERS: readonly {
+  readonly value: CrawlDomainOrder;
+  readonly label: string;
+}[] = [
+  { value: 'queue', label: 'Queue order' },
+  { value: 'domain', label: 'Domain A to Z' },
+];
+
+/**
+ * The bulk decision over the rows on screen (AAP 0.5.4, 0.5.6): the most domains one run decides,
+ * and the copy its controls and its run carry.
+ *
+ * One decision is one `PATCH`, and every mutating route is limited to 60 requests per minute per user
+ * (AAP 0.5.4), so a run of {@link CRAWL_DOMAINS_BULK_LIMIT} leaves the operator room for their own
+ * decisions inside the same minute; a larger selection is decided by running again.
+ */
+const CRAWL_DOMAINS_BULK_LIMIT = 50;
+const CRAWL_DOMAINS_BULK_LABEL = 'Decide in bulk';
+const CRAWL_DOMAINS_BULK_BOUND = `A run decides at most ${CRAWL_DOMAINS_BULK_LIMIT} domains; a larger selection is decided in successive runs.`;
+const CRAWL_DOMAINS_NO_SELECTION_TEXT = 'No domain is selected';
+const CRAWL_DOMAINS_SELECT_ALL = { label: 'Select all shown', variant: 'secondary' } as const;
+const CRAWL_DOMAINS_CLEAR_SELECTION = { label: 'Clear selection', variant: 'secondary' } as const;
+const CRAWL_DOMAINS_STOP_RUN = { label: 'Cancel the run', variant: 'secondary' } as const;
+const CRAWL_DOMAINS_ALLOW: ConfirmSpec = {
+  label: 'Allow selected domains',
+  hint: "Allow only after reading each site's terms.",
+  variant: 'primary',
+};
+const CRAWL_DOMAINS_PROHIBIT: ConfirmSpec = {
+  label: 'Prohibit selected domains',
+  hint: 'Their places then take the phone fallback.',
+};
+const SELECT_TOGGLE_TEXT = 'Select';
+const SELECTED_TOGGLE_TEXT = 'Selected';
+
+/** One bulk run, from the confirmation that started it to its last answered request. */
+interface BulkDecisionRun {
+  /** How many domains the run set out to decide, at most {@link CRAWL_DOMAINS_BULK_LIMIT}. */
+  readonly total: number;
+  /** How many domains the run has decided so far. */
+  readonly done: number;
+  /** True until the run's last request has answered. */
+  readonly running: boolean;
+  /** True when the run ended before its last domain, through the cancel control or a failure. */
+  readonly stopped: boolean;
+}
+
+/** What the run's own line says: its progress while it runs, and where it ended. */
+function bulkRunText(run: BulkDecisionRun): string {
+  if (run.running) return `Decided ${run.done} of ${run.total}…`;
+  if (run.stopped) return `Stopped after ${run.done} of ${run.total}`;
+  return `Decided ${run.done} of ${run.total}`;
+}
+
+/**
+ * The Crawl domains tab (AAP 0.5.4, 0.5.6, 0.5.8): the operator's site-terms review queue.
+ *
+ * A domain the crawler has not been allowed to fetch is never fetched (AAP 0.5.6), so this is the
+ * one queue that arrives in the hundreds and holds the menu pipeline up until it is worked through:
+ * the read returns the domains awaiting review first, capped at 500 rows, and carries no cursor and
+ * no server-side filter. The tab therefore narrows what is on screen — a search over the domain, a
+ * filter on the decision, and the queue's own order or domain A to Z — and says how many of the
+ * loaded rows the filters leave.
+ *
+ * The same volume is what makes one row at a time impractical, so the rows on screen carry a
+ * selection and the panel decides the whole selection in one run; {@link decideSelected} states the
+ * bound that run works under. Every per-row control stays exactly as it was, for the single decision.
+ *
+ * The search term is applied from the change handler after a pause in typing, exactly as the Call
+ * tasks tab applies its own, so a search filters the loaded list rather than the queue one request
+ * per keystroke, and the read keeps the one query key a resolution invalidates.
+ */
+function CrawlDomainsPanel(): ReactElement {
+  const [search, setSearch] = useState('');
+  const [term, setTerm] = useState('');
+  const [decision, setDecision] = useState<CrawlDecisionFilter>('all');
+  const [order, setOrder] = useState<CrawlDomainOrder>('queue');
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [run, setRun] = useState<BulkDecisionRun | null>(null);
+  const [runFailure, setRunFailure] = useState<ClientErrorCode | null>(null);
+  const pendingSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRequested = useRef(false);
+  const runInFlight = useRef(false);
+
+  useEffect(
+    () => () => {
+      if (pendingSearch.current !== null) clearTimeout(pendingSearch.current);
+    },
+    [],
+  );
+
+  const queue = useQuery({
+    queryKey: queryKeys.adminCrawlDomains,
+    queryFn: () => apiClient.admin.listCrawlDomains(),
+  });
+
+  const loaded = useMemo(() => queue.data?.items ?? [], [queue.data]);
+  const shown = useMemo(() => {
+    const needle = term.toLowerCase();
+    const matching = loaded.filter(
+      (entry) =>
+        (decision === 'all' || entry.decision === decision) &&
+        (needle === '' || entry.domain.toLowerCase().includes(needle)),
+    );
+    // Domain A to Z by code unit: a registrable domain is lower-case ASCII (AAP 0.5.2), so the order
+    // is the same on every runtime without reading a locale's collation.
+    return order === 'domain'
+      ? [...matching].sort((left, right) =>
+          left.domain < right.domain ? -1 : left.domain > right.domain ? 1 : 0,
+        )
+      : matching;
+  }, [loaded, term, decision, order]);
+
+  const errorMessage = queue.isError ? messageFor(queue.error) : null;
+  const announced = useRef<string | null>(null);
+  useEffect(() => {
+    if (errorMessage !== null && announced.current !== errorMessage) announce(errorMessage);
+    announced.current = errorMessage;
+  }, [errorMessage]);
+
+  // What a run would decide: the selected rows among those on screen, in the order they are shown.
+  const targets = useMemo(
+    () => shown.filter((entry) => selected.has(entry.domain)).map((entry) => entry.domain),
+    [shown, selected],
+  );
+
+  const changeSearch = (text: string): void => {
+    setSearch(text);
+    if (pendingSearch.current !== null) clearTimeout(pendingSearch.current);
+    pendingSearch.current = setTimeout(() => {
+      pendingSearch.current = null;
+      setTerm(text.trim());
+    }, CRAWL_DOMAINS_SEARCH_DEBOUNCE_MS);
+  };
+
+  const toggleSelected = (domain: string): void => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
+  };
+
+  // "Select all shown" means the rows the filters leave, and nothing else: what a run decides is
+  // always the selection the operator can see.
+  const selectAllShown = (): void => setSelected(new Set(shown.map((entry) => entry.domain)));
+  const clearSelection = (): void => setSelected(new Set<string>());
+  const cancelRun = (): void => {
+    cancelRequested.current = true;
+  };
+
+  /**
+   * Decides the selected rows one request at a time (AAP 0.5.4, 0.5.6).
+   *
+   * The run is bounded by the contract rather than by taste: one `PATCH` per domain, one request in
+   * flight at a time, at most {@link CRAWL_DOMAINS_BULK_LIMIT} domains to a run, and no second run
+   * while one is in flight. It stops at the first failure and as soon as the operator cancels, and
+   * keeps what it has already recorded — those domains leave the selection, so the next run picks up
+   * the rest. A failure is reported through the sentence its code has, which is what tells an
+   * operator held by the rate limit to continue in a minute. The queue is invalidated on the way out,
+   * exactly as a row's own decision invalidates it, so what is on screen is what the server now holds.
+   */
+  const decideSelected = async (chosen: Exclude<CrawlDecision, 'uncertain'>): Promise<void> => {
+    if (runInFlight.current) return;
+    const planned = targets.slice(0, CRAWL_DOMAINS_BULK_LIMIT);
+    if (planned.length === 0) return;
+    runInFlight.current = true;
+    cancelRequested.current = false;
+    setRunFailure(null);
+    setRun({ total: planned.length, done: 0, running: true, stopped: false });
+    const decided: string[] = [];
+    let failure: ClientErrorCode | null = null;
+    for (const domain of planned) {
+      if (cancelRequested.current) break;
+      try {
+        await apiClient.admin.setCrawlDomainDecision(domain, crawlBody(chosen));
+      } catch (error) {
+        failure = codeOf(error);
+        break;
+      }
+      decided.push(domain);
+      setRun({ total: planned.length, done: decided.length, running: true, stopped: false });
+    }
+    runInFlight.current = false;
+    const ended: BulkDecisionRun = {
+      total: planned.length,
+      done: decided.length,
+      running: false,
+      stopped: decided.length < planned.length,
+    };
+    setRun(ended);
+    if (failure === null) {
+      announce(bulkRunText(ended));
+    } else {
+      setRunFailure(failure);
+      announce(sentenceFor(failure));
+    }
+    if (decided.length === 0) return;
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const domain of decided) next.delete(domain);
+      return next;
+    });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.adminCrawlDomains });
+  };
+
+  const showLoading = loaded.length === 0 && errorMessage === null && queue.isPending;
+  const showEmpty = loaded.length === 0 && errorMessage === null && !queue.isPending;
+  const showNoMatch = loaded.length > 0 && shown.length === 0;
+  const retry = { ...RETRY_ACTION, onPress: () => void queue.refetch() };
+  // The count says how many of the loaded rows the filters leave on screen. It counts the read's own
+  // items rather than a server total, because the route answers neither a total nor a cursor.
+  const countLine =
+    loaded.length === 0 ? null : (
+      <Text style={styles.facts} testID="ops-crawl-domains-count">
+        {`Showing ${formatCount(shown.length)} of ${formatCount(loaded.length)} crawl domains`}
+      </Text>
+    );
+
+  const busy = run !== null && run.running;
+  const selectAllButton = {
+    ...CRAWL_DOMAINS_SELECT_ALL,
+    disabled: shown.length === 0 || busy,
+    onPress: selectAllShown,
+  };
+  const clearButton = {
+    ...CRAWL_DOMAINS_CLEAR_SELECTION,
+    disabled: targets.length === 0 || busy,
+    onPress: clearSelection,
+  };
+  const allowButton = {
+    ...CRAWL_DOMAINS_ALLOW,
+    busy,
+    onConfirm: () => void decideSelected('allowed'),
+  };
+  const prohibitButton = {
+    ...CRAWL_DOMAINS_PROHIBIT,
+    busy,
+    onConfirm: () => void decideSelected('prohibited'),
+  };
+  const selectionLine =
+    targets.length === 0
+      ? CRAWL_DOMAINS_NO_SELECTION_TEXT
+      : `Selected ${formatCount(targets.length)} of the ${formatCount(shown.length)} domains shown`;
+  // The bound again, against this selection, when one run cannot take all of it: an operator reading
+  // the confirm controls knows the run is one of several rather than the whole review.
+  const boundLine =
+    targets.length > CRAWL_DOMAINS_BULK_LIMIT
+      ? `This run decides the first ${CRAWL_DOMAINS_BULK_LIMIT} of them; run it again for the rest`
+      : null;
+  // The bulk controls appear as soon as the read has rows: with an empty queue there is nothing to
+  // select, and the panel says so in the queue's own empty text.
+  const bulkControls =
+    loaded.length === 0 ? null : (
+      <View style={styles.group}>
+        <Text style={styles.groupLabel}>{CRAWL_DOMAINS_BULK_LABEL}</Text>
+        <Facts>{CRAWL_DOMAINS_BULK_BOUND}</Facts>
+        <Facts>{selectionLine}</Facts>
+        {boundLine === null ? null : <Facts>{boundLine}</Facts>}
+        {run === null ? null : (
+          <Text style={styles.facts} testID="ops-crawl-domains-progress">
+            {bulkRunText(run)}
+          </Text>
+        )}
+        {busy ? (
+          <Button
+            {...CRAWL_DOMAINS_STOP_RUN}
+            testID="ops-crawl-domains-cancel"
+            onPress={cancelRun}
+          />
+        ) : null}
+        {runFailure === null ? null : (
+          <Banner
+            tone="error"
+            message={sentenceFor(runFailure)}
+            testID="ops-crawl-domains-run-error"
+          />
+        )}
+        <View style={styles.actions}>
+          <Button {...selectAllButton} testID="ops-crawl-domains-select-all" />
+          <Button {...clearButton} testID="ops-crawl-domains-clear" />
+        </View>
+        {targets.length === 0 ? null : (
+          <View style={styles.actions}>
+            {/* Keyed on the run, so starting one returns both to their unarmed shape: the next set
+                cannot be decided by a stray click on a control that is still armed. */}
+            <InlineConfirm
+              key={`allow-${String(busy)}`}
+              {...allowButton}
+              testID="ops-crawl-domains-allow"
+            />
+            <InlineConfirm
+              key={`prohibit-${String(busy)}`}
+              {...prohibitButton}
+              testID="ops-crawl-domains-prohibit"
+            />
+          </View>
+        )}
+      </View>
+    );
+
+  return (
+    <FlatList
+      data={shown}
+      keyExtractor={(entry) => entry.domain}
+      renderItem={({ item }) => (
+        <Card>
+          <CrawlDomainRow
+            entry={item}
+            selected={selected.has(item.domain)}
+            onToggle={() => toggleSelected(item.domain)}
+          />
+        </Card>
+      )}
+      ListHeaderComponent={
+        <View style={styles.panelHeader}>
+          <TextField
+            label={CRAWL_DOMAINS_SEARCH_LABEL}
+            value={search}
+            onChangeText={changeSearch}
+            testID="ops-crawl-domains-search"
+          />
+          <ChoiceGroup
+            groupLabel={CRAWL_DOMAINS_DECISION_LABEL}
+            options={CRAWL_DECISION_FILTERS}
+            value={decision}
+            testIDPrefix="ops-crawl-domains-decision"
+            onSelect={setDecision}
+          />
+          <ChoiceGroup
+            groupLabel={CRAWL_DOMAINS_SORT_LABEL}
+            options={CRAWL_DOMAIN_ORDERS}
+            value={order}
+            testIDPrefix="ops-crawl-domains-sort"
+            onSelect={setOrder}
+          />
+          {countLine}
+          {bulkControls}
+          {errorMessage === null ? null : (
+            <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
+          )}
+          {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
+          {showEmpty ? <Facts>{CRAWL_DOMAINS_EMPTY_TEXT}</Facts> : null}
+          {showNoMatch ? <Facts>{CRAWL_DOMAINS_NO_MATCH_TEXT}</Facts> : null}
+        </View>
+      }
+      contentContainerStyle={styles.listContent}
+      style={styles.fill}
+    />
+  );
+}
+
 type TabButtonProps = { onSelect: (tab: QueueTab) => void; selected: boolean; tab: QueueTab };
 function TabButton({ tab, selected, onSelect }: TabButtonProps): ReactElement {
   const [focused, setFocused] = useState(false);
@@ -1108,7 +1524,7 @@ export default function OpsQueuesScreen(): ReactElement {
         {tab === 'reports' ? <QueuePanel key={tab} spec={REPORTS_QUEUE} /> : null}
         {tab === 'call-tasks' ? <CallTasksPanel key={tab} /> : null}
         {tab === 'lodging-claims' ? <QueuePanel key={tab} spec={LODGING_CLAIMS_QUEUE} /> : null}
-        {tab === 'crawl-domains' ? <QueuePanel key={tab} spec={CRAWL_DOMAINS_QUEUE} /> : null}
+        {tab === 'crawl-domains' ? <CrawlDomainsPanel key={tab} /> : null}
       </View>
     </Screen>
   );
@@ -1150,6 +1566,8 @@ const styles = StyleSheet.create({
   controlFocused: { borderColor: colors.focusRing },
   controlLabel: { ...typography.label, color: colors.text },
   tabLabelSelected: { ...SELECTED_LABEL, textDecorationLine: 'underline' },
+  // Read by the crawl-domain row selection control, whose label shows its own state in words.
+  controlLabelSelected: { ...SELECTED_LABEL },
   // The active panel is the list that owns the scrolling, so it takes the height the tablist leaves.
   panel: { flex: 1 },
   // The step the panel's own children kept when the screen scrolled as a whole: the list header's

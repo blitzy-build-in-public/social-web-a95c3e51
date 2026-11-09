@@ -24,15 +24,10 @@
  * run of the same job leaves the same state (AAP 0.3.2). And nothing here calls a third party: a
  * resolution touches PostgreSQL alone.
  *
- * The leaderboard rule of AAP 0.5.7 that {@link backfillActivityFacts} implements is stated once,
- * in `@tablemate/db` (`coveringMeetupStatement`): `workers` must not import `@tablemate/api`, so
- * that statement lives in the package both processes already depend on, and the API's
- * `recordActivityForVerifiedClaim` runs that same one statement — which is what makes drift
- * impossible rather than merely forbidden (AAP 0.3.2, 0.5.7, 0.8.1).
- *
- * @see AAP 0.5.3 for the lodging-claim lifecycle and the 72-hour expiry, 0.5.6 for the job table and
- *   the 00:05 local schedule, 0.5.7 for the leaderboard and lodging-visibility rules, 0.5.2 for
- *   `LodgingActivityFact`, `AnalyticsEvent` and the booking-detail retention, 0.8.1 for this file.
+ * The leaderboard rule of AAP 0.5.7 that {@link backfillActivityFacts} implements is stated once, in
+ * `@tablemate/db` (`coveringMeetupStatement`): `workers` must not import `@tablemate/api`, so both
+ * this file and the API's `recordActivityForVerifiedClaim` run that one statement, which is what
+ * keeps the two paths' facts from drifting apart (AAP 0.3.2, 0.5.7, 0.8.1).
  */
 
 import {
@@ -71,10 +66,6 @@ import { writeNotificationOutbox } from './notifications.ts';
 // Type-only on purpose: `queues.ts` value-imports this file's `process`, so a value import back
 // would close a runtime cycle. A type-only import is erased on emit.
 import type { WorkerContext } from '../queues.ts';
-
-// ---------------------------------------------------------------------------------------------
-// The rules, as values (AAP 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The two statuses a claim may still leave: `pending_call` and `calling`. Every other status is
@@ -124,10 +115,6 @@ const LODGING_VERIFICATION_KIND: CallTaskKind = 'lodging_stay_verification';
  * daily run continues where it stopped.
  */
 const STALE_CLAIM_BATCH = 200;
-
-// ---------------------------------------------------------------------------------------------
-// Types (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * A claim as {@link resolveClaim} needs it: the row's identity, its owner, the lodging it claims
@@ -211,10 +198,6 @@ interface StayDates {
 /** What one locked attempt to expire a claim found; the four cases {@link expireLockedClaim} tells apart. */
 type ClaimExpiry = 'missing' | 'terminal' | 'early' | 'expired';
 
-// ---------------------------------------------------------------------------------------------
-// Resolving a claim (AAP 0.5.3, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * Applies a terminal outcome to a claim, or does nothing when the claim has already left its
  * active state (AAP 0.5.3).
@@ -241,18 +224,6 @@ type ClaimExpiry = 'missing' | 'terminal' | 'early' | 'expired';
  *    the message and the state it describes commit together (AAP 0.3.2).
  * 5. A log line naming the claim and the outcome and nothing else: never the booking name,
  *    reference, stay dates or phone number (AAP 0.11.1).
- *
- * @param tx - The caller's transaction, already holding the claim row lock.
- * @param ctx - The worker context: `env.ANALYTICS_SALT` keys the actor hash and the pair hash, the
- *   injected clock stamps the outcome, and the logger records it.
- * @param claim - The claim being resolved: its id, owner, lodging, creation instant and, when the
- *   caller holds them, its stay dates.
- * @param outcome - The terminal status to apply.
- * @param opts - The verification task that produced the outcome, when one did.
- * @returns `true` when this call applied the outcome, `false` when the claim was already terminal
- *   or gone, so a second run of the same job is a no-op.
- * @see AAP 0.5.3 for the claim lifecycle, 0.5.7 for the leaderboard and claim-measure rules, 0.3.2
- *   for the transactional outbox.
  */
 export async function resolveClaim(
   tx: DbTx,
@@ -262,22 +233,17 @@ export async function resolveClaim(
   opts: ResolveClaimOptions = {},
 ): Promise<boolean> {
   const now = ctx.clock.now();
-
   const applied = await tx.lodgingClaim.updateMany({
     where: { id: claim.id, status: { in: [...ACTIVE_CLAIM_STATUSES] } },
     data: { status: outcome, resolvedAt: now },
   });
-
   if (applied.count === 0) {
     return false;
   }
-
   await cancelOutstandingVerification(tx, claim.id, opts.byTaskId);
-
   if (outcome === 'verified') {
     await backfillActivityFacts(tx, ctx, claim, now);
   }
-
   await tx.analyticsEvent.create({
     data: {
       name: 'lodging_claim_resolved',
@@ -287,18 +253,15 @@ export async function resolveClaim(
       occurredAt: now,
     },
   });
-
   await writeNotificationOutbox(tx, now, {
     kind: 'lodging_claim_resolved',
     userId: claim.userId,
     lodgingClaimId: claim.id,
   });
-
   ctx.logger.info(
     { event: 'lodging_claim_resolved', claimId: claim.id, outcome },
     'lodging_claim_resolved',
   );
-
   return true;
 }
 
@@ -314,12 +277,6 @@ export async function resolveClaim(
  * A task that is already terminal — `completed`, `refused`, `do_not_call` or `cancelled` — is left
  * exactly as it stands, and `outcomeAt` is never written here: a cancelled task was cancelled, it
  * did not reach an outcome (AAP 0.5.3, 0.5.7).
- *
- * @param tx - The caller's transaction.
- * @param claimId - The resolved claim.
- * @param byTaskId - The task that produced the result, if any; it is never cancelled.
- * @returns How many tasks this call cancelled.
- * @see AAP 0.5.3 for the call-task lifecycle, "Terminal tasks stay terminal".
  */
 async function cancelOutstandingVerification(
   tx: DbTx,
@@ -331,24 +288,18 @@ async function cancelOutstandingVerification(
     kind: LODGING_VERIFICATION_KIND,
     status: { in: [...OUTSTANDING_TASK_STATUSES] },
   };
-
   if (byTaskId !== undefined) {
     where.id = { not: byTaskId };
   }
-
   const tasks = await tx.callTask.findMany({ where, select: { id: true } });
-
   if (tasks.length === 0) {
     return 0;
   }
-
   const taskIds = tasks.map((task) => task.id);
-
   await tx.callTask.updateMany({
     where: { id: { in: taskIds } },
     data: { status: 'cancelled' },
   });
-
   await tx.callAttempt.updateMany({
     where: {
       callTaskId: { in: taskIds },
@@ -357,47 +308,25 @@ async function cancelOutstandingVerification(
     },
     data: { superseded: true },
   });
-
   return taskIds.length;
 }
 
 /**
  * Credits the lodging's leaderboard with the completed meetups a verified stay covers (AAP 0.5.7).
  *
- * The statement that finds them is stated once, in `@tablemate/db`
- * ({@link coveringMeetupStatement}, `packages/db/src/lodging-activity.ts`), and both this function
+ * The statement that finds them is stated once, in `@tablemate/db` ({@link coveringMeetupStatement}),
  * and the API's `recordActivityForVerifiedClaim` (`apps/api/src/modules/lodgings/leaderboard.ts`)
- * run that one statement: `workers` may not import `@tablemate/api`, so it lives in the package both
- * processes already depend on, which is what makes the two paths' facts impossible to drift apart.
- * What that statement states:
+ * runs that same statement: `workers` may not import `@tablemate/api`, so it lives in the package
+ * both processes already depend on, which is what makes the two paths' facts impossible to drift.
  *
- * - The meetup's local date is `(meetup.starts_at AT TIME ZONE city.timezone)::date`, the city being
- *   the meetup venue's city.
- * - A verified claim *covers* a meetup when the claim covers that date:
- *   `claim.stay_from <= local_date AND claim.stay_to >= local_date`, both ends being the stay dates
- *   this function reads and passes in.
- * - Only meetups inside the 90-day activity window are read, from the window start this function
- *   computes.
- *
- * What this function adds to the rows the statement returns: `pair_key` is
- * `pairKey(ANALYTICS_SALT, initiatorId, recipientId)`, the order-independent HMAC of the two ids, and
- * one fact per distinct (lodging, meetup) is inserted with `ON CONFLICT (lodging_id, meetup_id) DO
- * NOTHING` — `createMany({ skipDuplicates: true })` in Prisma's terms, which is what makes a second
- * resolution of the same claim write nothing.
- *
- * Each fact carries the meetup's own `settledAt` as its completion instant, so a backfill never
- * moves a historical score to today. A fact holds no user id: the pair hash is its only trace of the
- * two travelers, which is why deleting the claim or erasing the account leaves the lodging's score
- * unchanged (AAP 0.5.2).
- *
- * @param tx - The caller's transaction, which the facts commit with.
- * @param ctx - The worker context: `env.APP_ENV` decides fixture visibility in the raw statement and
- *   `env.ANALYTICS_SALT` keys the pair hash.
- * @param claim - The claim that became `verified`.
- * @param now - The instant the 90-day window is measured back from; from the injected clock.
- * @returns How many facts were inserted: 0 when the stay covers no completed meetup, or when the
- *   facts already existed.
- * @see AAP 0.5.7 for the leaderboard rule, 0.5.2 for what a fact holds.
+ * A meetup counts when the claim's stay dates cover the meetup's city-local date
+ * (`claim.stay_from <= local_date AND claim.stay_to >= local_date`) and the meetup settled inside
+ * the 90-day activity window; each fact carries the meetup's own `settledAt`, so a backfill never
+ * moves a historical score to today. `pair_key` is the order-independent HMAC of the two ids, and one
+ * fact per distinct (lodging, meetup) is inserted with `ON CONFLICT (lodging_id, meetup_id) DO
+ * NOTHING` — `skipDuplicates: true` in Prisma's terms, which is what makes a second resolution of the
+ * same claim write nothing. A fact holds no user id: the pair hash is its only trace of the two
+ * travelers, which is why deleting the claim or erasing the account leaves the score unchanged.
  */
 async function backfillActivityFacts(
   tx: DbTx,
@@ -406,11 +335,9 @@ async function backfillActivityFacts(
   now: Date,
 ): Promise<number> {
   const stay = await stayDates(tx, claim);
-
   if (stay === null) {
     return 0;
   }
-
   const rows = await tx.$queryRaw<CoveringMeetupRow[]>(
     coveringMeetupStatement(
       ctx.env.APP_ENV,
@@ -418,11 +345,9 @@ async function backfillActivityFacts(
       new Date(now.getTime() - LEADERBOARD_WINDOW_MS),
     ),
   );
-
   if (rows.length === 0) {
     return 0;
   }
-
   const inserted = await tx.lodgingActivityFact.createMany({
     data: rows.map((row) => ({
       lodgingId: claim.lodgingId,
@@ -432,7 +357,6 @@ async function backfillActivityFacts(
     })),
     skipDuplicates: true,
   });
-
   return inserted.count;
 }
 
@@ -446,12 +370,10 @@ async function stayDates(tx: DbTx, claim: ResolvableClaim): Promise<StayDates | 
   if (claim.stayFrom !== undefined && claim.stayTo !== undefined) {
     return { from: toDateOnly(claim.stayFrom), to: toDateOnly(claim.stayTo) };
   }
-
   const row = await tx.lodgingClaim.findUnique({
     where: { id: claim.id },
     select: { stayFrom: true, stayTo: true },
   });
-
   return row === null ? null : { from: toDateOnly(row.stayFrom), to: toDateOnly(row.stayTo) };
 }
 
@@ -465,10 +387,6 @@ function elapsedSeconds(now: Date, createdAt: Date): number {
   return Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / 1000));
 }
 
-// ---------------------------------------------------------------------------------------------
-// Processing a job (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * Runs one `lodging-claims` job (AAP 0.5.6).
  *
@@ -479,41 +397,24 @@ function elapsedSeconds(now: Date, createdAt: Date): number {
  *
  * `stay-expiry` loads the city's configured zone, turns off every ended stay's `showStaying` and
  * expires the city's stale claims, reporting both counts.
- *
- * @param job - The BullMQ job: its name must be one of this queue's two, and its data `{ claimId }`
- *   or `{ cityId }` accordingly.
- * @param ctx - The worker context: configuration, clock, logger and database.
- * @returns What the run did, in the shape its job name reports.
- * @throws QueuePayloadError when the name is not one this queue accepts, or when the data does not
- *   satisfy that job's schema. `Error` when the named city is not configured.
- * @see AAP 0.5.3 for both expiries, 0.5.6 for the queue and its schedule.
  */
 export async function process(
   job: LodgingClaimsJob,
   ctx: WorkerContext,
 ): Promise<LodgingClaimsResult> {
   const queue = QUEUE.lodgingClaims;
-
   // A name this queue does not accept has no schema to parse against, so it is refused here rather
   // than parsed as one of the two jobs: a foreign job arriving on this queue is a wiring fault.
   if (!isJobName(queue, job.name)) {
     throw new QueuePayloadError(`${queue}/${job.name}`);
   }
-
   if (job.name === JOB[queue].claimExpire) {
     const { claimId } = parseJobData(queue, JOB[queue].claimExpire, job.data);
-
     return await runClaimExpire(ctx, claimId);
   }
-
   const { cityId } = parseJobData(queue, JOB[queue].stayExpiry, job.data);
-
   return await runStayExpiry(ctx, cityId);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Claim expiry (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Expires one claim 72 hours after it was created (AAP 0.5.3: "unresolved … no penalty").
@@ -521,23 +422,15 @@ export async function process(
  * A claim that is still `pending_call` or `calling` at that age becomes `unreachable`, which is a
  * terminal status: the user sees their claim resolved without a penalty, the verification task still
  * outstanding is cancelled, and a call that may be live is ended at its next turn.
- *
- * @param ctx - The worker context.
- * @param claimId - The claim the job names.
- * @returns Whether the claim was expired, and whether the run was early.
- * @see AAP 0.5.3 for the claim lifecycle and its 72-hour expiry.
  */
 async function runClaimExpire(ctx: WorkerContext, claimId: string): Promise<ClaimExpireResult> {
   const outcome = await expireLockedClaim(ctx, claimId, ctx.clock.now());
-
   if (outcome === 'expired') {
     return { expired: true };
   }
-
   if (outcome === 'early') {
     return { expired: false, early: true };
   }
-
   return { expired: false };
 }
 
@@ -549,12 +442,6 @@ async function runClaimExpire(ctx: WorkerContext, claimId: string): Promise<Clai
  * the second runner finds the claim terminal and reports it, so the resolution happens exactly once.
  * A claim that does not exist is reported as `missing` rather than raised, because a purged claim's
  * delayed job is not a failure.
- *
- * @param ctx - The worker context.
- * @param claimId - The claim to expire.
- * @param now - The instant the claim's age is measured against; from the injected clock.
- * @returns Which of the four cases the locked claim was in.
- * @see AAP 0.5.3 for the claim lifecycle, 0.3.2 for idempotent jobs.
  */
 async function expireLockedClaim(
   ctx: WorkerContext,
@@ -563,28 +450,19 @@ async function expireLockedClaim(
 ): Promise<ClaimExpiry> {
   return await ctx.db.$transaction(async (tx) => {
     const claim = await lockClaim(tx, claimId);
-
     if (claim === null) {
       return 'missing';
     }
-
     if (!isActiveClaim(claim.status)) {
       return 'terminal';
     }
-
     if (now.getTime() < claim.created_at.getTime() + CLAIM_EXPIRY_MS) {
       return 'early';
     }
-
     const resolved = await resolveClaim(tx, ctx, asResolvableClaim(claim), 'unreachable');
-
     return resolved ? 'expired' : 'terminal';
   });
 }
-
-// ---------------------------------------------------------------------------------------------
-// Stay expiry (AAP 0.5.3, 0.1.1)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Runs the daily 00:05 local step for one city (AAP 0.5.6): the stays that have ended stop being
@@ -593,13 +471,6 @@ async function expireLockedClaim(
  * The city's zone is loaded from `City.timezone`, which is the only way a city-local date is
  * derived, and the date the visibility statement compares against comes from
  * `localDateKey(timezone, now)` — never from a UTC day (AAP 0.11.1).
- *
- * @param ctx - The worker context.
- * @param cityId - The city the scheduler names.
- * @returns How many visibility flags were turned off and how many claims the backstop expired.
- * @throws Error when the city is not configured, which means the scheduler and the `city` table
- *   disagree about the pilot's cities — a wiring fault rather than a transient failure.
- * @see AAP 0.5.3 for the end of a stay, 0.1.1 for the reliability the backstop serves.
  */
 async function runStayExpiry(ctx: WorkerContext, cityId: string): Promise<StayExpiryResult> {
   const now = ctx.clock.now();
@@ -607,18 +478,14 @@ async function runStayExpiry(ctx: WorkerContext, cityId: string): Promise<StayEx
     where: { id: cityId },
     select: { timezone: true },
   });
-
   if (city === null) {
     // The slug is configuration, not personal data, so naming it is what lets an operator fix the
     // mismatch between the scheduler and the `city` table (AAP 0.11.1).
     throw new Error(`the stay-expiry job named no configured city: "${cityId}"`);
   }
-
   const hidden = await hideEndedStays(ctx, cityId, localDateKey(city.timezone, now), now);
   const expired = await expireStaleClaims(ctx, cityId, now);
-
   ctx.logger.info({ event: 'stay_expiry', cityId, hidden, expired }, 'stay_expiry');
-
   return { hidden, expired };
 }
 
@@ -627,23 +494,15 @@ async function runStayExpiry(ctx: WorkerContext, cityId: string): Promise<StayEx
  * (AAP 0.5.3).
  *
  * A verified claim is *active* until the end of its `stayTo` in the lodging's city time and no
- * longer, which is the period `currentStayPredicate` in
- * `apps/api/src/modules/lodgings/leaderboard.ts` expresses as `stay_to >= (now AT TIME ZONE
- * city.timezone)::date`. The statement below is that predicate's complement, written with the date
- * this run derived from the clock: `stay_to < today` holds exactly when
- * `endOfLocalDay(timezone, stayTo) < now`, so the toggle follows the rule the guest count and the
- * guest list follow. `sort=activity` and the console's stats are unaffected: the leaderboard reads
- * facts, not visibility.
+ * longer, which `currentStayPredicate` in `apps/api/src/modules/lodgings/leaderboard.ts` expresses as
+ * `stay_to >= (now AT TIME ZONE city.timezone)::date`. The statement below is that predicate's
+ * complement, written with the date this run derived from the clock: `stay_to < today` holds exactly
+ * when `endOfLocalDay(timezone, stayTo) < now`, so the toggle follows the rule the guest count and
+ * the guest list follow. `sort=activity` and the console's stats are unaffected: the leaderboard
+ * reads facts, not visibility.
  *
  * The statement is one guarded update, so a second run of the same day changes no row, and it writes
  * `updated_at` by hand because raw SQL bypasses the column's own maintenance.
- *
- * @param ctx - The worker context: `env.APP_ENV` decides fixture visibility in the statement.
- * @param cityId - The city whose visibility rows are in scope.
- * @param today - The city's local date, `YYYY-MM-DD`, derived from the injected clock.
- * @param now - The instant written to `updated_at`.
- * @returns How many rows were updated.
- * @see AAP 0.5.3 for a claim's active period, 0.5.7 for lodging visibility.
  */
 async function hideEndedStays(
   ctx: WorkerContext,
@@ -678,16 +537,9 @@ async function hideEndedStays(
  *
  * One transaction per claim, taken only once the claim is known to be stale, keeps the locking as
  * short as the resolution itself.
- *
- * @param ctx - The worker context.
- * @param cityId - The city whose claims are in scope, read through the lodging that owns them.
- * @param now - The instant a claim's age is measured against; from the injected clock.
- * @returns How many claims this run expired.
- * @see AAP 0.5.3 for the 72-hour expiry, 0.3.2 for idempotent work.
  */
 async function expireStaleClaims(ctx: WorkerContext, cityId: string, now: Date): Promise<number> {
   const cutoff = new Date(now.getTime() - CLAIM_EXPIRY_MS);
-
   const stale = await ctx.db.$queryRaw<{ id: string }[]>(Prisma.sql`
     SELECT "c"."id"::text AS "id"
       FROM "lodging_claim" AS "c"
@@ -699,23 +551,15 @@ async function expireStaleClaims(ctx: WorkerContext, cityId: string, now: Date):
      ORDER BY "c"."created_at"
      LIMIT ${STALE_CLAIM_BATCH}::int
   `);
-
   let expired = 0;
-
   for (const row of stale) {
     const outcome = await expireLockedClaim(ctx, row.id, now);
-
     if (outcome === 'expired') {
       expired += 1;
     }
   }
-
   return expired;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Row locks and conversions (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Locks one claim row for the rest of the caller's transaction and returns it, or `null` when no
@@ -725,13 +569,6 @@ async function expireStaleClaims(ctx: WorkerContext, cityId: string, now: Date):
  * `call-results` all take it before they read a status, so the first writer wins and every later one
  * sees its result. Ids come back as text and the stay dates as `@db.Date` days, which is how the
  * conversion to {@link ResolvableClaim} reads them.
- *
- * @param tx - The transaction the lock is held in; it must be the transaction that resolves the
- *   claim, because a lock is released at commit.
- * @param claimId - The claim to lock.
- * @returns The locked row, or `null` when the claim does not exist.
- * @throws Error when the statement cannot run at all — an aborted transaction, a lost connection —
- *   which the queue retries.
  */
 async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | null> {
   const rows = await tx.$queryRaw<LockedClaimRow[]>(Prisma.sql`
@@ -746,7 +583,6 @@ async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | nu
      WHERE "c"."id" = ${claimId}::uuid
        FOR UPDATE
   `);
-
   return rows[0] ?? null;
 }
 
@@ -778,14 +614,12 @@ function claimEventProps(
 ): Record<string, string | number> {
   const props = AnalyticsProps.parse({ outcome, resolveSeconds });
   const json: Record<string, string | number> = {};
-
   if (props.outcome !== undefined) {
     json['outcome'] = props.outcome;
   }
   if (props.resolveSeconds !== undefined) {
     json['resolveSeconds'] = props.resolveSeconds;
   }
-
   return json;
 }
 
@@ -799,6 +633,5 @@ async function cityOfLodging(tx: DbTx, lodgingId: string): Promise<string | null
     where: { id: lodgingId },
     select: { cityId: true },
   });
-
   return lodging?.cityId ?? null;
 }

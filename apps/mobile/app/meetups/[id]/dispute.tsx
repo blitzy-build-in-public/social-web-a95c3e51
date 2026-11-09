@@ -24,6 +24,7 @@ import type { DisputeKind, DisputeRequest, MeetupDto } from '@tablemate/shared';
 import { apiClient } from '../../../src/api/client';
 import { isApiError, userMessageFor } from '../../../src/api/errors';
 import type { ClientErrorCode } from '../../../src/api/errors';
+import { REASON_FIELD_LABEL, remainingCharsText } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
 
@@ -53,7 +54,7 @@ const SUBMIT_BUTTON = {
   testID: 'dispute-submit',
 } as const;
 const REASON_FIELD = {
-  label: 'Describe the problem',
+  label: REASON_FIELD_LABEL,
   multiline: true,
   maxLength: REASON_MAX_CHARS,
   autoCapitalize: 'sentences',
@@ -70,6 +71,7 @@ function selectOnSpace(event: WebKeyEvent, onSelect: () => void): void {
 
 function KindOption({ kind, selected, onSelect }: KindOptionProps): ReactElement {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const labelStyle = [styles.optionLabel, selected ? styles.optionLabelSelected : null];
   const spaceKey: { onKeyDown?: (event: WebKeyEvent) => void } =
     Platform.OS === 'web' ? { onKeyDown: (event) => selectOnSpace(event, onSelect) } : {};
@@ -81,9 +83,15 @@ function KindOption({ kind, selected, onSelect }: KindOptionProps): ReactElement
       onPress={onSelect}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
+      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       testID={KIND_TEST_IDS[kind]}
-      style={[
+      style={({ pressed }) => [
         styles.option,
+        hovered ? styles.optionHovered : null,
+        pressed ? styles.optionPressed : null,
         selected ? styles.optionSelected : null,
         focused ? styles.optionFocused : null,
         Platform.OS === 'web' ? ({ outlineStyle: 'none' } as ViewStyle) : {},
@@ -146,7 +154,6 @@ export default function DisputeScreen(): ReactElement {
     })();
   };
   const kindProps = (value: DisputeKind) => ({ kind: value, onSelect: () => setKind(value) });
-  const countHint = `${reason.length} / ${REASON_MAX_CHARS}`;
   const venueText = { style: styles.explanation, children: VENUE_UNAVAILABLE_EXPLANATION };
   const refetch = () => void meetup.refetch();
   const retryAction = { label: 'Try again', onPress: refetch, testID: 'dispute-retry' };
@@ -164,7 +171,12 @@ export default function DisputeScreen(): ReactElement {
       </View>
       <Text style={styles.explanation}>{OPEN_REPORT_EXPLANATION}</Text>
       {kind === 'venue_unavailable' ? <Text {...venueText} /> : null}
-      <TextField {...REASON_FIELD} value={reason} onChangeText={setReason} hint={countHint} />
+      <TextField
+        {...REASON_FIELD}
+        value={reason}
+        onChangeText={setReason}
+        hint={remainingCharsText(reason, REASON_MAX_CHARS)}
+      />
       <Button {...SUBMIT_BUTTON} onPress={submit} disabled={reasonEmpty} busy={busy} />
     </>
   );
@@ -203,6 +215,8 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.background,
   },
+  optionHovered: { backgroundColor: colors.surface },
+  optionPressed: { backgroundColor: colors.surface },
   optionSelected: { borderColor: colors.primary },
   optionFocused: { borderColor: colors.focusRing },
   optionLabel: { ...typography.label, color: colors.text },

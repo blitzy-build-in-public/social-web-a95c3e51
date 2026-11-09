@@ -1,35 +1,17 @@
 /**
- * `bench-verify` — the server-side proof-verification benchmark (AAP 0.5.5, 0.8.1, 0.12.1 criterion 4).
+ * `bench-verify` — the server-side proof-verification benchmark (AAP 0.5.5, 0.8.1, 0.12.1 criterion 4): 1,000
+ * `verifyItineraryProof` calls inside the `api` container and 30 route-level `POST /itinerary-proofs` calls with
+ * unique fixture proofs, reporting p50 and p95 against p95 ≤ 500 ms in `docs/zk-performance.md`. A run that
+ * cannot measure writes nothing there (AAP 0.12.3). The default mode prepares, measures in the `api` service and
+ * rewrites the document; `--prepare` writes the git-ignored `.local/bench/proofs.json`, and `--measure` prints
+ * one `BENCH_VERIFY_RESULT {…}` line on stdout for the orchestration to parse.
  *
- * ```sh
- * pnpm --filter @tablemate/api bench:verify                                  # measure, record, report
- * pnpm --filter @tablemate/api bench:verify -- --prepare [--api-url <url>]    # prepare only
- * node --enable-source-maps apps/api/dist/scripts/bench-verify.js --measure <file> [--api-url <url>]
- * ```
- *
- * AAP 0.5.5 fixes what to measure: 1,000 `verifyItineraryProof` calls inside the `api` container and 30
- * route-level `POST /itinerary-proofs` calls with unique fixture proofs, reporting p50 and p95 against
- * p95 ≤ 500 ms, recorded in `docs/zk-performance.md` (AAP 0.12.1). AAP 0.12.3 is why a run that cannot
- * measure writes nothing there: no pass without a measurement.
- *
- * The default mode prepares, measures inside the `api` service and rewrites the document; it wants a
- * compose stack up as `APP_ENV=test ZK_ALLOW_TEST_ISSUER=true` and a built `dist/scripts`. `--prepare`
- * runs on the host or the image's `test-support` target and writes the git-ignored
- * `.local/bench/proofs.json`. `--measure` runs in the `api` runtime container and prints one
- * `BENCH_VERIFY_RESULT {…}` line on stdout, which the orchestration parses.
- *
- * Two invariants shape the code. Nothing here proves: the runtime image holds no proving key and
- * `apps/api/src/**` holds no proving call, so the proofs come from the `test-support` harness, imported
- * dynamically inside the prepare branch alone because the image ships no `dist/test`; and no line ever
+ * Nothing here proves: the runtime image holds no proving key, so the proofs come from the `test-support`
+ * harness, imported dynamically inside the prepare branch alone because the image ships no `dist/test`. No line
  * carries a token, an email address, a private input or a proof byte, only counts, timings and codes
- * (AAP 0.11.1, 0.12.2). One booking yields one proof, so the 31 proofs alternate the two fixtures the
- * discarded DKIM key signed (AAP 0.4.2) with `{ fresh: true }`, and the route series spends and releases
- * one booking per call: proof 0 joins the direct series, proofs 1–30 are the 30 unique submissions.
- *
- * @see AAP 0.5.5 for the verification measured, 0.12.1 criterion 4 for the pass condition, 0.11.2 for
- *   the suite row and the container, 0.11.1 for the injected clock, 0.4.2 for the fixtures.
+ * (AAP 0.11.1, 0.12.2). One booking yields one proof, so the 31 proofs alternate the two fixtures the discarded
+ * DKIM key signed (AAP 0.4.2) with `{ fresh: true }`, and the route series spends and releases one per call.
  */
-
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -86,7 +68,6 @@ const USAGE_LINE =
   `usage: ${COMMAND} [${API_URL_FLAG} <url>]\n` +
   `       ${COMMAND} ${PREPARE_FLAG} [${API_URL_FLAG} <url>]\n` +
   `       ${COMMAND} ${MEASURE_FLAG} <file> [${API_URL_FLAG} <url>]\n`;
-
 /** The host default is the compose stack's published `API_PORT`; the container default is itself. */
 const DEFAULT_HOST_API_URL = 'http://localhost:3000';
 const DEFAULT_CONTAINER_API_URL = 'http://127.0.0.1:3000';
@@ -121,9 +102,8 @@ const COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
 const CLOSE_TIMEOUT_MS = 5_000;
 
 /**
- * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
- * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
- * hold the run open once the measurement is taken.
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway (one
+ * second): a consumer that never reads — a stopped `tee`, a detached log collector — must not hold the run open.
  */
 const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
@@ -194,14 +174,12 @@ interface BenchUser {
   readonly accessToken: string;
 }
 
-/** What the command line asked for. */
 interface Invocation {
   readonly mode: 'orchestrate' | 'prepare' | 'measure';
   readonly apiUrl: string | null;
   readonly proofFile: string | null;
 }
 
-/** What one child command answered. */
 interface CommandResult {
   readonly failed: boolean;
   readonly stdout: string;
@@ -221,34 +199,26 @@ class BenchFailure extends Error {
 }
 
 /**
- * End the process with `code` once every byte already written to stdout and stderr has reached its
- * consumer.
+ * End the process with `code` once every byte already written to stdout and stderr has reached its consumer.
  *
- * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
- * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
- * script exists to print. An empty write queued behind the real ones calls back once they have been
- * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
- * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
- * this script decided is what stands in either case.
- *
- * @param code - the status the explicit exit this replaces carried.
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued — under
+ * `| tee` or a CI log collector that is the last, machine-readable line this script exists to print. An empty
+ * write queued behind the real ones calls back once they have been flushed, and a consumer that stopped reading
+ * closes the pipe instead, which ends the drain the same way: the status this script decided is what stands.
+ * {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains.
  */
 function exitAfterFlush(code: number): void {
   process.exitCode = code;
-
   const draining = new Set<NodeJS.WriteStream>();
   if (process.stdout.writableLength > 0) draining.add(process.stdout);
   if (process.stderr.writableLength > 0) draining.add(process.stderr);
-
   if (draining.size === 0) {
     // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
     process.exit(code);
     return;
   }
-
   const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
   bound.unref();
-
   const finish = (stream: NodeJS.WriteStream): void => {
     draining.delete(stream);
     if (draining.size === 0) {
@@ -256,7 +226,6 @@ function exitAfterFlush(code: number): void {
       process.exit(code);
     }
   };
-
   for (const stream of [...draining]) {
     stream.once('error', () => {
       finish(stream);
@@ -270,10 +239,9 @@ function exitAfterFlush(code: number): void {
 exitAfterFlush(await run(process.argv.slice(2)));
 
 /**
- * Run the mode the arguments selected and answer this process's exit code.
- *
- * `0` covers a recorded measurement and one that missed its target alike, because a miss is a result
- * recorded as `fail` (AAP 0.12.1). Only a refusal answers `1`, with one `<step>: <reason>` line.
+ * Run the mode the arguments selected and answer this process's exit code: `0` covers a recorded measurement and
+ * one that missed its target alike, because a miss is a result recorded as `fail` (AAP 0.12.1); only a refusal
+ * answers `1`, with one `<step>: <reason>` line.
  */
 async function run(argv: readonly string[]): Promise<number> {
   const invocation = parseArguments(argv);
@@ -281,7 +249,6 @@ async function run(argv: readonly string[]): Promise<number> {
     process.stderr.write(USAGE_LINE);
     return 1;
   }
-
   try {
     if (invocation.mode === 'prepare') {
       const outPath = await prepare(invocation);
@@ -290,13 +257,11 @@ async function run(argv: readonly string[]): Promise<number> {
       );
       return 0;
     }
-
     if (invocation.mode === 'measure') {
       const result = await measure(invocation);
       process.stdout.write(`${RESULT_PREFIX}${JSON.stringify(result)}\n`);
       return 0;
     }
-
     return await orchestrate(invocation);
   } catch (error) {
     return error instanceof BenchFailure
@@ -306,18 +271,14 @@ async function run(argv: readonly string[]): Promise<number> {
 }
 
 /**
- * Read the argument list: the three flags, each taking the value that follows it, and `--` skipped.
- *
- * `--prepare` and `--measure` are mutually exclusive — the two halves of one sequence, where the second
- * needs the file the first writes. A repeated flag keeps its last value.
- *
- * @returns what to run, or `null` for a usage error.
+ * Read the argument list: the three flags, each taking the value that follows it, and `--` skipped. `--prepare`
+ * and `--measure` are mutually exclusive — the two halves of one sequence, where the second needs the file the
+ * first writes — and a repeated flag keeps its last value.
  */
 function parseArguments(argv: readonly string[]): Invocation | null {
   let prepare = false;
   let proofFile: string | null = null;
   let apiUrl: string | null = null;
-
   for (let position = 0; position < argv.length; position += 1) {
     const argument = argv[position];
     if (argument === OPTIONS_SEPARATOR) continue;
@@ -326,14 +287,12 @@ function parseArguments(argv: readonly string[]): Invocation | null {
       continue;
     }
     if (argument !== MEASURE_FLAG && argument !== API_URL_FLAG) return null;
-
     const value = argv[position + 1];
     if (value === undefined || value === '') return null;
     position += 1;
     if (argument === MEASURE_FLAG) proofFile = value;
     else apiUrl = value;
   }
-
   if (prepare && proofFile !== null) return null;
   if (prepare) return { mode: 'prepare', apiUrl, proofFile: null };
   if (proofFile !== null) return { mode: 'measure', apiUrl, proofFile };
@@ -341,34 +300,25 @@ function parseArguments(argv: readonly string[]): Invocation | null {
 }
 
 /**
- * Prove the fixture bookings and write the file the measuring half reads (AAP 0.5.5).
- *
- * The nullifier salt comes from the running API's own `GET /v1/zk/config`, never from an environment
- * this process reads, so the proofs a stack verifies are built against exactly the salt and registry it
- * publishes and a file prepared for another stack is refused at measurement rather than quietly proving
- * something else. The test issuer must be published — which the API does only as `APP_ENV=test` with
- * `ZK_ALLOW_TEST_ISSUER=true` — because the fixtures' registry root is accepted only then.
- *
- * @returns the absolute path of the file written.
- * @throws {BenchFailure} `prepare` when the API is unreachable, withholds the test issuer, the issuer
- *   configuration cannot be read, or the artefacts are missing (the harness names `pnpm circuits:build`).
+ * Prove the fixture bookings and write the file the measuring half reads (AAP 0.5.5). The nullifier salt comes
+ * from the running API's own `GET /v1/zk/config`, never from an environment this process reads, so the proofs a
+ * stack verifies are built against exactly the salt and registry it publishes, and a file prepared for another
+ * stack is refused rather than quietly proving something else. The test issuer is published only as
+ * `APP_ENV=test` with `ZK_ALLOW_TEST_ISSUER=true`, which is when the fixtures' registry root is accepted.
  */
 async function prepare(invocation: Invocation): Promise<string> {
   const apiUrl = apiUrlFor(invocation, DEFAULT_HOST_API_URL);
   const config = await fetchZkConfig(apiUrl);
   const testIssuer = testIssuerId();
-
   if (!config.issuers.some((issuer) => issuer.issuerId === testIssuer)) {
     throw new BenchFailure(
       'prepare',
       'the api service is not running with APP_ENV=test and ZK_ALLOW_TEST_ISSUER=true',
     );
   }
-
   // Loaded inside this branch alone: these proofs come from the test harness, and the runtime image
   // ships no `dist/test`, so a static import here would be one the container could not resolve.
   const { fixtureProof, releaseProverCurve } = await import('../test/support/proofs.ts');
-
   try {
     const proofs: ProofSubmission[] = [];
     for (let index = 0; index < PROOF_COUNT; index += 1) {
@@ -376,7 +326,6 @@ async function prepare(invocation: Invocation): Promise<string> {
       proofs.push(await fixtureProof(name, { salt: config.nullifierSalt, fresh: true }));
       progress(`proof ${index + 1}/${PROOF_COUNT}`);
     }
-
     const outPath = path.join(findRepoRoot(), PROOF_FILE);
     await mkdir(path.dirname(outPath), { recursive: true });
     await writeFile(
@@ -411,11 +360,9 @@ async function fetchZkConfig(apiUrl: string): Promise<ZkConfig> {
   } catch {
     throw new BenchFailure('prepare', `the api service is not reachable at ${apiUrl}`);
   }
-
   if (response.status !== 200) {
     throw new BenchFailure('prepare', `GET ${ZK_CONFIG_PATH} answered ${response.status}`);
   }
-
   const parsed = ZkConfig.safeParse(await readJson(response));
   if (!parsed.success) {
     throw new BenchFailure('prepare', `GET ${ZK_CONFIG_PATH} is not the published configuration`);
@@ -434,7 +381,6 @@ function testIssuerId(): number {
       error instanceof Error ? error.message : 'the issuer configuration cannot be read',
     );
   }
-
   if (entry === undefined) {
     throw new BenchFailure('prepare', `config/issuers/${TEST_ISSUER_STEM}.json is missing`);
   }
@@ -444,26 +390,18 @@ function testIssuerId(): number {
 /**
  * Measure both series inside the `api` runtime container and answer the result line's payload.
  *
- * This half refuses anything but a test stack, for the two reasons AAP 0.12.2 fixes: the fixture proofs
- * name the test registry root, which `verifyItineraryProof` accepts only under `APP_ENV=test` and
- * `ZK_ALLOW_TEST_ISSUER=true`, and the route series deletes `spent_nullifier` rows, acceptable only
- * where the data is disposable.
- *
- * The app is built and never started as a server — `startBackground` is deliberately not called, so this
- * process holds no worker, sweeper, poller or socket of its own and the API already listening in this
- * container keeps serving the route series underneath — and the logger is given stderr, which leaves
- * stdout for the one result line.
- *
- * @throws {BenchFailure} `measure` for every refusal, each naming its step.
+ * This half refuses anything but a test stack (AAP 0.12.2): the fixture proofs name the test registry root, which
+ * `verifyItineraryProof` accepts only under `APP_ENV=test` and `ZK_ALLOW_TEST_ISSUER=true`, and the route series
+ * deletes `spent_nullifier` rows, acceptable only where the data is disposable. The app is built and never
+ * started as a server — `startBackground` is deliberately not called — and the logger is given stderr, which
+ * leaves stdout for the one result line.
  */
 async function measure(invocation: Invocation): Promise<BenchResult> {
   const env = requireTestEnvironment();
-
   if (invocation.proofFile === null) {
     throw new BenchFailure('measure', 'no prepared proof file was given');
   }
   const file = await readBenchProofFile(invocation.proofFile, env.NULLIFIER_SALT);
-
   const logger = createLogger({
     name: LOGGER_NAME,
     level: 'warn',
@@ -471,7 +409,6 @@ async function measure(invocation: Invocation): Promise<BenchResult> {
     destination: process.stderr,
   });
   const app = buildApp({ env, logger });
-
   try {
     await app.ready();
     const verify = await measureVerify(app.services, file.proofs);
@@ -494,7 +431,6 @@ function requireTestEnvironment(): ApiEnv {
     if (!(error instanceof EnvValidationError)) throw error;
     throw new BenchFailure('measure', error.message);
   }
-
   if (env.APP_ENV !== 'test' || !env.testOnly.zkAllowTestIssuer) {
     throw new BenchFailure(
       'measure',
@@ -505,10 +441,9 @@ function requireTestEnvironment(): ApiEnv {
 }
 
 /**
- * Read and validate the prepared proof file, and check it belongs to this stack.
- *
- * The file's salt is compared with this process's published `NULLIFIER_SALT`: the verifier would reject
- * proofs from another stack anyway, but as a series of failures rather than as one clear message.
+ * Read and validate the prepared proof file, and check it belongs to this stack: the file's salt is compared
+ * with this process's published `NULLIFIER_SALT`, since the verifier would reject proofs from another stack
+ * anyway, but as a series of failures rather than as one clear message.
  */
 async function readBenchProofFile(file: string, salt: string): Promise<BenchProofFile> {
   let text: string;
@@ -517,7 +452,6 @@ async function readBenchProofFile(file: string, salt: string): Promise<BenchProo
   } catch {
     throw new BenchFailure('measure', `the prepared proof file cannot be read at ${file}`);
   }
-
   const result = BenchProofFile.safeParse(parseJson(text));
   if (!result.success) {
     throw new BenchFailure(
@@ -525,7 +459,6 @@ async function readBenchProofFile(file: string, salt: string): Promise<BenchProo
       `the prepared proof file is not ${PROOF_COUNT} proofs of the contract's shape`,
     );
   }
-
   if (result.data.nullifierSalt !== salt) {
     throw new BenchFailure('measure', 'the proofs were prepared against a different stack');
   }
@@ -533,12 +466,9 @@ async function readBenchProofFile(file: string, salt: string): Promise<BenchProo
 }
 
 /**
- * The direct series: one unmeasured warm-up call, then `VERIFY_SAMPLES` timed ones (AAP 0.5.5).
- *
- * The warm-up is what the recorded figure stands on: the first call builds the process-wide BN254 curve
- * and reads the mounted verification key, costs an order of magnitude more than the pairing check that
- * follows, and would otherwise land in the first sample. The measured calls cycle all 31 proofs, so both
- * bookings are exercised throughout.
+ * The direct series: one unmeasured warm-up call, then `VERIFY_SAMPLES` timed ones (AAP 0.5.5). The warm-up is
+ * what the recorded figure stands on: the first call builds the process-wide BN254 curve and reads the mounted
+ * verification key, and would otherwise land in the first sample. The measured calls cycle all 31 proofs.
  */
 async function measureVerify(
   services: AppServices,
@@ -547,12 +477,10 @@ async function measureVerify(
   for (let index = 0; index < VERIFY_WARMUP; index += 1) {
     await timedVerify(services, proofs, index);
   }
-
   const durations: number[] = [];
   for (let index = 0; index < VERIFY_SAMPLES; index += 1) {
     durations.push(await timedVerify(services, proofs, index));
   }
-
   return { warmup: VERIFY_WARMUP, ...stats(durations) };
 }
 
@@ -566,7 +494,6 @@ async function timedVerify(
   if (submission === undefined) {
     throw new BenchFailure('verify', 'no prepared proof at that position');
   }
-
   const started = performance.now();
   try {
     await verifyItineraryProof(services, submission);
@@ -581,18 +508,14 @@ async function timedVerify(
 /**
  * The route series: `ROUTE_SAMPLES` submissions of unique fixture proofs over HTTP (AAP 0.5.5).
  *
- * Each call spends one booking and releases it again, which is what makes the submissions unique while
- * only two fixture bookings exist: the `itinerary_proof` and `spent_nullifier` rows the call wrote are
- * deleted afterwards, so the next call meets an unspent booking. The accounts and their rows are removed
- * before the series starts and again at its end, so an interrupted run leaves nothing behind that the
- * next one cannot reuse.
+ * Each call spends one booking and releases it again, which is what makes the submissions unique while only two
+ * fixture bookings exist: the `itinerary_proof` and `spent_nullifier` rows the call wrote are deleted afterwards,
+ * so the next call meets an unspent booking. The accounts and their rows are removed before the series starts and
+ * again at its end, so an interrupted run leaves nothing behind that the next one cannot reuse.
  *
- * The accounts are created here rather than through `POST /auth/*`: the series measures verification,
- * and a magic link over SMTP would put the mailer in the measurement's path. Each carries a recorded 18+
- * confirmation and terms version, so `requireTraveler` admits it (AAP 0.5.4). Both rate limits are
- * clear: one call per account, and 30 calls from one address (AAP 0.5.4).
- *
- * @throws {BenchFailure} `measure` when a booking was already spent by another account, else `route`.
+ * The accounts are created here rather than through `POST /auth/*`, because a magic link over SMTP would put the
+ * mailer in the measurement's path; each carries a recorded 18+ confirmation and terms version, so
+ * `requireTraveler` admits it (AAP 0.5.4). Both rate limits are clear: one call per account, 30 from one address.
  */
 async function measureRoute(
   services: AppServices,
@@ -603,11 +526,9 @@ async function measureRoute(
   const db = services.db;
   const apiUrl = apiUrlFor(invocation, DEFAULT_CONTAINER_API_URL);
   const now = services.clock.now();
-
   await purgeBenchRows(db);
   const users = await createBenchUsers(services, env, now);
   const benchUserIds = new Set(users.map((user) => user.id));
-
   try {
     const durations: number[] = [];
     for (let index = 0; index < ROUTE_SAMPLES; index += 1) {
@@ -618,12 +539,10 @@ async function measureRoute(
       if (submission === undefined || user === undefined) {
         throw new BenchFailure('route', 'the prepared proofs or the bench accounts are incomplete');
       }
-
       const nullifier = submission.publicSignals[NULLIFIER_SIGNAL];
       if (nullifier === undefined) {
         throw new BenchFailure('route', 'a prepared proof carries no nullifier signal');
       }
-
       await releaseSpentFixture(db, nullifier, benchUserIds);
       durations.push(await submitProof(apiUrl, user.accessToken, submission));
       await deleteFixtureRows(db, nullifier);
@@ -641,7 +560,6 @@ async function createBenchUsers(
   now: Date,
 ): Promise<readonly BenchUser[]> {
   const users: BenchUser[] = [];
-
   for (let index = 1; index <= ROUTE_SAMPLES; index += 1) {
     const email = benchEmail(index);
     const user = await services.db.user.create({
@@ -656,7 +574,6 @@ async function createBenchUsers(
       },
       select: { id: true },
     });
-
     const session = await services.db.session.create({
       data: {
         userId: user.id,
@@ -665,7 +582,6 @@ async function createBenchUsers(
       },
       select: { id: true },
     });
-
     users.push({
       id: user.id,
       sessionId: session.id,
@@ -680,11 +596,9 @@ async function createBenchUsers(
 }
 
 /**
- * Submit one proof to the listening API and time it (AAP 0.5.4).
- *
- * The span runs from the request being sent until the whole body has been read, so the figure is what a
- * client experiences for the route end to end — rate limiting, authentication, verification and storage
- * included. The token travels only in the header and is never printed or logged.
+ * Submit one proof to the listening API and time it (AAP 0.5.4): the span runs from the request being sent until
+ * the whole body has been read, so the figure covers rate limiting, authentication, verification and storage. The
+ * token travels only in the header and is never printed or logged.
  */
 async function submitProof(
   apiUrl: string,
@@ -692,7 +606,6 @@ async function submitProof(
   submission: ProofSubmission,
 ): Promise<number> {
   const started = performance.now();
-
   try {
     const response = await fetch(`${apiUrl}${PROOF_PATH}`, {
       method: 'POST',
@@ -701,7 +614,6 @@ async function submitProof(
     });
     const text = await response.text();
     const elapsed = performance.now() - started;
-
     if (response.status !== PROOF_ACCEPTED_STATUS) {
       throw new BenchFailure(
         'route',
@@ -719,14 +631,11 @@ async function submitProof(
 }
 
 /**
- * Give a fixture booking back, or refuse to touch a row this script did not write.
- *
- * A booking's nullifier is spent once for the whole deployment, including by accounts this script knows
- * nothing about — a suite that submitted the same fixture, or a `bench_` account from a run that died
- * before its cleanup. Only the latter is reclaimed, and only with its `itinerary_proof` row: deleting
- * another account's rows to make room for a benchmark would corrupt real data (AAP 0.12.2).
- *
- * @throws {BenchFailure} `measure` when the booking was registered by anything but a bench account.
+ * Give a fixture booking back, or refuse to touch a row this script did not write. A booking's nullifier is spent
+ * once for the whole deployment, including by accounts this script knows nothing about — a suite that submitted
+ * the same fixture, or a `bench_` account from a run that died before its cleanup. Only the latter is reclaimed,
+ * and only with its `itinerary_proof` row: deleting another account's rows to make room for a benchmark would
+ * corrupt real data (AAP 0.12.2).
  */
 async function releaseSpentFixture(
   db: DbClient,
@@ -738,12 +647,10 @@ async function releaseSpentFixture(
     select: { nullifier: true },
   });
   if (spent === null) return;
-
   const proof = await db.itineraryProof.findUnique({
     where: { nullifier },
     select: { userId: true },
   });
-
   if (proof === null || !benchUserIds.has(proof.userId)) {
     throw new BenchFailure(
       'measure',
@@ -760,13 +667,10 @@ async function deleteFixtureRows(db: DbClient, nullifier: string): Promise<void>
 }
 
 /**
- * Remove every row this script could have written for a `bench_` account (AAP 0.5.2).
- *
- * The deletion runs in foreign-key order — the `spent_nullifier` rows of the accounts' proofs, the proof
- * rows, the sessions, then the accounts — and touches nothing else, because a user row is found only by
- * the handle prefix these accounts alone carry. `itinerary_proof` and `session` are the only two
- * relations a bench account can hold: `POST /itinerary-proofs` is the only route it calls, and that
- * route's transaction writes those two tables and nothing more.
+ * Remove every row this script could have written for a `bench_` account (AAP 0.5.2). The deletion runs in
+ * foreign-key order — the `spent_nullifier` rows of the accounts' proofs, the proof rows, the sessions, then the
+ * accounts — and touches nothing else, because a user row is found only by the handle prefix these accounts alone
+ * carry. `itinerary_proof` and `session` are the only two relations a bench account can hold.
  */
 async function purgeBenchRows(db: DbClient): Promise<void> {
   const users = await db.user.findMany({
@@ -775,13 +679,11 @@ async function purgeBenchRows(db: DbClient): Promise<void> {
   });
   const userIds = users.map((row) => row.id);
   if (userIds.length === 0) return;
-
   const proofs = await db.itineraryProof.findMany({
     where: { userId: { in: userIds } },
     select: { nullifier: true },
   });
   const nullifiers = proofs.map((row) => row.nullifier);
-
   if (nullifiers.length > 0) {
     await db.spentNullifier.deleteMany({ where: { nullifier: { in: nullifiers } } });
   }
@@ -790,7 +692,6 @@ async function purgeBenchRows(db: DbClient): Promise<void> {
   await db.user.deleteMany({ where: { id: { in: userIds } } });
 }
 
-/** The handle of bench account `index`: `bench_01`…`bench_30`, the cleanup's own key. */
 function benchHandle(index: number): string {
   return `${HANDLE_PREFIX}${String(index).padStart(HANDLE_DIGITS, '0')}`;
 }
@@ -801,19 +702,13 @@ function benchEmail(index: number): string {
 }
 
 /**
- * Prepare, measure inside the `api` service and record the result (AAP 0.5.5, 0.12.1).
- *
- * The measurement happens in the container the plan names — "the `api` container for verification"
- * (AAP 0.11.2) — so the figure covers the image a deployment runs rather than the host's Node. The
- * document is written only after a result line has been parsed: a container that cannot measure leaves
- * `docs/zk-performance.md` untouched, which is AAP 0.12.3's rule that no pass is recorded without one.
- *
- * @returns `0` once the block is written, whether the measured p95 passed or missed; `1` for a step that
- *   could not be completed.
+ * Prepare, measure inside the `api` container for verification (AAP 0.11.2) and record the result (AAP 0.5.5,
+ * 0.12.1), so the figure covers the image a deployment runs rather than the host's Node. The document is written
+ * only after a result line has been parsed: a container that cannot measure leaves `docs/zk-performance.md`
+ * untouched (AAP 0.12.3).
  */
 async function orchestrate(invocation: Invocation): Promise<number> {
   const outPath = await prepare(invocation);
-
   // The proofs travel through the container command's stdin rather than with `docker compose cp`: a
   // copy is written root-owned with the source's mode, and the measuring process runs as the image's
   // `node` user, which could not read the 0600 file this process wrote. `dd` writes stdin to the path
@@ -827,7 +722,6 @@ async function orchestrate(invocation: Invocation): Promise<number> {
   if (copied.failed) {
     return refuse('orchestrate', 'the prepared proofs could not be handed to the api container');
   }
-
   const measured = await compose([
     'exec',
     '-T',
@@ -842,15 +736,12 @@ async function orchestrate(invocation: Invocation): Promise<number> {
   if (measured.failed) {
     return refuse('orchestrate', 'the api container exited without a measured result');
   }
-
   const result = parseResult(measured.stdout);
   if (result === null) {
     return refuse('orchestrate', 'the api container reported no result line');
   }
-
   const pass = result.verify.p95Ms <= TARGET_P95_MS && result.route.p95Ms <= TARGET_P95_MS;
   const written = await writeDocsBlock(blockFor(result, pass, await gitCommit()));
-
   process.stdout.write(
     `${COMMAND}: verify p95 ${result.verify.p95Ms} ms, route p95 ${result.route.p95Ms} ms -> ` +
       `${pass ? 'pass' : 'fail'} (${displayPath(written)})\n`,
@@ -859,23 +750,18 @@ async function orchestrate(invocation: Invocation): Promise<number> {
 }
 
 /**
- * Replace this file's block in `docs/zk-performance.md`, creating the document when it is absent.
- *
- * The block is what sits between the two markers, so a rerun replaces exactly what it wrote and leaves
- * every other result in the document — the device benchmarks, which own their own block — as it was.
- *
- * @returns the absolute path of the document.
+ * Replace this file's block in `docs/zk-performance.md`, creating the document when it is absent: the block is
+ * what sits between the two markers, so a rerun replaces exactly what it wrote and leaves every other result —
+ * the device benchmarks, which own their own block — as it was.
  */
 async function writeDocsBlock(block: string): Promise<string> {
   const file = path.join(findRepoRoot(), DOCS_FILE);
-
   let existing: string | null;
   try {
     existing = await readFile(file, 'utf8');
   } catch {
     existing = null;
   }
-
   await writeFile(file, withBlock(existing, block));
   return file;
 }
@@ -885,11 +771,9 @@ function withBlock(existing: string | null, block: string): string {
   // A blank line after the opening marker and none before the closing one: the form Prettier keeps for
   // an HTML comment followed by prose, so a `prettier --check` of the record stays clean.
   const fenced = `${BLOCK_BEGIN}\n\n${block}\n${BLOCK_END}\n`;
-
   if (existing === null) {
     return `${DOCS_TITLE}\n\n${DOCS_SECTION}\n\n${fenced}`;
   }
-
   const start = existing.indexOf(BLOCK_BEGIN);
   const end = existing.indexOf(BLOCK_END);
   if (start >= 0 && end > start) {
@@ -898,7 +782,6 @@ function withBlock(existing: string | null, block: string): string {
     const rest = existing.slice(end + BLOCK_END.length).replace(/^\n+/, '');
     return `${existing.slice(0, start)}${fenced}${rest === '' ? '' : `\n${rest}`}`;
   }
-
   const separator = existing.endsWith('\n') ? '\n' : '\n\n';
   return `${existing}${separator}${DOCS_SECTION}\n\n${fenced}`;
 }
@@ -918,11 +801,9 @@ function blockFor(result: BenchResult, pass: boolean, commit: string): string {
 }
 
 /**
- * The two result rows as one table, padded the way Prettier writes a Markdown table.
- *
- * The block lands in a tracked document that `pnpm lint` formats, so the generator emits the canonical
- * form itself: a hand-written table would be rewritten by the next `prettier --write`, and the record
- * would drift from the formatter on every check.
+ * The two result rows as one table, padded the way Prettier writes a Markdown table: the block lands in a tracked
+ * document that `pnpm lint` formats, so the generator emits the canonical form itself, since a hand-written table
+ * would be rewritten by the next `prettier --write` and the record would drift on every check.
  */
 function benchTable(result: BenchResult): readonly string[] {
   const header = ['Series', 'Samples', 'p50 (ms)', 'p95 (ms)', 'Max (ms)', 'Target', 'Result'];
@@ -943,7 +824,6 @@ function benchTable(result: BenchResult): readonly string[] {
   );
   const line = (cells: readonly string[]): string =>
     `| ${cells.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join(' | ')} |`;
-
   return [line(header), line(widths.map((width) => '-'.repeat(width))), ...rows.map(line)];
 }
 
@@ -971,12 +851,10 @@ async function gitCommit(): Promise<string> {
 }
 
 /**
- * Run one child command from the repository root, with no shell.
- *
- * `execFile` rather than a shell, so nothing in an argument can be interpreted as one, and the compose
- * project is whatever the caller's environment selects — the same `docker compose` an operator runs by
- * hand, which is what makes this script measure the stack they started. `input`, when given, is written
- * to the child's stdin and the stream closed behind it; every child that reads no stdin is unaffected.
+ * Run one child command from the repository root, with no shell: `execFile` rather than a shell, so nothing in an
+ * argument can be interpreted as one, and the compose project is whatever the caller's environment selects — the
+ * same `docker compose` an operator runs by hand, which is what makes this script measure the stack they started.
+ * `input`, when given, is written to the child's stdin and the stream closed behind it.
  */
 function runCommand(
   file: string,
@@ -1008,7 +886,6 @@ function parseResult(stdout: string): BenchResult | null {
     .filter((candidate) => candidate.startsWith(RESULT_PREFIX))
     .pop();
   if (line === undefined) return null;
-
   const parsed = BenchResult.safeParse(parseJson(line.slice(RESULT_PREFIX.length)));
   return parsed.success ? parsed.data : null;
 }
@@ -1062,12 +939,11 @@ function gibibytes(bytes: number): number {
   return Math.round(bytes / 1024 ** 3);
 }
 
-/** A count with its thousands separator, so `1000` reads as the plan writes it. */
+/** A count with its thousands separator, the form the AAP's tables write it in. */
 function thousands(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/** The API address to reach: the flag when given, else this mode's default, without a trailing slash. */
 function apiUrlFor(invocation: Invocation, fallback: string): string {
   return (invocation.apiUrl ?? fallback).replace(/\/+$/, '');
 }
@@ -1109,7 +985,6 @@ async function closeBounded(app: App): Promise<void> {
     timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
     timer.unref();
   });
-
   try {
     await Promise.race([app.close(), deadline]);
   } catch {

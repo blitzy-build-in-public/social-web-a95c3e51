@@ -12,9 +12,9 @@
  * reaches it by Tab and activates it with Enter or Space (WCAG 2.1 AA, AAP 0.5.8). Its focus ring is
  * the reserved boundary band `Button` paints, so focusing it moves no layout.
  *
- * {@link renderWebHeaderLeft} is what a layout spreads into a navigator's screen options, and only
- * under `Platform.OS === 'web'`: on iOS and Android the platform header keeps the control it has
- * today, and no option, component or request changes there.
+ * {@link renderWebHeaderLeft} is what `./NavigationHeader`'s `navigationHeaderOptions` spreads into a
+ * web navigator's screen options, and only under `Platform.OS === 'web'`: on iOS and Android the
+ * platform header keeps the control it has today, and no option, component or request changes there.
  */
 import { useCallback, useState } from 'react';
 import type { ReactElement } from 'react';
@@ -177,14 +177,14 @@ export function HeaderBackButton(props: HeaderBackButtonProps): ReactElement | n
 }
 
 /**
- * The `headerLeft` renderer every web layout spreads into its screen options (AAP 0.5.8), so the
+ * The `headerLeft` renderer the app's chrome hands every web navigator (AAP 0.5.8), so the
  * navigator's own image-backed control is never drawn there:
  *
  * ```ts
- * const HEADER = { ...(Platform.OS === 'web' ? { headerLeft: renderWebHeaderLeft } : {}) };
+ * const chrome = { headerLeft: renderWebHeaderLeft }; // web only; see ./NavigationHeader
  * ```
  *
- * Off web the layouts spread nothing, which leaves the platform header exactly as it is.
+ * Off web no such option is spread, which leaves the platform header exactly as it is.
  *
  * @param props - What the navigator's header hands `headerLeft`.
  * @returns The drawn control, or `null` where the header holds no back entry.

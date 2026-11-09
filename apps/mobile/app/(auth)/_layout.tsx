@@ -1,19 +1,26 @@
 /** The auth route group: sign-in, check-email and the age gate in one stack (AAP 0.5.8). */
-import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
-import { colors, fontWeights, typography } from '@tablemate/shared';
-import { renderWebHeaderLeft } from '../../src/ui/HeaderBackButton';
+import { colors } from '@tablemate/shared';
+
+import { navigationHeaderOptions } from '../../src/ui';
+
 const SCREEN_OPTIONS = {
   headerShown: true,
-  headerStyle: { backgroundColor: colors.background },
-  headerTintColor: colors.text,
-  headerTitleStyle: { fontSize: typography.title.fontSize, fontWeight: fontWeights.bold },
+  // The band's fill, tint, title style, separator and back control all come from the one chrome
+  // definition the root Stack and the tab navigator spread as well (`src/ui/NavigationHeader`), so no
+  // navigator default and no second back control reaches a screen of this stack.
+  ...navigationHeaderOptions('background'),
   contentStyle: { backgroundColor: colors.background },
-  // Web only: where the measured request of the header's own back control comes from, on the screens
-  // a signed-out traveler walks through. Native keeps the platform header (AAP 0.5.8).
-  ...(Platform.OS === 'web' ? { headerLeft: renderWebHeaderLeft } : {}),
 };
-const AGE_GATE = { title: 'Before you start', gestureEnabled: false, headerBackVisible: false };
+// The age gate is the one pushed screen with no way back into the signed-in flow. The library's web
+// header ignores `headerBackVisible`, which hides the native header's own back button alone, so the
+// chrome's back control is replaced by nothing here.
+const AGE_GATE = {
+  title: 'Before you start',
+  gestureEnabled: false,
+  headerBackVisible: false,
+  headerLeft: () => null,
+};
 export default function AuthLayout() {
   return (
     <Stack screenOptions={SCREEN_OPTIONS}>

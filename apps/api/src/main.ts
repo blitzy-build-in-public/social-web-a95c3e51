@@ -1,20 +1,15 @@
 /**
- * The API process (AAP 0.5.1, 0.6.2, 0.8.1): the HTTP and WebSocket server and the in-process
- * settlement worker. It loads the `api` environment, refuses to start on a configuration the
- * circuit's registries disagree with, builds the app, listens, reports the database versions it is
- * running against and starts the background work.
+ * The API process (AAP 0.5.1, 0.6.2, 0.8.1): the HTTP and WebSocket server and the in-process settlement
+ * worker. It loads the `api` environment, refuses to start on a configuration the circuit's registries disagree
+ * with, builds the app, listens, reports the database versions it is running against and starts the background
+ * work.
  *
- * Failures end the process with one JSON line naming the event and, at most, an error's name and
- * message — never a variable's value, a URL or a key (AAP 0.11.1). `SIGTERM` and `SIGINT` log the
- * signal, close the app and exit 0; a second signal, or a `close()` that has not finished within ten
- * seconds, exits 1, so a wedged dependency cannot hold a container open. The app's own `onClose` hook
- * stops the background work and closes the queues, the connections and Prisma (`./app.ts`), which is
- * why this file only has to call `app.close()`.
- *
- * @see AAP 0.4.2 for the version line, 0.5.1 and 0.6.2 for the entry point, 0.5.3 and 0.5.6 for the
- *   in-process settlement worker, and 0.11.1 for the injected clock and the logging rules.
+ * Failures end the process with one JSON line naming the event and, at most, an error's name and message — never
+ * a variable's value, a URL or a key (AAP 0.11.1). `SIGTERM` and `SIGINT` log the signal, close the app and exit
+ * 0; a second signal, or a `close()` that has not finished within ten seconds, exits 1, so a wedged dependency
+ * cannot hold a container open. The app's own `onClose` hook stops the background work and closes the queues,
+ * the connections and Prisma, which is why this file only has to call `app.close()`.
  */
-
 import process from 'node:process';
 
 import { Prisma } from '@tablemate/db';
@@ -31,10 +26,6 @@ import { buildApp, startBackground, type App } from './app.ts';
 import { checkZkConfiguration } from './modules/proofs/registry.ts';
 
 import type { ApiEnv, Clock, Logger } from '@tablemate/server-core';
-
-/*
- * Constants
- */
 
 /** The address the process listens on: every interface, because a container's proxy calls in. */
 const LISTEN_HOST = '0.0.0.0';
@@ -58,10 +49,6 @@ interface DatabaseVersions {
   readonly postgres: string;
   readonly postgis: string;
 }
-
-/*
- * Start
- */
 
 const env = loadEnvironment();
 
@@ -112,20 +99,12 @@ app.log.info(
   API_STARTED,
 );
 
-/*
- * Helpers
- */
-
 /**
  * Load the `api` environment, or end the process with the loader's own findings (AAP 0.6.2).
  *
  * They are written to stderr as one JSON line rather than through the logger, whose level is one of
  * the values that may have been refused. Each finding is a variable's name and a fixed reason; the
  * loader never quotes a value (AAP 0.12.2).
- *
- * @returns the validated configuration.
- * @throws the original error when it is not an {@link EnvValidationError}, because a defect in the
- *   loader is not a configuration problem.
  */
 function loadEnvironment(): ApiEnv {
   try {
@@ -153,9 +132,6 @@ function loadEnvironment(): ApiEnv {
  * cover — the rule `guardReason` and `dropReason` follow (AAP 0.11.1). The text is an error's, and a
  * check that compares files on disk quotes the file it read, so it passes through the shared
  * sanitizer first: pino rewrites object fields and never a message.
- *
- * @param env - the loaded configuration.
- * @param logger - the process logger.
  */
 function assertZkConfiguration(env: ApiEnv, logger: Logger): void {
   try {
@@ -173,41 +149,31 @@ function assertZkConfiguration(env: ApiEnv, logger: Logger): void {
  * End the process on an unhandled rejection or an uncaught exception: one fatal line carrying the
  * error's name and message — no stack, no request body and no header — an attempt to close the app
  * bounded by the same ten seconds, then exit 1.
- *
- * @param app - the app to close before the process ends.
  */
 function installFailureHandlers(app: App): void {
   /**
    * Report `error` and end the process with status 1.
-   *
-   * @param error - what was rejected or thrown.
-   * @param event - the event name for this failure's line.
    */
   async function fail(error: unknown, event: string): Promise<void> {
     app.log.fatal(
       { event, name: errorName(error), message: sanitizeLogMessage(errorMessage(error)) },
       event,
     );
-
     const timer = setTimeout(() => {
       process.exit(1);
     }, CLOSE_TIMEOUT_MS);
     timer.unref();
-
     try {
       await app.close();
     } catch {
       // The process is ending and the close hook has already logged whichever step failed inside it;
       // there is nothing left to report and nothing left to retry.
     }
-
     process.exit(1);
   }
-
   process.on('unhandledRejection', (reason) => {
     void fail(reason, UNHANDLED_REJECTION);
   });
-
   process.on('uncaughtException', (error) => {
     void fail(error, UNCAUGHT_EXCEPTION);
   });
@@ -218,39 +184,29 @@ function installFailureHandlers(app: App): void {
  *
  * A second signal, or a `close()` that has not finished within {@link CLOSE_TIMEOUT_MS}, exits 1, and
  * the timer is `unref`ed so it never holds an otherwise finished process open.
- *
- * @param app - the app to close.
  */
 function installSignalHandlers(app: App): void {
   /** Whether a shutdown is already running, which makes the next signal an escalation. */
   let shuttingDown = false;
-
   /**
    * Close the app and end the process.
-   *
-   * @param signal - the signal that asked for the shutdown.
    */
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
     app.log.info({ event: API_STOPPING, signal }, API_STOPPING);
-
     if (shuttingDown) {
       process.exit(1);
     }
     shuttingDown = true;
-
     const timer = setTimeout(() => {
       process.exit(1);
     }, CLOSE_TIMEOUT_MS);
     timer.unref();
-
     await app.close();
     process.exit(0);
   }
-
   process.on('SIGTERM', (signal) => {
     void shutdown(signal);
   });
-
   process.on('SIGINT', (signal) => {
     void shutdown(signal);
   });
@@ -260,8 +216,6 @@ function installSignalHandlers(app: App): void {
  * Log the PostgreSQL and PostGIS versions the process is running against (AAP 0.4.2), or say that
  * they could not be read: the query runs once, after the app is serving, so a database that is still
  * starting costs a warning rather than a delayed listen.
- *
- * @param app - the listening app, read through `services.db`.
  */
 async function logDatabaseVersions(app: App): Promise<void> {
   try {
@@ -269,12 +223,10 @@ async function logDatabaseVersions(app: App): Promise<void> {
       Prisma.sql`SELECT version() AS postgres, postgis_full_version() AS postgis`,
     );
     const row = rows[0];
-
     if (row === undefined) {
       app.log.warn({ event: DB_VERSIONS_UNAVAILABLE }, DB_VERSIONS_UNAVAILABLE);
       return;
     }
-
     app.log.info({ event: DB_VERSIONS, postgres: row.postgres, postgis: row.postgis }, DB_VERSIONS);
   } catch {
     app.log.warn({ event: DB_VERSIONS_UNAVAILABLE }, DB_VERSIONS_UNAVAILABLE);
@@ -299,7 +251,6 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) {
     return undefined;
   }
-
   const code: unknown = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
 }

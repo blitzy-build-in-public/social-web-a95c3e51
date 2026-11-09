@@ -9,16 +9,12 @@
 #
 # Invoked as `bash scripts/compile.sh` through the `circuit:compile` package script.
 #
-# Environment knobs, all optional; `bash scripts/compile.sh --help` prints the same list.
-#
-#   CIRCUITS_NODE_HEAP_MB  node's heap for the `snarkjs r1cs info` parse of the R1CS, which a circuit
-#                          of a few million constraints does not fit in node's default heap.
-#                          Default 8192 MB, and a positive integer of megabytes: any other value is
-#                          rejected before the multi-minute compile it precedes, not after it.
-#   TMPDIR                 the directory the docs-block content temp file is created in. Default
-#                          /tmp. The other temp this script uses, the one write_doc_block renames
-#                          into place, is created next to the document instead, so its rename is
-#                          atomic whatever TMPDIR is.
+# Environment knobs, all optional; `bash scripts/compile.sh --help` prints the same list. CIRCUITS_NODE_HEAP_MB
+# is node's heap for the `snarkjs r1cs info` parse of the R1CS, which a circuit of a few million constraints
+# does not fit in node's default heap: default 8192 MB, a positive integer of megabytes, any other value
+# rejected before the multi-minute compile it precedes. TMPDIR is the directory the docs-block content temp
+# file is created in (default /tmp); the temp write_doc_block renames into place is created next to the
+# document instead, so its rename is atomic whatever TMPDIR is.
 
 set -euo pipefail
 
@@ -71,9 +67,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-# ---------------------------------------------------------------------------------------------
 # The build directory lock
-# ---------------------------------------------------------------------------------------------
 
 # build/ is shared with setup.sh, and both write fixed intermediate names inside it, so one run at a
 # time owns it: two runs interleaving those writes can leave a proving key, a verification key or a
@@ -122,9 +116,7 @@ trap release_lock EXIT
 trap 'release_lock; exit 130' INT
 trap 'release_lock; exit 143' TERM
 
-# ---------------------------------------------------------------------------------------------
 # Tools and dependency files
-# ---------------------------------------------------------------------------------------------
 
 command -v circom >/dev/null 2>&1 || die \
     "circom is not on PATH; install it with: cargo install --locked --git https://github.com/iden3/circom.git --tag v2.1.9 circom"
@@ -167,9 +159,7 @@ for lib in "@zk-email/circuits/email-verifier.circom" "circomlib/circuits/poseid
         die "$lib is not installed under node_modules; run pnpm install"
 done
 
-# ---------------------------------------------------------------------------------------------
 # Compile
-# ---------------------------------------------------------------------------------------------
 
 mkdir -p "$BUILD_DIR"
 
@@ -196,9 +186,7 @@ done
 # circom's `<name>_js/` directory layout.
 cp "$WASM_DIR/tablemate_itinerary.wasm" "$ARTIFACT.wasm"
 
-# ---------------------------------------------------------------------------------------------
 # Constraint count and public signal shape
-# ---------------------------------------------------------------------------------------------
 
 # snarkjs colours its output even when stdout is not a terminal, so the codes are stripped before
 # parsing. The heap bound is raised because the R1CS of a multi-million-constraint circuit does not
@@ -244,9 +232,7 @@ if [ "$CONSTRAINTS" -gt "$LIMIT" ]; then
     RESULT="exceeds limit"
 fi
 
-# ---------------------------------------------------------------------------------------------
 # docs/zk-proofs.md
-# ---------------------------------------------------------------------------------------------
 
 write_doc_block() {
     # write_doc_block <file> <block name> <content file>: replaces what sits between the named

@@ -11,7 +11,6 @@
  * The caller (`../jobs/menu-ingest.ts`) owns logging and reads the returned drop counts; source
  * text is neither logged nor returned.
  *
- * @see AAP 0.5.6 for the gate and the extraction rules, 0.5.7 for the estimation that consumes the
  * kept items, and 0.8.1 for this file.
  */
 
@@ -27,9 +26,6 @@ import { hasExplicitCurrencyMarker, isPriceCurrency, parsePrice } from './price-
  * Deliberately the only normalization: no NFKC, no case folding, no punctuation change. The kept
  * `priceText` has to occur literally in the whitespace-normalized source — the criterion-11 check
  * itself — so normalizing further would let a stored price differ from its source text.
- *
- * @param text The source text or price string to normalize.
- * @returns The text with every `\s+` run replaced by a single space, trimmed.
  */
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/gu, ' ').trim();
@@ -72,11 +68,6 @@ export type GateDrops = { not_in_source: number; unparseable: number };
  * Order-preserving and total: `kept` holds the surviving items in input order, a bad item is
  * counted rather than thrown, and the stored `priceText` is the normalized substring the source was
  * found to contain (AAP 0.5.6).
- *
- * @param items The items the extractor read, each already valid per the contract.
- * @param sourceText The visible text they came from — page text, PDF text layer or OCR output.
- * @param currency The ISO 4217 code of the city the place stands in (AAP 0.5.2).
- * @returns The kept items with their local minor-unit amount, and the per-reason drop counts.
  */
 export function gateItems(
   items: readonly ExtractedMenuItem[],
@@ -86,20 +77,17 @@ export function gateItems(
   const source = normalizeWhitespace(sourceText);
   const kept: GatedMenuItem[] = [];
   const drops: GateDrops = { not_in_source: 0, unparseable: 0 };
-
   for (const item of items) {
     const priceText = normalizeWhitespace(item.priceText);
     if (priceText === '' || !source.includes(priceText)) {
       drops.not_in_source += 1;
       continue;
     }
-
     const itemCurrency = item.currency;
     if (!isPriceCurrency(itemCurrency)) {
       drops.unparseable += 1;
       continue;
     }
-
     // `parsePrice` refuses zero and negatives; the range check keeps the gate's "positive amount"
     // contract true however that parser bounds its own return value.
     const amount = parsePrice(priceText, itemCurrency);
@@ -107,14 +95,11 @@ export function gateItems(
       drops.unparseable += 1;
       continue;
     }
-
     if (itemCurrency !== currency && !hasExplicitCurrencyMarker(priceText, itemCurrency)) {
       drops.unparseable += 1;
       continue;
     }
-
     kept.push({ ...item, priceText, localAmountMinor: amount });
   }
-
   return { kept, drops };
 }

@@ -1,41 +1,31 @@
 /**
- * The two proof routes (AAP 0.5.1, 0.5.4, 0.5.5): the contract's `POST /itinerary-proofs`, which
- * stores the stay a proof proves and spends that booking's nullifier, and the additive public
- * `GET /zk/config`, which publishes the configuration a device builds its circuit inputs from.
+ * The two proof routes (AAP 0.5.1, 0.5.4, 0.5.5): the contract's `POST /itinerary-proofs`, which stores
+ * the stay a proof proves and spends that booking's nullifier, and the additive public `GET /zk/config`,
+ * which publishes the configuration a device builds its circuit inputs from.
  *
  * They differ in who may call them, so each route group is registered in its own encapsulated
- * sub-plugin rather than on one context: the submission is a traveler feature route — a bearer token,
- * the 18+ gate and the mutating allowances of AAP 0.5.4 — while `GET /zk/config` is public, because a
- * device needs the issuer keys, the registry, the salt and the artefact links before it holds any
- * proof, and because AAP 0.5.4 does not name the import screen among the age-gated routes. No hook is
- * installed on the context this file is mounted on, so neither group's guard can reach the other's
- * routes and nothing outside this module inherits the age gate by accident.
+ * sub-plugin: the submission is a traveler feature route — a bearer token, the 18+ gate and the mutating
+ * allowances of AAP 0.5.4 — while `GET /zk/config` is public, because a device needs the issuer keys, the
+ * registry, the salt and the artefact links before it holds any proof, and because AAP 0.5.4 does not
+ * name the import screen among the age-gated routes. No hook is installed on the context this file is
+ * mounted on, so neither group's guard can reach the other's routes and nothing outside this module
+ * inherits the age gate by accident.
  *
  * The submission's steps are the order AAP 0.5.5 and 0.5.4 fix, and each is where it is for a reason:
+ * `verifyItineraryProof` runs outside any transaction, because it is CPU-bound pairing work and holding a
+ * transaction open across it would pin a pool connection and a row lock for its whole duration (AAP
+ * 0.3.2); the validity window is derived from the arrival city's own zone, so a stay ending on a Lisbon
+ * evening is valid to Lisbon's midnight rather than the prover's (AAP 0.5.2, 0.5.7); one transaction,
+ * behind the account-deletion write fence, writes the `SpentNullifier` row first and the `ItineraryProof`
+ * row second, the nullifier insert being what makes a booking provable once for the whole deployment —
+ * the key names the booking rather than the account, it carries no user link and it survives account
+ * erasure, so a deleted account cannot free a booking for reuse (AAP 0.5.2, 0.5.3); and the answer is
+ * built field by field from the public outputs.
  *
- *   1. `verifyItineraryProof` runs outside any transaction. It is CPU-bound pairing work that answers
- *      `422 proof_invalid`, `422 issuer_not_allowlisted`, `422 stay_out_of_range` or
- *      `503 service_unavailable`, and holding a transaction open across it would pin a pool
- *      connection and a row lock for its whole duration (AAP 0.3.2).
- *   2. the validity window is derived from the arrival city's own zone, so a stay ending on a Lisbon
- *      evening is valid to Lisbon's midnight rather than the prover's (AAP 0.5.2, 0.5.7).
- *   3. one transaction, behind the account-deletion write fence, writes the `SpentNullifier` row
- *      first and the `ItineraryProof` row second (AAP 0.5.2, 0.5.3). The nullifier insert is what
- *      makes a booking provable once for the whole deployment: the key names the booking rather than
- *      the account, it carries no user link, and it survives account erasure, so a deleted account
- *      cannot free a booking for reuse.
- *   4. the answer is built field by field from the public outputs.
- *
- * Nothing private leaves this file: the proof, the nullifier, the registry root and the salt are read
- * by the verifier and written to the row, never logged and never answered (AAP 0.11.1, 0.12.2). The
- * body is parsed by the shared `ProofSubmission`, whose strict schemas make an unknown key or a
- * signal array that is not seven long the `400 proof_malformed` this route's `validationErrorCode`
- * names, so the handler reads `proof` and `publicSignals` and nothing else whatever a client sends
- * (success criterion 3).
- *
- * @see AAP 0.5.5 for the circuit, the check order and the nullifier rule, 0.5.4 for both routes —
- *   their schemas, errors, guard scope and rate limits — 0.5.3 for the write fence, 0.5.2 for the
- *   `ItineraryProof` and `SpentNullifier` models, and 0.8.1 for this file.
+ * Nothing private leaves this file: the proof, the nullifier, the registry root and the salt are read by
+ * the verifier and written to the row, never logged and never answered (AAP 0.11.1, 0.12.2). The body is
+ * parsed by the shared `ProofSubmission`, whose strict schemas make an unknown key or a signal array that
+ * is not seven long the `400 proof_malformed` this route's `validationErrorCode` names.
  */
 
 import { Prisma, isUniqueViolation, type DbTx } from '@tablemate/db';
@@ -50,9 +40,7 @@ import { zkConfig } from './registry.ts';
 import { proofValidity } from './validity.ts';
 import { verifyItineraryProof, type VerifiedItinerary } from './verifier.ts';
 
-// Type-only, as in every sibling plugin and route module: `App` and `AppServices` are the plan's one
-// declaration of the instance and of what it hands its modules (AAP 0.5.1), they are erased at
-// compile time, and nothing of `app.ts` is read here at runtime.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { App, AppServices } from '../../app.ts';
@@ -75,8 +63,6 @@ const PROOF_VERIFIED = 'proof_verified';
  * leave a `TypeError` to be answered as `500 internal_error` where the contract requires
  * `401 token_invalid`, and no compiler check would catch it.
  *
- * @param request - The request the traveler guard admitted.
- * @returns The acting account's id, which the proof is stored against and the fence is taken on.
  * @throws AppError `token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
@@ -92,9 +78,6 @@ function callerId(request: FastifyRequest): string {
  *
  * The date is a calendar date the circuit proved, not an instant, so it is anchored to UTC rather
  * than to any process zone — the two columns are read back with `toISOString().slice(0, 10)`.
- *
- * @param isoDate - The date as `YYYY-MM-DD`, already validated by the verifier's date decode.
- * @returns The same date at UTC midnight.
  */
 function dateColumn(isoDate: string): Date {
   return new Date(`${isoDate}T00:00:00.000Z`);
@@ -108,9 +91,6 @@ function dateColumn(isoDate: string): Date {
  * returned row count is the whole answer: one row means this call spent the nullifier, and no rows
  * mean another proof already holds it.
  *
- * @param tx - The transaction `transact`'s callback was handed.
- * @param nullifier - The canonical nullifier the proof's signals carry.
- * @param now - The instant the nullifier is spent at, from the injected clock.
  * @throws AppError `nullifier_used` (409) when the booking was already spent, by this account or
  *   another.
  */
@@ -123,7 +103,6 @@ async function spendNullifier(tx: DbTx, nullifier: string, now: Date): Promise<v
       RETURNING "nullifier"
     `,
   );
-
   if (spent.length === 0) {
     throw new AppError('nullifier_used');
   }
@@ -138,12 +117,6 @@ async function spendNullifier(tx: DbTx, nullifier: string, now: Date): Promise<v
  * than derived per read, so a later change to the city's zone or to the look-back constant cannot
  * move an accepted proof's window.
  *
- * @param services - The app's services: the guarded client, the injected clock, the logger and the
- *   outbox dispatcher `transact` needs.
- * @param userId - The caller the proof belongs to; also the fence the transaction takes.
- * @param verified - The stay and the public outputs `verifyItineraryProof` returned.
- * @param window - The validity window `proofValidity` derived for those two dates.
- * @returns The new `ItineraryProof` row's id, the `proofId` the client receives.
  * @throws AppError `nullifier_used` (409) for a booking already spent, and `token_invalid` (401) when
  *   the account has requested deletion.
  */
@@ -154,12 +127,10 @@ async function storeProof(
   window: { readonly validFrom: Date; readonly validTo: Date },
 ): Promise<string> {
   const now = services.clock.now();
-
   return transact(
     services,
     async (tx) => {
       await spendNullifier(tx, verified.nullifier, now);
-
       try {
         const created = await tx.itineraryProof.create({
           data: {
@@ -175,7 +146,6 @@ async function storeProof(
           },
           select: { id: true },
         });
-
         return created.id;
       } catch (error) {
         // Unreachable after the nullifier insert above, which is the table's only unique column. It
@@ -199,11 +169,6 @@ async function storeProof(
  * sibling route modules all declare a `void` function — so the returned promise is already resolved
  * and a caller may await it or not. The declared `Promise<void>` is what keeps this plugin usable
  * wherever Fastify's own plugin types expect one.
- *
- * @param app - The route instance; its `services` carry the guarded database client, the injected
- *   clock, the validated environment the proof is checked against, the logger and the outbox
- *   dispatcher.
- * @see AAP 0.5.5 for the proof system these routes serve.
  */
 export default function proofsRoutes(app: App): Promise<void> {
   // The traveler group: bearer authentication plus the 18+ gate, and the mutating allowances of
@@ -217,9 +182,7 @@ export default function proofsRoutes(app: App): Promise<void> {
     // from the route's schema, so the handler reads the parsed `ProofSubmission` rather than an
     // `unknown` it would have to re-check (AAP 0.3.1, 0.11.1).
     const traveler = instance.withTypeProvider<ZodTypeProvider>();
-
     traveler.addHook('onRequest', requireTraveler);
-
     traveler.post(
       '/itinerary-proofs',
       {
@@ -243,19 +206,15 @@ export default function proofsRoutes(app: App): Promise<void> {
       },
       async (request, reply) => {
         const userId = callerId(request);
-
         // Verification first, outside any transaction and outside the window below: it answers the
         // contract's own codes and needs no database at all (AAP 0.5.5).
         const verified = await verifyItineraryProof(app.services, request.body);
-
         const window = proofValidity(
           app.services.timezoneFor(verified.cityId),
           verified.arrivalDate,
           verified.departureDate,
         );
-
         const proofId = await storeProof(app.services, userId, verified, window);
-
         // Public outputs only, in the one line a stored proof writes (AAP 0.11.1).
         request.log.info(
           {
@@ -267,7 +226,6 @@ export default function proofsRoutes(app: App): Promise<void> {
           },
           PROOF_VERIFIED,
         );
-
         reply.code(201);
         return {
           proofId,
@@ -278,7 +236,6 @@ export default function proofsRoutes(app: App): Promise<void> {
       },
     );
   });
-
   // The public group: `GET /zk/config` carries no bearer guard, no age gate and no counter, because
   // the device fetches it before it can prove anything and AAP 0.5.4 lists it among the public
   // routes. A missing artefact manifest is answered `503 service_unavailable` by `zkConfig` itself.
@@ -291,6 +248,5 @@ export default function proofsRoutes(app: App): Promise<void> {
       () => zkConfig(app.services),
     );
   });
-
   return Promise.resolve();
 }

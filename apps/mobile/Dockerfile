@@ -1,6 +1,5 @@
-# Tablemate web client: the Expo web export of apps/mobile, served by nginx (AAP 0.7.1, AAP 0.8.1).
-# Both stages build from the repository root, so every COPY path below is repository-root relative and
-# .dockerignore is what keeps secrets, host installs and proving artefacts out of the context.
+# Tablemate web client: the Expo web export of apps/mobile, served by nginx (AAP 0.7.1, AAP 0.8.1). Both
+# stages build from the repository root, so every COPY path below is repository-root relative.
 FROM node:22.23.4-bookworm-slim AS build
 
 # The root package.json pins pnpm 12.16.1 in `packageManager`; Corepack activates that same version.
@@ -8,7 +7,7 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 
 # Deliberately no NODE_ENV=production: the export runs on the devDependencies the SDK 52 toolchain
-# expects (babel-preset-expo), and `expo export` puts the bundle in production mode itself.
+# expects, and `expo export` puts the bundle in production mode itself.
 ENV CI=1 \
     EXPO_NO_TELEMETRY=1
 
@@ -30,21 +29,21 @@ COPY packages/db/package.json packages/db/
 COPY packages/server-core/package.json packages/server-core/
 COPY packages/shared/package.json packages/shared/
 
-# The trailing `...` adds the app's two workspace dependencies (@tablemate/shared and
-# @tablemate/circuits) and nothing else, which keeps the API, worker and console graphs out of this
-# image. The hoisted linker comes from pnpm-workspace.yaml, as Expo SDK 52's Metro requires.
+# The trailing `...` adds the app's two workspace dependencies and nothing else, which keeps the API,
+# worker and console graphs out of this image. The hoisted linker comes from pnpm-workspace.yaml, as
+# Expo SDK 52's Metro requires.
 #
-# pnpm installs the workspace root's own devDependencies whatever the filter selects — the
-# repository's test toolchain, which nothing here uses. The optional native addons among them
-# (cpu-features, ssh2) cannot compile in a slim image and pnpm lets their install scripts fail, so
-# this layer logs gyp errors that are expected and harmless.
+# pnpm also installs the workspace root's own devDependencies whatever the filter selects — the
+# repository's test toolchain, which nothing here uses. The optional native addons among them cannot
+# compile in a slim image and pnpm lets their install scripts fail, so this layer logs gyp errors that
+# are expected and harmless.
 RUN pnpm install --frozen-lockfile --filter @tablemate/mobile...
 
 # Everything the bundle is built from. Both workspace packages publish their TypeScript source through
 # the `tablemate-source` condition, so these sources are what Metro reads, and tsconfig.base.json is
-# copied because apps/mobile/tsconfig.json extends it. `config/` is the issuer and registry JSON plus
-# the `.eml` fixture that app/dev/zk-bench.tsx bundles as an asset; the proving artefacts themselves
-# are served by the separate `artifacts` service and no image carries a proving key (AAP 0.5.5).
+# copied because apps/mobile/tsconfig.json extends it. `config/` is the issuer and registry JSON plus the
+# `.eml` fixture that app/dev/zk-bench.tsx bundles; the proving artefacts themselves are served by the
+# separate `artifacts` service, and no image carries a proving key (AAP 0.5.5).
 COPY tsconfig.base.json ./
 COPY config/ config/
 COPY packages/shared/ packages/shared/
@@ -63,8 +62,7 @@ ARG EXPO_PUBLIC_WS_URL=ws://localhost:3000
 # Optional: the app holds Stripe's publishable key and nothing else, and an empty value leaves the card
 # screens reporting that payments are not configured. app.config.ts rejects a secret key here outright.
 ARG EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=
-# Optional, '0' or '1': '1' exposes the device proving benchmark, which the `bench` build profile alone
-# sets.
+# Optional, '0' or '1': '1' exposes the device proving benchmark, which the `bench` profile alone sets.
 ARG EXPO_PUBLIC_ZK_BENCH=0
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL \
     EXPO_PUBLIC_WS_URL=$EXPO_PUBLIC_WS_URL \
@@ -79,9 +77,9 @@ FROM nginx:1.30.6-alpine AS serve
 
 # The entrypoint renders the template copied below with envsubst, limited here to the origins
 # infra/nginx/web.conf substitutes, so no other environment variable can reach the rendered config. The
-# defaults keep that config valid when compose passes none, an unreplaced token being no origin at all;
-# compose overrides them per environment. API_ORIGIN is the browser-facing API, ARTIFACTS_ORIGIN the
-# proving artefacts and WEB_ORIGIN the web client's own origin.
+# defaults keep that config valid when compose passes none; compose overrides them per environment.
+# API_ORIGIN is the browser-facing API, ARTIFACTS_ORIGIN the proving artefacts and WEB_ORIGIN the web
+# client's own origin.
 ENV NGINX_ENVSUBST_FILTER='^(API_ORIGIN|ARTIFACTS_ORIGIN|WEB_ORIGIN)$' \
     API_ORIGIN=http://localhost:3000 \
     ARTIFACTS_ORIGIN=http://localhost:8070 \

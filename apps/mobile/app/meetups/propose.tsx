@@ -32,19 +32,24 @@ import {
   SAFETY_NOTICE,
   SAFETY_TIPS,
   SAFETY_TIPS_TITLE,
+  travelerSubtitle,
   VENUES_EMPTY,
 } from '../../src/copy/strings';
 import { CardSetup } from '../../src/payments/card-setup';
 import type { CardSetupResult } from '../../src/payments/card-setup';
 import { completeNextAction } from '../../src/payments/next-action';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
-import { Banner, Button, Card, ListItem, Screen, TextField, announce } from '../../src/ui';
+import { Avatar, Banner, Button, Card, ListItem, Screen, TextField, announce } from '../../src/ui';
 
 const NO_RECIPIENT = 'Choose a traveler to propose a meetup to.';
+const NO_VENUE = 'Choose a partner venue.';
 const VENUE_HEADING = 'Partner venue';
 const DEPOSIT_HEADING = 'Deposit';
 const SUBMIT = 'Send proposal';
 const START_ERROR = `Choose a time in the next ${START_HORIZON_DAYS} days.`;
+const START_EMPTY = 'Choose a start time.';
+const START_FORMAT = 'Enter the time as YYYY-MM-DD HH:mm.';
+const START_PAST = 'Choose a time in the future.';
 const STILL_CONFIRMING = 'Still confirming — check Meetups shortly.';
 const NOT_CONFIRMED = "Card confirmation wasn't completed.";
 const START_PATTERN = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/;
@@ -110,6 +115,18 @@ function parseStart(text: string, timeZone: string): Date | null {
 }
 const isWithinHorizon = (startsAt: Date, nowMs: number): boolean =>
   startsAt.getTime() > nowMs && startsAt.getTime() <= nowMs + START_HORIZON_DAYS * DAY_MS;
+/**
+ * What the start field says about the text it holds: an empty field, text that is not
+ * `YYYY-MM-DD HH:mm`, a time that has already passed and a time beyond {@link START_HORIZON_DAYS}
+ * each name the one thing to change, and a time the API would accept says nothing (AAP 0.5.4
+ * `422 starts_at_invalid`, AAP 0.5.8).
+ */
+function startMessage(text: string, startsAt: Date | null, nowMs: number): string | null {
+  if (text.trim() === '') return START_EMPTY;
+  if (startsAt === null) return START_FORMAT;
+  if (startsAt.getTime() <= nowMs) return START_PAST;
+  return isWithinHorizon(startsAt, nowMs) ? null : START_ERROR;
+}
 type StartPreset = Readonly<{ testID: string; label: string; at: Date }>;
 function startPresets(now: Date, timeZone: string): readonly StartPreset[] {
   const today = utcToZonedParts(now, timeZone);
@@ -122,10 +139,18 @@ function startPresets(now: Date, timeZone: string): readonly StartPreset[] {
     { testID: 'propose-start-tomorrow-19', label: 'Tomorrow 19:00', at: at(19, 0) },
   ].filter((preset) => isWithinHorizon(preset.at, now.getTime()));
 }
-const rowOf = (p: AnyTierProfile): { readonly label: string; readonly subtitle?: string } => {
+const rowOf = (
+  p: AnyTierProfile,
+): { readonly label: string; readonly subtitle: string; readonly leading: ReactElement } => {
   const fields = ['nickname' in p ? p.nickname : null, 'bio' in p ? p.bio : null];
-  const subtitle = fields.filter((field) => field !== null).join(' · ');
-  return subtitle === '' ? { label: p.handle } : { label: p.handle, subtitle };
+  const described = fields.filter((field) => field !== null).join(' · ');
+  // A viewer below the tier that releases the nickname and bio gets the shared traveler subtitle
+  // instead, so the same person reads the same way here and in the Discover list (AAP 0.5.4, 0.5.8).
+  return {
+    label: p.handle,
+    subtitle: described === '' ? travelerSubtitle(p) : described,
+    leading: <Avatar avatarSeed={p.avatarSeed} handle={p.handle} decorative />,
+  };
 };
 const errorCodeOf = (error: unknown): ClientErrorCode =>
   isApiError(error) ? error.code : 'invalid_response';
@@ -167,6 +192,7 @@ function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent
 }
 function RadioOption({ label, note, selected, onPress, testID, style }: RadioProps): ReactElement {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   return (
     <Pressable
       {...spaceActivates(onPress)}
@@ -175,10 +201,15 @@ function RadioOption({ label, note, selected, onPress, testID, style }: RadioPro
       accessibilityState={{ selected, checked: selected }}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
+      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       onPress={onPress}
       testID={testID}
       style={({ pressed }) => [
         styles.option,
+        hovered ? styles.optionHovered : null,
         focused ? styles.optionFocused : null,
         pressed ? styles.optionPressed : null,
         Platform.OS === 'web' ? ({ outlineStyle: 'none' } as ViewStyle) : {},
@@ -362,7 +393,10 @@ export default function ProposeScreen(): ReactElement {
   const errorMessage = errorCode === null ? null : userMessageFor(errorCode);
   const notFound = userMessageFor('user_not_found');
   const readsCopy = userMessageFor(errorCodeOf(venues.error ?? recipient.error));
-  const announced = errorMessage ?? (noRecipient ? NO_RECIPIENT : gone ? notFound : null);
+  // One sentence, spoken in the precedence the banners render in (AAP 0.5.8): an unverified caller
+  // sees the import banner alone, which needs no announcement of a state the screen is not in.
+  const announced =
+    errorMessage ?? (gone ? notFound : noRecipient && cityId !== undefined ? NO_RECIPIENT : null);
   useEffect(() => {
     if (announced !== null) announce(announced);
   }, [announced]);
@@ -373,20 +407,34 @@ export default function ProposeScreen(): ReactElement {
   const retryHoldAction = { label: 'Try again', onPress: retryHold };
   const find = { label: 'Find travelers', onPress: () => router.replace('/discover') };
   const toMeetups = { label: 'Go to Meetups', onPress: () => router.replace('/meetups') };
+  // The states that stand before the form, in the order the caller has to be told them: the recipient
+  // read is settled before the caller's own proof, and the missing-recipient notice waits for the
+  // city reads. An unverified caller is owed the import banner rather than an action that reaches no
+  // traveler, and an unresolvable recipient is owed the error the reader is alerted to (AAP 0.5.8).
   const blocked: ReactElement | null = me.isError ? (
     <Banner tone="error" message={userMessageFor(errorCodeOf(me.error))} action={retryMe} />
   ) : me.data === undefined ? (
     <LoadingLine />
-  ) : noRecipient ? (
-    <Banner testID="propose-no-recipient" tone="error" message={NO_RECIPIENT} action={find} />
+  ) : gone ? (
+    <>
+      <Banner
+        testID="propose-recipient-error"
+        tone="error"
+        message={notFound}
+        // The action is offered only where /discover lists travelers: an unverified caller finds the
+        // import banner there, which is the dead end this branch exists to keep off the screen.
+        {...(cityId === undefined ? {} : { action: find })}
+      />
+      {cityId === undefined ? PROOF_BANNER : null}
+    </>
   ) : cityId === undefined ? (
     PROOF_BANNER
   ) : city === undefined && !cities.isError ? (
     <LoadingLine />
   ) : city === undefined ? (
     <Banner tone="error" message={userMessageFor(errorCodeOf(cities.error))} action={retryCities} />
-  ) : gone ? (
-    <Banner testID="propose-recipient-error" tone="error" message={notFound} />
+  ) : noRecipient ? (
+    <Banner testID="propose-no-recipient" tone="error" message={NO_RECIPIENT} action={find} />
   ) : null;
   if (blocked !== null) return <Shell>{blocked}</Shell>;
   if (me.data === undefined || city === undefined) return <Shell>{<LoadingLine />}</Shell>;
@@ -489,7 +537,7 @@ export default function ProposeScreen(): ReactElement {
   };
   const startLabel = `Start (YYYY-MM-DD HH:mm, ${city.name} time)`;
   const startHint = `Times are in ${city.name} time.`;
-  const startError = startText.trim() !== '' && !startValid ? START_ERROR : null;
+  const startError = startMessage(startText, startsAt, now.getTime());
   const startValue = { value: startText, onChangeText: setStartText };
   const startField = { ...START_BASE, ...START_KEYS, ...startValue, testID: 'propose-start' };
   const startInput = { ...startField, onSubmitEditing: send };
@@ -510,6 +558,9 @@ export default function ProposeScreen(): ReactElement {
           {venueRows.map(toOption)}
         </View>
         {noVenues ? <Text style={styles.body}>{VENUES_EMPTY}</Text> : null}
+        {venueList.length > 0 && venueId === '' ? (
+          <Text style={styles.body}>{NO_VENUE}</Text>
+        ) : null}
       </View>
       <View style={styles.section}>
         <TextField {...startInput} label={startLabel} hint={startHint} error={startError} />
@@ -539,8 +590,12 @@ const styles = StyleSheet.create({
   body: { ...typography.body, color: colors.textMuted },
   group: { gap: spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  chip: { flexGrow: 1 },
+  // `flexBasis: 0` is what makes same-type siblings equal: with `flexGrow` alone each chip keeps its
+  // own text width as a base, so the free space is shared on top of unequal bases and a row that wraps
+  // at a narrow width reads as columns of different widths (AAP 0.5.8).
+  chip: { flexBasis: 0, flexGrow: 1 },
   option: { ...OPTION_BOX, ...OPTION_SHAPE, ...OPTION_SIZE },
+  optionHovered: { backgroundColor: colors.surface },
   optionFocused: { borderColor: colors.focusRing },
   optionPressed: { backgroundColor: colors.surface },
   marker: { ...MARKER_BOX, height: MARKER_SIZES.ring, width: MARKER_SIZES.ring },

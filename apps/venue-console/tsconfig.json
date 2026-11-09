@@ -1,9 +1,6 @@
 // TypeScript project for the venue console and the lodging stats console. Vite bundles this
 // app, so the project type-checks only: "module": "preserve" with "moduleResolution":
 // "bundler" replaces the base's NodeNext, and noEmit leaves every emitted file to Vite.
-// strict, verbatimModuleSyntax, rewriteRelativeImportExtensions and the load-bearing
-// customConditions "tablemate-source" that resolves @tablemate/shared to its TypeScript
-// source are inherited from tsconfig.base.json and deliberately not restated here.
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {

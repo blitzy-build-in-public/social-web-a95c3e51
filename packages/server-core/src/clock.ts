@@ -1,16 +1,4 @@
-/**
- * The injectable clock (AAP 0.11.1).
- *
- * AAP 0.11.1 makes this a domain invariant: "Time comes from the injected clock, never `Date.now()`
- * directly, so tests can advance it." The criterion tests have to cross the 45-minute check-in
- * window, the 24-hour booking-detail erasure limit and the 30-day anti-farming rule, and
- * `POST /v1/test/clock` (AAP 0.5.4) exists to move the clock forward for them.
- *
- * This is the only server file that reads the system clock, and it reads it in exactly one place,
- * `systemClock.nowMs`. Every other module takes a `Clock` and asks it for the time, which is what
- * lets the root eslint configuration ban `Date.now()` and argument-less `new Date()` everywhere
- * else.
- */
+/** The injectable clock (AAP 0.11.1). */
 
 /** A source of the current time (AAP 0.11.1). */
 export interface Clock {
@@ -25,7 +13,7 @@ export interface Clock {
 
 /**
  * The process clock: real time, every module's default, and frozen so no caller can replace its
- * methods. The single call site of `Date.now()` in the server (AAP 0.11.1).
+ * methods.
  */
 export const systemClock: Clock = Object.freeze({
   now(): Date {
@@ -36,13 +24,7 @@ export const systemClock: Clock = Object.freeze({
   },
 });
 
-/**
- * How a `TestClock` tracks time.
- *
- * `frozen` stands still until `set` or `advance` moves it, which is what unit tests want.
- * `flowing` keeps moving with real time at a fixed offset, which is what a running `APP_ENV=test`
- * API and the venue-console countdown need, and what `POST /v1/test/clock` (AAP 0.5.4) relies on.
- */
+/** How a `TestClock` tracks time. */
 export type TestClockMode = 'frozen' | 'flowing';
 
 /** A controllable clock: `set`, `advance` and `reset` move this instance alone (AAP 0.11.1). */
@@ -65,28 +47,12 @@ export interface TestClock extends Clock {
   reset(): void;
 }
 
-/**
- * Where a frozen clock without an explicit `start` begins: 2026-11-04T12:00:00Z.
- *
- * An ISO string rather than a `Date`, so no mutable instance is shared between callers and every
- * test that omits `start` reads the same deterministic instant.
- */
+/** Where a frozen clock without an explicit `start` begins: 2026-11-04T12:00:00Z. */
 export const DEFAULT_TEST_CLOCK_START = '2026-11-04T12:00:00.000Z';
 
 const DEFAULT_TEST_CLOCK_START_MS = Date.parse(DEFAULT_TEST_CLOCK_START);
 
-/**
- * Create a controllable clock (AAP 0.11.1).
- *
- * @param options - the creation state; omit it for a frozen clock at {@link DEFAULT_TEST_CLOCK_START}.
- * @param options.start - the instant to begin at. A frozen clock defaults to
- * {@link DEFAULT_TEST_CLOCK_START}; a flowing clock without it keeps the real time it already has.
- * @param options.mode - `'frozen'` (the default) or `'flowing'`.
- * @param options.base - the clock a flowing clock measures real time by, default {@link systemClock}.
- * Injectable so the flowing mode is itself testable without waiting on the real clock.
- * @returns a `TestClock` whose `set`, `advance` and `reset` affect this instance only.
- * @throws RangeError when `start` is an invalid `Date`.
- */
+/** Create a controllable clock (AAP 0.11.1). */
 export function createTestClock(options?: {
   start?: Date;
   mode?: TestClockMode;
@@ -100,7 +66,6 @@ export function createTestClock(options?: {
   const initialOffsetMs = startMs === undefined ? 0 : startMs - base.nowMs();
   let frozenMs = initialMs;
   let offsetMs = initialOffsetMs;
-
   const nowMs = (): number => (mode === 'frozen' ? frozenMs : base.nowMs() + offsetMs);
   const set = (at: Date): void => {
     const ms = instantMs(at, 'set()');
@@ -122,21 +87,15 @@ export function createTestClock(options?: {
     frozenMs = initialMs;
     offsetMs = initialOffsetMs;
   };
-
   return Object.freeze({ mode, nowMs, now: () => new Date(nowMs()), set, advance, reset });
 }
 
-/**
- * Whether `clock` is controllable. The test-control routes (AAP 0.5.4) confirm the injected clock
- * implements `set` and `advance` before they mutate it, because `buildApp` may have been handed the
- * {@link systemClock} instead of a `TestClock`.
- */
+/** Whether `clock` is controllable. */
 export function isTestClock(clock: Clock): clock is TestClock {
   const candidate: Partial<TestClock> = clock;
   return typeof candidate.set === 'function' && typeof candidate.advance === 'function';
 }
 
-/** Epoch milliseconds of `at`, or a `RangeError` when it is an invalid `Date`. */
 function instantMs(at: Date, source: string): number {
   const ms = at.getTime();
   if (Number.isNaN(ms)) {
@@ -145,7 +104,6 @@ function instantMs(at: Date, source: string): number {
   return ms;
 }
 
-/** `ms` when it is a finite, non-negative millisecond count, or a `RangeError` otherwise. */
 function advanceMs(ms: number): number {
   if (!Number.isFinite(ms) || ms < 0) {
     throw new RangeError(

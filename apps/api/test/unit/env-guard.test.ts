@@ -1,25 +1,6 @@
 /**
  * The environment guards' unit suite (AAP 0.6.2, 0.12.2): each process schema in each mode, over the
  * five claims the AAP states for it.
- *
- * Modes need credentials only when they reach a real provider: `STRIPE_MODE=mock` starts the default
- * stack with no key and takes {@link STRIPE_MOCK_PLACEHOLDERS}; `TELEPHONY_MODE=off` and `simulator`
- * reach no one, and `simulator` takes {@link TWILIO_SIMULATOR}'s published values, which the API
- * accepts without a simulator URL because it only validates signatures; `LLM_PROVIDER=fake` needs no
- * key. `test` and `live`, `twilio` and `openai` need exactly what their guards name — a key that does
- * not carry the test prefix is refused outside production in every mode, a test key is refused in
- * production `live` mode, and `live` is refused outside production entirely (AAP 0.3.3, 0.12.2).
- *
- * `workers` holds no Stripe variable in any mode, because it holds no Stripe secret (AAP 0.3.2), and
- * a test-only variable is refused outside `APP_ENV=test` in both processes (AAP 0.5.1): that refusal
- * is what keeps the `/test/*` control routes unmountable in production. Every refusal names the
- * variable and a fixed reason and carries no part of a supplied value, because the issues and the
- * message reach logs and container output (AAP 0.11.1, 0.12.2).
- *
- * The loaders are pure and take the raw map as an argument, so each row builds its own environment
- * and `process.env` is neither read nor written. Credential-shaped samples are joined at run time
- * from fragments, so this file holds no complete credential shape: `scripts/check-secrets.ts`, run
- * by `pnpm lint`, is the gate that keeps it that way.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -39,8 +20,6 @@ import {
 } from '@tablemate/server-core';
 import type { ApiEnv, WorkersEnv } from '@tablemate/server-core';
 
-/* Credential-shaped samples, assembled at run time (see scripts/check-secrets.ts) */
-
 /*
  * Each is a fragment list joined here, so no complete credential shape is written into this file, and
  * each is random, so a value that reached an error stays distinguishable from a fixed reason.
@@ -54,8 +33,6 @@ const openAiKey = ['sk', randomBytes(24).toString('hex')].join('-');
 const twilioSid = ['AC', randomBytes(16).toString('hex')].join('');
 const twilioToken = randomBytes(16).toString('hex');
 const testControlToken = randomBytes(24).toString('hex');
-
-/* Raw environments */
 
 /** A raw environment: what a process would see, or the record a row hands a loader. */
 type RawMap = Record<string, string | undefined>;
@@ -150,8 +127,6 @@ function workersRaw(appEnv: string, overrides: RawMap = {}): RawMap {
   );
 }
 
-/* Assertions */
-
 /**
  * The fixed vocabulary a reason may name — every mode, and both booleans — so {@link expectEnvError}
  * does not mistake a word like `simulator` for a leaked value: the reasons legitimately read
@@ -174,8 +149,6 @@ const REASON_VOCABULARY: ReadonlySet<string> = new Set([
  * variable of `variables`, and no value of `raw` outside {@link REASON_VOCABULARY} and long enough
  * to carry a credential appears in its message, in `String(error)` or in the serialized issues
  * (AAP 0.11.1, 0.12.2).
- *
- * @returns the error, for a row that asserts more about it.
  */
 function expectEnvError(
   load: () => unknown,
@@ -229,8 +202,6 @@ const LOADERS = {
 } as const;
 
 const PROCESSES = ['api', 'workers'] as const;
-
-/* api: Stripe */
 
 /** What an API row expects: the variables a refusal has to name, or the assertions a load passes. */
 type ApiExpectation = readonly string[] | ((env: ApiEnv) => void);
@@ -319,8 +290,6 @@ const API_STRIPE_CASES: readonly ApiCase[] = [
   ],
 ];
 
-/* api: telephony and the language model */
-
 /** The four variables `LLM_PROVIDER=openai` requires, with the two prices of AAP 0.5.6. */
 const OPENAI_LLM: RawMap = {
   LLM_PROVIDER: 'openai',
@@ -402,8 +371,6 @@ function runApiCase(appEnv: string, overrides: RawMap, expectation: ApiExpectati
   expectEnvError(() => loadApiEnv(raw), expectation, raw);
 }
 
-/* The test-only variables and the worker modes */
-
 /** Each test-only variable, with a value `APP_ENV=test` accepts (AAP 0.5.1). */
 const TEST_ONLY_VALUES: readonly (readonly [variable: string, value: string])[] = [
   ['ZK_ALLOW_TEST_ISSUER', 'true'],
@@ -457,8 +424,6 @@ const WORKERS_CASES: readonly WorkersCase[] = [
   ['twilio + openai', WORKERS_TWILIO, OPENAI_LLM],
 ];
 
-/* Suites */
-
 describe('api: the Stripe mode guards', () => {
   it.each(API_STRIPE_CASES)('%s', (_label, appEnv, overrides, expectation) => {
     runApiCase(appEnv, overrides, expectation);
@@ -469,14 +434,12 @@ describe('api: the telephony and language-model modes', () => {
   it.each(API_MODE_CASES)('%s', (_label, appEnv, overrides, expectation) => {
     runApiCase(appEnv, overrides, expectation);
   });
-
   it('needs no simulator URL, because it validates signatures and dials nothing', () => {
     const env = loadApiEnv(
       apiRaw('demo', { TELEPHONY_MODE: 'simulator', VOICE_SIM_URL: undefined }),
     );
     expect(env.telephony.mode).toBe('simulator');
   });
-
   it('returns a configuration frozen at every depth', () => {
     const env = loadApiEnv(apiRaw('demo'));
     for (const section of [env, env.stripe, env.telephony, env.llm, env.testOnly]) {
@@ -491,13 +454,11 @@ describe('test-only variables', () => {
     const error = expectEnvError(() => loadApiEnv(raw), [variable], raw);
     expect(error.issues.map((issue) => issue.variable)).toEqual([variable]);
   });
-
   it.each(TEST_ONLY_VIOLATIONS)('workers refuses %s in %s', (appEnv, variable, value) => {
     const raw = workersRaw(appEnv, { [variable]: value });
     const error = expectEnvError(() => loadWorkersEnv(raw), [variable], raw);
     expect(error.issues.map((issue) => issue.variable)).toEqual([variable]);
   });
-
   it.each(PROCESSES)('%s accepts all three under APP_ENV=test', (name) => {
     const raw = LOADERS[name].raw('test', {
       ZK_ALLOW_TEST_ISSUER: 'true',
@@ -510,7 +471,6 @@ describe('test-only variables', () => {
       crawlAllowPrivateHosts: ['fixtures.local'],
     });
   });
-
   it('keeps every test-only switch off in production', () => {
     const raw = apiRaw('production', { TEST_CONTROL_TOKEN: '' });
     expect(loadApiEnv(raw).testOnly).toEqual({
@@ -528,7 +488,6 @@ describe('workers: no Stripe variable in any mode', () => {
     const env: WorkersEnv = loadWorkersEnv(raw);
     expect(propertyNames(env).filter((name) => /stripe/i.test(name))).toEqual([]);
   });
-
   it('ignores the Stripe triple an environment may carry', () => {
     const raw = workersRaw('demo', {
       STRIPE_MODE: 'mock',
@@ -538,12 +497,10 @@ describe('workers: no Stripe variable in any mode', () => {
     });
     expect(propertyNames(loadWorkersEnv(raw)).filter((name) => /stripe/i.test(name))).toEqual([]);
   });
-
   it('requires VOICE_SIM_URL in simulator mode', () => {
     const raw = workersRaw('demo', { TELEPHONY_MODE: 'simulator' });
     expectEnvError(() => loadWorkersEnv(raw), ['VOICE_SIM_URL'], raw);
   });
-
   it('requires both credentials, the caller id and the allowlist in twilio mode', () => {
     const raw = workersRaw('demo', { TELEPHONY_MODE: 'twilio' });
     expectEnvError(
@@ -552,17 +509,14 @@ describe('workers: no Stripe variable in any mode', () => {
       raw,
     );
   });
-
   it('requires the allowlist for twilio outside production only', () => {
     const overrides: RawMap = { ...WORKERS_TWILIO, CALL_ALLOWLIST: undefined };
     const staging = workersRaw('staging', overrides);
     expectEnvError(() => loadWorkersEnv(staging), ['CALL_ALLOWLIST'], staging);
-
     const production = loadWorkersEnv(workersRaw('production', overrides));
     expect(production.telephony.mode).toBe('twilio');
     expect(production.CALL_ALLOWLIST.size).toBe(0);
   });
-
   it('refuses an allowlist entry that is not an E.164 number', () => {
     const raw = workersRaw('demo', { CALL_ALLOWLIST: 'not-a-number' });
     expectEnvError(() => loadWorkersEnv(raw), ['CALL_ALLOWLIST'], raw);
@@ -574,24 +528,20 @@ describe('both processes: the common variables', () => {
     const raw = LOADERS[name].raw('demo', { APP_ENV: undefined });
     expectEnvError(() => LOADERS[name].load(raw), ['APP_ENV'], raw);
   });
-
   it.each(PROCESSES)('%s refuses an APP_ENV outside the four modes', (name) => {
     const raw = LOADERS[name].raw('prod', {});
     expect(expectEnvError(() => LOADERS[name].load(raw), ['APP_ENV'], raw).process).toBe(name);
   });
-
   it.each(PROCESSES)('%s refuses a FIELD_ENCRYPTION_KEY that is not 32 bytes', (name) => {
     const raw = LOADERS[name].raw('demo', {
       FIELD_ENCRYPTION_KEY: randomBytes(31).toString('base64'),
     });
     expectEnvError(() => LOADERS[name].load(raw), ['FIELD_ENCRYPTION_KEY'], raw);
   });
-
   it('api refuses a JWT_SECRET shorter than 32 characters', () => {
     const raw = apiRaw('demo', { JWT_SECRET: randomBytes(5).toString('hex') });
     expectEnvError(() => loadApiEnv(raw), ['JWT_SECRET'], raw);
   });
-
   it('requires only the variables of the process being configured', () => {
     // `SMTP_URL` belongs to `workers` and `JWT_SECRET` to `api`; each schema drops the other's, so
     // neither is ever required where it does not belong (AAP 0.6.2, 0.11.2).
@@ -602,7 +552,6 @@ describe('both processes: the common variables', () => {
       'workers',
     );
   });
-
   it('requires neither of the two api-scoped variables of workers', () => {
     // `API_PUBLIC_URL` and `WEB_ORIGIN` are the `api` row's (AAP 0.6.2) and `workers` reads them
     // where a deployment provides them, so their absence fails the call-dispatch or magic-link work
@@ -611,11 +560,9 @@ describe('both processes: the common variables', () => {
     const env = loadWorkersEnv(workers);
     expect(env.API_PUBLIC_URL).toBeNull();
     expect(env.WEB_ORIGIN).toBeNull();
-
     const api = apiRaw('demo', { WEB_ORIGIN: undefined });
     expectEnvError(() => loadApiEnv(api), ['WEB_ORIGIN'], api);
   });
-
   it('reports every finding of one start attempt, once each', () => {
     const raw = apiRaw('demo', { JWT_SECRET: undefined, NULLIFIER_SALT: 'not a field element' });
     const error = expectEnvError(() => loadApiEnv(raw), ['JWT_SECRET', 'NULLIFIER_SALT'], raw);

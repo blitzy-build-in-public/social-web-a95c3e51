@@ -2,7 +2,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState, type ReactElement } from 'react';
-import { StyleSheet, Switch, Text, View, type TextProps } from 'react-native';
+import { StyleSheet, Text, View, type TextProps } from 'react-native';
 import {
   BOOKING_NAME_MAX_CHARS,
   BOOKING_REFERENCE_MAX_CHARS,
@@ -22,7 +22,7 @@ import {
   lodgingCallNotice,
 } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
-import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
+import { Banner, Button, Card, Screen, Switch, TextField, announce } from '../../src/ui';
 import type { BannerTone, ScreenProps } from '../../src/ui';
 
 const SCREEN_TITLE = "I'm staying here";
@@ -379,7 +379,6 @@ export default function LodgingClaimScreen(): ReactElement {
           <Text style={styles.consentLabel}>{LODGING_CALL_CONSENT_LABEL}</Text>
           <Switch
             accessibilityLabel={LODGING_CALL_CONSENT_LABEL}
-            accessibilityState={{ checked: consent, disabled: !noticeReady }}
             disabled={!noticeReady}
             onValueChange={(next: boolean) => setConsentedNotice(next ? (noticeText ?? '') : null)}
             testID="claim-consent"

@@ -2,11 +2,6 @@
  * The call-and-menu priority rule's unit suite (AAP 0.5.7): the distance bands of
  * `nearest_partner_distance_m`, the BullMQ priority `menu-ingest` labels its jobs with, and the
  * `ORDER BY` fragment `call-dispatch` takes its call tasks in.
- *
- * The rule is written twice, in TypeScript and in SQL, so the cases hold the numbers the bands are
- * made of — 250 m, 500 m, 1 km, 2 km. The SQL is asserted on its text and bound values alone and is
- * never sent to a database, so this suite needs none, and every instant is an argument because the
- * module never reads the clock (AAP 0.11.1).
  */
 
 import type { Prisma } from '@tablemate/db';
@@ -15,27 +10,20 @@ import { describe, expect, it } from 'vitest';
 
 import { callTaskOrderSql, distanceBand, menuPriority } from '../../src/calls/priority.ts';
 
-/** The instant the SQL assertions are built at (AAP 0.11.1). */
 const NOW = new Date('2026-11-10T10:00:00.000Z');
 
-/** `APP_ENV`; `test` also keeps fixture venues visible to the generated predicate (AAP 0.5.2). */
 const APP_ENV = 'test';
 
-/** The aliases `call-dispatch` gives the `call_task` it orders and the `place` it LEFT JOINs. */
 const TASK_ALIAS = 't';
 const PLACE_ALIAS = 'p';
 
-/** The inclusive upper edge of each band, nearest first, and the band beyond the last (AAP 0.5.7). */
 const BAND_EDGES_M = [250, 500, 1000, 2000] as const;
 const NOT_NEAR_BAND = BAND_EDGES_M.length;
 
-/** Days ahead a locked meetup lifts its neighbourhood inside its band (AAP 0.5.7). */
 const LOCKED_MEETUP_HORIZON_DAYS = 3;
 
-/** The largest priority the rule returns: the last band, with no locked meetup (AAP 0.5.7). */
 const MAX_PRIORITY = 1 + 2 * NOT_NEAR_BAND + 1;
 
-/** A band case: a distance in metres, and the band it falls in (AAP 0.5.7). */
 type BandCase = readonly [distanceM: number | null, band: number];
 
 /**
@@ -58,7 +46,6 @@ const BAND_CASES: readonly BandCase[] = [
   [Number.POSITIVE_INFINITY, 4],
 ];
 
-/** A candidate place: its label, the rule's three inputs, and the priority the rule gives it. */
 type Candidate = readonly [
   name: string,
   distanceM: number | null,
@@ -83,10 +70,8 @@ const CANDIDATES: readonly Candidate[] = [
   ['d', 400, false, false, 4],
 ];
 
-/** The order the rule gives those candidates: nearest band first, the locked flag second. */
 const RANKED = ['a', 'b', 'c', 'd', 'e', 'f', 'h', 'g'];
 
-/** A boundary pair: the last metre of a band, then the first metre of the band after it. */
 const BOUNDARY_CASES: readonly (readonly [nearerM: number, fartherM: number])[] = [
   [250, 251],
   [500, 501],
@@ -101,7 +86,6 @@ const UNSAFE_ALIASES: readonly (readonly [string])[] = [
   [''],
 ];
 
-/** The priority of one place, from the rule's three inputs and nothing else (AAP 0.5.7). */
 function priorityOf(
   nearestPartnerDistanceM: number | null,
   nearLockedMeetup: boolean,

@@ -1,40 +1,6 @@
 /**
  * Fixture proofs for `apps/api`'s suites: the harness in the client's role (AAP 0.8.1 "fixture
  * proofs", AAP 0.11.2, AAP 0.5.5).
- *
- * A criterion or integration suite proves a committed `.eml` fixture the way a phone would — build
- * the circuit inputs from the email, generate the witness, prove with the key `pnpm circuits:build`
- * produced — and submits only `{ proof, publicSignals }`, so the suite exercises the API against the
- * same artefacts a device uses (AAP 0.12.1 criterion 3). {@link fixtureProof} therefore reads the
- * fixture, the issuer record and the committed registry, and proves; the proof of a booking is
- * re-randomised per attempt, so the same email yields a different `pi_a` every time.
- *
- * Three boundaries hold here and nowhere else in the API package:
- *
- *   - Proving lives in this file alone. `apps/api/src/**` holds no proving call, no proving key and
- *     no private input, and the runtime image copies neither this file nor its `dist` output
- *     (AAP 0.5.5 "No server proving", AAP 0.12.2).
- *   - Nothing here logs or returns email content, a field value, a private input, a booking
- *     reference or a guest name: every error names a step and a file, and a proof is returned as the
- *     contract's own `{ proof, publicSignals }` (AAP 0.12.2).
- *   - Importing this module does no I/O and reads no argument, so it can be imported by a test
- *     worker or by a script that proves without ever building an app.
- *
- * The native prover is resolved to an absolute path before it runs — from `RAPIDSNARK_PROVER` when
- * the environment sets it to a non-empty value, otherwise the first executable `prover` on `PATH` —
- * and the resolved path is reported, so which binary received the proving key and the witness is
- * auditable (AAP 0.4.2, CWE-426).
- *
- * The proofs are cached per (fixture, verification key, salt, registry root) under the git-ignored
- * `.local/test-proofs/`, because a proof of this circuit costs minutes and the fixtures change only
- * when `pnpm circuits:fixtures` reruns. Only two valid bookings exist — the signing key is discarded
- * after the fixtures are written — so every proof of one booking carries the same nullifier, which
- * is why `scripts/bench-verify.ts` asks for {@link FixtureProofOptions.fresh} proofs and clears the
- * `SpentNullifier` rows it creates between route calls.
- *
- * @see AAP 0.5.5 for the circuit, its public signals and the artefact set, 0.11.2 for harness-side
- *   proving, 0.12.1 criterion 3 for what the proofs are asserted to cause, and 0.8.1 for this
- *   file's place in the inventory.
  */
 
 import { Buffer } from 'node:buffer';
@@ -57,8 +23,6 @@ import {
 } from '@tablemate/shared';
 import type { CircuitInputs, SupportedIssuer } from '@tablemate/circuits';
 import type { PublicSignalName } from '@tablemate/shared';
-
-/* Constants and types (AAP 0.5.5, AAP 0.11.2). */
 
 /**
  * The fixed public nullifier salt the fixture proofs are taken with: a short decimal field element,
@@ -101,8 +65,6 @@ export interface FixtureStay {
   readonly nullifier: string;
 }
 
-/* Reading the repository's fixtures, configuration and build output. */
-
 /**
  * The workspace marker {@link findRepoRoot} walks up to: only the repository root holds it.
  */
@@ -126,7 +88,6 @@ const TEST_ISSUER_FILE = 'config/issuers/tablemate-test.json';
 /** The launch-city configuration whose alias leaves the registries carry. */
 const CITIES_FILE = 'config/cities.json';
 
-/* The circuit build's file names, and the temporary files one proof writes (AAP 0.4.2, 0.5.5). */
 const WASM_FILE = 'tablemate_itinerary.wasm';
 const ZKEY_FILE = 'tablemate_itinerary.zkey';
 const VERIFICATION_KEY_FILE = 'verification_key.json';
@@ -188,19 +149,11 @@ let cachedRepoRoot: string | undefined;
 /**
  * The repository root: the nearest ancestor of this module's directory holding
  * `pnpm-workspace.yaml` (AAP 0.5.5).
- *
- * Walking up rather than counting directories serves both layouts a clone has — `apps/api/test/support`
- * under `tsx` or Vitest, and `apps/api/dist/test/support` after `tsc -b`. The result is cached, so the
- * walk happens once per process.
- *
- * @returns The absolute path of the repository root.
- * @throws {Error} When no ancestor holds the workspace marker.
  */
 export function findRepoRoot(): string {
   if (cachedRepoRoot !== undefined) {
     return cachedRepoRoot;
   }
-
   let dir = MODULE_DIR;
   while (!existsSync(join(dir, WORKSPACE_MARKER))) {
     const parent = dirname(dir);
@@ -209,7 +162,6 @@ export function findRepoRoot(): string {
     }
     dir = parent;
   }
-
   cachedRepoRoot = dir;
   return dir;
 }
@@ -217,10 +169,6 @@ export function findRepoRoot(): string {
 /**
  * Reads one committed fixture email (AAP 0.8.1), so a suite can assert that a stored row or a log
  * line never contains the fixture's text (AAP 0.12.2).
- *
- * @param name - The fixture, by stem.
- * @returns The message's bytes, in memory only.
- * @throws {Error} When the fixture cannot be read, naming its repository-relative path.
  */
 export async function readFixtureEml(name: FixtureName): Promise<Uint8Array> {
   const relative = `${FIXTURE_DIR}/${name}.eml`;
@@ -230,8 +178,6 @@ export async function readFixtureEml(name: FixtureName): Promise<Uint8Array> {
     throw new Error(`${relative}: cannot be read`);
   }
 }
-
-/* The fixture configuration, read once per process: the issuer, the registry and the cities. */
 
 /** The configuration a fixture proof is built from. */
 interface FixtureConfig {
@@ -263,12 +209,6 @@ async function readFixtureConfig(): Promise<FixtureConfig> {
 /**
  * Reads one configuration file and parses it with its schema (AAP 0.5.5).
  *
- * @param root - The repository root.
- * @param relative - The file's repository-relative path.
- * @param schema - The schema the file must satisfy, as its `parse`.
- * @returns The parsed value.
- * @throws {Error} When the file cannot be read or does not satisfy its schema, naming the file and
- *   never a configured value.
  */
 async function readJson<T>(
   root: string,
@@ -281,7 +221,6 @@ async function readJson<T>(
   } catch {
     throw new Error(`${relative}: cannot be read`);
   }
-
   try {
     return schema.parse(JSON.parse(text) as unknown);
   } catch {
@@ -289,35 +228,9 @@ async function readJson<T>(
   }
 }
 
-/* Proving one fixture (AAP 0.5.5, AAP 0.11.2). */
-
 /**
  * Proves one committed fixture in the client's role and answers the submission the API's
  * `POST /itinerary-proofs` accepts (AAP 0.5.5, AAP 0.11.2).
- *
- * The flow is the device's: build the circuit inputs from the email, generate the witness with the
- * circuit's WASM, prove with the key `pnpm circuits:build` wrote, and return only
- * `{ proof, publicSignals }` — parsed by `ProofSubmission`, so the shape is the contract's own and
- * an unknown key can never reach a suite.
- *
- * `valid`, `valid-second` and `tampered` are proved against the committed test registry, which is the
- * registry the API publishes when `APP_ENV=test` and `ZK_ALLOW_TEST_ISSUER=true`. `other-issuer` is
- * proved against a registry rebuilt around the key that actually signed it — read from the fixture's
- * own `d=`/`s=` tags and its unsigned `X-Tablemate-Fixture-Key` header — so the proof is a valid
- * Groth16 proof of a root the API does not publish, which is the `422 issuer_not_allowlisted` case
- * (AAP 0.12.1 criterion 3).
- *
- * A `tampered` proof is impossible by construction: the fixture's body no longer hashes to the `bh=`
- * its signature commits to, so `buildCircuitInputs` throws the input generator's `CircuitInputError`
- * with code `body_hash_mismatch` before anything is generated. That rejection is the evidence a suite
- * asserts, so it is propagated unchanged.
- *
- * @param name - The fixture to prove.
- * @param options - The salt to prove against, and whether to bypass the proof cache.
- * @returns The submission `ProofSubmission.parse` accepted.
- * @throws {Error} When the circuit artefacts are missing (naming `pnpm circuits:build`), a
- *   configuration file cannot be read, or a prover fails.
- * @throws {CircuitInputError} From the input generator, which names a code and never a value.
  */
 export async function fixtureProof(
   name: FixtureName,
@@ -325,29 +238,24 @@ export async function fixtureProof(
 ): Promise<ProofSubmission> {
   const salt = canonicalSalt(options.salt ?? TEST_NULLIFIER_SALT);
   const fresh = options.fresh === true;
-
   const root = findRepoRoot();
   const artefacts = artefactPaths(root);
   const eml = await readFixtureEml(name);
   const { issuer, registry } = await fixtureProver(name, eml);
-
   const cacheFile = cacheFilePath(root, {
     eml,
     verificationKey: await readFile(artefacts.verificationKey),
     salt,
     registryRoot: registry.root,
   });
-
   if (!fresh) {
     const cached = await readCachedProof(cacheFile);
     if (cached !== undefined) {
       return cached;
     }
   }
-
   const { inputs } = buildCircuitInputs(eml, [issuer], registry, { nullifierSalt: salt });
   const submission = await proveFixture(inputs, artefacts, salt);
-
   if (!fresh) {
     await writeCachedProof(cacheFile, submission);
   }
@@ -367,7 +275,6 @@ async function fixtureProver(
   if (name !== 'other-issuer') {
     return { issuer: config.issuer, registry: config.registry };
   }
-
   const issuer = rogueIssuer(eml, config.issuer);
   const { registry } = buildRegistry({
     name: 'test',
@@ -380,24 +287,14 @@ async function fixtureProver(
 /**
  * The `other-issuer` fixture's signer as an issuer record: the test issuer's id and template, with
  * the key the fixture was signed under instead of the registered one (AAP 0.5.5).
- *
- * The key is read from the message itself, because the fixture's signing key is not in the registry:
- * `d=` and `s=` from its `DKIM-Signature` field, and the modulus from the unsigned
- * `X-Tablemate-Fixture-Key` field the fixture generator wrote.
- *
- * @param eml - The fixture's bytes.
- * @param config - The test issuer, for the issuer id, the template and the display name.
- * @throws {Error} When either header field is absent, or the modulus is not a base64 DKIM key.
  */
 function rogueIssuer(eml: Uint8Array, config: IssuerConfig): IssuerConfig {
   const message = Buffer.from(eml).toString('latin1');
   const signature = headerValue(message, DKIM_FIELD);
   const modulusBase64 = headerValue(message, ROGUE_KEY_FIELD);
-
   if (signature === undefined || modulusBase64 === undefined) {
     throw new Error(`other-issuer.eml: no ${DKIM_FIELD} or ${ROGUE_KEY_FIELD} header`);
   }
-
   try {
     return IssuerConfig.parse({
       issuerId: config.issuerId,
@@ -422,18 +319,10 @@ function rogueIssuer(eml: Uint8Array, config: IssuerConfig): IssuerConfig {
 /**
  * The value of a message's first header field with this name, its folded continuation lines joined
  * (AAP 0.5.5).
- *
- * Minimal on purpose: the fixtures' headers are ASCII, the search stops at the end of the header
- * block, and no decoding, unfolding rule or MIME handling beyond joining a fold is needed here.
- *
- * @param message - The message, decoded one byte per character.
- * @param name - The field name, matched case-insensitively.
- * @returns The field's value, or `undefined` when the header block holds no such field.
  */
 function headerValue(message: string, name: string): string | undefined {
   const lines = message.split(/\r?\n/);
   const prefix = `${name.toLowerCase()}:`;
-
   for (const [index, line] of lines.entries()) {
     if (line === '') {
       return undefined;
@@ -441,7 +330,6 @@ function headerValue(message: string, name: string): string | undefined {
     if (!line.toLowerCase().startsWith(prefix)) {
       continue;
     }
-
     // The value starts after the colon's optional whitespace; a fold continues it with WSP, which
     // is dropped here so a base64 value reassembles exactly.
     const parts = [line.slice(prefix.length).trim()];
@@ -453,18 +341,12 @@ function headerValue(message: string, name: string): string | undefined {
     }
     return parts.join('');
   }
-
   return undefined;
 }
 
 /**
  * One tag of a `DKIM-Signature` value, by name: how the fixture's `d=` and `s=` are read without
  * pulling in the client generator's own parser, which is not part of that package's public surface.
- *
- * @param value - The field's value, a `;`-separated tag list.
- * @param name - The tag's name, lower case.
- * @returns The tag's value.
- * @throws {Error} When the tag is absent or empty, naming the tag and never the value.
  */
 function dkimTag(value: string, name: string): string {
   for (const tag of value.split(';')) {
@@ -477,11 +359,8 @@ function dkimTag(value: string, name: string): string {
       return found;
     }
   }
-
   throw new Error(`fixture DKIM signature: no ${name} tag`);
 }
-
-/* The circuit build's artefacts and the proof cache. */
 
 /** The three artefacts one fixture proof reads, at the absolute paths they hold in the build. */
 interface ArtefactPaths {
@@ -493,10 +372,6 @@ interface ArtefactPaths {
 /**
  * The circuit artefacts, or the failure that says how to produce them (AAP 0.4.2, AAP 0.5.5).
  *
- * @param root - The repository root.
- * @returns The three absolute paths.
- * @throws {Error} When any of them is absent, naming `pnpm circuits:build` — never a skip, because a
- *   suite that cannot prove must fail loudly rather than pass without a proof.
  */
 function artefactPaths(root: string): ArtefactPaths {
   const paths = {
@@ -504,7 +379,6 @@ function artefactPaths(root: string): ArtefactPaths {
     zkey: join(root, BUILD_DIR, ZKEY_FILE),
     verificationKey: join(root, BUILD_DIR, VERIFICATION_KEY_FILE),
   };
-
   for (const file of Object.values(paths)) {
     if (!existsSync(file)) {
       throw new Error(MISSING_ARTEFACTS);
@@ -555,13 +429,10 @@ async function readCachedProof(file: string): Promise<ProofSubmission | undefine
 /**
  * Writes a proof to the cache atomically (AAP 0.11.2): a temporary file beside it and a rename, so a
  * run killed mid-write leaves no half-written proof for the next one to trust.
- *
- * @throws {Error} When the entry cannot be written, naming the cache directory.
  */
 async function writeCachedProof(file: string, submission: ProofSubmission): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
   const temporary = `${file}.${String(process.pid)}.tmp`;
-
   try {
     await writeFile(temporary, JSON.stringify(submission));
     await rename(temporary, file);
@@ -570,8 +441,6 @@ async function writeCachedProof(file: string, submission: ProofSubmission): Prom
     throw new Error(`fixture proof cache: cannot be written at ${CACHE_DIR}`);
   }
 }
-
-/* Generating the witness and proving (AAP 0.5.5). */
 
 /**
  * snarkjs 0.7.6's two calls, narrowed here because the package ships no declarations (AAP 0.5.5):
@@ -602,13 +471,6 @@ function loadSnarkjs(): Snarkjs {
 /**
  * Proves one witness: the witness in a fresh temporary directory, then the native prover when
  * {@link resolveProverBinary} finds one and snarkjs otherwise (AAP 0.2.4, AAP 0.5.5).
- *
- * The directory is removed whatever happens, so a failed proof leaves no witness behind.
- *
- * @param inputs - The witness inputs, stringified by snarkjs on the way in.
- * @param artefacts - The circuit build's wasm and proving key.
- * @param salt - The canonical salt the proof is taken with, checked against its own signal.
- * @returns The submission, parsed and checked.
  */
 async function proveFixture(
   inputs: CircuitInputs,
@@ -616,24 +478,18 @@ async function proveFixture(
   salt: string,
 ): Promise<ProofSubmission> {
   const workDir = await mkdtemp(join(tmpdir(), WORK_DIR_PREFIX));
-
   try {
     const witness = join(workDir, WITNESS_FILE);
     const snarkjs = loadSnarkjs();
-
     await snarkjs.wtns.calculate(inputs, artefacts.wasm, witness);
-
     const output =
       (await proverOutput(artefacts, witness, workDir)) ??
       (await snarkjsOutput(artefacts, witness, workDir, snarkjs));
-
     return submissionFrom(output, salt);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
 }
-
-/* Resolving the native prover before it runs (AAP 0.4.2, CWE-426). */
 
 /** The prover paths already reported, so one path is announced once per process, not once per proof. */
 const reportedProverPaths = new Set<string>();
@@ -662,7 +518,6 @@ function isExecutableProver(file: string): boolean {
  */
 function proverPathCandidates(): readonly string[] {
   const candidates = new Set<string>();
-
   for (const entry of (process.env['PATH'] ?? '').split(delimiter)) {
     if (entry === '') {
       continue;
@@ -672,7 +527,6 @@ function proverPathCandidates(): readonly string[] {
       candidates.add(candidate);
     }
   }
-
   return [...candidates];
 }
 
@@ -681,7 +535,6 @@ function reportProver(file: string, source: string): void {
   if (reportedProverPaths.has(file)) {
     return;
   }
-
   reportedProverPaths.add(file);
   console.warn(`fixture proof: proving with ${file} (${source})`);
 }
@@ -689,41 +542,22 @@ function reportProver(file: string, source: string): void {
 /**
  * The native prover to run, as an absolute path, or `undefined` when none is installed
  * (AAP 0.4.2, CWE-426).
- *
- * `RAPIDSNARK_PROVER`, when it is set to a non-empty value, names the binary outright; an empty value
- * counts as unset, which is how an unset variable is conventionally spelled. A prover the operator
- * pointed at and a prover that was never installed are different situations, so a pin that is not an
- * absolute path to an executable regular file is an error rather than a fallback to `PATH`; the
- * variable is read on every call, so a suite that changes it between proofs is taken at its word.
- * Otherwise the first executable `prover` on `PATH` is taken, in search order.
- *
- * The binary is resolved here rather than left to `execFile`'s own search, which would run whichever
- * same-named file the environment happened to offer first with the proving key and the witness as its
- * arguments: a path this function chose and reported is what makes those two files auditable.
- *
- * @returns The absolute path of the prover to run, or `undefined` when no prover is installed.
- * @throws {Error} When `RAPIDSNARK_PROVER` is set and is not an absolute path to an executable
- *   regular file, naming the variable and the value.
  */
 export function resolveProverBinary(): string | undefined {
   const pinned = process.env[PROVER_PATH_ENV];
-
   if (pinned !== undefined && pinned !== '') {
     if (!isAbsolute(pinned) || !isExecutableProver(pinned)) {
       throw new Error(
         `${PROVER_PATH_ENV}: ${pinned} is not an absolute path to an executable file`,
       );
     }
-
     reportProver(pinned, `pinned by ${PROVER_PATH_ENV}`);
     return pinned;
   }
-
   const [first, ...others] = proverPathCandidates();
   if (first === undefined) {
     return undefined;
   }
-
   reportProver(
     first,
     others.length === 0 ? 'from PATH' : `from PATH, ahead of ${others.join(', ')}`,
@@ -748,19 +582,15 @@ async function proverOutput(
   if (prover === undefined) {
     return undefined;
   }
-
   const proofFile = join(workDir, PROVER_PROOF_FILE);
   const publicFile = join(workDir, PROVER_PUBLIC_FILE);
-
   const result = await runCommand(prover, [artefacts.zkey, witness, proofFile, publicFile]);
-
   if (result.missing) {
     return undefined;
   }
   if (!result.ok) {
     throw new Error(`${prover} failed (${result.code}) on ${ZKEY_FILE}${result.note}`);
   }
-
   return {
     proof: await readJsonFile(proofFile),
     publicSignals: await readJsonFile(publicFile),
@@ -781,7 +611,6 @@ async function snarkjsOutput(
   if (cli === undefined) {
     return snarkjs.groth16.prove(artefacts.zkey, witness);
   }
-
   const proofFile = join(workDir, SNARKJS_PROOF_FILE);
   const publicFile = join(workDir, SNARKJS_PUBLIC_FILE);
   const result = await runCommand(process.execPath, [
@@ -794,11 +623,9 @@ async function snarkjsOutput(
     proofFile,
     publicFile,
   ]);
-
   if (!result.ok) {
     throw new Error(`snarkjs groth16 prove failed (${result.code}) on ${ZKEY_FILE}${result.note}`);
   }
-
   return {
     proof: await readJsonFile(proofFile),
     publicSignals: await readJsonFile(publicFile),
@@ -845,7 +672,6 @@ function runCommand(file: string, args: readonly string[]): Promise<CommandResul
           resolve({ ok: true, missing: false, code: '0', note: '' });
           return;
         }
-
         const code = String(error.code ?? 'unknown');
         resolve({
           ok: false,
@@ -871,16 +697,12 @@ async function readJsonFile(file: string): Promise<unknown> {
  * The submission one prover output is (AAP 0.5.5): the three proof components under the protocol and
  * curve the contract names — extra keys a prover adds are dropped — and the public signals as decimal
  * strings, then the salt assertion the circuit's own inputs must satisfy.
- *
- * @throws {Error} When the output is not a Groth16 proof of the seven signals, or its salt signal is
- *   not the salt it was proved with.
  */
 function submissionFrom(output: ProverOutput, salt: string): ProofSubmission {
   const submission = ProofSubmission.parse({
     proof: proofObject(output.proof),
     publicSignals: signalStrings(output.publicSignals),
   });
-
   const index = PUBLIC_SIGNAL_NAMES.indexOf('nullifierSalt');
   if (submission.publicSignals[index] !== salt) {
     throw new Error('fixture proof: the nullifierSalt signal is not the salt it was proved with');
@@ -893,7 +715,6 @@ function proofObject(raw: unknown): unknown {
   if (typeof raw !== 'object' || raw === null) {
     throw new Error('fixture proof: the prover returned no proof');
   }
-
   const { pi_a, pi_b, pi_c } = raw as { pi_a?: unknown; pi_b?: unknown; pi_c?: unknown };
   return { pi_a, pi_b, pi_c, protocol: 'groth16', curve: 'bn128' };
 }
@@ -914,20 +735,11 @@ function canonicalSalt(salt: string): string {
   return BigInt(salt).toString();
 }
 
-/* Helpers the suites read a proof with. */
-
 /**
  * The same submission with one public signal replaced (AAP 0.12.1 criterion 3).
  *
  * Groth16 then fails, which is the API's `422 proof_invalid`: the suite's evidence that a tampered
  * claim about a booking is refused even though the proof's shape is still valid.
- *
- * @param submission - The submission to alter.
- * @param index - The signal position, 0 to 6, in `PUBLIC_SIGNAL_NAMES` order.
- * @param value - The replacement, a canonical decimal field element; the signal's own value plus one
- *   when omitted.
- * @returns A new submission; the argument is left untouched.
- * @throws {RangeError} When no signal sits at that index, or the replacement is not a field element.
  */
 export function alterSignal(
   submission: ProofSubmission,
@@ -938,18 +750,14 @@ export function alterSignal(
   if (current === undefined) {
     throw new RangeError(`alterSignal: no public signal at index ${index}`);
   }
-
   const altered = [...submission.publicSignals];
   altered[index] = value ?? (BigInt(current) + 1n).toString();
-
   return ProofSubmission.parse({ proof: submission.proof, publicSignals: altered });
 }
 
 /**
  * The stay a fixture proof proves, decoded from its public signals (AAP 0.5.5).
  *
- * @param submission - A fixture proof.
- * @throws {Error} When a signal it reads is missing or is not the shape the circuit emits.
  */
 export function fixtureStay(submission: ProofSubmission): FixtureStay {
   const signals = staySignals(submission);
@@ -957,7 +765,6 @@ export function fixtureStay(submission: ProofSubmission): FixtureStay {
   if (!Number.isSafeInteger(circuitCityId) || circuitCityId < 1) {
     throw new Error('fixtureStay: the cityId signal is not a circuit city id');
   }
-
   return {
     circuitCityId,
     arrivalDate: isoDate(signals.arrivalDate),
@@ -969,15 +776,6 @@ export function fixtureStay(submission: ProofSubmission): FixtureStay {
 /**
  * An instant inside the stay a fixture proof proves: the day after its arrival, at noon UTC
  * (AAP 0.11.2).
- *
- * The fixture bookings' dates are fixed in the committed emails, so a suite that needs a *currently
- * valid* proof — criterion 1's settlement walk, discovery — moves the test clock to this instant
- * before submitting it, which puts the clock inside `validFrom = arrival − 2 days` and the end of the
- * departure day (AAP 0.5.7).
- *
- * @param submission - A fixture proof.
- * @returns The instant, one day after the arrival date at 12:00 UTC.
- * @throws {Error} When the proof's arrival signal is not a circuit date.
  */
 export function instantDuringStay(submission: ProofSubmission): Date {
   const { arrivalDate } = fixtureStay(submission);
@@ -991,23 +789,14 @@ export function instantDuringStay(submission: ProofSubmission): Date {
 /**
  * Releases the process-wide BN254 curve instance ffjavascript builds, for a script that proves without
  * ever building an app (AAP 0.5.5).
- *
- * It is never called from here: the API's verifier reuses that same singleton and releases it from its
- * own `app.close()` (`proofs/verifier.ts` `closeVerifier`), so a script that terminated it underneath
- * a running app would leave the next verification to rebuild the curve — or, worse, to use a dead one.
- * Idempotent, and it never throws.
- *
- * @returns When the curve's threads have stopped.
  */
 export async function releaseProverCurve(): Promise<void> {
   const scope = globalThis as { curve_bn128?: { terminate(): Promise<void> } };
   const curve = scope.curve_bn128;
   delete scope.curve_bn128;
-
   if (curve === undefined) {
     return;
   }
-
   try {
     await curve.terminate();
   } catch {
@@ -1032,7 +821,6 @@ function staySignals(submission: ProofSubmission): StaySignals {
     }
     return value;
   };
-
   return {
     cityId: at('cityId'),
     arrivalDate: at('arrivalDate'),

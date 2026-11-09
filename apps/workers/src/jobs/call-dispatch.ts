@@ -1,54 +1,37 @@
 /**
- * The `call-dispatch` queue: which queued call task is dialed next, and the verification task a
- * lodging claim needs before it can be dialed at all (AAP 0.3.2, 0.5.3, 0.5.6).
+ * The `call-dispatch` queue: which queued call task is dialed next, and the verification task a lodging claim needs
+ * before it can be dialed at all (AAP 0.3.2, 0.5.3, 0.5.6).
  *
- * Two jobs run here, and between them they are the only way a call starts:
- *
- * - `dispatch-city` carries `{ cityId }` and runs every two minutes per city, when an operator asks
- *   for a call sweep through `POST /v1/admin/price-jobs` and after a place refresh (AAP 0.5.6). The
- *   run resolves the city's unfinished attempts first, then takes at most {@link DISPATCH_BATCH_SIZE}
- *   queued tasks that are due, in the call-and-menu order of `./calls/priority.ts` (AAP 0.5.7), and
- *   decides each one in turn. Only a task the eligibility rule accepts is handed to `dispatch`,
- *   which claims it under its own lock; every other verdict is written on the task itself — a
- *   `nextAttemptAt`, a `blockedReason`, or `unreachable` with its `outcomeAt` — because a decision
- *   that was not persisted would be taken again on the next pass.
- * - `create-task` carries `{ outboxId, lodgingClaimId }` and is delivered from the
- *   `create_call_task` outbox row the API writes in the transaction that creates a lodging claim
- *   (AAP 0.3.2): it opens the claim's `lodging_stay_verification` task, sends the claim straight to
- *   the operator queue when the lodging cannot be called, and schedules the claim's 72-hour expiry.
- *   It is idempotent on the claim, because the dispatcher may deliver one outbox row twice.
+ * Two jobs run here, and between them they are the only way a call starts. `dispatch-city` carries `{ cityId }` and
+ * runs every two minutes per city: it resolves the city's unfinished attempts first, then takes at most
+ * {@link DISPATCH_BATCH_SIZE} queued tasks that are due, in the call-and-menu order of `./calls/priority.ts`
+ * (AAP 0.5.7), and decides each one in turn — only a task the eligibility rule accepts is handed to `dispatch`,
+ * which claims it under its own lock, while every other verdict is written on the task itself, because a decision
+ * that was not persisted would be taken again on the next pass. `create-task` carries `{ outboxId, lodgingClaimId }`
+ * and is delivered from the `create_call_task` outbox row the API writes in the transaction that creates a lodging
+ * claim (AAP 0.3.2): it opens the claim's `lodging_stay_verification` task, sends the claim straight to the operator
+ * queue when the lodging cannot be called, and schedules the claim's 72-hour expiry. It is idempotent on the claim,
+ * because the dispatcher may deliver one outbox row twice.
  *
  * Five rules hold across both jobs:
  *
- * 1. **A call exists only after its attempt does.** No Twilio call is created in this file:
- *    `dispatch` persists the `CallAttempt` as `dispatching` and commits before it dials, and it is
- *    the only place that contacts the vendor (AAP 0.3.2).
- * 2. **The dialogue budget is counted once per run, before anything is dialed, and a count that
- *    fails dials nothing** (AAP 0.5.6). `dispatch` reserves that figure for the call it places and
- *    stores it on the attempt; the batch ends on the first count failure rather than dialing without
- *    a bound.
- * 3. **Caps and calling hours defer, they do not drop.** `cap_reached` and `budget_refused` end the
- *    batch, because `dispatch` has already moved that task to 09:00 local the next day and every
- *    later task over the same day's cap would be deferred the same way: with the 40-call cap, the
- *    41st task of a city's local day runs the next morning (AAP 0.5.6).
- * 4. **Time and city-local reasoning come from the injected clock and the city's own zone**
- *    (AAP 0.11.1), and a raw read of `place` or `lodging` carries {@link fixturePredicate}, because
- *    raw SQL bypasses the guarded client's fixture filter (AAP 0.5.2).
- * 5. **Lock order: `lodging_claim` before `call_task`.** The API's claim deletion states the same
- *    contract with the same two tables; the `create-task` transaction locks the claim first and only
- *    then reads or writes the tasks, so the two cannot deadlock.
+ * 1. A call exists only after its attempt does. No Twilio call is created in this file: `dispatch` persists the
+ *    `CallAttempt` as `dispatching` and commits before it dials, and it is the only place that contacts the vendor
+ *    (AAP 0.3.2).
+ * 2. The dialogue budget is counted once per run, before anything is dialed, and a count that fails dials nothing
+ *    (AAP 0.5.6): the batch ends on the first count failure rather than dialing without a bound.
+ * 3. Caps and calling hours defer, they do not drop: `cap_reached` and `budget_refused` end the batch, because
+ *    `dispatch` has already moved that task to 09:00 local the next day and every later task over the same day's cap
+ *    would be deferred the same way (AAP 0.5.6).
+ * 4. Time and city-local reasoning come from the injected clock and the city's own zone (AAP 0.11.1), and a raw read
+ *    of `place` or `lodging` carries {@link fixturePredicate}, because raw SQL bypasses the guarded client's fixture
+ *    filter (AAP 0.5.2).
+ * 5. Lock order: `lodging_claim` before `call_task`, the contract the API's claim deletion states with the same two
+ *    tables, so a deletion and a task creation cannot deadlock.
  *
- * Every decision is logged under one `call_dispatch` event with the id it concerns — a task, a claim —
- * and never a phone number (AAP 0.11.1, 0.12.2). The lines this file writes are its own verdicts:
- * `eligible`, `unreachable`, `allowlist_block`, `deferred`, `budget_count_failed`, `target_missing`,
- * `claim_cancelled` for the dispatch run, and `task_created` for a claim's verification task.
- * `dispatch` writes the vendor-level ones (`dialing`, `dispatch_failed`, `dispatch_unknown`,
- * `not_claimed`, `cap_reached`, `budget_refused`, `not_eligible`) itself, so one task never produces
- * two lines saying the same thing. Nothing here imports `@tablemate/api`, the Twilio SDK or Stripe.
- *
- * @see AAP 0.3.2 for the dispatch sequence and the reconciliation that follows it, 0.5.3 for the
- *   call-task and lodging-claim lifecycles, 0.5.6 for the job table, the caps and the dialogue
- *   budget, 0.5.7 for the priority rule, 0.6.2 for `TELEPHONY_MODE=off`, and 0.8.1 for this file.
+ * Every decision is logged under one `call_dispatch` event with the id it concerns and never a phone number
+ * (AAP 0.11.1, 0.12.2). `dispatch` writes its own vendor-level lines, so one task never produces two lines saying
+ * the same thing. Nothing here imports `@tablemate/api`, the Twilio SDK or Stripe.
  */
 
 import { Prisma, fixturePredicate } from '@tablemate/db';
@@ -81,10 +64,6 @@ import type { Eligibility } from '../calls/eligibility.ts';
 // would close a runtime cycle. A type-only import is erased on emit.
 import type { WorkerContext } from '../queues.ts';
 
-// ---------------------------------------------------------------------------------------------
-// The rules, as values (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /** The one log event every decision this file records is written under (AAP 0.11.1). */
 const LOG_EVENT = 'call_dispatch';
 
@@ -111,12 +90,10 @@ const OPEN_CLAIM_STATUSES: ReadonlySet<LodgingClaimStatus> = new Set<LodgingClai
 /**
  * The `priority` a `lodging_stay_verification` task is created with (AAP 0.5.7).
  *
- * `1` is the first number the call-and-menu rule assigns — the nearest band with a locked meetup
- * ahead of it — and so the value that sorts first. It is not what orders these tasks, though: the
- * rule's own first key in {@link callTaskOrderSql} puts every lodging task ahead of price collection
- * whatever this column holds, and a claim expires 72 hours after it was created. The column is
- * written so the row carries a valid priority rather than the `0` default, which in BullMQ order
- * would mean "before every prioritized job".
+ * `1` is the first number the call-and-menu rule assigns, and so the value that sorts first. It is not what orders
+ * these tasks, though: the rule's own first key in {@link callTaskOrderSql} puts every lodging task ahead of price
+ * collection whatever this column holds. The column is written so the row carries a valid priority rather than the
+ * `0` default, which in BullMQ order would mean "before every prioritized job".
  */
 const LODGING_TASK_PRIORITY = 1;
 
@@ -128,10 +105,6 @@ const LODGING_TASK_PRIORITY = 1;
 const TASK_ALIAS = 't';
 const PLACE_ALIAS = 'p';
 const LODGING_ALIAS = 'l';
-
-// ---------------------------------------------------------------------------------------------
-// The jobs and what they report (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The `call-dispatch` job as a processor receives it: a structural subset of BullMQ's `Job`, so a
@@ -151,23 +124,20 @@ export interface CallDispatchJob {
 }
 
 /**
- * How one queued task was decided (AAP 0.5.3, 0.5.6). Every value but the three count-only ones is
- * also a log line's own `decision`, written by whichever side decided it:
+ * How one queued task was decided (AAP 0.5.3, 0.5.6). Every value but the three count-only ones is also a log line's
+ * own `decision`, written by whichever side decided it:
  *
- * - `unreachable` — a safety refusal: no phone number, or a number marked `doNotCall`. The task goes
- *   to the operator queue with `outcomeAt` set.
+ * - `unreachable` — a safety refusal: no phone number, or a number marked `doNotCall`; the task goes to the operator
+ *   queue with `outcomeAt` set.
  * - `allowlist_block` — the call guard refused the number, so the task stays `queued` with
  *   `blockedReason = not_allowlisted` and is rechecked at the next calling window.
  * - `deferred` — attempts, spacing or calling hours push the task to a named instant.
- * - `budget_count_failed` — the dialogue budget could not be counted, so nothing was dialed and the
- *   batch stopped.
- * - `target_missing` — the place or lodging the task points at is no longer visible; the row leaves
- *   the candidate set by itself, because the join that selects it can no longer match a city.
- * - `claim_cancelled` — the task's claim is no longer open, so the still-queued task is cancelled
- *   (AAP 0.5.3: a cancelled task was cancelled, it reached no outcome).
- * - `dialing` / `dispatch_failed` / `dispatch_unknown` / `not_claimed` — what `dispatch` reported.
- * - `cap_reached` / `budget_refused` — the day's call cap or the language-model cap is used up; the
- *   task is deferred to 09:00 local the next day and the batch ends.
+ * - `budget_count_failed` — the dialogue budget could not be counted, so nothing was dialed and the batch stopped.
+ * - `target_missing` — the place or lodging the task points at is no longer visible; the row leaves the candidate
+ *   set by itself, because the join that selects it can no longer match a city.
+ * - `claim_cancelled` — the task's claim is no longer open, so the still-queued task is cancelled (AAP 0.5.3).
+ * - `dialing` / `dispatch_failed` / `dispatch_unknown` / `not_claimed` / `cap_reached` / `budget_refused` — what
+ *   `dispatch` reported.
  */
 export type DispatchDecision =
   | 'unreachable'
@@ -182,7 +152,6 @@ export type DispatchDecision =
   | 'not_claimed'
   | 'cap_reached'
   | 'budget_refused';
-
 /** One count per {@link DispatchDecision}: what a run reports, and what it returns (AAP 0.5.6). */
 export type DispatchCounts = Readonly<Record<DispatchDecision, number>>;
 
@@ -252,41 +221,24 @@ interface ClaimTaskOutcome {
   readonly claimCreatedAt: Date | null;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The tasks one city's run acts on (AAP 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * The queued, due tasks of one city, in dispatch order, at most {@link DISPATCH_BATCH_SIZE} of them.
  *
- * One statement, because the order and the bound are what keep a backlog from being walked in an
- * arbitrary sequence: the `ORDER BY` fragment comes from {@link callTaskOrderSql}, which puts a
- * lodging verification first, then the place's distance band, then whether a locked meetup starts
- * within 2 km and 3 days, then `next_attempt_at` and finally the id (AAP 0.5.7).
+ * One statement, because the order and the bound are what keep a backlog from being walked in an arbitrary sequence:
+ * the `ORDER BY` fragment comes from {@link callTaskOrderSql}, which puts a lodging verification first, then the
+ * place's distance band, then whether a locked meetup starts within 2 km and 3 days, then `next_attempt_at` and
+ * finally the id (AAP 0.5.7).
  *
- * The `LEFT JOIN`s are the shape that fragment requires, and each fixture predicate is written
- * NULL-safe around them: a lodging task holds no `place_id` at all, so its place columns are NULL and
- * a bare `is_fixture = false` predicate would drop the row the order's first key exists to put ahead
- * of price collection. The guard still belongs there, because these joins are raw reads of `place`
- * and `lodging`, which the Prisma fixture filter leaves to the caller (AAP 0.5.2).
+ * The `LEFT JOIN`s are the shape that fragment requires, and each fixture predicate is written NULL-safe around
+ * them: a lodging task holds no `place_id` at all, so its place columns are NULL and a bare `is_fixture = false`
+ * predicate would drop the row the order's first key exists to put ahead of price collection (AAP 0.5.2).
  *
- * The task's last counted attempt is deliberately not read here: `eligibility.ts` owns that rule and
- * answers it through `lastCountedAttemptEndedAt`, so a definite vendor failure — which does not count
- * as an attempt and must not start the 24-hour spacing — is excluded by the one place that says so
- * (AAP 0.5.3).
- *
- * @param ctx - The worker context: the guarded client the statement runs on and the `APP_ENV` that
- *   decides whether fixture rows are visible.
- * @param cityId - The city slug whose tasks are selected, matched against the target's own city.
- * @param now - The instant from the injected clock, bound as the due bound (AAP 0.11.1).
- * @returns The due tasks, nearest-first in the call-and-menu order and bounded in number.
- * @throws RangeError when an alias does not match `SQL_IDENTIFIER`, which cannot happen with the
- *   constants above, and whatever a database failure raises, which the queue retries.
- * @see AAP 0.5.6 for the candidates, 0.5.7 for the order, 0.5.2 for the fixture guard.
+ * The task's last counted attempt is deliberately not read here: `eligibility.ts` owns that rule, so a definite
+ * vendor failure — which does not count as an attempt and must not start the 24-hour spacing — is excluded by the one
+ * place that says so (AAP 0.5.3).
  */
 async function dueTasks(ctx: WorkerContext, cityId: string, now: Date): Promise<DueTaskRow[]> {
   const appEnv = ctx.env.APP_ENV;
-
   return await ctx.db.$queryRaw<DueTaskRow[]>(Prisma.sql`
     SELECT "t"."id"::text AS "id",
            "t"."attempts" AS "attempts",
@@ -304,51 +256,28 @@ async function dueTasks(ctx: WorkerContext, cityId: string, now: Date): Promise<
      LIMIT ${DISPATCH_BATCH_SIZE}`);
 }
 
-// ---------------------------------------------------------------------------------------------
-// One city's dispatch run (AAP 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * The `dispatch-city` job (AAP 0.5.6): reconcile the city's unfinished attempts, then decide its due
- * tasks one at a time, in the call-and-menu order.
+ * The `dispatch-city` job (AAP 0.5.6): reconcile the city's unfinished attempts, then decide its due tasks one at a
+ * time, in the call-and-menu order.
  *
- * The steps are the questions, in the order they have to be asked. Telephony off decides nothing at
- * all (AAP 0.6.2). The city's zone is read before anything is scheduled in it, so a job naming a
- * `City` the database does not hold answers `unknown_city` rather than deferring against the host's
- * zone (AAP 0.11.1). Reconciliation runs before the candidates are read, so an attempt it resolves
- * into `no_answer` moves its task's `nextAttemptAt` in the same run (AAP 0.3.2). Up to
- * {@link DISPATCH_BATCH_SIZE} due tasks are read once and decided sequentially — each decision writes
- * the state the next one's rules may read, and a run that fanned out would hold a connection per task
- * — and the dialogue budget is counted once, lazily, only when a call is about to be dialed. A
- * failure in one decision propagates: it is idempotent, and the retried run re-reads the state it
- * left rather than skipping the task.
- *
- * @param ctx - The worker context: configuration, the injected clock, the logger, the guarded
- *   client, the telephony client, the call guard, the spend meter and the language-model adapter.
- * @param cityId - The city slug whose queued tasks this run decides.
- * @returns The decisions taken, or why the run decided nothing.
- * @throws RangeError when the city's zone is not an IANA zone or a figure from the environment is
- *   malformed, and whatever a database, telephony or spend-meter failure raises — a job retries
- *   rather than reading a failure as a refusal.
- * @see AAP 0.3.2 for the recovery steps, 0.5.3 for the call-task lifecycle, 0.5.6 for the caps and
- *   the dialogue budget, 0.5.7 for the order the tasks are taken in.
+ * The steps are the questions, in the order they have to be asked: telephony off decides nothing at all (AAP 0.6.2);
+ * the city's zone is read before anything is scheduled in it, so a job naming a `City` the database does not hold
+ * answers `unknown_city` rather than deferring against the host's zone; reconciliation runs before the candidates are
+ * read, so an attempt it resolves into `no_answer` moves its task's `nextAttemptAt` in the same run (AAP 0.3.2); and
+ * the dialogue budget is counted once, lazily, only when a call is about to be dialed. A failure in one decision
+ * propagates: it is idempotent, and the retried run re-reads the state it left rather than skipping the task.
  */
 async function dispatchCity(ctx: WorkerContext, cityId: string): Promise<CallDispatchOutcome> {
   const telephony = ctx.telephony;
-
   if (telephony === null) {
     return { event: LOG_EVENT, cityId, skipped: 'telephony_off' };
   }
-
   const city = await ctx.db.city.findUnique({ where: { id: cityId }, select: { timezone: true } });
-
   if (city === null) {
     return { event: LOG_EVENT, cityId, skipped: 'unknown_city' };
   }
-
   const timezone = city.timezone;
   const now = ctx.clock.now();
-
   const reconciled = await reconcileDue(cityId, {
     db: ctx.db,
     telephony,
@@ -357,11 +286,9 @@ async function dispatchCity(ctx: WorkerContext, cityId: string): Promise<CallDis
     logger: ctx.logger,
     spend: ctx.spend,
   });
-
   const due = await dueTasks(ctx, cityId, now);
   const decisions = blankCounts();
   let dialogueBudget: number | null = null;
-
   for (const task of due) {
     const verdict = await checkEligibility(
       task,
@@ -374,26 +301,21 @@ async function dispatchCity(ctx: WorkerContext, cityId: string): Promise<CallDis
         lastAttemptEndedAt: await lastCountedAttemptEndedAt(ctx.db, task.id),
       },
     );
-
     if (verdict.kind !== 'eligible') {
       count(decisions, await applyVerdict(ctx, task.id, verdict, timezone, now));
       continue;
     }
-
     // The guard has just accepted the number, so a `not_allowlisted` an earlier pass wrote is no
     // longer true and the column is cleared before the task is handed to `dispatch`.
     await clearBlockedReason(ctx.db, task.id);
     logDecision(ctx, { taskId: task.id, decision: 'eligible' });
-
     if (dialogueBudget === null) {
       dialogueBudget = await countDialogueBudget(ctx);
-
       if (dialogueBudget === null) {
         count(decisions, 'budget_count_failed');
         break;
       }
     }
-
     const dispatched = await dispatch(task.id, {
       db: ctx.db,
       telephony,
@@ -405,29 +327,23 @@ async function dispatchCity(ctx: WorkerContext, cityId: string): Promise<CallDis
       timezone,
       dialogueBudgetMicros: dialogueBudget,
     });
-
     if (dispatched.kind === 'cap_reached' || dispatched.kind === 'budget_refused') {
       count(decisions, dispatched.kind);
       break;
     }
-
     if (dispatched.kind === 'not_eligible') {
       count(decisions, await applyDispatchRefusal(ctx, task.id, dispatched.reason, timezone, now));
       continue;
     }
-
     count(decisions, dispatched.kind);
   }
-
   const outcome: CallDispatchResult = {
     event: LOG_EVENT,
     cityId,
     reconciled: reconciled.length,
     decisions,
   };
-
   ctx.logger.info(outcome, LOG_EVENT);
-
   return outcome;
 }
 
@@ -437,15 +353,6 @@ async function dispatchCity(ctx: WorkerContext, cityId: string): Promise<CallDis
  *
  * Every write is guarded on the task still being `queued`, so a task an operator resolved or another
  * runner claimed between the read and the verdict is left exactly as it stands.
- *
- * @param ctx - The worker context: the client the guarded writes go through and the logger.
- * @param taskId - The task the verdict concerns.
- * @param verdict - The eligibility rule's answer, `eligible` excluded.
- * @param timezone - The city zone a block or a deferral is dated in (AAP 0.11.1).
- * @param now - The instant the verdict was reached, from the injected clock.
- * @returns The decision that was counted and logged.
- * @see AAP 0.5.3 for the two writes that are lifecycle states, 0.5.6 for the allowlist and the
- *   calling window.
  */
 async function applyVerdict(
   ctx: WorkerContext,
@@ -457,19 +364,15 @@ async function applyVerdict(
   if (verdict.kind === 'unreachable') {
     await markUnreachable(ctx.db, taskId, verdict.blockedReason, now);
     logDecision(ctx, { taskId, decision: 'unreachable', blockedReason: verdict.blockedReason });
-
     return 'unreachable';
   }
-
   if (verdict.kind === 'blocked') {
     // The task keeps its status and moves to the next calling window, so a number the guard refuses
     // today is rechecked once a day instead of filling every two-minute batch (AAP 0.5.6).
     await markNotAllowlisted(ctx.db, taskId, nextCallingWindow(timezone, now));
     logDecision(ctx, { taskId, decision: 'allowlist_block', blockedReason: verdict.guardReason });
-
     return 'allowlist_block';
   }
-
   await deferTask(ctx.db, taskId, verdict.until);
   logDecision(ctx, {
     taskId,
@@ -477,30 +380,17 @@ async function applyVerdict(
     blockedReason: verdict.reason,
     until: verdict.until.toISOString(),
   });
-
   return 'deferred';
 }
 
 /**
- * Applies the verdict `dispatch` reached when it re-checked the task under its own lock, and reports
- * the decision it recorded (AAP 0.5.3, 0.5.6).
- *
- * Those re-checks exist because the state can change between this run's read and `dispatch`'s claim.
- * The mapping repeats {@link applyVerdict}'s, so a verdict reached on either side of the hand-off
- * writes the same state: `do_not_call` and `no_phone` to the operator queue as `unreachable` with
- * their `outcomeAt`, `not_callable` to `queued` with `blockedReason = not_allowlisted` deferred to the
- * next calling window, and `claim_not_open` to `cancelled` — a lifecycle state, not an outcome, so
- * `outcomeAt` is deliberately not written (AAP 0.5.3). `target_missing` writes nothing: the target is
- * gone or invisible, so the join that selected the task no longer matches a city and the next run
- * leaves it out.
- *
- * @param ctx - The worker context: the client the guarded writes go through and the logger.
- * @param taskId - The task `dispatch` refused.
- * @param reason - Why `dispatch` refused it.
- * @param timezone - The city zone the next calling window is computed in (AAP 0.11.1).
- * @param now - The instant the refusal is recorded against, from the injected clock.
- * @returns The decision that was counted and logged.
- * @see AAP 0.5.3 for the transitions and "terminal tasks stay terminal", 0.5.6 for the allowlist.
+ * Applies the verdict `dispatch` reached when it re-checked the task under its own lock, and reports the decision it
+ * recorded (AAP 0.5.3, 0.5.6). Those re-checks exist because the state can change between this run's read and
+ * `dispatch`'s claim, so the mapping repeats {@link applyVerdict}'s: `do_not_call` and `no_phone` to the operator
+ * queue as `unreachable` with their `outcomeAt`, `not_callable` to `queued` with `blockedReason = not_allowlisted`
+ * deferred to the next calling window, and `claim_not_open` to `cancelled` — a lifecycle state, not an outcome, so
+ * `outcomeAt` is deliberately not written. `target_missing` writes nothing, because the target is gone or invisible
+ * and the join that selected the task no longer matches a city.
  */
 async function applyDispatchRefusal(
   ctx: WorkerContext,
@@ -514,45 +404,31 @@ async function applyDispatchRefusal(
     case 'no_phone': {
       await markUnreachable(ctx.db, taskId, reason, now);
       logDecision(ctx, { taskId, decision: 'unreachable', blockedReason: reason });
-
       return 'unreachable';
     }
-
     case 'not_callable': {
       await markNotAllowlisted(ctx.db, taskId, nextCallingWindow(timezone, now));
       logDecision(ctx, { taskId, decision: 'allowlist_block', blockedReason: reason });
-
       return 'allowlist_block';
     }
-
     case 'claim_not_open': {
       await cancelQueuedTask(ctx.db, taskId);
       logDecision(ctx, { taskId, decision: 'claim_cancelled', blockedReason: reason });
-
       return 'claim_cancelled';
     }
-
     case 'target_missing': {
       logDecision(ctx, { taskId, decision: 'target_missing' });
-
       return 'target_missing';
     }
   }
 }
 
 /**
- * Counts one call's dialogue budget, or reports that it could not be counted (AAP 0.5.6).
- *
- * `./calls/caps.ts` owns the template and the arithmetic: the largest counted bound of one
- * classification turn over a full conversation window, times `LLM_MAX_TURNS_PER_CALL`. The count is a
- * provider call made outside every transaction, before any claim, so a refusal here leaves no state
- * behind. A failure — a count that errored or passed its deadline — is logged by name alone and
- * answers `null`, which is the caller's signal to dial nothing.
- *
- * @param ctx - The worker context: the adapter the count is made through, the meter that turns it
- *   into micro-dollars, `LLM_MAX_TURNS_PER_CALL` and the configured prices.
- * @returns The budget in micro-dollars, or `null` when it could not be counted.
- * @see AAP 0.5.6 for the reservation, 0.2.3 for the count endpoint.
+ * Counts one call's dialogue budget, or reports that it could not be counted (AAP 0.5.6). `./calls/caps.ts` owns the
+ * template and the arithmetic: the largest counted bound of one classification turn over a full conversation window,
+ * times `LLM_MAX_TURNS_PER_CALL`. The count is a provider call made outside every transaction, before any claim, so a
+ * refusal here leaves no state behind; a failure is logged by name alone and answers `null`, the caller's signal to
+ * dial nothing.
  */
 async function countDialogueBudget(ctx: WorkerContext): Promise<number | null> {
   try {
@@ -568,33 +444,18 @@ async function countDialogueBudget(ctx: WorkerContext): Promise<number | null> {
       { event: LOG_EVENT, decision: 'budget_count_failed', errorName: errorName(error) },
       LOG_EVENT,
     );
-
     return null;
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The verification task a lodging claim needs (AAP 0.3.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * The `create-task` job (AAP 0.3.2, 0.5.3): opens the claim's `lodging_stay_verification` task, or
- * hands the claim to the operator queue, and schedules the claim's 72-hour expiry.
+ * The `create-task` job (AAP 0.3.2, 0.5.3): opens the claim's `lodging_stay_verification` task, or hands the claim to
+ * the operator queue, and schedules the claim's 72-hour expiry.
  *
- * The work splits in two around the commit, and the split is a rule: the task and its state are
- * written inside the transaction that locks the claim, and the BullMQ add happens after it. A
- * third-party call inside a transaction would hold the claim lock for as long as Redis takes, and
- * this way a job that fails after the commit is redelivered and only repeats the schedule, under the
- * same stable id, which BullMQ ignores.
- *
- * @param ctx - The worker context: the guarded client, the clock the claim's age is measured from and
- *   the logger.
- * @param claimId - The claim whose verification task this run opens.
- * @param now - The instant from the injected clock (AAP 0.11.1).
- * @returns Whether the task was created and the status it carries.
- * @throws Error when the `lodging-claims` producer is missing, which is a configuration fault rather
- *   than a property of a claim, and whatever a database failure raises, which the queue retries.
- * @see AAP 0.5.3 for the claim lifecycle, 0.5.6 for the queue and its 72-hour expiry.
+ * The work splits in two around the commit, and the split is a rule: the task and its state are written inside the
+ * transaction that locks the claim, and the BullMQ add happens after it, because a third-party call inside a
+ * transaction would hold the claim lock for as long as Redis takes. A job that fails after the commit is redelivered
+ * and only repeats the schedule, under the same stable id, which BullMQ ignores.
  */
 async function createVerificationTask(
   ctx: WorkerContext,
@@ -604,41 +465,28 @@ async function createVerificationTask(
   const outcome = await ctx.db.$transaction(
     async (tx) => await openVerificationTask(ctx, tx, claimId, now),
   );
-
   if (outcome.claimCreatedAt !== null) {
     await scheduleClaimExpiry(ctx, claimId, outcome.claimCreatedAt, now);
   }
-
   return outcome.result;
 }
 
 /**
  * Opens the claim's verification task inside the caller's transaction (AAP 0.5.3).
  *
- * The claim is locked `FOR UPDATE` before anything else is read — the lock order the API's claim
- * deletion keeps with the same two tables, `lodging_claim` before `call_task`, so the two cannot
- * deadlock.
+ * The claim is locked `FOR UPDATE` before anything else is read — the lock order the API's claim deletion keeps with
+ * the same two tables, `lodging_claim` before `call_task`.
  *
- * Three states need no task and are not failures: the claim is gone or already terminal (its own
- * resolution path cancels the work it still had open, and no expiry is scheduled for a decided
- * claim), a task already points at it (a redelivered outbox row: the task stands and only the expiry
- * is scheduled again), or the lodging row is gone.
+ * Three states need no task and are not failures: the claim is gone or already terminal, whose own resolution path
+ * cancels the work it still had open; a task already points at it, a redelivered outbox row for which the task stands
+ * and only the expiry is scheduled again; or the lodging row is gone.
  *
- * Otherwise the task is created, and the eligibility rule decides its opening state — the same rule
- * the dispatcher asks, so a target that cannot be called is routed at creation rather than one tick
- * later. A safety refusal opens it `unreachable` with its `blockedReason` and its `outcomeAt`, which
- * is the operator's queue, and the claim stays `pending_call` so its owner still sees a claim waiting
- * rather than a decision they cannot appeal. A refusal that is not a safety one — the number is
- * outside `CALL_ALLOWLIST`, or the claim was created outside calling hours — opens it `queued`, which
- * is where the dispatcher's next pass would record it either way (AAP 0.5.6).
- *
- * @param ctx - The worker context: the call guard and `CAP_CALL_SECONDS` the opening verdict reads,
- *   `APP_ENV` (through the guarded client) and the logger.
- * @param tx - The caller's transaction, which holds the claim's lock.
- * @param claimId - The claim to open a verification task for.
- * @param now - The instant the task becomes due, from the injected clock (AAP 0.11.1).
- * @returns The result to report, and the claim's creation instant when an expiry is to be scheduled.
- * @see AAP 0.5.3 for the claim and call-task lifecycles, 0.5.6 for the eligibility rule.
+ * Otherwise the task is created, and the eligibility rule decides its opening state — the same rule the dispatcher
+ * asks, so a target that cannot be called is routed at creation rather than one tick later. A safety refusal opens it
+ * `unreachable` with its `blockedReason` and its `outcomeAt`, which is the operator's queue, and the claim stays
+ * `pending_call` so its owner still sees a claim waiting rather than a decision they cannot appeal; a refusal that is
+ * not a safety one opens it `queued`, which is where the dispatcher's next pass would record it either way
+ * (AAP 0.5.6).
  */
 async function openVerificationTask(
   ctx: WorkerContext,
@@ -647,29 +495,23 @@ async function openVerificationTask(
   now: Date,
 ): Promise<ClaimTaskOutcome> {
   const claim = await lockClaim(tx, claimId);
-
   if (claim === null || !OPEN_CLAIM_STATUSES.has(claim.status)) {
     return { result: { created: false, status: null }, claimCreatedAt: null };
   }
-
   const existing = await tx.callTask.findFirst({
     where: { lodgingClaimId: claimId },
     select: { id: true },
   });
-
   if (existing !== null) {
     return { result: { created: false, status: null }, claimCreatedAt: claim.created_at };
   }
-
   const lodging = await tx.lodging.findFirst({
     where: { id: claim.lodging_id },
     select: { phone: true, doNotCall: true, city: { select: { timezone: true } } },
   });
-
   if (lodging === null) {
     return { result: { created: false, status: null }, claimCreatedAt: claim.created_at };
   }
-
   const verdict = await checkEligibility(
     { attempts: 0 },
     { phone: lodging.phone, doNotCall: lodging.doNotCall, timezone: lodging.city.timezone },
@@ -681,10 +523,8 @@ async function openVerificationTask(
       lastAttemptEndedAt: null,
     },
   );
-
   const blockedReason: BlockedReason | null =
     verdict.kind === 'unreachable' ? verdict.blockedReason : null;
-
   const created = await tx.callTask.create({
     data: {
       kind: 'lodging_stay_verification',
@@ -700,30 +540,21 @@ async function openVerificationTask(
     },
     select: { status: true },
   });
-
   logDecision(ctx, {
     claimId,
     decision: 'task_created',
     blockedReason: blockedReason ?? 'queued',
   });
-
   return { result: { created: true, status: created.status }, claimCreatedAt: claim.created_at };
 }
 
 /**
  * Schedules the 72-hour expiry of one claim, under its stable job id (AAP 0.3.2, 0.5.3).
  *
- * `claim-expire-<claimId>` is added with the delay that remains of `CLAIM_EXPIRY_HOURS`, so it fires
- * 72 hours after the claim was created whatever time this run reached it, and a redelivery adds the
- * same id, which BullMQ ignores. A claim already past its 72 hours gets a delay of zero: the expiry
- * runs at once, and its own guard decides whether the claim is still open.
- *
- * @param ctx - The worker context: the clock the delay is measured from and the queue registry.
- * @param claimId - The claim the timer belongs to.
- * @param createdAt - The claim's creation instant, from its own row.
- * @param now - The instant from the injected clock (AAP 0.11.1).
- * @throws Error when the `lodging-claims` producer is missing.
- * @see AAP 0.5.3 for the expiry, 0.5.6 for the queue and its schedule.
+ * `claim-expire-<claimId>` is added with the delay that remains of `CLAIM_EXPIRY_HOURS`, so it fires 72 hours after
+ * the claim was created whatever time this run reached it, and a redelivery adds the same id, which BullMQ ignores. A
+ * claim already past its 72 hours gets a delay of zero: the expiry runs at once, and its own guard decides whether
+ * the claim is still open.
  */
 async function scheduleClaimExpiry(
   ctx: WorkerContext,
@@ -732,7 +563,6 @@ async function scheduleClaimExpiry(
   now: Date,
 ): Promise<void> {
   const delay = Math.max(0, createdAt.getTime() + CLAIM_EXPIRY_MS - now.getTime());
-
   await lodgingClaimsQueue(ctx).add(
     JOB[QUEUE.lodgingClaims].claimExpire,
     { claimId },
@@ -741,86 +571,45 @@ async function scheduleClaimExpiry(
 }
 
 /**
- * The `lodging-claims` producer (AAP 0.5.6).
- *
- * `queues.ts` builds one producer per queue at startup, so a worker whose producer is missing is a
- * configuration fault rather than a property of a claim: the throw reaches BullMQ, which retries the
- * job, and the retry finds the task that already exists and schedules the timer that was missing.
- *
- * @param ctx - The worker context whose queue registry is read.
- * @returns The producer this file adds the claim's expiry job to.
- * @throws Error when no producer is registered for the queue.
+ * The `lodging-claims` producer (AAP 0.5.6). `queues.ts` builds one producer per queue at startup, so a worker whose
+ * producer is missing is a configuration fault rather than a property of a claim: the throw reaches BullMQ, which
+ * retries the job, and the retry finds the task that already exists and schedules the timer that was missing.
  */
 function lodgingClaimsQueue(ctx: WorkerContext): Queue {
   const queue: Queue | undefined = ctx.queues.get(QUEUE.lodgingClaims);
-
   if (queue === undefined) {
     throw new Error('lodging_claims_queue_unavailable');
   }
-
   return queue;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Processing a job (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Runs one `call-dispatch` job (AAP 0.5.6).
- *
- * The job name is narrowed with `isJobName` before the data is parsed, which is the pair `names.ts`
- * and `payloads.ts` are built for: the name and the data are validated together, so a name this queue
- * does not accept, or data that does not match that name's schema, fails here rather than reaching a
- * rule.
- *
- * @param job - The BullMQ job: its name must be one of this queue's two, and its data `{ cityId }` or
- *   `{ outboxId, lodgingClaimId }` accordingly.
- * @param ctx - The worker context: configuration, clock, logger, guarded client, queue registry,
- *   telephony client, call guard, spend meter and language-model adapter.
- * @returns What the run did, in the shape its job name reports.
- * @throws QueuePayloadError when the name is not one this queue accepts, or when the data does not
- *   satisfy that job's schema.
- * @see AAP 0.3.2 for the outbox delivery, 0.5.3 for the call-task lifecycle, 0.5.6 for the queue.
+ * Runs one `call-dispatch` job (AAP 0.5.6). The job name is narrowed with `isJobName` before the data is parsed, which
+ * is the pair `names.ts` and `payloads.ts` are built for: a name this queue does not accept, or data that does not
+ * match that name's schema, fails here rather than reaching a rule.
  */
 export async function process(
   job: CallDispatchJob,
   ctx: WorkerContext,
 ): Promise<CallDispatchJobResult> {
   const queue = QUEUE.callDispatch;
-
   // A name this queue does not accept has no schema to parse against, so it is refused here rather
   // than parsed as one of the two jobs: a foreign job arriving on this queue is a wiring fault.
   if (!isJobName(queue, job.name)) {
     throw new QueuePayloadError(`${queue}/${job.name}`);
   }
-
   if (job.name === JOB[queue].dispatchCity) {
     const { cityId } = parseJobData(queue, JOB[queue].dispatchCity, job.data);
-
     return await dispatchCity(ctx, cityId);
   }
-
   const { lodgingClaimId } = parseJobData(queue, JOB[queue].createTask, job.data);
-
   return await createVerificationTask(ctx, lodgingClaimId, ctx.clock.now());
 }
 
-// ---------------------------------------------------------------------------------------------
-// The writes each decision leaves on a task (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Moves a still-queued task to the operator queue (AAP 0.5.3).
- *
- * `unreachable` with its `blockedReason` and its `outcomeAt` is the state that puts a task in front of
- * a person: no number to call, or a number that asked not to be called again. The guard on
- * `status = 'queued'` is what keeps this write off a task an operator resolved or another runner
- * claimed meanwhile.
- *
- * @param db - The guarded client or an interactive transaction.
- * @param taskId - The task to move.
- * @param blockedReason - `do_not_call` or `no_phone`.
- * @param now - The instant the outcome is dated by, from the injected clock (AAP 0.11.1).
+ * Moves a still-queued task to the operator queue (AAP 0.5.3): `unreachable` with its `blockedReason` and its
+ * `outcomeAt` is the state that puts a task in front of a person. The guard on `status = 'queued'` is what keeps this
+ * write off a task an operator resolved or another runner claimed meanwhile.
  */
 async function markUnreachable(
   db: DbClient,
@@ -881,15 +670,9 @@ async function cancelQueuedTask(db: DbClient, taskId: string): Promise<void> {
 }
 
 /**
- * Locks one claim row for the rest of the caller's transaction (AAP 0.5.3).
- *
- * The row lock is taken before any `call_task` row is read or written, which is the cross-app lock
- * order the API's claim deletion states with the same two tables: taking them in the other order
- * would let a deletion and a task creation deadlock.
- *
- * @param tx - The caller's transaction.
- * @param claimId - The claim to lock.
- * @returns The claim's id, lodging, status and creation instant, or `null` when it is gone.
+ * Locks one claim row for the rest of the caller's transaction (AAP 0.5.3). The row lock is taken before any
+ * `call_task` row is read or written, which is the cross-app lock order the API's claim deletion states with the same
+ * two tables: taking them in the other order would let a deletion and a task creation deadlock.
  */
 async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | null> {
   const rows = await tx.$queryRaw<LockedClaimRow[]>(Prisma.sql`
@@ -900,7 +683,6 @@ async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | nu
       FROM "lodging_claim" AS "c"
      WHERE "c"."id" = ${claimId}::uuid
        FOR UPDATE`);
-
   return rows[0] ?? null;
 }
 
@@ -928,14 +710,12 @@ function count(counts: Record<DispatchDecision, number>, decision: DispatchDecis
 }
 
 /**
- * Records one decision under the one `call_dispatch` event (AAP 0.11.1).
+ * Records one decision under the one `call_dispatch` event (AAP 0.11.1). The fields are ids and codes — a task, a
+ * claim, a decision, a blocked reason, an instant — and never a phone number, a URL or a vendor error body
+ * (AAP 0.12.2).
  *
- * The fields are ids and codes — a task, a claim, a decision, a blocked reason, an instant — and never
- * a phone number, a URL or a vendor error body (AAP 0.12.2).
- *
- * The code travels under `blockedReason`, not `reason`: the logger's redaction list censors `reason`
- * (a dispute's or a report's free text), and a code that has to be read back is logged under a name
- * the list does not cover (AAP 0.11.1).
+ * The code travels under `blockedReason`, not `reason`: the logger's redaction list censors `reason`, and a code that
+ * has to be read back is logged under a name the list does not cover.
  */
 function logDecision(
   ctx: WorkerContext,

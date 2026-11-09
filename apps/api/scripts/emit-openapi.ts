@@ -1,25 +1,15 @@
 /**
- * Emits `docs/api/openapi.json` from the routes the API actually registers (AAP 0.4.1, 0.8.1, 0.8.2,
- * 0.11.2).
+ * Emits `docs/api/openapi.json` from the routes the API actually registers (AAP 0.4.1, 0.8.1, 0.8.2, 0.11.2).
  *
- * Run it with `pnpm --filter @tablemate/api openapi:emit`, or with `--check` to compare the generated
- * text against the committed file and exit 1 when the two differ — the drift check a release step
- * runs. The app is composed through `buildApp` with a placeholder environment built from the
- * constants in this file and never from `process.env`, so the document depends neither on the shell
- * nor on any running service: Docker may be stopped, and no `.env` need exist. `plugins/openapi.ts`
- * advertises `API_PUBLIC_URL` as the document's single server, so that value is a constant here too;
+ * Run it with `pnpm --filter @tablemate/api openapi:emit`, or with `--check` for the drift check a release step
+ * runs. The app is composed through `buildApp` with a placeholder environment built from the constants in this
+ * file and never from `process.env`, so the document depends neither on the shell nor on any running service;
  * the placeholder secrets are generated per run and appear in no output.
  *
- * The committed file is generated: never hand-edit it, and re-run this script after changing any
- * route's schema. `pnpm loc` and Prettier both exclude it (AAP 0.7.1 and the root `format` script),
- * and `docs/api/README.md` — not this script — is where the routes and error codes the pilot adds to
- * the contract are marked as additions (AAP 0.5.4).
- *
- * @see AAP 0.4.1 for `@fastify/swagger`, 0.5.1 for the registration order the document follows, 0.5.4
- *   for the routes and security schemes the sanity checks require, and 0.6.2 for the environment
- *   schemas the placeholder must satisfy.
+ * The committed file is generated: never hand-edit it, and re-run this script after changing a route's schema.
+ * `pnpm loc` and Prettier both exclude it (AAP 0.7.1), and `docs/api/README.md` is where the pilot's additions to
+ * the contract are marked (AAP 0.5.4).
  */
-
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -48,9 +38,8 @@ const TEST_PATH_PREFIX = '/v1/test/';
 const CLOSE_TIMEOUT_MS = 5_000;
 
 /**
- * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
- * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
- * hold the run open once the document has been emitted or refused.
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway (one second):
+ * a consumer that never reads — a stopped `tee`, a detached log collector — must not hold the run open.
  */
 const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
@@ -76,34 +65,26 @@ interface EmittedDocument {
 }
 
 /**
- * End the process with `code` once every byte already written to stdout and stderr has reached its
- * consumer.
+ * End the process with `code` once every byte already written to stdout and stderr has reached its consumer.
  *
- * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
- * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
- * script exists to print. An empty write queued behind the real ones calls back once they have been
- * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
- * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
- * this script decided is what stands in either case.
- *
- * @param code - the status the explicit exit this replaces carried.
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued — under
+ * `| tee` or a CI log collector that is the last, machine-readable line this script exists to print. An empty
+ * write queued behind the real ones calls back once they have been flushed, and a consumer that stopped reading
+ * closes the pipe instead, which ends the drain the same way. {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that
+ * never drains.
  */
 function exitAfterFlush(code: number): void {
   process.exitCode = code;
-
   const draining = new Set<NodeJS.WriteStream>();
   if (process.stdout.writableLength > 0) draining.add(process.stdout);
   if (process.stderr.writableLength > 0) draining.add(process.stderr);
-
   if (draining.size === 0) {
     // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
     process.exit(code);
     return;
   }
-
   const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
   bound.unref();
-
   const finish = (stream: NodeJS.WriteStream): void => {
     draining.delete(stream);
     if (draining.size === 0) {
@@ -111,7 +92,6 @@ function exitAfterFlush(code: number): void {
       process.exit(code);
     }
   };
-
   for (const stream of [...draining]) {
     stream.once('error', () => {
       finish(stream);
@@ -123,10 +103,9 @@ function exitAfterFlush(code: number): void {
 }
 
 /**
- * The marker a refusal throws once its own line is written: every {@link fail} and the drift refusal
- * in {@link writeOrCheck}. Only the top-level handler can drain the streams before the process ends,
- * and throwing is what keeps `fail`'s `never` return type, which this file's callers rely on for the
- * definite assignment of `env` and for narrowing the document.
+ * The marker a refusal throws once its own line is written: every {@link fail} and the drift refusal in
+ * {@link writeOrCheck}. Only the top-level handler can drain the streams before the process ends, and throwing is
+ * what keeps `fail`'s `never` return type, which the callers rely on for the definite assignment of `env`.
  */
 class RefusalError extends Error {
   constructor() {
@@ -141,12 +120,9 @@ function writeRefusal(step: string, reason: string): void {
 }
 
 /**
- * Refuse the run in the one-line form every failure takes: `emit-openapi: <step>: <reason>`.
- *
- * The line is written where the failure is detected and the refusal is then thrown rather than the
- * process ended here, so that the top-level handler can drain the line before the process ends.
- *
- * @throws {RefusalError} Always: the top-level handler ends the process through {@link exitAfterFlush}.
+ * Refuse the run in the one-line form every failure takes, `emit-openapi: <step>: <reason>`: the line is written
+ * where the failure is detected and the refusal is thrown rather than the process ended here, so the top-level
+ * handler can drain the line first. Throws {@link RefusalError} always.
  */
 function fail(step: string, reason: string): never {
   writeRefusal(step, reason);
@@ -164,18 +140,11 @@ function placeholderFieldKey(): string {
 }
 
 /**
- * The placeholder environment the app is composed with (AAP 0.6.2).
- *
- * Every value is a constant of this file, so two runs on two machines emit the same bytes, and the
- * combination reaches no provider: `STRIPE_MODE=mock` takes server-core's own non-secret
- * placeholders, `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` hold no credential, and no test-only
- * variable is set, because the loader refuses one outside `APP_ENV=test`. The service URLs name the
- * reserved `.invalid` TLD: nothing resolves them, and nothing connects to them, because `buildApp`
- * opens no socket until a route first uses one.
- *
- * @returns The validated configuration `buildApp` takes.
- * @throws {EnvValidationError} When this map no longer satisfies the API's schema — a bug in this
- *   file rather than an environment problem.
+ * The placeholder environment the app is composed with (AAP 0.6.2). Every value is a constant of this file, so two
+ * runs on two machines emit the same bytes, and the combination reaches no provider: `STRIPE_MODE=mock` takes
+ * server-core's own non-secret placeholders, `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` hold no credential, and
+ * no test-only variable is set, because the loader refuses one outside `APP_ENV=test`. The service URLs name the
+ * reserved `.invalid` TLD, which nothing resolves and nothing connects to.
  */
 function placeholderEnv(): Readonly<ApiEnv> {
   return loadApiEnv({
@@ -203,21 +172,15 @@ function placeholderEnv(): Readonly<ApiEnv> {
 }
 
 /**
- * The document `app.swagger()` returned, checked structurally.
- *
- * `@fastify/swagger` types that call as any OpenAPI version, so the two members this script reads —
- * the version and the path table — are narrowed here rather than asserted.
- *
- * @param value - what `app.swagger()` returned.
- * @returns The document, ready for the sanity checks below.
+ * The document `app.swagger()` returned, checked structurally: `@fastify/swagger` types that call as any OpenAPI
+ * version, so the two members this script reads — the version and the path table — are narrowed rather than
+ * asserted.
  */
 function readDocument(value: unknown): EmittedDocument {
   const candidate = value as Partial<EmittedDocument> | null;
-
   if (candidate === null || typeof candidate !== 'object') {
     fail('document', 'the generator returned no document');
   }
-
   const { openapi, paths } = candidate;
   if (typeof openapi !== 'string' || !openapi.startsWith(OPENAPI_VERSION_PREFIX)) {
     fail('document', `the generator returned no OpenAPI ${OPENAPI_VERSION_PREFIX}x document`);
@@ -225,27 +188,22 @@ function readDocument(value: unknown): EmittedDocument {
   if (typeof paths !== 'object' || paths === null || Array.isArray(paths)) {
     fail('document', 'the generated document carries no path table');
   }
-
   return candidate as EmittedDocument;
 }
 
 /**
  * Require the document to hold the routes and the security schemes the contract names, and no
  * test-only path (AAP 0.5.4).
- *
- * @param doc - the generated document.
  */
 function assertDocumentShape(doc: EmittedDocument): void {
   const missing = REQUIRED_PATHS.filter((route) => !(route in doc.paths));
   if (missing.length > 0) {
     fail('document', `path(s) absent from the generated document: ${missing.join(', ')}`);
   }
-
   const testPath = Object.keys(doc.paths).find((route) => route.startsWith(TEST_PATH_PREFIX));
   if (testPath !== undefined) {
     fail('document', `test-only path present in the generated document: ${testPath}`);
   }
-
   const schemes = doc.components?.securitySchemes ?? {};
   const absent = REQUIRED_SECURITY_SCHEMES.filter((scheme) => !(scheme in schemes));
   if (absent.length > 0) {
@@ -263,9 +221,6 @@ function sleep(ms: number): Promise<void> {
 /**
  * Close the app, bounded (AAP 0.6.2): a client built lazily but never connected must not be able to
  * hang the run, and the caller ends the process explicitly either way.
- *
- * @param app - the app to close.
- * @param timeoutMs - how long its close hook is given.
  */
 async function closeWithin(app: App, timeoutMs: number): Promise<void> {
   await Promise.race([app.close(), sleep(timeoutMs)]);
@@ -282,11 +237,6 @@ async function readIfPresent(target: string): Promise<string | undefined> {
 
 /**
  * Write the document, or compare it with the committed file (AAP 0.8.2).
- *
- * @param text - the serialized document.
- * @param target - its absolute path.
- * @param pathCount - how many paths it holds, for the line a caller reads.
- * @param check - whether to compare instead of writing.
  */
 async function writeOrCheck(
   text: string,
@@ -302,7 +252,6 @@ async function writeOrCheck(
     process.stdout.write(`openapi: ${OUTPUT_FILE} is up to date (${pathCount} paths)\n`);
     return;
   }
-
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, text, 'utf8');
   process.stdout.write(`openapi: wrote ${OUTPUT_FILE} (${pathCount} paths)\n`);
@@ -319,22 +268,17 @@ function describeError(error: unknown): string {
 /**
  * Emit the document (AAP 0.4.1, 0.8.2): load the placeholder environment, compose the app, read the
  * document back once every route is resolved, and write it or compare it.
- *
- * @param argv - the script's arguments; `--check` turns the write into a drift check.
  */
 async function main(argv: readonly string[]): Promise<void> {
   const check = argv.includes('--check');
-
   let env: Readonly<ApiEnv>;
   try {
     env = placeholderEnv();
   } catch (error) {
     fail('environment', describeError(error));
   }
-
   const logger = createLogger({ name: 'emit-openapi', level: 'error', appEnv: 'demo' });
   const app = buildApp({ env, logger });
-
   let document: EmittedDocument | undefined;
   try {
     // Loading the plugins resolves every route, and `@fastify/swagger` collects them through its own
@@ -344,17 +288,13 @@ async function main(argv: readonly string[]): Promise<void> {
   } finally {
     await closeWithin(app, CLOSE_TIMEOUT_MS);
   }
-
   if (document === undefined) {
     fail('document', 'the app was closed before a document was read');
   }
-
   assertDocumentShape(document);
-
   // Two spaces and one trailing newline: an unchanged route set therefore yields byte-identical
   // output across runs and machines, because nothing here carries a time, an id or the environment.
   const text = `${JSON.stringify(document, null, 2)}\n`;
-
   await writeOrCheck(
     text,
     path.join(findRepoRoot(), OUTPUT_FILE),

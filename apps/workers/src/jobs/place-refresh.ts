@@ -28,11 +28,6 @@
  * Nothing is caught. An Overpass failure, a database failure or a queue failure propagates so BullMQ
  * retries the job on the queue's own policy — three tries, exponential backoff from five minutes
  * (AAP 0.5.6) — and the next weekly run is the backstop.
- *
- * @see AAP 0.3.3 for the two queries and the identifying user agent, 0.5.2 for the models and the
- *   fixture policy, 0.5.6 for the schedule, the lodging-ingestion rules and the phone fallback, 0.5.7
- *   for the priority bands and the freshness windows, 0.11.1 for the injected clock and the
- *   counts-only logging, and 0.8.1 for this file.
  */
 
 import {
@@ -62,10 +57,6 @@ import { ensureMenuPricesTask, enqueueMenuIngest } from './menu-ingest.ts';
 // Type-only on purpose: `queues.ts` value-imports this file's `process`, so a value import back
 // would close a runtime cycle. A type-only import is erased on emit.
 import type { WorkerContext } from '../queues.ts';
-
-// ---------------------------------------------------------------------------------------------
-// The run's own vocabulary (AAP 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /** The queue name, for the payload refusal and the log line. */
 const QUEUE_NAME = QUEUE.placeRefresh;
@@ -99,10 +90,6 @@ const OSM_TYPES = ['node', 'way', 'relation'] as const;
 
 /** The price source whose records have the shorter freshness window (AAP 0.5.6, 0.5.7). */
 const ONLINE_MENU_SOURCE = 'online_menu';
-
-// ---------------------------------------------------------------------------------------------
-// What this file reports (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The `place-refresh` job as a processor receives it: a structural subset of BullMQ's `Job`, so a
@@ -167,10 +154,6 @@ interface RefreshedPlaces {
   readonly ids: string[];
 }
 
-// ---------------------------------------------------------------------------------------------
-// The city, its centres and its bbox (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /** The `City` columns this run reads. */
 type CityRow = {
   readonly id: string;
@@ -182,10 +165,6 @@ type CityRow = {
 
 /**
  * Reads the city a job names, or `null` when it is gone.
- *
- * @param db - The guarded database client.
- * @param cityId - The slug the job's data carries.
- * @returns The city's id, country code and bbox, or `null`.
  */
 async function loadCity(db: DbClient, cityId: string): Promise<CityRow | null> {
   return await db.city.findUnique({
@@ -202,19 +181,12 @@ async function loadCity(db: DbClient, cityId: string): Promise<CityRow | null> {
  * query: a refresh that quietly stopped ingesting lodgings every week would leave the directory
  * stale with only a log line to explain it, while a failed job lands in the queue's failure set for
  * an operator.
- *
- * @param city - The city row read by {@link loadCity}.
- * @returns The validated box.
- * @throws Error naming the city when the column is not a `Bbox`. The message carries the slug alone,
- *   never the value that failed.
  */
 function cityBbox(city: CityRow): Bbox {
   const parsed = Bbox.safeParse(city.bbox);
-
   if (!parsed.success) {
     throw new Error(`place_refresh_city_bbox_invalid: "${city.id}"`);
   }
-
   return parsed.data;
 }
 
@@ -231,12 +203,6 @@ function cityBbox(city: CityRow): Bbox {
  * The ids are read through the guarded client and the coordinates through `readPoints`, which is the
  * only reader of the `geography` column Prisma cannot select; a row whose location is NULL is absent
  * from both maps and yields no centre.
- *
- * @param db - The guarded database client.
- * @param cityId - The city whose venues and lodgings are read.
- * @param appEnv - The process's `APP_ENV`, which decides whether fixture rows are visible.
- * @returns The coordinates, at most one per venue or lodging. Empty is a valid answer: the city then
- *   has no 2 km neighbourhood to query.
  */
 async function cityCentres(db: DbClient, cityId: string, appEnv: AppEnv): Promise<LatLng[]> {
   const venues = await db.venue.findMany({
@@ -259,13 +225,8 @@ async function cityCentres(db: DbClient, cityId: string, appEnv: AppEnv): Promis
     lodgings.map((lodging) => lodging.id),
     appEnv,
   );
-
   return [...venuePoints.values(), ...lodgingPoints.values()];
 }
-
-// ---------------------------------------------------------------------------------------------
-// Places (AAP 0.5.2, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The (`osmType`, `osmId`) keys the batch already has, as `<osmType>/<osmId>` (AAP 0.5.2, 0.5.6).
@@ -274,10 +235,6 @@ async function cityCentres(db: DbClient, cityId: string, appEnv: AppEnv): Promis
  * one branch per element type for the reason {@link OSM_TYPES} gives, and it is a read the guarded
  * client narrows to `isFixture: false` outside `test` and `demo`, so the answer is the one an upsert
  * will act on (AAP 0.5.2).
- *
- * @param tx - The batch's transaction.
- * @param batch - The batch's mapped places.
- * @returns The keys that already have a row, holding only those found.
  */
 async function existingPlaceKeys(tx: DbTx, batch: readonly PlaceFields[]): Promise<Set<string>> {
   const osmIds = [...new Set(batch.map((place) => place.osmId))];
@@ -286,13 +243,11 @@ async function existingPlaceKeys(tx: DbTx, batch: readonly PlaceFields[]): Promi
     select: { osmType: true, osmId: true },
   });
   const keys = new Set<string>();
-
   for (const row of rows) {
     if (row.osmType !== null && row.osmId !== null) {
       keys.add(osmKeyString(row.osmType, row.osmId));
     }
   }
-
   return keys;
 }
 
@@ -308,13 +263,6 @@ async function existingPlaceKeys(tx: DbTx, batch: readonly PlaceFields[]): Promi
  * An element that cannot become a place is counted as skipped rather than failing the refresh, and a
  * duplicated element is written once — the first occurrence wins — because a second write of one row
  * would double-count it.
- *
- * @param ctx - The worker context: the guarded client.
- * @param cityId - The city every new row belongs to.
- * @param elements - The places `runOverpass` returned, fetched before this call.
- * @param countryCode - The city's ISO 3166-1 alpha-2 code, which the opening-hours check needs.
- * @returns The counts of {@link PlaceRefreshCounts} and the ids the upserts touched, so the price
- *   work of {@link enqueuePriceWork} covers exactly this run's places.
  */
 async function refreshPlaces(
   ctx: WorkerContext,
@@ -324,32 +272,25 @@ async function refreshPlaces(
 ): Promise<RefreshedPlaces> {
   const counts = { inserted: 0, updated: 0, skipped: 0 };
   const mapped = new Map<string, PlaceFields>();
-
   for (const element of elements) {
     const fields = placeFields(element, { countryCode });
-
     if (fields === null) {
       counts.skipped += 1;
       continue;
     }
-
     const key = osmKeyString(fields.osmType, fields.osmId);
-
     if (!mapped.has(key)) {
       mapped.set(key, fields);
     }
   }
-
   const wanted = [...mapped.values()];
   const ids: string[] = [];
-
   for (let start = 0; start < wanted.length; start += PLACE_BATCH_SIZE) {
     const batch = wanted.slice(start, start + PLACE_BATCH_SIZE);
     const written = await ctx.db.$transaction(
       async (tx) => {
         const existing = await existingPlaceKeys(tx, batch);
         const batchIds: string[] = [];
-
         for (const place of batch) {
           const row = await tx.place.upsert({
             where: { osmType_osmId: { osmType: place.osmType, osmId: place.osmId } },
@@ -376,31 +317,22 @@ async function refreshPlaces(
             },
             select: { id: true },
           });
-
           await setPoint(tx, 'place', row.id, { lat: place.lat, lng: place.lng });
           batchIds.push(row.id);
-
           if (existing.has(osmKeyString(place.osmType, place.osmId))) {
             counts.updated += 1;
           } else {
             counts.inserted += 1;
           }
         }
-
         return batchIds;
       },
       { timeout: PLACE_TRANSACTION_TIMEOUT_MS },
     );
-
     ids.push(...written);
   }
-
   return { counts, ids };
 }
-
-// ---------------------------------------------------------------------------------------------
-// The price work a refresh triggers (AAP 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /** One refreshed place as the two price questions are answered for it (AAP 0.5.6, 0.5.7). */
 interface PriceWorkRow {
@@ -439,12 +371,6 @@ interface PriceWorkCounts {
  *     directly: with nothing to fetch, a `menu_prices` call is the only route to a price (AAP
  *     0.5.6). A price is never guessed, and a place whose task is already open is left alone by
  *     `ensureMenuPricesTask`.
- *
- * @param ctx - The worker context: the guarded client, the environment (whose `APP_ENV` decides
- *   fixture visibility) and the producers the ingestion jobs are added to.
- * @param placeIds - The places the place upserts of this run touched. An empty list queues nothing.
- * @param now - The instant a fallback task becomes due, from the injected clock (AAP 0.11.1).
- * @returns How many ingestion jobs were queued and how many phone tasks this run opened.
  */
 async function enqueuePriceWork(
   ctx: WorkerContext,
@@ -452,11 +378,9 @@ async function enqueuePriceWork(
   now: Date,
 ): Promise<PriceWorkCounts> {
   const wanted = [...new Set(placeIds)];
-
   if (wanted.length === 0) {
     return { menuJobs: 0, callTasks: 0 };
   }
-
   const rows = await ctx.db.$queryRaw<PriceWorkRow[]>(Prisma.sql`
     SELECT "p"."id"::text AS "id",
            ("p"."website" IS NOT NULL OR "p"."menu_url" IS NOT NULL) AS "hasLink",
@@ -488,24 +412,17 @@ async function enqueuePriceWork(
      WHERE "p"."id" = ANY(${wanted}::uuid[])
        AND ${fixturePredicate(ctx.env.APP_ENV, 'p')}
   `);
-
   const menuIds = rows.filter((row) => row.hasLink && !row.hasFreshOnline).map((row) => row.id);
   const fallbackIds = rows.filter((row) => !row.hasLink && !row.hasFreshAny).map((row) => row.id);
   const menuJobs = await enqueueMenuIngest(ctx, menuIds);
   let callTasks = 0;
-
   for (const placeId of fallbackIds) {
     if (await ensureMenuPricesTask(ctx.db, ctx, placeId, now)) {
       callTasks += 1;
     }
   }
-
   return { menuJobs, callTasks };
 }
-
-// ---------------------------------------------------------------------------------------------
-// The processor (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Runs one `place-refresh` / `refresh` job: one city's places, its lodgings, its distance bands and
@@ -520,14 +437,6 @@ async function enqueuePriceWork(
  * A city with no active partner venue and no lodging holding a console secret has no 2 km
  * neighbourhood, and `buildPlacesQuery` refuses an empty centre list: the lodgings query alone is
  * that city's whole refresh.
- *
- * @param job - The BullMQ job: its name and unparsed data.
- * @param ctx - The worker context: the environment (`OVERPASS_URL`, `CRAWLER_CONTACT_URL`, `APP_ENV`),
- *   the injected clock, the logger, the guarded client and the producers.
- * @returns The counts of the run, or that the city the job names is gone.
- * @throws QueuePayloadError when the job name is not this queue's `refresh`, or when its data is not
- *   `{ cityId }`. Error when the city's `bbox` is not a box, and `OverpassError` when Overpass fails
- *   or truncates an answer. Each is left to the queue's three tries (AAP 0.5.6).
  */
 export async function process(
   job: PlaceRefreshJob,
@@ -538,11 +447,9 @@ export async function process(
     // this processor by a direct test call fails the same way one through the queue does.
     throw new QueuePayloadError(`${QUEUE_NAME}/${job.name}`);
   }
-
   const { cityId } = parseJobData(QUEUE_NAME, job.name, job.data);
   const now = ctx.clock.now();
   const city = await loadCity(ctx.db, cityId);
-
   if (city === null) {
     // A city dropped by a reseed can still have a scheduler or an onboarding job queued behind it
     // (AAP 0.5.6). There is nothing to refresh and nothing a retry would change, so the run reports
@@ -550,7 +457,6 @@ export async function process(
     ctx.logger.warn({ event: 'place_refresh_skipped', skipReason: 'unknown_city', cityId });
     return { skipped: 'unknown_city' };
   }
-
   const bbox = cityBbox(city);
   const centres = await cityCentres(ctx.db, city.id, ctx.env.APP_ENV);
   const request = {
@@ -558,19 +464,15 @@ export async function process(
     userAgent: crawlerUserAgent(ctx.env.CRAWLER_CONTACT_URL),
     timeoutMs: OVERPASS_TIMEOUT_MS,
   };
-
   const placeElements =
     centres.length === 0 ? [] : await runOverpass(buildPlacesQuery(centres), request);
   const lodgingElements = await runOverpass(buildLodgingsQuery(bbox), request);
-
   const places = await refreshPlaces(ctx, city.id, placeElements, city.countryCode);
   const lodgings = await ctx.db.$transaction(
     (tx) => upsertLodgings(tx, city.id, lodgingElements, now, ctx.env.APP_ENV),
     { timeout: LODGING_TRANSACTION_TIMEOUT_MS },
   );
-
   await refreshNearestPartnerDistances(ctx.db, city.id, ctx.env.APP_ENV);
-
   const priceWork = await enqueuePriceWork(ctx, places.ids, now);
   const result: PlaceRefreshResult = {
     event: 'place_refresh',
@@ -580,8 +482,6 @@ export async function process(
     menuJobs: priceWork.menuJobs,
     callTasks: priceWork.callTasks,
   };
-
   ctx.logger.info(result, 'place_refresh');
-
   return result;
 }

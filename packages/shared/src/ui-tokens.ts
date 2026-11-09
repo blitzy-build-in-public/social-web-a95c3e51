@@ -1,11 +1,13 @@
 /**
- * Design tokens for every Tablemate surface: colour, spacing, radii, type roles, the boundary
- * widths and interaction opacity the primitives paint, and the contrast records the UI primitives
- * are built and checked against (AAP 0.5.8).
+ * Design tokens for every Tablemate surface: colour, spacing, layout and component sizes, radii,
+ * type roles with the one font family they paint in, the boundary widths and interaction opacity
+ * the primitives paint, and the contrast records the UI primitives are built and checked against
+ * (AAP 0.5.8).
  *
  * Platform-neutral plain values with no imports, so the native app, the web build and the Vite
  * venue console all read the same numbers. Consumers style from these tokens and never
- * hard-code a colour, a spacing step, a boundary width or a type size of their own.
+ * hard-code a colour, a spacing step, a size, a boundary width, a type size or a font family of
+ * their own, so a value has exactly one home.
  */
 
 /**
@@ -48,6 +50,29 @@ export const spacing = {
 } as const;
 
 /**
+ * Layout sizes in points on native and CSS px on web: the widest a content column grows, the
+ * responsive widths of the rows that wrap, and the geometry of the operator dashboard's rate bars.
+ *
+ * A wrapping row takes a `*Basis` value as its `flexBasis` and the `*MinWidth` beside it as the width
+ * it stops shrinking at, so the row reflows into the next line instead of overflowing a narrow
+ * viewport. A bar's `barFillInset` is the gap it keeps inside its own track on every side, so
+ * `barHeight - barFillInset * 2` is its drawn thickness.
+ */
+export const layout = {
+  maxContentWidth: 1200,
+  dateFieldBasis: 180,
+  dateFieldMinWidth: 160,
+  panelBasis: 340,
+  panelMinWidth: 280,
+  headlineMainBasis: 240,
+  headlineAsideBasis: 200,
+  barHeight: 12,
+  barFillInset: 2,
+  barMarkerWidth: 2,
+  barMarkerCasing: 4,
+} as const;
+
+/**
  * Corner radii in points / CSS px; `pill` rounds a control to a capsule.
  */
 export const radii = {
@@ -74,12 +99,44 @@ export const typography = {
 } as const;
 
 /**
+ * The one font stack the product paints, written as a CSS `font-family` value.
+ *
+ * Every face it names is one a reader's device already holds — the platform's own UI face first,
+ * then the three named fallbacks, then the generic family — so no surface downloads a webfont. The
+ * names stay unquoted: the venue console writes this string straight into a custom property and
+ * relies on the browser parsing it as written.
+ */
+export const fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+
+/**
  * Font weights in string form, which React Native and CSS both accept.
  */
 export const fontWeights = {
   regular: '400',
   medium: '500',
   bold: '700',
+} as const;
+
+/**
+ * Sizes in points on native and CSS px on web that more than one screen paints and that neither the
+ * spacing scale nor a layout width describes: the fixed side a control or a figure is drawn at.
+ *
+ * `avatarSmall`, `avatarMedium` and `avatarLarge` are the three frame sizes a traveler's avatar
+ * takes, so one size has one home rather than one per screen. `readingColumnWidth` and `qrCodeWidth`
+ * are the venue console's two lengths, the readable measure of its single column and the square its
+ * check-in code resolves to. The `trend*` values are the lodging trend chart's viewBox units rather
+ * than pixels: each week is one `trendUnitWidth` slot, of which a `trendBarWidth` bar is drawn and
+ * the rest is the gap to the next, in a `trendHeight`-tall plot.
+ */
+export const componentSizes = {
+  avatarSmall: 40,
+  avatarMedium: 72,
+  avatarLarge: 96,
+  readingColumnWidth: 640,
+  qrCodeWidth: 288,
+  trendUnitWidth: 10,
+  trendBarWidth: 8,
+  trendHeight: 60,
 } as const;
 
 /**
@@ -97,15 +154,22 @@ export const MIN_TOUCH_TARGET = 44;
 export const borderWidths = { separator: 1, edge: 1, control: 2, accent: 4 } as const;
 
 /**
- * How a control answers the pointer, as an opacity over its own fill (AAP 0.5.8).
+ * How a control answers the pointer, as an opacity over its own fill, and the factor an unavailable
+ * one dims by (AAP 0.5.8).
  *
  * The palette holds no darker shade of `primary` or `danger` and records no darker text pair, so a
  * filled control dims instead of taking a second colour: at `pressed` the white label still measures
  * above 5:1 on either fill (onPrimary/primary 5.30:1, onDanger/danger 5.13:1 composited), and `hover`
  * is the lighter step so a held control still reads as the stronger state. A control whose own fill
  * is the lightest token steps to `surface` instead of dimming, which is the fill its press paints.
+ *
+ * `disabled` says something else: a control that cannot be activated at all fades to this over its
+ * own fill, so the muted fill and label colours a primitive paints for that state step back far
+ * enough that the control reads as unavailable before it is tried rather than only after a press
+ * does nothing. A disabled control's own text is exempt from the text-contrast minimums, because
+ * nothing in it is operable content, which is why no pair below records this composite.
  */
-export const interactionOpacity = { hover: 0.9, pressed: 0.85 } as const;
+export const interactionOpacity = { hover: 0.9, pressed: 0.85, disabled: 0.5 } as const;
 
 /**
  * A foreground painted on a background, with the measured contrast between them.

@@ -14,11 +14,6 @@
  * mis-cased country code and a length over its limit are all `400 invalid_field` from the route's
  * validator before this module runs; the photo's refusals — `413 photo_too_large` above 5 MiB,
  * `400 invalid_field` for a format or payload the encoder cannot use — come from `processPhoto`.
- *
- * @see AAP 0.5.1 for the Me component and `updateProfile`, 0.5.2 for the tier ciphertext and the
- *   Table Credit ledger, 0.5.4 for both routes and their errors, 0.5.5 for the proof states
- *   `MeDto.proof` reports, 0.5.8 for the screens that read this payload, 0.11.1 for the injected
- *   clock and the no-values-in-logs rule.
  */
 
 import { decryptField, encryptField, FieldDecryptionError } from '@tablemate/server-core';
@@ -30,15 +25,13 @@ import { AppError } from '../../plugins/errors.ts';
 import { variantFor } from '../experiment/assignment.ts';
 import { activeClaimFor } from '../lodgings/claims.ts';
 import { transact } from '../outbox/write.ts';
-import { currentProof, latestProof } from '../proofs/validity.ts';
+import { currentProof, latestProof, validCityIdsFor } from '../proofs/validity.ts';
 import type { ProofSummary } from '../proofs/validity.ts';
 import { countersFor } from '../reputation/counters.ts';
 import { processPhoto, storePhoto } from './photo.ts';
 import type { ProcessedPhoto } from './photo.ts';
 
-// Type-only, and taken from the module that builds the app rather than from a local restatement of
-// it: it is the one declaration of the app's services in the plan, it is erased at compile time, and
-// this module reads no value from `app.ts` — the same import every module under `src/modules` writes.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /**
@@ -49,7 +42,6 @@ import type { AppServices } from '../../app.ts';
  */
 export interface BuildMeDtoOptions {
   /**
-   * The database to read through. Defaults to `services.db`.
    *
    * A caller already holding a transaction passes its client, because a row written in that
    * transaction is not visible through the process's client yet: `auth/magic-link.ts` builds this
@@ -61,7 +53,6 @@ export interface BuildMeDtoOptions {
   readonly now?: Date;
 }
 
-/** The `User` columns `PUT /me/profile` may write, in the plain-value form Prisma's update takes. */
 interface UserWrite {
   homeCity?: string | null;
   homeCountryCode?: string | null;
@@ -91,7 +82,6 @@ interface DisclosureWrite {
  */
 function interestTagsOf(tags: readonly string[] | undefined): InterestTag[] {
   const kept: InterestTag[] = [];
-
   for (const tag of tags ?? []) {
     const parsed = InterestTag.safeParse(tag);
     if (!parsed.success) {
@@ -102,7 +92,6 @@ function interestTagsOf(tags: readonly string[] | undefined): InterestTag[] {
       break;
     }
   }
-
   return kept;
 }
 
@@ -123,7 +112,6 @@ function decryptOrNull(
   if (ciphertext === null || ciphertext === undefined) {
     return null;
   }
-
   try {
     return decryptField(services.keyring, ciphertext);
   } catch (error) {
@@ -154,7 +142,6 @@ function proofOf(current: ProofSummary | null, latest: ProofSummary | null): MeD
       validTo: current.validTo.toISOString(),
     };
   }
-
   const status: ProofStatus = latest === null ? 'none' : 'expired';
   return { status };
 }
@@ -173,10 +160,8 @@ async function tableCreditCents(db: DbClient | DbTx, userId: string): Promise<nu
     where: { userId },
     _sum: { amountCents: true },
   });
-
   let grants = 0;
   let voids = 0;
-
   for (const total of totals) {
     const cents = total._sum.amountCents ?? 0;
     if (total.kind === 'grant') {
@@ -185,7 +170,6 @@ async function tableCreditCents(db: DbClient | DbTx, userId: string): Promise<nu
       voids = cents;
     }
   }
-
   return Math.max(0, grants - voids);
 }
 
@@ -194,21 +178,20 @@ async function tableCreditCents(db: DbClient | DbTx, userId: string): Promise<nu
  * `PUT /me/profile` after its write, and the `user` property of `VerifyResponse` on a first sign-in.
  *
  * One `findUnique` with an explicit `select` loads the row — never `include`, and never a column the
- * payload does not carry — and the six things outside it are fetched together: the experiment
- * assignment, the reputation counters, the current and the latest proof, the Table Credit balance and
- * the active lodging claim. The payload is then built field by field, so a column added to `User`
- * cannot reach a response by itself.
+ * payload does not carry — and the seven things outside it are fetched together: the experiment
+ * assignment, the reputation counters, the current and the latest proof, the valid proof cities, the
+ * Table Credit balance and the active lodging claim. The payload is then built field by field, so a
+ * column added to `User` cannot reach a response by itself.
+ *
+ * `validCityIds` is the caller's whole proof entitlement, not the one city {@link proofOf} reports:
+ * a traveler may hold overlapping valid proofs for several cities, and the client gates the city page
+ * and the traveler list on that set rather than on the single stay (AAP 0.5.7, 0.5.8).
  *
  * A missing row, a tombstone (`deletedAt` set) and a row whose handle or avatar seed is gone are all
  * `401 token_invalid`: the first two are the account-deletion refusals every route answers with
  * (AAP 0.5.3), and the third cannot be a signed-in traveler, because both are minted at account
  * creation and nulled only by erasure (AAP 0.1.1, 0.5.2). Refusing beats fabricating a handle.
  *
- * @param services - The app's services: the database, the injected clock, the field keyring, the
- *   logger, and the environment the active claim is read with.
- * @param userId - The authenticated account whose own profile is wanted.
- * @param opts - See {@link BuildMeDtoOptions}.
- * @returns The caller's profile, typed as the shared `MeDto`.
  * @throws AppError `token_invalid` when the account is unknown, erased or unusable.
  */
 export async function buildMeDto(
@@ -218,7 +201,6 @@ export async function buildMeDto(
 ): Promise<MeDto> {
   const db = opts.db ?? services.db;
   const now = opts.now ?? services.clock.now();
-
   const row = await db.user.findUnique({
     where: { id: userId },
     select: {
@@ -245,25 +227,22 @@ export async function buildMeDto(
       profilePhoto: { select: { userId: true } },
     },
   });
-
   if (row === null || row.deletedAt !== null) {
     throw new AppError('token_invalid');
   }
-
   if (row.handle === null || row.avatarSeed === null) {
     throw new AppError('token_invalid');
   }
-
-  const [assignment, reputation, current, latest, creditCents, activeLodgingClaim] =
+  const [assignment, reputation, current, latest, validCityIds, creditCents, activeLodgingClaim] =
     await Promise.all([
       variantFor(db, userId),
       countersFor(db, userId, now),
       currentProof(db, userId, now),
       latestProof(db, userId),
+      validCityIdsFor(db, userId, now),
       tableCreditCents(db, userId),
       activeClaimFor(services, userId),
     ]);
-
   return {
     id: row.id,
     handle: row.handle,
@@ -293,6 +272,7 @@ export async function buildMeDto(
       termsVersion: row.termsVersion,
     },
     proof: proofOf(current, latest),
+    validCityIds,
     tableCreditCents: creditCents,
     reputation,
     activeLodgingClaim,
@@ -309,7 +289,6 @@ export async function buildMeDto(
  */
 function disclosureWriteOf(services: AppServices, body: ProfileUpdate): DisclosureWrite {
   const write: DisclosureWrite = {};
-
   if (body.nickname !== undefined) {
     write.nickname = body.nickname;
   }
@@ -329,7 +308,6 @@ function disclosureWriteOf(services: AppServices, body: ProfileUpdate): Disclosu
     write.externalContactCiphertext =
       body.externalContact === null ? null : encryptField(services.keyring, body.externalContact);
   }
-
   return write;
 }
 
@@ -346,11 +324,6 @@ function disclosureWriteOf(services: AppServices, body: ProfileUpdate): Disclosu
  * lock off a CPU-bound step and lets a refused photo roll back nothing (AAP 0.3.2). The response is
  * read after the commit, so the caller sees exactly what was stored.
  *
- * @param services - The app's services: the database, injected clock, field keyring, logger and
- *   outbox dispatcher the fenced transaction is opened through.
- * @param userId - The authenticated account the edit belongs to.
- * @param body - The validated `ProfileUpdate`.
- * @returns The caller's profile as it stands after the write.
  * @throws AppError `token_invalid` after `DELETE /me`, thrown by the fence before any write, or when
  *   the account row is gone.
  * @throws AppError `photo_too_large` (413) or `invalid_field` (400) for a photo that cannot be
@@ -371,7 +344,6 @@ export async function updateProfile(
   } else {
     photo = await processPhoto(body.photoBase64);
   }
-
   const userWrite: UserWrite = {};
   if (body.homeCity !== undefined) {
     userWrite.homeCity = body.homeCity;
@@ -379,16 +351,13 @@ export async function updateProfile(
   if (body.homeCountryCode !== undefined) {
     userWrite.homeCountryCode = body.homeCountryCode;
   }
-
   const disclosureWrite = disclosureWriteOf(services, body);
-
   await transact(
     services,
     async (tx) => {
       if (Object.keys(userWrite).length > 0) {
         await tx.user.update({ where: { id: userId }, data: userWrite });
       }
-
       if (Object.keys(disclosureWrite).length > 0) {
         // One row per user, keyed by `userId`: `create` fills the columns this body did not name from
         // their defaults, so a first write of one field sets nothing else.
@@ -398,14 +367,12 @@ export async function updateProfile(
           update: disclosureWrite,
         });
       }
-
       if (photo !== undefined) {
         await storePhoto(tx, userId, photo);
       }
     },
     { fenceUserId: userId },
   );
-
   // The key names this call wrote and nothing else: no value, no photo byte, no ciphertext and no
   // plaintext of a tier-3 field ever reaches a log line (AAP 0.11.1).
   services.logger.info(
@@ -420,6 +387,5 @@ export async function updateProfile(
     },
     'profile_updated',
   );
-
   return buildMeDto(services, userId);
 }

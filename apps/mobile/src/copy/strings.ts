@@ -6,8 +6,9 @@
  * cannot drift from what the API enforces. A string another module owns stays there: the framing
  * copy in `depositCopy`, the lock-loss copy in `LOCK_LOST_COPY` and the low guest count in
  * `GUEST_COUNT_BELOW_LABEL` are never repeated here. Every string AAP 0.5.8 states is copied
- * character for character from it, and the announcements the plan does not enumerate are moved here
- * unchanged from the screens that speak them. No `Intl`, `Date`, React Native or Node API is used,
+ * character for character from it, the announcements the plan does not enumerate are moved here
+ * unchanged from the screens that speak them, and the two page-chrome strings at the foot of this
+ * file come from its accessibility rules instead. No `Intl`, `Date`, React Native or Node API is used,
  * so the e2e support scripts and Vitest also load this module under plain Node.
  */
 import {
@@ -17,7 +18,7 @@ import {
   GUEST_COUNT_BELOW_LABEL,
   LATE_CANCEL_WINDOW_HOURS,
 } from '@tablemate/shared';
-import type { GuestCount, SuggestionEmptyReason } from '@tablemate/shared';
+import type { GuestCount, SuggestionEmptyReason, Tier0Profile } from '@tablemate/shared';
 
 // --- Private helpers ---------------------------------------------------------------------------
 
@@ -182,18 +183,14 @@ export const TERMS_PENDING_REVIEW_NOTE = 'Pending legal review';
 export function formatCalendarDate(date: string): string {
   const match = CALENDAR_DATE_PATTERN.exec(date);
   if (match === null) return date;
-
   const year = match[1];
   const month = match[2];
   const day = match[3];
   if (year === undefined || month === undefined || day === undefined) return date;
-
   const monthName = ENGLISH_MONTHS[Number(month) - 1];
   if (monthName === undefined) return date;
-
   const dayOfMonth = Number(day);
   if (dayOfMonth < 1 || dayOfMonth > 31) return date;
-
   return `${dayOfMonth} ${monthName} ${year}`;
 }
 
@@ -342,6 +339,38 @@ export const CHECK_IN_CLOSED_NOTICE = 'This meetup has finished, so check-in is 
 /** Spoken on `app/meetups/[id]/check-in.tsx` when the scanner fills the code field. */
 export const VENUE_CODE_FILLED_NOTICE = 'Venue code filled in.';
 
+// --- Traveler list: app/(tabs)/discover.tsx, app/meetups/propose.tsx -----------------------------
+
+/** `1 witnessed meetup` for a single one, `N witnessed meetups` for every other count (AAP 0.5.7). */
+function witnessedMeetupsText(count: number): string {
+  return count === 1 ? '1 witnessed meetup' : `${count} witnessed meetups`;
+}
+
+/**
+ * The subtitle of a traveler row: witnessed meetups, interest tags, then the stay the proof covers,
+ * joined with ` · ` (AAP 0.5.8).
+ *
+ * Every part comes from the `Tier0Profile` a traveler row carries (AAP 0.5.4), and each part is
+ * optional: a traveler with no valid proof has `proofDates: null` and may have no tags, so the line
+ * holds whichever parts exist and never a trailing or doubled separator. Tags are rendered as words
+ * rather than `snake_case`, and the two stay dates go through {@link formatCalendarDate} for the same
+ * reason they do there.
+ *
+ * The Discover list and the proposal form's "Meetup with" row show the same person, which is why this
+ * line, rather than the row that renders it, lives here.
+ */
+export function travelerSubtitle(profile: Tier0Profile): string {
+  const parts = [witnessedMeetupsText(profile.reputation.witnessedMeetups)];
+  const tags = profile.interestTags.map((tag) => tag.replace(/_/g, ' '));
+  if (tags.length > 0) parts.push(tags.join(', '));
+  const { proofDates } = profile;
+  if (proofDates !== null) {
+    const { arrivalDate, departureDate } = proofDates;
+    parts.push(`${formatCalendarDate(arrivalDate)} – ${formatCalendarDate(departureDate)}`);
+  }
+  return parts.join(' · ');
+}
+
 // --- Empty states (AAP 0.5.8, verbatim) ---------------------------------------------------------
 
 /** The Discover tab with no travelers holding a valid proof for the city (AAP 0.5.8). */
@@ -383,6 +412,31 @@ export const SUGGESTIONS_EMPTY = {
  */
 export const CARD_PAYMENTS_UNAVAILABLE = 'Card payments are not configured in this environment.';
 
+// --- Report and dispute: app/report.tsx, app/meetups/[id]/dispute.tsx ---------------------------
+
+/**
+ * The visible label of the free-text reason field both safety forms collect (AAP 0.5.8, 0.5.2):
+ * `Report.reason` and `Dispute.reason` are one concept under one cap, so they carry one name. On
+ * `app/meetups/[id]/dispute.tsx` the field sits under the kind radiogroup, whose own question is
+ * "What happened?", and AAP 0.5.8 gives every control its own visible label, so the two names stay
+ * distinct from each other.
+ */
+export const REASON_FIELD_LABEL = 'Describe the problem';
+
+/**
+ * The count left in a counted field, counted down from that field's own cap (AAP 0.5.8, 0.5.2):
+ * `REASON_MAX_CHARS` (500) for both safety forms and `BIO_MAX_CHARS` for the profile bio, so every
+ * counted field reads the same way.
+ *
+ * The count floors at zero. `maxLength` bounds what a traveller types or pastes, but a programmatic
+ * fill -- a stored value reloaded into the form, an autofill or a browser extension -- can exceed
+ * the cap, and a negative count would misstate what is left. One character remaining is singular.
+ */
+export function remainingCharsText(value: string, maxLength: number): string {
+  const remaining = Math.max(0, maxLength - value.length);
+  return remaining === 1 ? '1 character left' : `${remaining} characters left`;
+}
+
 // --- Announcements: screen-reader notices for a change with no page load ------------------------
 
 /**
@@ -393,3 +447,18 @@ export const CHAT_MENU_ANNOUNCEMENT = 'More options: report or block.';
 
 /** Spoken on `app/settings/delete-account.tsx` when its confirmation step appears. */
 export const DELETE_CONFIRM_ANNOUNCEMENT = 'Press Permanently delete my account to confirm.';
+
+// --- Page chrome: apps/mobile/src/ui/Screen.tsx -------------------------------------------------
+
+/**
+ * Names the `main` landmark that every screen's content region is (AAP 0.5.8, WCAG 2.4.1): a screen
+ * reader user reaches the page's content from the landmark list, and {@link SKIP_TO_CONTENT} moves
+ * keyboard focus into it.
+ */
+export const MAIN_LANDMARK_LABEL = 'Main content';
+
+/**
+ * The visible text of the skip link, and its accessible name (AAP 0.5.8, WCAG 2.4.1): the first Tab
+ * stop of a screen's content, it moves focus past the navigation chrome every screen repeats.
+ */
+export const SKIP_TO_CONTENT = 'Skip to content';

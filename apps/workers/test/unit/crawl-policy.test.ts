@@ -4,12 +4,6 @@
  * and is not fetched while it stays so, a recorded decision stands until an operator or the
  * blocklist changes it, and both `prohibited` and `uncertain` leave the place to the phone fallback
  * rather than to a guessed price.
- *
- * The evidence is behaviour: the decision `domainDecision` returns, the writes it did and did not
- * make, and — in the last row — a loopback fixture server that counts every request, so an
- * unreviewed host is proved never fetched rather than assumed to be. The review-site domain is read
- * from `config/crawl-blocklist.json` at runtime and never written here; every other host is a
- * reserved `.test` name or the loopback literal, and no database or Redis is touched.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -51,10 +45,8 @@ const BLOCKED = [...blocklist.domains][0] ?? '';
 const FIXTURES = fileURLToPath(new URL('../fixtures/sites/', import.meta.url));
 const USER_AGENT = crawlerUserAgent('https://example.test/contact');
 
-/** The host whose terms no operator has reviewed: the end-to-end row's subject (AAP 0.5.6). */
 const UNREVIEWED_HOST = 'tasca.unreviewed.fixture.test';
 
-/** One decision row the fake store holds, and one write it was asked for (AAP 0.5.2). */
 type Row = {
   decision: CrawlDecision;
   reason: string;
@@ -68,7 +60,6 @@ type Store = { store: CrawlPolicyStore; rows: Map<string, Row>; writes: Write[] 
  * The `CrawlPolicyStore` of a suite that needs no database (AAP 0.5.6): `insertUncertain` behaves as
  * the `ON CONFLICT DO NOTHING` insert it stands for, so a domain that is already known is neither
  * overwritten nor counted as a write, and `upsertProhibited` clears `overriddenBy` as the SQL does.
- *
  * @param seed Rows to pre-record, as `[domain, decision, overriddenBy?]`.
  * @returns The store, its rows and the writes it was asked for.
  */
@@ -111,7 +102,6 @@ function createStore(seed: readonly (readonly [string, CrawlDecision, string?])[
   return { store, rows, writes };
 }
 
-/** The one decision a row asks for, on a store the row owns (AAP 0.5.6). */
 const decide = (target: Store, host: string): Promise<CrawlDecision> =>
   domainDecision(target.store, host, clock.now(), blocklist);
 
@@ -165,7 +155,6 @@ describe('what a decision leaves the pipeline to do', () => {
 describe('domainDecision', () => {
   it('refuses a blocklisted domain at its registrable domain, recording the reason', async () => {
     const target = createStore();
-
     await expect(decide(target, `menu.${BLOCKED}`)).resolves.toBe('prohibited');
     expect(target.writes).toEqual([{ op: 'upsertProhibited', domain: registrableDomain(BLOCKED) }]);
     expect(target.rows.get(registrableDomain(BLOCKED))).toEqual({
@@ -178,7 +167,6 @@ describe('domainDecision', () => {
 
   it('lets the blocklist outrank an operator decision the crawler never rechecks', async () => {
     const target = createStore([[registrableDomain(BLOCKED), 'allowed', 'operator-1']]);
-
     await expect(decide(target, `menu.${BLOCKED}`)).resolves.toBe('prohibited');
     expect(target.writes).toEqual([{ op: 'upsertProhibited', domain: registrableDomain(BLOCKED) }]);
     expect(target.rows.get(registrableDomain(BLOCKED))?.overriddenBy).toBeNull();
@@ -186,7 +174,6 @@ describe('domainDecision', () => {
 
   it('records an unreviewed domain uncertain once, before its first fetch', async () => {
     const target = createStore();
-
     await expect(decide(target, 'tasca.unknown.fixture.test')).resolves.toBe('uncertain');
     expect(target.writes).toEqual([{ op: 'insertUncertain', domain: 'fixture.test' }]);
     expect(target.rows.get('fixture.test')).toEqual({
@@ -195,7 +182,6 @@ describe('domainDecision', () => {
       checkedAt: now,
       overriddenBy: null,
     });
-
     // The second attempt reads the row it recorded rather than inserting another one.
     await expect(decide(target, 'tasca.unknown.fixture.test')).resolves.toBe('uncertain');
     expect(target.writes).toHaveLength(1);
@@ -208,7 +194,6 @@ describe('domainDecision', () => {
       ['fixture.test', 'uncertain'],
       ['127.0.0.1', 'allowed', 'seed'],
     ]);
-
     await expect(decide(target, 'tasca.lisbon.fixture.test')).resolves.toBe('allowed');
     await expect(decide(target, 'other.fixture.test')).resolves.toBe('uncertain');
     await expect(decide(target, '127.0.0.1')).resolves.toBe('allowed');
@@ -217,7 +202,6 @@ describe('domainDecision', () => {
 
   it('refuses a host that is itself a public suffix, recording no row for it', async () => {
     const target = createStore();
-
     // A row keyed on `com.ar` would stand for every site beneath it, with none of their terms read.
     await expect(decide(target, 'com.ar')).resolves.toBe('prohibited');
     expect(target.writes).toEqual([]);
@@ -225,12 +209,10 @@ describe('domainDecision', () => {
   });
 });
 
-/** The loopback fixture server, the requests it received and the port it took. */
 let server: Server | null = null;
 let port = 0;
 let hits = 0;
 
-/** The resolver's calls and the log lines the modules under test wrote (AAP 0.11.1). */
 const lookups: string[] = [];
 const logs: Record<string, unknown>[] = [];
 
@@ -240,7 +222,6 @@ const lookup: LookupFn = (host) => {
   return Promise.resolve([{ address: '127.0.0.1', family: 4 }]);
 };
 
-/** The logger `createSafeFetch` takes: it keeps every line and writes nothing. */
 const logger = {
   debug: (line: Record<string, unknown>) => {
     logs.push(line);
@@ -281,7 +262,6 @@ async function refusalOf(fetch: SafeFetch, url: string): Promise<SafeFetchError 
   }
 }
 
-/** Start the fixture server on any free loopback port. */
 function listen(fixture: Server): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     fixture.once('error', reject);
@@ -322,11 +302,9 @@ describe('an unreviewed host is never fetched', () => {
     const target = createStore();
     const fetch = buildFetch(target);
     const url = `http://${UNREVIEWED_HOST}:${port}/menu-html/`;
-
     const refusal = await refusalOf(fetch, url);
     expect(refusal?.reason).toBe('policy_uncertain');
     expect(refusal?.host).toBe(UNREVIEWED_HOST);
-
     // Not one request reached the fixture server — not even for its robots.txt — and the host was
     // never resolved, because the decision precedes both (AAP 0.5.6).
     expect(hits).toBe(0);
@@ -339,7 +317,6 @@ describe('an unreviewed host is never fetched', () => {
         dropReason: 'policy_uncertain',
       },
     ]);
-
     // The domain is on the operator's review queue from the first attempt (AAP 0.5.4).
     expect(target.rows.get('fixture.test')?.decision).toBe('uncertain');
     expect(target.writes).toEqual([{ op: 'insertUncertain', domain: 'fixture.test' }]);

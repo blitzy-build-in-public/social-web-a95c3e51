@@ -1,26 +1,22 @@
 /**
  * TextField — a labelled text input whose hint and error text are linked to the input itself.
  *
- * One primitive carries the input rules the form screens depend on (AAP 0.5.8): the label is always
- * rendered and is never replaced by a placeholder; `hint` and `error` are shown below the input and
- * bound to it (`aria-describedby` on web, `accessibilityHint` on iOS and Android) so a screen reader
- * reaches them from the field; an error is prefixed with the word "Error:" so its meaning is not
- * carried by colour alone; the input keeps a 2 px border in every state, so the focus ring never
- * shifts the layout; on web that band is the ring itself, because `webFocusRingReset` keeps the
- * browser's own outline off the input; and the field is at least `MIN_TOUCH_TARGET` tall with the
- * 16-point body font, which also keeps iOS Safari from zooming a focused input.
+ * One primitive carries the input rules the form screens depend on (AAP 0.5.8): the label is always rendered and is
+ * never replaced by a placeholder; `hint` and `error` are shown below the input and bound to it (`aria-describedby` on
+ * web, `accessibilityHint` on iOS and Android) so a screen reader reaches them from the field; an error is prefixed
+ * with the word "Error:" so its meaning is not carried by colour alone; the input keeps a 2 px border in every state,
+ * so the focus ring never shifts the layout, and on web that band is the ring itself because `webFocusRingReset` keeps
+ * the browser's own outline off the input; and the field is at least `MIN_TOUCH_TARGET` tall with the 16-point body
+ * font, which also keeps iOS Safari from zooming a focused input.
  *
- * Every colour, spacing step, radius and type size comes from the shared tokens: each text colour is
- * a `CONTRAST_PAIRS` entry over the field's own background, and the input border and focus ring are
- * `NON_TEXT_CONTRAST_PAIRS` entries (WCAG 1.4.11). The error state keeps that recorded border and
- * carries its message in the error text, its colour and `aria-invalid`, because the token module
- * records no boundary pair for the error colour and a primitive never invents one. The field carries
- * no live region on iOS or Android — the screens announce core-flow errors through `announce()` in
- * `Banner.tsx`, and one here would speak them twice — while on web the error text is itself the live
- * region, because `announce()` is a no-op there and this is the only place the message exists
- * (WCAG 4.1.3).
- *
- * Nothing in this component logs or persists `value`, which is an email address or a booking name.
+ * Every colour, spacing step, radius and type size comes from the shared tokens: each text colour is a
+ * `CONTRAST_PAIRS` entry over the field's own background, and the input border and focus ring are
+ * `NON_TEXT_CONTRAST_PAIRS` entries (WCAG 1.4.11). The error state keeps that recorded border and carries its message
+ * in the error text, its colour and `aria-invalid`, because the token module records no boundary pair for the error
+ * colour and a primitive never invents one. The field carries no live region on iOS or Android — the screens announce
+ * core-flow errors through `announce()` in `Banner.tsx`, and one here would speak them twice — while on web the error
+ * text is itself the live region, because `announce()` is a no-op there and this is the only place the message exists
+ * (WCAG 4.1.3). Nothing in this component logs or persists `value`, which is an email address or a booking name.
  */
 import { useId, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -187,7 +183,6 @@ export function TextField({
   ...inputProps
 }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
-
   // `useId()` yields a token such as `:r0:` in the client renderer and `R0` on the server: a valid
   // HTML id, but not a valid CSS selector, so the punctuation is stripped before the label, input,
   // hint and error ids are composed from it. The value stays unique per field instance, and the
@@ -197,7 +192,6 @@ export function TextField({
   const inputId = `${uid}-input`;
   const hintId = `${uid}-hint`;
   const errorId = `${uid}-error`;
-
   const hintText = hint ?? '';
   const errorText = error ?? '';
   const isDisabled = disabled === true;
@@ -205,16 +199,13 @@ export function TextField({
   // the non-editable state travels once, through `readOnly`, on both platforms.
   const isReadOnly = isDisabled || inputProps.readOnly === true;
   const isMultiline = inputProps.multiline === true;
-
   // Native screen readers read the hint after the label and the value. The error comes first in the
   // sentence because it is the part the reader has to act on.
   const spoken = [errorText, hintText].filter((part) => part !== '');
   const accessibilityHint = spoken.length > 0 ? spoken.join('. ') : undefined;
-
   const describedByIds: string[] = [];
   if (hintText !== '') describedByIds.push(hintId);
   if (errorText !== '') describedByIds.push(errorId);
-
   const webAria: WebInputAria = {};
   if (Platform.OS === 'web') {
     // On web the visible label names the field: `aria-labelledby` outranks the `aria-label` below,
@@ -223,7 +214,6 @@ export function TextField({
     if (describedByIds.length > 0) webAria['aria-describedby'] = describedByIds.join(' ');
     if (errorText !== '') webAria['aria-invalid'] = true;
   }
-
   return (
     <View style={styles.field}>
       <Text {...elementId(labelId)} style={styles.label}>

@@ -1,34 +1,9 @@
-/**
- * The one place Twilio is touched: outbound call dispatch, call reconciliation and request-signature
- * validation, behind a client whose mode comes from validated configuration (AAP 0.5.1, AAP 0.11.1).
- *
- * `twilio` mode reaches the REST API; `simulator` mode reaches the scripted telephony simulator the
- * compose profile `test` runs at `VOICE_SIM_URL`, so automated call traffic never leaves the host
- * (AAP 0.6.2, AAP 0.11.2). The API runs simulator mode only to validate signatures and has no
- * simulator URL: that client constructs, and its call methods reject naming the option they lack.
- *
- * What no caller can turn off is what AAP 0.5.6 and AAP 0.12.2 fix: recording is off, machine
- * detection is on, the call is bounded by the caller's `CAP_CALL_SECONDS`, and the four status events
- * carry the reconciliation evidence. Credentials are passed explicitly with `env: {}`, so `src/env/*`
- * stays the only reader of the environment (AAP 0.6.2), and automatic SDK retries are off, so one
- * `createCall` sends exactly one call create (AAP 0.3.2: "never redials").
- *
- * No logger, and no error carries a credential, a URL, a phone number or TwiML: an SDK error is
- * rethrown unchanged for {@link classifyCallError}, and the errors this file creates name an option
- * or a code only (AAP 0.11.1).
- */
-
 import twilio from 'twilio';
 import { TwilioCallStatus } from '@tablemate/shared';
 
 /**
  * The public simulator credentials, used by both processes in `simulator` mode and by the scripted
  * simulator that signs the callbacks it posts and the socket it opens (AAP 0.6.2, AAP 0.11.2).
- *
- * These are test values, not secrets. `accountSid` keeps the `AC` prefix the SDK requires while being
- * all zeros, and neither it nor the readable `authToken` is a credential shape the repository's
- * secret scan matches (AAP 0.12.2). `fromNumber` is a reserved fictional 555-01XX number, outside the
- * `+1202`/`+1312`/`+1415` fixture ranges that only the test `CALL_ALLOWLIST` holds.
  */
 export const TWILIO_SIMULATOR = {
   accountSid: 'AC00000000000000000000000000000000',
@@ -38,17 +13,11 @@ export const TWILIO_SIMULATOR = {
 
 /**
  * The deadline for one Twilio REST request, matching the Stripe bound of AAP 0.11.1: a dispatch
- * unanswered in ten seconds is reconciled rather than waited on (AAP 0.3.2). It reaches the request
- * client the SDK builds itself; a client handed in through {@link TelephonyClientOptions.httpClient}
- * carries its own timeout.
+ * unanswered in ten seconds is reconciled rather than waited on (AAP 0.3.2).
  */
 export const TWILIO_REST_TIMEOUT_MS = 10_000;
 
-/**
- * The progress events every outbound call subscribes to (AAP 0.3.2, AAP 0.3.3). `completed` is the
- * final status; the first three let a signed callback carrying the attempt id adopt a call whose
- * create result was lost.
- */
+/** The progress events every outbound call subscribes to (AAP 0.3.2, AAP 0.3.3). */
 export const CALL_STATUS_CALLBACK_EVENTS = [
   'initiated',
   'ringing',
@@ -56,30 +25,16 @@ export const CALL_STATUS_CALLBACK_EVENTS = [
   'completed',
 ] as const;
 
-/**
- * What a client without a REST transport answers its call methods with. It names the option the
- * caller has to supply, and nothing else: the API's signature-only simulator client never reaches it.
- */
 const MISSING_SIMULATOR_URL =
   'this telephony client has no call transport: simulator mode needs the simulatorUrl option';
 
-/** The REST host the SDK builds request URIs against, rewritten in simulator mode. */
 const TWILIO_API_ORIGIN = 'https://api.twilio.com';
 
-/**
- * The REST origin as a URI prefix. The trailing slash keeps the match on the origin's own boundary,
- * so a host that merely begins with those characters is not rewritten onto another host either.
- */
 const TWILIO_REST_URI_PREFIX = `${TWILIO_API_ORIGIN}/`;
 
-/**
- * The SDK's client and request-client types, derived from the package rather than imported from a
- * deep `twilio/lib/...` path, so this file does not depend on the SDK's internal layout (AAP 0.11.1).
- */
 type SdkClient = ReturnType<typeof twilio>;
 type SdkRequestClient = InstanceType<typeof twilio.RequestClient>;
 
-/** The call API a client dispatches through. */
 type CallApi = SdkClient['calls'];
 
 /** The two transport selections `TELEPHONY_MODE` can name (AAP 0.6.2). */
@@ -90,8 +45,8 @@ export type TwilioHttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
 /**
  * One REST request as the SDK issues it: the structural contract of its request client, narrow
- * enough for a plain object to implement and wide enough that {@link TwilioHttpClient} needs no more
- * than the fields the SDK actually passes.
+ * enough for a plain object to implement and wide enough that {@link TwilioHttpClient} needs no
+ * more than the fields the SDK actually passes.
  */
 export interface TwilioHttpRequest {
   method: TwilioHttpMethod;
@@ -125,10 +80,7 @@ export interface TwilioHttpClient {
   request(request: TwilioHttpRequest): Promise<TwilioHttpResponse>;
 }
 
-/**
- * What one outbound call asks for. Both URLs carry the `CallAttempt` id, the only evidence that
- * adopts a `dispatch_unknown` attempt (AAP 0.3.2).
- */
+/** What one outbound call asks for. */
 export interface CreateCallParams {
   /** The number to call, in E.164, already checked against the allowlist (AAP 0.5.6). */
   to: string;
@@ -173,11 +125,7 @@ export interface ListCallsParams {
   startTimeAfter: Date;
 }
 
-/**
- * One call the REST API reports for a number pair. These are operator-display candidates only:
- * a listing match may belong to another dispatch and an empty listing proves that no call exists, so
- * a candidate is never adopted and never releases a reservation (AAP 0.3.2).
- */
+/** One call the REST API reports for a number pair. */
 export interface CallCandidate {
   callSid: string;
   status: TwilioCallStatus;
@@ -185,19 +133,10 @@ export interface CallCandidate {
   startTime: string | null;
 }
 
-/**
- * How a failed dispatch is read (AAP 0.3.2, AAP 0.5.3). `definite` means no call was created, so the
- * cap slot is released, `attempts` is decremented, the attempt is `dispatch_failed` and the task is
- * requeued with backoff. `ambiguous` means the call may exist, so the attempt becomes
- * `dispatch_unknown` and is never redialled.
- */
+/** How a failed dispatch is read (AAP 0.3.2, AAP 0.5.3). */
 export type CallErrorClass = 'definite' | 'ambiguous';
 
-/**
- * How to build a client. Credentials are always passed explicitly, so the SDK never reads the
- * environment for them (AAP 0.6.2); absent optionals are omitted by the caller, never assigned as
- * `undefined`.
- */
+/** How to build a client. */
 export interface TelephonyClientOptions {
   mode: TelephonyClientMode;
   accountSid: string;
@@ -212,11 +151,10 @@ export interface TelephonyClientOptions {
 export interface TelephonyClient {
   readonly mode: TelephonyClientMode;
   /**
-   * Place one outbound call. The caller persists its `CallAttempt` as `dispatching` first, and puts
-   * that attempt's id in both URLs, so a callback or TwiML fetch carrying the id is the only evidence
-   * that adopts an ambiguous dispatch (AAP 0.3.2).
-   *
-   * Recording is off and is not a parameter: no caller can turn it on (AAP 0.5.6, AAP 0.12.2).
+   * Place one outbound call. The caller persists its `CallAttempt` as `dispatching` first and puts
+   * that attempt's id in both URLs, so a callback or TwiML fetch carrying the id is the only
+   * evidence that adopts an ambiguous dispatch (AAP 0.3.2). Recording is off and is not a parameter
+   * (AAP 0.5.6, AAP 0.12.2).
    */
   createCall(params: CreateCallParams): Promise<CreatedCall>;
   /** Read one call by SID, for reconciliation of a call that reported no final status (AAP 0.5.3). */
@@ -227,21 +165,16 @@ export interface TelephonyClient {
    */
   listCalls(params: ListCallsParams): Promise<CallCandidate[]>;
   /**
-   * Check `X-Twilio-Signature` over the URL Twilio called and every field it posted (AAP 0.3.3). The
-   * caller rebuilds `url` from `API_PUBLIC_URL` plus the original path and query — or the public
-   * `wss://…/v1/webhooks/voice/relay` URL with no params, for the relay upgrade — and passes every
-   * form field parsed by `@fastify/formbody`, because the signature covers all of them.
+   * Check `X-Twilio-Signature` over the URL Twilio called and every field it posted (AAP 0.3.3):
+   * the caller rebuilds `url` from `API_PUBLIC_URL` plus the original path and query and passes
+   * every form field parsed by `@fastify/formbody`, because the signature covers all of them.
    */
   validateSignature(signature: string, url: string, params: Record<string, string>): boolean;
   /** {@link classifyCallError}, on the client, so dispatch needs no second import. */
   classifyCallError(error: unknown): CallErrorClass;
 }
 
-/**
- * Build the client `options.mode` names, the one entry point its callers use (AAP 0.5.1). The SDK
- * client is built here rather than on first use, so a credential the SDK rejects fails the process at
- * startup instead of mid-dispatch.
- */
+/** Build the client `options.mode` names, the one entry point its callers use (AAP 0.5.1). */
 export function createTelephonyClient(options: TelephonyClientOptions): TelephonyClient {
   const callApi = resolveCallApi(options);
   const calls = (): CallApi => {
@@ -250,10 +183,8 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
     }
     return callApi;
   };
-
   return {
     mode: options.mode,
-
     async createCall(params: CreateCallParams): Promise<CreatedCall> {
       const call = await calls().create({
         to: params.to,
@@ -269,7 +200,6 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
       });
       return { callSid: readCallSid(call.sid) };
     },
-
     async fetchCall(callSid: string): Promise<FetchedCall> {
       const call = await calls()(callSid).fetch();
       const fetched: FetchedCall = { status: parseCallStatus(call.status) };
@@ -284,7 +214,6 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
       }
       return fetched;
     },
-
     async listCalls(params: ListCallsParams): Promise<CallCandidate[]> {
       const page = await calls().list({
         to: params.to,
@@ -298,7 +227,6 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
         startTime: toIsoStartTime(call.startTime),
       }));
     },
-
     validateSignature(signature: string, url: string, params: Record<string, string>): boolean {
       if (signature === '') {
         return false;
@@ -312,16 +240,10 @@ export function createTelephonyClient(options: TelephonyClientOptions): Telephon
         return false;
       }
     },
-
     classifyCallError,
   };
 }
 
-/**
- * The call API this client dispatches through, or `null` when its mode has no REST transport. A
- * caller-supplied transport wins; otherwise simulator mode needs `simulatorUrl`, and `twilio` mode
- * uses the SDK's own request client.
- */
 function resolveCallApi(options: TelephonyClientOptions): CallApi | null {
   const httpClient = options.httpClient;
   if (httpClient !== undefined) {
@@ -337,11 +259,6 @@ function resolveCallApi(options: TelephonyClientOptions): CallApi | null {
   return buildClient(options, forwardToSimulator(simulatorUrl)).calls;
 }
 
-/**
- * Build the SDK client. `env: {}` keeps the SDK's own environment lookups to its edge, region and log
- * level, and `autoRetry: false` keeps a dispatch to exactly one call create: retries belong to the
- * task, which knows the cap reservation and the backoff (AAP 0.3.2, AAP 0.5.6).
- */
 function buildClient(
   options: TelephonyClientOptions,
   httpClient: TwilioHttpClient | undefined,
@@ -360,11 +277,6 @@ function buildClient(
   return twilio(options.accountSid, options.authToken, clientOptions);
 }
 
-/**
- * A transport that sends every Twilio REST request to the scripted telephony simulator instead of
- * `api.twilio.com`, keeping the path, the query string, the form body and the basic-auth credentials
- * the SDK built (AAP 0.6.2, AAP 0.11.2).
- */
 function forwardToSimulator(simulatorUrl: string): TwilioHttpClient {
   const baseUrl = simulatorUrl.replace(/\/+$/, '');
   const inner = new twilio.RequestClient({ timeout: TWILIO_REST_TIMEOUT_MS, autoRetry: false });
@@ -386,13 +298,6 @@ function forwardToSimulator(simulatorUrl: string): TwilioHttpClient {
   };
 }
 
-/**
- * Point a URI the SDK built for the REST API at the simulator, path and query included. In
- * `simulator` mode no request may leave the host (AAP 0.3.3, AAP 0.6.2, AAP 0.11.2), so a URI
- * outside the REST origin — the regional host the SDK builds when `TWILIO_REGION` or `TWILIO_EDGE`
- * is set, or any request this transport was never meant to carry — fails the call closed instead
- * of being sent to the real REST API.
- */
 function toSimulatorUri(uri: string, baseUrl: string): string {
   if (!uri.startsWith(TWILIO_REST_URI_PREFIX)) {
     throw new Error('the simulator transport refuses a request URI outside the Twilio REST origin');
@@ -400,10 +305,6 @@ function toSimulatorUri(uri: string, baseUrl: string): string {
   return `${baseUrl}${uri.slice(TWILIO_API_ORIGIN.length)}`;
 }
 
-/**
- * Read the provider's status value, the one field dispatch branches on. An unrecognized value is an
- * error rather than a guess, and the error names no call content (AAP 0.11.1).
- */
 function parseCallStatus(status: unknown): TwilioCallStatus {
   const parsed = TwilioCallStatus.safeParse(status);
   if (!parsed.success) {
@@ -412,11 +313,6 @@ function parseCallStatus(status: unknown): TwilioCallStatus {
   return parsed.data;
 }
 
-/**
- * A start instant as ISO 8601, or `null` when the call has not started. The SDK parses the payload's
- * `start_time` into a `Date` whatever it held, and a call that has not started reports `null`, which
- * arrives as an invalid `Date` whose `toISOString()` throws.
- */
 function toIsoStartTime(startTime: unknown): string | null {
   if (!(startTime instanceof Date) || Number.isNaN(startTime.getTime())) {
     return null;
@@ -424,14 +320,6 @@ function toIsoStartTime(startTime: unknown): string | null {
   return startTime.toISOString();
 }
 
-/**
- * Read the SID a provider response carries. Every other field on this boundary goes through a
- * guard, and this one is the value dispatch persists as `CallAttempt.twilioCallSid` — the unique
- * key a signed status callback matches against, so an attempt whose call was created is adopted at
- * all (AAP 0.3.2). A response without a usable SID is an error rather than an `undefined` written
- * into that key, and {@link classifyCallError} answers `ambiguous` with it: the request reached
- * Twilio, so the call may exist and is never redialled.
- */
 function readCallSid(sid: unknown): string {
   if (typeof sid !== 'string' || sid === '') {
     throw new Error('twilio answered without a call sid');
@@ -439,31 +327,13 @@ function readCallSid(sid: unknown): string {
   return sid;
 }
 
-/** The only network codes that prove the request never reached Twilio. */
 const DEFINITE_NETWORK_CODES: ReadonlySet<string> = new Set([
   'ECONNREFUSED',
   'ENOTFOUND',
   'EAI_AGAIN',
 ]);
 
-/**
- * Decide whether a failed dispatch created a call (AAP 0.3.2, AAP 0.5.3).
- *
- * The HTTP status is checked before the error code, because a rejected request carries both: a
- * `RestException` holds a 4xx `status` and a numeric Twilio error `code`. A 4xx is `definite` — Twilio
- * answered, and no call was created. A 5xx is `ambiguous`, because the request reached Twilio and its
- * outcome is unknown.
- *
- * With no status, only `ECONNREFUSED`, `ENOTFOUND` and `EAI_AGAIN` prove the request was never sent,
- * so they are `definite`. Every other network code (`ECONNABORTED`, `ETIMEDOUT`, `ECONNRESET`,
- * `EPIPE`, `ESOCKETTIMEDOUT`) and anything unrecognized — a bare `Error`, `null`, a shape from a
- * future SDK — is `ambiguous`: a redial that is not certain to be safe does not happen, and a
- * `calls.list` candidate cannot settle it either.
- *
- * `status`, `code` and `cause` are read by duck typing, one `cause` level deep, so an error wrapped by
- * a transport still classifies. Only a string `code` counts, which keeps Twilio's numeric error code
- * from being read as a network code.
- */
+/** Decide whether a failed dispatch created a call (AAP 0.3.2, AAP 0.5.3). */
 export function classifyCallError(error: unknown): CallErrorClass {
   const status = readStatus(error);
   if (status !== null) {
@@ -476,7 +346,6 @@ export function classifyCallError(error: unknown): CallErrorClass {
   return 'ambiguous';
 }
 
-/** Read a property of a value of any shape, without assuming anything about that shape. */
 function readProperty(value: unknown, key: 'status' | 'code' | 'cause'): unknown {
   if (typeof value !== 'object' || value === null) {
     return undefined;
@@ -484,7 +353,6 @@ function readProperty(value: unknown, key: 'status' | 'code' | 'cause'): unknown
   return (value as Record<string, unknown>)[key];
 }
 
-/** The HTTP status an error or its `cause` carries, or `null` when neither carries a whole number. */
 function readStatus(error: unknown): number | null {
   for (const candidate of [error, readProperty(error, 'cause')]) {
     const status = readProperty(candidate, 'status');
@@ -495,7 +363,6 @@ function readStatus(error: unknown): number | null {
   return null;
 }
 
-/** The string error code an error or its `cause` carries, or `null` when neither carries one. */
 function readCode(error: unknown): string | null {
   for (const candidate of [error, readProperty(error, 'cause')]) {
     const code = readProperty(candidate, 'code');

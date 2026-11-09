@@ -1,23 +1,9 @@
 /**
  * The lodging leaderboard's pure rules as unit rows: the 90-day activity window, the
- * once-in-any-30-days pair dedupe, the "fewer than 3" guest-count label and the ranking order
- * (AAP 0.5.7, 0.5.4, criterion 16).
- *
- * Almost every row pins a boundary the directory's SQL also relies on, and both readers share one
- * implementation of the rule: `scoreFacts` is the pair chain the city board, a lodging's own
- * console standings and the settlement's fact writer all go through, and `compareForLeaderboard`
- * is the order the board and that console both report. No database is touched here — the SQL, and
- * the seeded scenario for a whole city (score first, then verified guest count, then name, zero
- * scores last), are covered by `apps/api/test/integration/lodgings.test.ts`.
- *
- * Three conventions keep the rows honest: every instant comes from `Date.UTC` arithmetic and never
- * from the wall clock, a row's facts are plain `ActivityFact` values no statement produced, and the
- * expected `counted` instants are written with the same {@link at} helper the facts are, so a row
- * states *when* each fact must count rather than only how many did.
- *
- * @see AAP 0.5.7 for the leaderboard, visibility and guest-count rules, 0.5.4 for the DTOs and the
- *   "fewer than 3" label, 0.12.1 criterion 16 for "a second meetup by the same pair within 30 days
- *   adds nothing".
+ * once-in-any-30-days pair dedupe, the "fewer than 3" guest-count label, the ranking order and the
+ * 13 city-local weekly points of the console's trend (AAP 0.5.7, 0.5.4, criterion 16). Almost every
+ * row pins a boundary the directory's SQL also relies on, and both readers share one implementation
+ * of the rule.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -30,6 +16,7 @@ import {
   GuestCount,
   LEADERBOARD_PAIR_DEDUPE_DAYS,
   LEADERBOARD_WINDOW_DAYS,
+  LODGING_TREND_WEEKS,
   toGuestCount as sharedToGuestCount,
   type AppEnv,
   type GuestCount as GuestCountValue,
@@ -39,6 +26,7 @@ import {
   compareForLeaderboard,
   scoreFacts,
   toGuestCount,
+  trendFromCounted,
   type ActivityFact,
   type LeaderboardEntry,
 } from '../../src/modules/lodgings/leaderboard.ts';
@@ -156,13 +144,10 @@ describe('scoreFacts', () => {
 
   it.each(SCORE_CASES)('$name', ({ facts, expected }) => {
     const scored = scoreFacts(facts, NOW);
-
     // Exactly the lodgings with a counted fact, and no others: absence is how a caller reads 0.
     expect([...scored.keys()].sort()).toEqual(Object.keys(expected).sort());
-
     for (const [lodgingId, counted] of Object.entries(expected)) {
       const entry = scored.get(lodgingId);
-
       expect(entry?.counted).toEqual(counted);
       expect(entry?.score).toBe(counted.length);
     }
@@ -172,9 +157,7 @@ describe('scoreFacts', () => {
     const newer = fact(L1, P1, 5);
     const older = fact(L1, P1, 60);
     const elsewhere = fact(L2, P1, 30);
-
     const entry = scoreFacts([newer, older, elsewhere], NOW).get(L1);
-
     expect(entry?.counted).toEqual([at(60), at(5)]);
     expect(entry?.counted[0]).not.toBe(older.completedAt);
     expect(entry?.counted[1]).not.toBe(newer.completedAt);
@@ -198,10 +181,8 @@ describe('toGuestCount', () => {
       },
       { name: 'renders a larger count as a number', guests: 10, expected: 10 },
     ];
-
   it.each(GUEST_COUNT_CASES)('$name', ({ guests, expected }) => {
     const rendered = toGuestCount(guests);
-
     expect(rendered).toBe(expected);
     // Every rendering is a valid `GuestCount`, so no response schema can reject one.
     expect(GuestCount.parse(rendered)).toBe(expected);
@@ -303,12 +284,125 @@ describe('compareForLeaderboard', () => {
       entry('alpha', 'Alpha', 0, 0),
       entry('bravo', 'Bravo', 3, 4),
     ];
-
     expect(sortIds(entries)).toEqual(['bravo', 'charlie', 'alpha']);
     // `computeLeaderboard` numbers the board it sorts this way (`rank: index + 1`).
     expect([...entries].sort(compareForLeaderboard).map((_, index) => index + 1)).toEqual([
       1, 2, 3,
     ]);
+  });
+});
+
+/**
+ * The one launch city whose clocks change (AAP 0.5.7): the trend's DST boundary is expressed in it,
+ * because seven 24-hour spans back from an instant fall on the same local date in every other city.
+ */
+const LISBON = 'Europe/Lisbon';
+
+/**
+ * The instant the trend's boundary rows are read at: 2026-11-01T23:00Z is 23:00 in Lisbon, and the
+ * seven local days before it span the 2026-10-25 01:00 UTC change from WEST to WET.
+ */
+const DST_NOW = new Date(Date.UTC(2026, 10, 1, 23));
+
+/** One row over {@link trendFromCounted}. */
+interface TrendCase {
+  /** Reads as the rule the row pins. */
+  readonly name: string;
+  /** The instant the trend is read at, whose city-local date anchors the 13 labels. */
+  readonly now: Date;
+  /** The instants of the counted facts. */
+  readonly counted: readonly Date[];
+  /** Weeks back from the week just ended (0) to the number of facts that must land there. */
+  readonly expected: Readonly<Record<number, number>>;
+}
+
+const TREND_CASES: readonly TrendCase[] = [
+  {
+    name: 'counts today and the six local days before it in the week just ended',
+    now: NOW,
+    counted: [at(0), at(3), at(6)],
+    expected: { 0: 3 },
+  },
+  {
+    name: 'counts a fact seven local days old in the week before that one, inside the trend',
+    now: NOW,
+    counted: [at(6), at(7)],
+    expected: { 0: 1, 1: 1 },
+  },
+  {
+    name: 'counts a fact 90 local days old in the oldest point',
+    now: NOW,
+    counted: [at(90)],
+    expected: { 12: 1 },
+  },
+  {
+    name: 'keeps a fact exactly on the far boundary of the trend inside it',
+    now: NOW,
+    counted: [at(91)],
+    expected: { 12: 1 },
+  },
+  {
+    // Seven local days before DST_NOW is 2026-10-25T23:30Z, six days and 23.5 hours away, so a
+    // window measured in milliseconds put it in the week just ended; its own local date puts it a
+    // week back.
+    name: 'counts a fact seven local days back that is under seven 24-hour spans away',
+    now: DST_NOW,
+    counted: [new Date(Date.UTC(2026, 9, 25, 23, 30))],
+    expected: { 1: 1 },
+  },
+  {
+    name: 'lands two facts of one local date in one point whatever the clock time',
+    now: DST_NOW,
+    counted: [new Date(Date.UTC(2026, 9, 25, 12)), new Date(Date.UTC(2026, 9, 25, 23, 30))],
+    expected: { 1: 2 },
+  },
+];
+
+describe('trendFromCounted', () => {
+  it.each(TREND_CASES)('$name', ({ now, counted, expected }) => {
+    // Oldest first, so the point `LODGING_TREND_WEEKS - 1` holds the week just ended.
+    const scores = Array.from(
+      { length: LODGING_TREND_WEEKS },
+      (_, index) => expected[LODGING_TREND_WEEKS - 1 - index] ?? 0,
+    );
+    expect(trendFromCounted(counted, LISBON, now).map((point) => point.activityScore)).toEqual(
+      scores,
+    );
+  });
+
+  it('reads 13 week labels seven local days apart across the Lisbon DST change', () => {
+    // Seven 24-hour spans back from DST_NOW is 2026-10-25T23:00Z and fourteen is 2026-10-18T23:00Z,
+    // which is 2026-10-19 local: a fixed step labelled the two newest weeks 2026-10-19 and
+    // 2026-10-25, six local days apart, the unequal bucket the QA pass reported.
+    expect(trendFromCounted([], LISBON, DST_NOW).map((point) => point.weekStart)).toEqual([
+      '2026-08-02',
+      '2026-08-09',
+      '2026-08-16',
+      '2026-08-23',
+      '2026-08-30',
+      '2026-09-06',
+      '2026-09-13',
+      '2026-09-20',
+      '2026-09-27',
+      '2026-10-04',
+      '2026-10-11',
+      '2026-10-18',
+      '2026-10-25',
+    ]);
+  });
+
+  it('labels and scores every week of the window when no fact arrived', () => {
+    const trend = trendFromCounted([], LISBON, NOW);
+    expect(trend).toHaveLength(LODGING_TREND_WEEKS);
+    expect(new Set(trend.map((point) => point.weekStart)).size).toBe(LODGING_TREND_WEEKS);
+    expect(trend.every((point) => point.activityScore === 0)).toBe(true);
+  });
+
+  it('sums its points to the number of facts it was given', () => {
+    const counted = [at(0), at(1), at(7), at(45), at(89), at(91)];
+    expect(
+      trendFromCounted(counted, LISBON, NOW).reduce((sum, point) => sum + point.activityScore, 0),
+    ).toBe(counted.length);
   });
 });
 
@@ -321,7 +415,6 @@ describe('compareForLeaderboard', () => {
  * second copy to keep in step with it, and nothing in this suite runs SQL. The rows it returns, and
  * the facts written from them, are covered by the integration suites.
  */
-
 /** The claim every statement row is built for: one traveler, one five-day stay. */
 const COVERAGE = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -353,7 +446,6 @@ function statementSql(appEnv: AppEnv): string {
 describe('coveringMeetupStatement', () => {
   it.each(STATEMENT_CASES)("$name: reads the covering rule over the venue's city", ({ appEnv }) => {
     const sql = statementSql(appEnv);
-
     // The meetup, its venue and that venue's city, joined so the local date is the meetup's own.
     expect(sql).toContain('FROM "meetup" AS "m"');
     expect(sql).toContain('JOIN "venue" AS "v" ON "v"."id" = "m"."venue_id"');
@@ -375,7 +467,6 @@ describe('coveringMeetupStatement', () => {
 
   it('binds every value and interpolates none of them into its text', () => {
     const statement = coveringMeetupStatement('staging', COVERAGE, NOW);
-
     expect(statement.values).toEqual([
       NOW,
       COVERAGE.userId,
@@ -383,7 +474,6 @@ describe('coveringMeetupStatement', () => {
       COVERAGE.stayFrom,
       COVERAGE.stayTo,
     ]);
-
     for (const value of [COVERAGE.userId, COVERAGE.stayFrom, COVERAGE.stayTo]) {
       expect(statement.sql).not.toContain(value);
     }

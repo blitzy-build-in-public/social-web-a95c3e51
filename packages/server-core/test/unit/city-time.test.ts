@@ -1,14 +1,3 @@
-/**
- * City-local time (AAP 0.8.1, 0.11.1): the local-day boundaries every per-city rule is keyed on —
- * the date a city's call and language-model budgets are counted under (AAP 0.5.6), the 09:00–20:00
- * calling window, a task's next 09:00 or 00:05 local attempt, the 23:00 suggestion cut-off
- * (AAP 0.5.7) and the last instant of a proof's departure day or of a stay (AAP 0.5.2, 0.5.3).
- *
- * Every instant is written literally and every zone is a launch city's, because the unit reads no
- * clock and no ambient zone: the assertions must hold under any host timezone and whatever the
- * process clock says. Lisbon is the only launch zone with DST — an hour lost on 2026-03-29 and an
- * hour gained on 2026-10-25.
- */
 import { Settings } from 'luxon';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -30,16 +19,12 @@ const BOG = 'America/Bogota';
 const BKK = 'Asia/Bangkok';
 const MAK = 'Asia/Makassar';
 
-/** The five launch zones of `config/cities.json`. */
 const LAUNCH_ZONES = [LIS, MEX, BOG, BKK, MAK];
 
-/** `CAP_CALL_SECONDS` (AAP 0.5.6): the longest call, which must finish by 20:00 local. */
 const CALL_MS = 300_000;
 
-/** 10 h 55 min after 09:00 local: the last start a five-minute call fits before 20:00. */
 const LAST_START_MS = 39_300_000;
 
-/** Both DST readings that must be pinned: the process clock in summer and in winter. */
 const CLOCK_SEEDS = ['2026-07-01T12:00:00Z', '2026-01-15T12:00:00Z'];
 
 const at = (instant: string): Date => new Date(instant);
@@ -60,7 +45,6 @@ describe('localDateKey', () => {
     expect(localDateKey(tz, new Date(edge))).toBe('2026-11-05');
     expect(localDateKey(tz, new Date(edge + 1))).toBe('2026-11-05');
   });
-
   it.each([
     ['2026-03-28T23:59:59.999Z', '2026-03-28'],
     ['2026-03-29T00:00:00.000Z', '2026-03-29'],
@@ -96,7 +80,6 @@ describe('localTimeOn', () => {
     // cut-off (AAP 0.5.7). Mexico City and Bogotá reach both on the next UTC date.
     expect(iso(localTimeOn(tz, '2026-11-04', hhmm))).toBe(expected);
   });
-
   const FIXED_OFFSETS = [
     [MEX, '15:00:00.000'],
     [BOG, '14:00:00.000'],
@@ -104,7 +87,6 @@ describe('localTimeOn', () => {
     [MAK, '01:00:00.000'],
   ] as const;
   const SEASONS = ['2026-01-15', '2026-04-05', '2026-07-01', '2026-10-25'] as const;
-
   it.each(
     FIXED_OFFSETS.flatMap(([tz, utc]) =>
       SEASONS.map((date): [string, string, string] => [tz, date, `${date}T${utc}Z`]),
@@ -121,14 +103,12 @@ describe('wall times inside a DST transition', () => {
   afterEach(() => {
     Settings.now = realNow;
   });
-
   it.each(CLOCK_SEEDS)('moves the 01:30 gap forward by the hour it lost, clock at %s', (seed) => {
     // Each wall time is asserted under a summer and a winter clock, because luxon's factory resolves
     // both from the offset it guesses at the process clock: the reading must not move with it.
     Settings.now = () => at(seed).getTime();
     expect(iso(localTimeOn(LIS, '2026-03-29', '01:30'))).toBe('2026-03-29T01:30:00.000Z');
   });
-
   it.each(CLOCK_SEEDS)('takes the earlier reading of the 01:30 overlap, clock at %s', (seed) => {
     Settings.now = () => at(seed).getTime();
     // A task deferred to a wall time that resolved differently depending on when the process
@@ -150,14 +130,12 @@ describe('deferring to a later local time', () => {
     // today's, and the answer is tomorrow's.
     expect(iso(nextLocalDayAt(tz, at(from), '09:00'))).toBe(expected);
   });
-
   it('defers a refused menu job to 00:05 local the next day', () => {
     // menu-ingest defers to 00:05 local when a language-model reservation is refused (AAP 0.5.6).
     expect(iso(nextLocalDayAt(BKK, at('2026-11-04T18:00:00.000Z'), '00:05'))).toBe(
       '2026-11-05T17:05:00.000Z',
     );
   });
-
   it.each([
     [BOG, '2026-11-04T13:59:59.999Z', '2026-11-04T14:00:00.000Z'],
     [BOG, '2026-11-04T14:00:00.000Z', '2026-11-05T14:00:00.000Z'],
@@ -182,7 +160,6 @@ describe('day bounds', () => {
     expect(iso(startOfLocalDay(tz, date))).toBe(start);
     expect(iso(endOfLocalDay(tz, date))).toBe(end);
   });
-
   it.each([
     ['2026-11-04', -2, '2026-11-02'],
     ['2026-11-02', 1, '2026-11-03'],
@@ -214,7 +191,6 @@ describe('the 09:00–20:00 calling window', () => {
     expect(within(last)).toBe(true);
     expect(within(last + 1)).toBe(false);
   });
-
   it.each([
     [MEX, '2026-11-05T01:55:00.000Z'],
     [BOG, '2026-11-05T00:55:00.000Z'],
@@ -236,11 +212,9 @@ describe('invalid input', () => {
     ['a one-digit hour', () => localTimeOn(LIS, '2026-11-04', '9:00')],
     ['a date the month does not have', () => localTimeOn(LIS, '2026-02-30', '09:00')],
   ];
-
   it.each(FAILING_CALLS)('throws RangeError for %s', (_case, call) => {
     expect(call).toThrow(RangeError);
   });
-
   it('accepts every launch zone', () => {
     for (const tz of LAUNCH_ZONES) expect(() => assertValidZone(tz)).not.toThrow();
   });

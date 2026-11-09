@@ -1,22 +1,13 @@
 /**
  * The client error model: the one error type the API and WebSocket clients raise, the parser that
- * turns a failing HTTP response into it, and the mapping from an error code to the sentence a screen
- * shows (AAP 0.5.4, AAP 0.8.1, AAP 0.11.1).
+ * turns a failing HTTP response into it, and the code-to-sentence map a screen renders (AAP 0.5.4,
+ * AAP 0.8.1, AAP 0.11.1).
  *
- * Three invariants live here and nowhere else:
- *
- *   - The server's envelope `{ error: { code: string, message: string } }` (AAP 0.5.4) is described
- *     only by `ErrorEnvelope` and `ErrorCode` from `@tablemate/shared`; no code list and no envelope
- *     shape is redeclared (AAP 0.11.1, one schema per shape).
- *   - An `ApiError` carries the HTTP status, the code and, on a 429, the retry delay. It never
- *     carries the server's `message` text or any part of the body: neither is shown nor logged
- *     (AAP 0.11.1), so a body that arrives here leaves as a code alone.
- *   - Screens render {@link userMessageFor}. `ApiError.message` is the code itself, which is what a
- *     log line or a crash report may safely hold.
- *
- * Its imports are `@tablemate/shared` and the fixed copy of `src/copy/strings.ts`, neither of which
- * has a side effect or touches a platform API, so the module loads unchanged under Hermes, in a
- * browser and in a plain Node test process.
+ * The envelope is described only by `@tablemate/shared`'s `ErrorEnvelope` and `ErrorCode`, and an
+ * `ApiError` never carries the server's `message` text or any part of the body: it leaves as a code
+ * alone (AAP 0.11.1), which is also what makes it safe to log. `ApiError.message` is the code itself
+ * and screens render {@link userMessageFor}. Client-safe: `@tablemate/shared` and
+ * `src/copy/strings.ts` are its only imports.
  */
 import {
   BUDGET_MAX_CENTS,
@@ -35,13 +26,10 @@ import {
 import { DEPOSIT_AMOUNTS_TEXT } from '../copy/strings';
 
 /**
- * Every code the client can hold: the shared server codes of AAP 0.5.4, plus the two that exist only
- * on the client and must never be added to the shared `ErrorCode` enum.
- *
- * `network_error` is a request that never reached the API — offline, a DNS failure, a timeout — and
- * is the one code whose `status` is 0. `invalid_response` is an answer that is not the envelope: an
- * empty body, a body that is not JSON (an nginx HTML 502, say), or one whose code is not a known
- * code.
+ * Every code the client can hold: the shared server codes of AAP 0.5.4, plus the two client-only ones
+ * that must never be added to the shared `ErrorCode` enum. `network_error` is a request that never
+ * reached the API and the only code whose `status` is 0; `invalid_response` is an answer that is not
+ * the envelope.
  */
 export type ClientErrorCode = ErrorCode | 'network_error' | 'invalid_response';
 
@@ -54,10 +42,9 @@ interface ApiErrorOptions {
 /**
  * The error every request in `apps/mobile/src/api` raises (AAP 0.5.4, AAP 0.11.1).
  *
- * `message` is the code, never the server's prose: the server's `message` is free text a client may
- * neither display (screens call {@link userMessageFor}) nor log (AAP 0.11.1). `status` is the HTTP
- * status, or 0 when no response arrived. `retryAfterSeconds` is set only from a 429 that carried a
- * usable `Retry-After`, and is absent rather than `undefined`-valued otherwise.
+ * `message` is the code, never the server's prose, which a client may neither display nor log
+ * (AAP 0.11.1). `status` is 0 when no response arrived; `retryAfterSeconds` is absent rather than
+ * `undefined`-valued unless a 429 asked for a wait.
  */
 export class ApiError extends Error {
   /** HTTP status of the response, or 0 for a network failure or a timeout. */
@@ -90,10 +77,8 @@ export function isApiError(err: unknown): err is ApiError {
 }
 
 /**
- * True only for a request that never reached the API — an {@link ApiError} coded `network_error`.
- *
- * `src/state/meetup-store.ts` reads it so React Query retries a network failure while treating a 4xx
- * answer as final.
+ * True only for a request that never reached the API — an {@link ApiError} coded `network_error`,
+ * which `src/state/meetup-store.ts` reads so React Query retries it and treats a 4xx answer as final.
  */
 export function isNetworkError(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'network_error';
@@ -104,10 +89,7 @@ export function networkError(): ApiError {
   return new ApiError(0, 'network_error');
 }
 
-/**
- * An answer that is not the error envelope, carrying the status it arrived with (AAP 0.5.4): an
- * empty or non-JSON body, or a body naming a code this client does not know.
- */
+/** An answer that is not the error envelope, carrying the status it arrived with (AAP 0.5.4). */
 export function invalidResponse(status: number): ApiError {
   return new ApiError(status, 'invalid_response');
 }
@@ -115,20 +97,12 @@ export function invalidResponse(status: number): ApiError {
 /**
  * Turns a failing HTTP response into an {@link ApiError} (AAP 0.5.4).
  *
- * The body is read with the shared envelope schema, and a body that is empty, not JSON (an nginx
- * HTML 502), or not the envelope — a code this client does not know included — yields
- * `invalid_response`, the code {@link invalidResponse} builds. The status comes from the response,
- * never from the body, and no part of the body is kept (AAP 0.11.1).
- *
- * A 429's `Retry-After` is read as whole seconds and copied to `retryAfterSeconds`; its HTTP-date
- * form and any other unparsable value are ignored, leaving the field absent. On the web the header is
- * unreadable cross-origin unless the answer exposes it — the API's CORS configuration exposes only
- * `Date` (`apps/api/src/plugins/security.ts`) — so callers must treat `retryAfterSeconds` as an
- * optional hint, never as a guarantee.
- *
- * `response` is typed structurally, so the React Native and browser `Response` objects both fit it
- * and a test can pass a literal. Its `headers` must behave like the `Headers` interface, whose `get`
- * is case-insensitive; the two `Response` implementations both do.
+ * A body that is empty, not JSON (an nginx HTML 502), or not the envelope yields `invalid_response`;
+ * the status comes from the response, never from the body, and no part of the body is kept
+ * (AAP 0.11.1). A 429's `Retry-After` is read as whole seconds only — on the web the header is
+ * unreadable cross-origin unless the answer exposes it, and the API exposes only `Date` — so callers
+ * treat `retryAfterSeconds` as an optional hint. `response` is typed structurally, so both `Response`
+ * implementations fit it and a test can pass a literal.
  */
 export function parseError(
   response: { status: number; headers: { get(name: string): string | null } },
@@ -142,10 +116,7 @@ export function parseError(
     : new ApiError(response.status, code, options);
 }
 
-/**
- * The code of a body that is the error envelope, or `undefined` for anything else: an empty body,
- * text that is not JSON, or a value whose shape or code the envelope rejects.
- */
+/** The code of a body that is the error envelope, or `undefined` for anything else. */
 function codeFromBody(bodyText: string): ClientErrorCode | undefined {
   let body: unknown;
   try {
@@ -157,10 +128,7 @@ function codeFromBody(bodyText: string): ClientErrorCode | undefined {
   return envelope.success ? envelope.data.error.code : undefined;
 }
 
-/**
- * Whole seconds from a 429's `Retry-After`, or `undefined` when the status is not 429 or the value is
- * not a non-negative integer — the header's HTTP-date form included.
- */
+/** Whole seconds from a 429's `Retry-After`, or `undefined` when absent or not a non-negative integer. */
 function retryAfterSecondsFrom(response: {
   status: number;
   headers: { get(name: string): string | null };
@@ -183,18 +151,11 @@ const PHOTO_MAX_MEGABYTES = PHOTO_MAX_BYTES / 1024 / 1024;
 /**
  * The fixed English sentence each code shows a user (AAP 0.5.8: the interface is English only).
  *
- * Keys are {@link ClientErrorCode} members, so a misspelt or unknown key fails typecheck. Every
- * sentence is short, actionable and repeats nothing the server sent: no field name, no id, no reason
- * text, no provider message (AAP 0.11.1). No sentence here repeats a fixed string of AAP 0.5.8; the
- * deposit framing, safety, age-gate, Table Credit, lodging-call and visibility notices belong to
- * their own screens. A sentence that carries a rule's own number — a window, the budget bounds, the
- * stay range, the photo limit — is built from that shared constant rather than typed out, so the copy
- * cannot drift from what the API enforces. The deposit levels are the one such sentence the copy
- * module already builds, so {@link DEPOSIT_AMOUNTS_TEXT} is imported from there rather than derived
- * here a second time.
- *
- * The `/ops` operator screens share this mapping, so the operator codes are covered here too. Only a
- * code this client does not know at all reaches {@link GENERIC_MESSAGE}.
+ * Keys are {@link ClientErrorCode} members, so a misspelt or unknown key fails typecheck. No sentence
+ * repeats a fixed string of AAP 0.5.8 — the deposit framing, safety, age-gate, Table Credit,
+ * lodging-call and visibility notices belong to their own screens — and a sentence carrying a rule's
+ * own number is built from that shared constant, so the copy cannot drift from what the API enforces.
+ * The `/ops` operator screens share this mapping, so the operator codes are covered here too.
  */
 const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
   // Client-side codes, raised by this client only. An answer that is not the envelope says nothing
@@ -288,23 +249,15 @@ const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
 };
 
 /**
- * The sentence a screen shows for an error code (AAP 0.5.4, 0.5.8).
- *
- * The parameter is an open `string` rather than `ClientErrorCode | string`: the union's wider
- * constituent already admits every known code, so it says nothing extra. An unknown string — a code
- * added to the API before this client knows it, or a value from anywhere else — returns the generic
- * sentence rather than exposing it, and a known code with no sentence of its own falls back the same
- * way.
+ * The sentence a screen shows for an error code (AAP 0.5.4, 0.5.8). An unknown string — a code added
+ * to the API before this client knows it — returns the generic sentence rather than exposing it.
  */
 export function userMessageFor(code: string): string {
   if (!isClientErrorCode(code)) return GENERIC_MESSAGE;
   return MESSAGES[code] ?? GENERIC_MESSAGE;
 }
 
-/**
- * Narrows a string to the codes this client can hold, checked against the shared schema rather than a
- * second hand-written list (AAP 0.11.1).
- */
+/** Narrows a string to the codes this client can hold, checked against the shared schema (AAP 0.11.1). */
 function isClientErrorCode(code: string): code is ClientErrorCode {
   return (
     code === 'network_error' || code === 'invalid_response' || ErrorCode.safeParse(code).success

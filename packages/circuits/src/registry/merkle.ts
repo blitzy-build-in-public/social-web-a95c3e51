@@ -8,10 +8,10 @@
  * tree is padded to its 256 leaves with `EMPTY_LEAF`, and issuer key leaves come before city alias
  * leaves, because the circuit proves one of each against the single published root.
  *
- * Client-safe: `buildMerkleTree` runs on the device through `../inputs/build-inputs.ts` under Hermes
- * (React Native 0.76.9) and in the browser Web Worker, so this module imports `poseidon-lite`, the
- * shared contract and `./leaves.ts`/`./template-hash.ts` only — no Node built-in, no global `Buffer`,
- * no `TextEncoder`, no DOM API, no I/O, no randomness, no logging, and no work at module load.
+ * Client-safe: `buildMerkleTree` runs on the device through `../inputs/build-inputs.ts` under Hermes (React
+ * Native 0.76.9) and in the browser Web Worker, so this module imports `poseidon-lite`, the shared contract
+ * and `./leaves.ts`/`./template-hash.ts` only — no Node built-in, no global `Buffer`, no `TextEncoder`, no
+ * DOM API, no I/O, no randomness, no logging, no work at module load.
  */
 import type { CityConfig, IssuerConfig, RegistryFile } from '@tablemate/shared';
 
@@ -123,15 +123,15 @@ function inField(value: bigint): boolean {
  * with {@link EMPTY_LEAF}.
  *
  * The tree mirrors `MerkleInclusion` exactly — level 0 is the leaf level, each parent is
- * `Poseidon(left, right)`, and the root is the one node at depth {@link REGISTRY_DEPTH} — so a path
- * this returns is the path the circuit folds of the root its `registryRoot` input names. Hashing every
- * level once lets the client take both of a proof's paths from one build, and lets the input generator
- * check the registry it was handed before emitting anything.
+ * `Poseidon(left, right)`, and the root is the one node at depth {@link REGISTRY_DEPTH} — so a path it
+ * returns is the path the circuit folds to the root its `registryRoot` input names. Hashing every level
+ * once lets the client take both of a proof's paths from one build, and lets the input generator check the
+ * registry it was handed before emitting anything.
  *
  * A parent whose two children are both the empty subtree at their depth is read from a table of the
- * empty-subtree root at each depth instead of hashed — the same value, because it is the hash of the
- * same two children — which is what turns about 255 Poseidon calls into the populated count plus
- * eight and keeps the build affordable under Hermes.
+ * empty-subtree root at each depth instead of hashed — the same value, it being the hash of the same two
+ * children — which turns about 255 Poseidon calls into the populated count plus eight and keeps the build
+ * affordable under Hermes.
  *
  * @param leaves - The populated leaves, issuer leaves first.
  * @returns The tree, with a proof of any of its 256 positions.
@@ -146,56 +146,45 @@ export function buildMerkleTree(leaves: readonly bigint[]): MerkleTree {
       throw new RangeError('buildMerkleTree: leaf outside the field');
     }
   }
-
   // The root of an all-empty subtree at each depth, depths 0 to REGISTRY_DEPTH inclusive.
   const emptyRoots: bigint[] = [EMPTY_LEAF];
   for (let depth = 0; depth < REGISTRY_DEPTH; depth += 1) {
     const child = nodeAt(emptyRoots, depth);
     emptyRoots.push(poseidon2([child, child]));
   }
-
   const levels: bigint[][] = [];
   const bottom: bigint[] = [];
   for (let index = 0; index < MAX_REGISTRY_LEAVES; index += 1) {
     bottom.push(leaves[index] ?? EMPTY_LEAF);
   }
   levels.push(bottom);
-
   for (let depth = 0; depth < REGISTRY_DEPTH; depth += 1) {
     const empty = nodeAt(emptyRoots, depth);
     const emptyParent = nodeAt(emptyRoots, depth + 1);
     const level = nodeAtLevel(levels, depth);
     const parents: bigint[] = [];
-
     for (let index = 0; index < level.length; index += 2) {
       const left = nodeAt(level, index);
       const right = nodeAt(level, index + 1);
       parents.push(left === empty && right === empty ? emptyParent : poseidon2([left, right]));
     }
-
     levels.push(parents);
   }
-
   const root = nodeAt(nodeAtLevel(levels, REGISTRY_DEPTH), 0);
-
   return {
     root,
     proof(index: number): MerkleProof {
       if (!Number.isInteger(index) || index < 0 || index >= MAX_REGISTRY_LEAVES) {
         throw new RangeError('buildMerkleTree: index out of range');
       }
-
       const pathElements: bigint[] = [];
       const pathIndices: (0 | 1)[] = [];
-
       for (let depth = 0; depth < REGISTRY_DEPTH; depth += 1) {
         const position = index >> depth;
         pathElements.push(nodeAt(nodeAtLevel(levels, depth), position ^ 1));
-
         const bit: 0 | 1 = (position & 1) === 1 ? 1 : 0;
         pathIndices.push(bit);
       }
-
       return { pathElements, pathIndices, root };
     },
   };
@@ -238,9 +227,9 @@ export function merkleProof(leaves: readonly bigint[], index: number): MerklePro
  * check `../inputs/build-inputs.ts` makes of the registry entry it read, and the check the registry
  * tests make of every generated proof.
  *
- * It answers rather than throws, so a proof read from configuration cannot break a caller that only
- * wants to know whether it holds: a path that is not {@link REGISTRY_DEPTH} long, an index that is not
- * a path bit, and a value outside the field all return false.
+ * It answers rather than throws, so a proof read from configuration cannot break a caller that only wants
+ * to know whether it holds: a path that is not {@link REGISTRY_DEPTH} long, an index that is not a path bit,
+ * and a value outside the field all return false.
  *
  * @param leaf - The leaf value the path starts from.
  * @param proof - The path, at the level-0-first order {@link MerkleProof} fixes.
@@ -254,7 +243,6 @@ export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
   if (!inField(leaf) || !inField(root)) {
     return false;
   }
-
   let current = leaf;
   for (let depth = 0; depth < REGISTRY_DEPTH; depth += 1) {
     const sibling = pathElements[depth];
@@ -268,10 +256,8 @@ export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
     if (!inField(sibling)) {
       return false;
     }
-
     current = bit === 0 ? poseidon2([current, sibling]) : poseidon2([sibling, current]);
   }
-
   return current === root;
 }
 
@@ -280,26 +266,25 @@ export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
  * (AAP 0.5.5): the tree the circuit proves membership against, with the readable entries
  * `pnpm circuits:registry` writes to `config/registry/<name>.json` and `GET /zk/config` publishes.
  *
- * Leaf layout, which the circuit and the committed file both depend on: issuer key leaves first, in
- * ascending `issuerId` and, within an issuer, in configured key order; then city alias leaves, in
- * ascending `circuitCityId` and configured alias order. Inclusion by verification status is the
- * caller's decision — an issuer whose template is absent or whose keys are empty, as a record
- * awaiting samples is, contributes nothing, and no status is filtered out here. A key's domain is
- * lowercased because the client selects a key by the lowercased `d=` tag, while its selector is kept
- * as written; an alias's bytes are exactly what the decoded body carries, escapes included.
+ * Leaf layout, which the circuit and the committed file both depend on: issuer key leaves first, in ascending
+ * `issuerId` and, within an issuer, in configured key order; then city alias leaves, in ascending
+ * `circuitCityId` and configured alias order. Inclusion by verification status is the caller's decision — an
+ * issuer whose template is absent or whose keys are empty, as a record awaiting samples is, contributes
+ * nothing, and no status is filtered out here. A key's domain is lowercased because the client selects a key
+ * by the lowercased `d=` tag, while its selector is kept as written; an alias's bytes are exactly what the
+ * decoded body carries, escapes included.
  *
- * An entry's `leafIndex` is its leaf's position in `registry.leaves`, which holds the populated leaves
- * only, while `registry.root` is the root of the tree padded to 256 with {@link EMPTY_LEAF}. The
- * result is deterministic — identical configuration gives a byte-identical
- * `JSON.stringify(registry, null, 2)`, whatever order the caller supplied its records in — so
- * `pnpm circuits:registry --check` and the registry test can compare it with the committed file.
+ * An entry's `leafIndex` is its leaf's position in `registry.leaves`, which holds the populated leaves only,
+ * while `registry.root` is the root of the tree padded to 256 with {@link EMPTY_LEAF}. The result is
+ * deterministic — identical configuration gives a byte-identical `JSON.stringify(registry, null, 2)`,
+ * whatever order the caller supplied its records in — so `pnpm circuits:registry --check` and the registry
+ * test can compare it with the committed file.
  *
  * @param input - The environment's name, with the issuer and city configuration records.
  * @returns The built registry and a proof of any populated leaf.
- * @throws {RangeError} When an `issuerId`, city slug or `circuitCityId` repeats, a `(domain,
- *   selector)` pair repeats across issuers, two cities register identical alias bytes, or the
- *   populated leaves exceed 256, named with the registry and the count it carries. A repeated key
- *   or alias names neither value in the message.
+ * @throws {RangeError} When an `issuerId`, city slug or `circuitCityId` repeats, a `(domain, selector)` pair
+ *   repeats across issuers, two cities register identical alias bytes, or the populated leaves exceed 256,
+ *   named with the registry and the count it carries. A repeated key or alias names neither value.
  */
 export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
   const seenIssuerIds = new Set<number>();
@@ -309,19 +294,15 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
     }
     seenIssuerIds.add(issuer.issuerId);
   }
-
   const leaves: bigint[] = [];
   const issuers: RegistryFile['issuers'] = [];
   const seenKeys = new Set<string>();
   const orderedIssuers = input.issuers.slice().sort((a, b) => a.issuerId - b.issuerId);
-
   for (const issuer of orderedIssuers) {
     if (issuer.template === null || issuer.keys.length === 0) {
       continue;
     }
-
     const th = templateHash(issuer.template);
-
     for (const key of issuer.keys) {
       const domain = key.domain.toLowerCase();
       const keyId = JSON.stringify([domain, key.selector]);
@@ -329,7 +310,6 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
         throw new RangeError('buildRegistry: duplicate DKIM domain and selector');
       }
       seenKeys.add(keyId);
-
       const pk = pubkeyHash(modulusFromBase64(key.modulusBase64));
       const leafIndex = leaves.length;
       leaves.push(issuerLeaf(issuer.issuerId, pk, th));
@@ -344,7 +324,6 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
       });
     }
   }
-
   const seenCityIds = new Set<number>();
   const seenCitySlugs = new Set<string>();
   for (const city of input.cities) {
@@ -354,11 +333,9 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
     seenCityIds.add(city.circuitCityId);
     seenCitySlugs.add(city.id);
   }
-
   const cities: RegistryFile['cities'] = [];
   const seenAliases = new Set<string>();
   const orderedCities = input.cities.slice().sort((a, b) => a.circuitCityId - b.circuitCityId);
-
   for (const city of orderedCities) {
     for (const alias of city.aliases) {
       const bytes = utf8Encode(alias);
@@ -367,7 +344,6 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
         throw new RangeError('buildRegistry: duplicate city alias');
       }
       seenAliases.add(aliasId);
-
       const ah = cityAliasHash(bytes);
       const leafIndex = leaves.length;
       leaves.push(cityLeaf(city.circuitCityId, ah));
@@ -380,14 +356,12 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
       });
     }
   }
-
   if (leaves.length > MAX_REGISTRY_LEAVES) {
     throw new RangeError(
       `buildRegistry: the ${input.name} registry carries ${leaves.length} leaves, more than the ` +
         `${MAX_REGISTRY_LEAVES} the depth-8 tree holds`,
     );
   }
-
   const tree = buildMerkleTree(leaves);
   const registry: RegistryFile = {
     name: input.name,
@@ -397,7 +371,6 @@ export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
     issuers,
     cities,
   };
-
   return {
     registry,
     proofFor(leafIndex: number): MerkleProof {

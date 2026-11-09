@@ -1,25 +1,18 @@
 /**
- * The list row every list screen is built from: traveler discovery, meetups, the lodging
- * directory and Profile settings (AAP 0.5.8).
+ * The list row every list screen is built from: traveler discovery, meetups, the lodging directory and Profile
+ * settings (AAP 0.5.8).
  *
- * Given `onPress` the row is a control — a `link` for rows that navigate, a `button`
- * otherwise — announced once, under an accessible name that is the row's own visible text:
- * label, then subtitle, then whatever `trailing` shows. Enter and Space activate a `button`
- * row, and Enter activates a `link` row. Without `onPress` the row is plain content with no
- * role at all.
+ * Given `onPress` the row is a control — a `link` for rows that navigate, a `button` otherwise — announced once,
+ * under an accessible name that is the row's own visible text: label, then subtitle, then whatever `trailing` shows.
+ * Enter and Space activate a `button` row, and Enter activates a `link` row; without `onPress` the row is plain
+ * content with no role at all.
  *
- * The row deliberately sets no `aria-label`. A name written from the label and subtitle
- * cannot contain the row's other visible text (WCAG 2.5.3, Label in Name), and the platform's
- * grouping of the row's own text already names it completely: VoiceOver and TalkBack read
- * one row, and react-native-web exposes one element whose browser-computed name is the
- * visible text. Every call site therefore keeps `trailing` to text that belongs in the name
- * and marks decoration `aria-hidden`.
- *
- * Every colour, space and type size comes from `@tablemate/shared` tokens: the text pairs
- * are `CONTRAST_PAIRS` records and the separator and focus ring are `NON_TEXT_CONTRAST_PAIRS`
- * records, so no pair is painted that has not been measured. On web the reserved band is the
- * focus ring a keyboard user sees, because `webFocusRingReset` keeps the browser's own outline
- * off a pressable row; a row without `onPress` is not focusable and carries no such reset.
+ * The row deliberately sets no `aria-label`: a name written from the label and subtitle cannot contain the row's other
+ * visible text (WCAG 2.5.3, Label in Name), and the platform's grouping of the row's own text already names it
+ * completely, so every call site keeps `trailing` to text that belongs in the name and marks decoration `aria-hidden`.
+ * The text pairs are `CONTRAST_PAIRS` records and the separator and focus ring are `NON_TEXT_CONTRAST_PAIRS` records,
+ * so no pair is painted that has not been measured; on web the reserved band is the focus ring a keyboard user sees,
+ * and a row without `onPress` is not focusable and carries no such reset.
  */
 import { useState } from 'react';
 import type { ReactNode } from 'react';
@@ -54,7 +47,6 @@ export interface ListItemProps {
   disabled?: boolean;
   /** Test handle, forwarded to the root element (`traveler-<id>`, `lodging-<id>`, ...). */
   testID?: string;
-
   /**
    * Opt-in minimum width for the text column, in points / CSS px. Set, the row wraps and `trailing`
    * moves to a line of its own once it can no longer sit beside a column this wide, so a narrow row
@@ -89,7 +81,6 @@ export function ListItem({
 }: ListItemProps): JSX.Element {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
-
   // The opt-in narrow-width rule: `flexWrap` on the row, a minimum width on the text column.
   // `trailing` keeps its intrinsic width either way (React Native's default `flexShrink` is 0), so
   // once the column can no longer hold `textMinWidth` beside it the trailing node takes a line of its
@@ -100,7 +91,6 @@ export function ListItem({
     styles.textColumn,
     textMinWidth === undefined ? null : { minWidth: textMinWidth },
   ];
-
   const children = (
     <>
       {leading}
@@ -113,7 +103,6 @@ export function ListItem({
       {trailing}
     </>
   );
-
   if (onPress === undefined) {
     return (
       <View style={rowBase} testID={testID}>
@@ -121,9 +110,7 @@ export function ListItem({
       </View>
     );
   }
-
   const activate: () => void = onPress;
-
   // react-native-web withholds `onPress` from an element whose role is `link`, assuming the
   // browser activates a link itself (PressResponder's key-up handler skips `role="link"`,
   // `a`, `button`, `input`, `select` and `textarea`). A row is a `div` with no href, so Enter
@@ -140,7 +127,6 @@ export function ListItem({
           },
         }
       : {};
-
   const rowStyle = ({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> => [
     rowBase,
     hovered && !disabled ? styles.rowHovered : null,
@@ -148,7 +134,6 @@ export function ListItem({
     focused ? styles.rowFocused : null,
     webFocusRingReset,
   ];
-
   return (
     <Pressable
       {...linkKeys}
@@ -207,7 +192,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.md,
     minHeight: MIN_TOUCH_TARGET,
-    paddingHorizontal: spacing.lg,
+    // The row's reserved focus band takes 2px where a card's own edge takes 1px, so the padding
+    // drops by that one pixel and the row's content edge lands where the text of the cards beside it
+    // does: all of them sit in the same padded column, and the band a keyboard user sees must not
+    // push the row's content out of line with them.
+    paddingHorizontal: spacing.lg - (borderWidths.control - borderWidths.edge),
     paddingVertical: spacing.sm,
   },
   // The wrapping variant the `textMinWidth` opt-in turns on: the row breaks between the text column

@@ -1,15 +1,6 @@
 /**
  * The Expo push sender's unit suite (AAP 0.3.3, 0.11.1): the bound on one chunk send, and the
  * ticket handling the `notifications` job reads.
- *
- * The bound is the module's own — `SEND_TIMEOUT_MS` in `src/notify/push.ts`, ten seconds, the
- * same fast-provider bound `notify/email.ts` gives a connection. AAP 0.11.1 makes it required:
- * every external call carries a timeout. It is also what stops a dark Expo endpoint from holding
- * the `notifications` job's only concurrency slot open with no BullMQ retry ever firing
- * (AAP 0.5.6). Every case drives the module's own `deps.client` seam, so none reaches the network.
- *
- * Timers are faked for the whole suite, so proving the ten-second bound costs the run nothing and
- * the handles the module leaves behind can be counted.
  */
 
 import { type ExpoPushMessage, type ExpoPushTicket } from 'expo-server-sdk';
@@ -39,7 +30,6 @@ const ACCESS_TOKEN = 'test-access-token';
  */
 const PUSH_TOKEN = `ExponentPushToken[${'a'.repeat(22)}]`;
 
-/** The notification under test, which carries no text the user wrote (AAP 0.3.4). */
 const MESSAGE = { title: 'A seat is held', body: 'Your proposal was accepted.' };
 
 /** A ticket case: the label, the one ticket Expo answers, and the result the send must report. */
@@ -71,10 +61,6 @@ const TICKET_CASES: readonly TicketCase[] = [
 
 /**
  * A stub Expo client: one chunk per call, and an answer the case chooses.
- *
- * `answer` takes the chunk and returns its tickets — or a promise that never settles, which is
- * the dark endpoint the bound exists for. `chunks` records every request the sender made, so a
- * case can also assert that no request was made at all.
  */
 function stubClient(answer: (messages: ExpoPushMessage[]) => Promise<ExpoPushTicket[]>): {
   client: ExpoPushClient;
@@ -136,11 +122,8 @@ describe('createPushSender', () => {
 describe('PushSender.send ticket handling', () => {
   it.each(TICKET_CASES)('%s', async (_label, ticket, sent, invalidTokens) => {
     const { client, chunks } = stubClient(() => Promise.resolve([ticket]));
-
     const result = await senderFor(client).send([PUSH_TOKEN], MESSAGE);
-
     expect(result).toEqual({ sent, invalidTokens: [...invalidTokens] });
-    // The chunk was requested once, under one message for the one token.
     expect(chunks).toHaveLength(1);
   });
 
@@ -149,9 +132,7 @@ describe('PushSender.send ticket handling', () => {
     // that would fail it — and every well-formed token beside it — is sent. The stub never
     // answers, so a request here would hang instead of returning this result.
     const { client, chunks } = stubClient(neverAnswers);
-
     const result = await senderFor(client).send(['not-an-expo-token'], MESSAGE);
-
     expect(result).toEqual({ invalidTokens: ['not-an-expo-token'], sent: 0 });
     expect(chunks).toEqual([]);
   });
@@ -159,28 +140,16 @@ describe('PushSender.send ticket handling', () => {
 
 describe('PushSender.send send bound', () => {
   it('fails a never-answering endpoint at the bound and clears the timer', async () => {
-    // The dark-endpoint case the bound exists for: nothing settles the request, so only the
-    // bound ends it — and it ends as a failed request, which is the code the job's retry path
-    // already handles. Without the bound the send would stay pending here, holding the job's
-    // only concurrency slot.
     const { client, chunks } = stubClient(neverAnswers);
     const otherTimers = vi.getTimerCount();
-
     const send = senderFor(client).send([PUSH_TOKEN], MESSAGE);
     const rejection = expect(send).rejects.toBeInstanceOf(PushDeliveryError);
-
-    // The send installed the bound, and nothing else of its own.
     expect(vi.getTimerCount()).toBe(otherTimers + 1);
-
     // One millisecond short of the bound the chunk is still in flight, and it is still armed.
     await vi.advanceTimersByTimeAsync(PUSH_SEND_TIMEOUT_MS - 1);
     expect(vi.getTimerCount()).toBe(otherTimers + 1);
-
     await vi.advanceTimersByTimeAsync(1);
     await rejection;
-
-    // The recorded code is the one a thrown request gets, the request is not repeated, and the
-    // timer is gone with the race.
     await expect(send).rejects.toMatchObject({ codes: ['request_failed'] });
     expect(chunks).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(otherTimers);

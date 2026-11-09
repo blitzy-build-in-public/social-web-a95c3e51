@@ -1,47 +1,31 @@
 /**
  * The four user routes of AAP 0.5.4 — a traveler's profile, their photo bytes, a block and a report
- * (AAP 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.7).
+ * (AAP 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.7). They are the whole HTTP surface of the `users` module, and
+ * each of them is deliberately thin: the rule it exposes is decided in one other place.
  *
- * They are the whole HTTP surface of the `users` module, and each of them is deliberately thin: the
- * rule it exposes is decided in one other place and only consumed here.
+ * `GET /users/:userId` answers the profile `loadProfile` returned for the viewer's disclosure tier
+ * (AAP 0.5.4, criterion 5). The three disclosure layers — `disclosure/tier.ts` decides the tier,
+ * `disclosure/select.ts` loads only that tier's columns and `disclosure/serialize.ts` copies that
+ * tier's keys through its own schema — are the only place a profile field is chosen, so nothing here
+ * re-decides a tier, filters a field or re-serializes one: a field above the viewer's tier is never
+ * loaded, let alone returned, whichever tier the pair earned (AAP 0.12.2).
  *
- *  - `GET /users/:userId` answers the profile `loadProfile` returned for the viewer's disclosure tier
- *    (AAP 0.5.4, criterion 5). The three disclosure layers — `disclosure/tier.ts` decides the tier,
- *    `disclosure/select.ts` loads only that tier's columns and `disclosure/serialize.ts` copies that
- *    tier's keys through its own schema — are the only place a profile field is chosen, so nothing
- *    here re-decides a tier, filters a field or re-serializes one: a field above the viewer's tier is
- *    never loaded, let alone returned, whichever tier the pair earned (AAP 0.12.2). `AnyTierProfile`
- *    is the shared schema the route declares, and `MeetupDto.counterpart` is built by the same
- *    function.
- *  - `GET /users/:userId/photo` asks `computeTier` for the pair's tier and compares it with
- *    `PHOTO_MIN_TIER` (2), which is the single gate on photo bytes (AAP 0.5.4). Every refusal answers
- *    `404 user_not_found`: a block in either direction, a tier below 2, an unknown or erased account
- *    and a traveler with no stored photo are indistinguishable, so the route cannot be used to probe
- *    who exists, who is blocked, or who has a photo.
- *  - `POST /users/:id/block` and `POST /users/:id/report` hand their work to `./safety.ts`, which owns
- *    the `Block` and `Report` rows, the cancellation of an open pair meetup (`cancelReason = block`,
- *    no forfeit and no reputation change) and the account-deletion write fence (AAP 0.5.3, 0.7.3).
- *    A report changes nothing else and is operator-visible only, so its reason travels in the body and
- *    back out to no one.
+ * `GET /users/:userId/photo` asks `computeTier` for the pair's tier and compares it with
+ * `PHOTO_MIN_TIER` (2), which is the single gate on photo bytes (AAP 0.5.4). Every refusal answers
+ * `404 user_not_found`: a block in either direction, a tier below 2, an unknown or erased account and a
+ * traveler with no stored photo are indistinguishable, so the route cannot be used to probe who exists,
+ * who is blocked, or who has a photo. `POST /users/:id/block` and `POST /users/:id/report` hand their
+ * work to `./safety.ts`, which owns the `Block` and `Report` rows (AAP 0.5.3, 0.7.3).
  *
  * All four are traveler feature routes, so the guard is installed once on this encapsulated context as
- * `app.addHook('onRequest', requireTraveler)` and never globally: the age gate covers exactly the
- * routes declared below and cannot reach `GET /me`, the public routes, the provider webhooks, the
- * console routes or `/admin/*` (AAP 0.5.4). A refusal is `401 token_invalid` or `403
- * age_gate_required`. The two reads carry no counter — AAP 0.5.4 limits the mutating routes and the two
- * state-writing reads, and neither is one — while the block and the report spread `mutatingLimits(app)`
- * for their per-IP `onRequest` and per-user `preHandler` allowances.
+ * `app.addHook('onRequest', requireTraveler)` and never globally (AAP 0.5.4); a refusal is `401
+ * token_invalid` or `403 age_gate_required`. The two reads carry no counter, while the block and the
+ * report spread `mutatingLimits(app)` for their per-IP `onRequest` and per-user `preHandler` allowances.
  *
- * The instant the profile read is judged at is `request.receivedAt`, the single instant `plugins/clock.ts`
- * stamps per request, so a proof's validity and the tier it feeds cannot be decided across the boundary
- * of the proof's own window (AAP 0.11.1). Nothing here logs: not a profile field, not a report reason,
- * not a contact handle, not a photo byte. A refusal is recorded once by `plugins/auth.ts`, and a block
- * or a report by `./safety.ts`.
- *
- * @see AAP 0.5.1 for the `users` component and its `routes`/`safety` files, 0.5.4 for the four routes,
- *   their schemas, their errors and the guard scope, 0.5.7 for the tier rule `computeTier` implements,
- *   0.5.2 for the `ProfilePhoto` row and erasure, 0.11.1 for the injected clock and the logging rules,
- *   0.11.2 for the response schemas, and 0.8.1 for this file.
+ * The instant the profile read is judged at is `request.receivedAt`, the single instant
+ * `plugins/clock.ts` stamps per request, so a proof's validity and the tier it feeds cannot be decided
+ * across the boundary of the proof's own window (AAP 0.11.1). Nothing here logs: not a profile field,
+ * not a report reason, not a contact handle, not a photo byte.
  */
 
 import { z } from 'zod';
@@ -66,11 +50,7 @@ import { block, report } from './safety.ts';
 
 import type { FastifyContextConfig, FastifyRequest } from 'fastify';
 
-// Type-only, so this module holds no run-time edge back to the module that registers it: `App` and
-// `AppServices` are the plan's one declaration of the instance and of what it hands its modules
-// (AAP 0.5.1), they are erased at compile time, and nothing of `app.ts` is read here at runtime.
-// `app.ts` registers this plugin with the `/v1` prefix, which is what makes the four routes below
-// `/v1/users/...`.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag all four routes group under: a member of the document's own vocabulary (AAP 0.11.2). */
@@ -99,7 +79,6 @@ const PHOTO_CACHE_CONTROL = 'private, no-store';
  */
 const RAW_PHOTO_RESPONSE = { rawResponse: true } as FastifyContextConfig;
 
-/** What the photo handler reads: the guarded database client, and nothing else. */
 type PhotoServices = Pick<AppServices, 'db'>;
 
 /**
@@ -110,8 +89,6 @@ type PhotoServices = Pick<AppServices, 'db'>;
  * a `TypeError` to be answered as `500 internal_error` where the contract requires `401 token_invalid`,
  * and no compiler check would catch it.
  *
- * @param request - The request the traveler guard admitted.
- * @returns The acting account's id.
  * @throws AppError `token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
@@ -130,12 +107,6 @@ function callerId(request: FastifyRequest): string {
  * a block in either direction, an unknown id, a deleted or deletion-requested account and a tombstone
  * whose handle and avatar seed erasure nulled — so the route is no oracle for which of them applies.
  *
- * @param services - The guarded database client, the keyring the tier-3 fields are decrypted with and
- *   the logger a decryption failure is recorded on.
- * @param viewerId - The authenticated caller, from `request.auth`.
- * @param targetId - The `:userId` path parameter, already validated as a uuid by `UserIdParams`.
- * @param now - The instant proof validity is judged at, from `request.receivedAt`.
- * @returns The tier's profile, already parsed by `PROFILE_SCHEMA_BY_TIER[tier]`.
  * @throws AppError `user_not_found` (404) whenever the pair, the target or the row is unservable.
  */
 async function profileForViewer(
@@ -145,11 +116,9 @@ async function profileForViewer(
   now: Date,
 ): Promise<AnyTierProfile> {
   const loaded = await loadProfile(services, viewerId, targetId, now);
-
   if (loaded === null) {
     throw new AppError('user_not_found');
   }
-
   return loaded.profile;
 }
 
@@ -167,10 +136,6 @@ async function profileForViewer(
  * disclosure field and never leave the server (AAP 0.5.2). Every refusal is the same `404`, so neither
  * the tier, the block state, the account's existence nor the presence of a photo can be told apart.
  *
- * @param services - The guarded database client.
- * @param viewerId - The authenticated caller, from `request.auth`.
- * @param targetId - The `:userId` path parameter, already validated as a uuid by `UserIdParams`.
- * @returns The stored WebP bytes, as the `BYTEA` column holds them.
  * @throws AppError `user_not_found` (404) for a block, a tier below {@link PHOTO_MIN_TIER}, an unknown
  *   or erased account, and a traveler with no photo.
  */
@@ -180,20 +145,16 @@ async function photoForViewer(
   targetId: string,
 ): Promise<Buffer> {
   const tier = await computeTier(services.db, viewerId, targetId);
-
   if (tier === 'blocked' || tier < PHOTO_MIN_TIER) {
     throw new AppError('user_not_found');
   }
-
   const row = await services.db.user.findFirst({
     where: { id: targetId, deletedAt: null, deletionRequestedAt: null },
     select: { profilePhoto: { select: { webp: true } } },
   });
-
   if (row === null || row.profilePhoto === null) {
     throw new AppError('user_not_found');
   }
-
   // `Buffer`, not the `Uint8Array` Prisma hands back: Fastify's reply sends a Node buffer as the body
   // it is, and the bytes are never copied anywhere else on the way out (AAP 0.11.1).
   return Buffer.from(row.profilePhoto.webp);
@@ -212,15 +173,9 @@ async function photoForViewer(
  * declared `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect
  * one, and `return Promise.resolve()` states that resolution rather than relying on the absence of an
  * `await` (AAP 0.11.2: `@typescript-eslint/require-await`).
- *
- * @param app - The route instance; its `services` carry the guarded database client, the keyring the
- *   tier-3 fields are decrypted with, the injected clock, the logger and the outbox every write opens
- *   its transaction through.
- * @see AAP 0.5.4 for the four routes, their schemas and their errors.
  */
 export default function usersRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
-
   app.get(
     '/users/:userId',
     {
@@ -243,7 +198,6 @@ export default function usersRoutes(app: App): Promise<void> {
     async (request) =>
       profileForViewer(app.services, callerId(request), request.params.userId, request.receivedAt),
   );
-
   // The reply's payload type is overridden to the `Buffer` the handler sends: the declared `200`
   // describes those bytes to the document as the string body the media type carries, while the
   // payload itself never reaches a serializer (AAP 0.11.2). `Params` is restated because supplying
@@ -273,14 +227,12 @@ export default function usersRoutes(app: App): Promise<void> {
     },
     async (request, reply) => {
       const bytes = await photoForViewer(app.services, callerId(request), request.params.userId);
-
       return reply
         .type(PHOTO_CONTENT_TYPE)
         .header('Cache-Control', PHOTO_CACHE_CONTROL)
         .send(bytes);
     },
   );
-
   app.post(
     '/users/:id/block',
     {
@@ -307,13 +259,11 @@ export default function usersRoutes(app: App): Promise<void> {
     },
     async (request, reply) => {
       await block(app.services, callerId(request), request.params.id);
-
       // `block` cancels an open pair meetup itself, through the state machine, and logs the one
       // `user_blocked` line; the answer is the contract's empty `204`.
       reply.code(204).send(null);
     },
   );
-
   app.post(
     '/users/:id/report',
     {
@@ -339,10 +289,8 @@ export default function usersRoutes(app: App): Promise<void> {
       // The reason is read from the validated body and passed on; it is never logged, never returned
       // and never attached to a notification (AAP 0.5.4, 0.11.1).
       await report(app.services, callerId(request), request.params.id, request.body);
-
       reply.code(204).send(null);
     },
   );
-
   return Promise.resolve();
 }

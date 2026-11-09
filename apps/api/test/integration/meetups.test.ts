@@ -1,30 +1,18 @@
 /**
- * The meetup routes end to end, with the saved-card setup a first proposal needs (AAP 0.8.1 lists
- * this file; AAP 0.5.4 names it for `POST /meetups`, `POST /meetups/:id/{accept,decline,cancel,hold}`,
- * `GET /meetups`, `GET /meetups/:id` and `POST /me/payment-setup`).
+ * The meetup routes end to end, with the saved-card setup a first proposal needs.
  *
  * Five groups, in the order the contract states the operations: the proposal's guards, which run in
- * the order AAP 0.5.4 lists them so a request breaking two rules is answered with the earlier one and
- * a `422 self_proposal` leaves no meetup and no PaymentIntent behind; the proposal that succeeds,
- * whose visibility, recipient deadline and lapse timer all follow from the initiator's hold; the
- * acceptance, which alone locks a meetup, which repeats a 3-D Secure attempt instead of authorizing a
- * second time, and whose retry after a refused card releases the attempt it superseded; the decline,
- * the cancellation with its exact two-hour boundary and the initiator's hold retry; and the two
- * own-meetup reads with their pagination, the funnel's `proposal_viewed`, and the payment setup.
+ * the contract's own order so a request breaking two rules is answered with the earlier one; the
+ * proposal that succeeds, whose visibility, recipient deadline and lapse timer all follow from the
+ * initiator's hold; the acceptance, which alone locks a meetup and whose retry after a refused card
+ * releases the attempt it superseded; the decline, the cancellation with its exact two-hour boundary
+ * and the initiator's hold retry; and the own-meetup reads with the payment setup.
  *
- * The assertions read what the handlers wrote and scheduled (AAP 0.11.1): the meetup's columns, its
- * deposits, its `AnalyticsEvent`s, the `notification` outbox rows a worker would deliver, the
- * settlement queue's `lapse-`, `remind-` and `settle-` jobs, and — in the mock topology alone — the
- * proxy's record of the PaymentIntents. Time moves only through `t.time`, so both sides of the
- * late-cancellation boundary are reached exactly. Titles carry `stripeModeLabel()` (AAP 0.12.1), and
- * the rows that need the proxy's control routes run under `describe.runIf(MOCK)` alone.
- *
- * @see AAP 0.5.3 for the meetup, deposit and cancellation rules and the exact two-hour boundary,
- *   0.5.4 for the routes, their schemas, their errors and their order, 0.5.7 for the funnel stages,
- *   the deposit levels and the deadlines, 0.3.2 for the hold recovery every `503` and `409` reports,
- *   0.7.3 for the recipient deadline, and 0.11.2 for the harness.
+ * The assertions read what the handlers wrote and scheduled: the meetup's columns, its deposits, its
+ * analytics rows, the `notification` outbox rows a worker would deliver, the settlement queue's
+ * `lapse-`, `remind-` and `settle-` jobs, and — in the mock topology alone — the proxy's record of
+ * the PaymentIntents.
  */
-
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -96,17 +84,12 @@ import type {
   VenueFixture,
 } from '../support/factories.ts';
 
-/* The app, the topology and the vocabulary of this file (AAP 0.11.2) */
-
 let t: TestApp;
 
-/** Whether this run drives the stateful proxy; only the control-route cases require it. */
 const MOCK = inject('stripeMode') === 'mock';
 
-/** The tag every title carries, so a run's output says which topology produced its evidence. */
 const MODE = stripeModeLabel(MOCK ? 'mock' : 'test');
 
-/** The city every fixture venue stands in and every fixture proof is for. */
 const CITY = 'lisbon';
 
 /** A second launch city: a proof for it is the `403 no_valid_proof` of a stay elsewhere. */
@@ -133,29 +116,17 @@ beforeEach(async () => {
   await t.seedCities();
 });
 
-/* The fixtures every case builds on (AAP 0.5.2, 0.11.2) */
-
-/** The two accounts and the venue a proposal needs, and the instant it would start at. */
 interface Proposal {
   readonly initiator: UserFixture;
   readonly recipient: UserFixture;
   readonly venue: VenueFixture;
-  /** The start a case proposes at, three days out unless it built the fixture itself. */
   readonly startsAt: Date;
 }
 
-/** What {@link proposal} may change about the fixture it writes. */
 interface ProposalOptions {
-  /** Which card both accounts hold; `none` leaves the account with no customer at all. */
   readonly card?: CardFixture;
-  /** Which card the recipient holds instead, for the 3-D Secure and refused-card cases. */
   readonly recipientCard?: CardFixture;
-  /**
-   * Whether both sides are given a valid proof for the venue's city. Default true: proposing needs
-   * one from each side, so the `403 no_valid_proof` rows build their own users.
-   */
   readonly proofs?: boolean;
-  /** The instant the proposal starts at. Default three days out, inside the five-day horizon. */
   readonly startsAt?: Date;
 }
 
@@ -163,7 +134,7 @@ interface ProposalOptions {
  * The base fixture of this suite: two consented travelers whose accounts can hold a card deposit, a
  * valid proof each for the venue's city, one active partner venue in that city, and a start three
  * days out — far enough ahead that the recipient deadline is the 48-hour one, and inside the
- * five-day horizon of AAP 0.5.4.
+ * five-day horizon.
  */
 async function proposal(options: ProposalOptions = {}): Promise<Proposal> {
   const now = t.time.now();
@@ -171,12 +142,10 @@ async function proposal(options: ProposalOptions = {}): Promise<Proposal> {
   const initiator = await makeUser(t, { card });
   const recipient = await makeUser(t, { card: options.recipientCard ?? card });
   const venue = await makeVenue(t, { cityId: CITY });
-
   if (options.proofs !== false) {
     await makeProof(t, initiator, { cityId: CITY });
     await makeProof(t, recipient, { cityId: CITY });
   }
-
   return {
     initiator,
     recipient,
@@ -185,7 +154,6 @@ async function proposal(options: ProposalOptions = {}): Promise<Proposal> {
   };
 }
 
-/** The members of the `POST /meetups` body a case replaces (AAP 0.5.4). */
 interface ProposeOverrides {
   readonly recipientId?: string;
   readonly venueId?: string;
@@ -194,10 +162,8 @@ interface ProposeOverrides {
 }
 
 /**
- * The body of `POST /meetups` for one fixture, with the members a case replaces.
- *
- * Typed as a plain object so a case can spread a replacement over it: the request goes through
- * `callRoute`, which serializes whatever it is given and lets the route's own strict schema decide.
+ * The body of `POST /meetups` for one fixture, with the members a case replaces. Typed as a plain
+ * object so a case can spread a replacement over it: the route's own strict schema decides.
  */
 function proposeBody(fixture: Proposal, overrides: ProposeOverrides = {}): object {
   return {
@@ -208,7 +174,6 @@ function proposeBody(fixture: Proposal, overrides: ProposeOverrides = {}): objec
   };
 }
 
-/** The body of a proposal among fixtures a case built itself, three days out by default. */
 function bodyAmong(
   recipient: ActorRef,
   venue: VenueFixture,
@@ -223,14 +188,10 @@ function bodyAmong(
   };
 }
 
-/* The routes this suite drives (AAP 0.5.4) */
-
-/** One `POST /meetups` as `actor`, with the body given. */
 async function propose(actor: ActorRef, body: object): Promise<RouteResponse> {
   return callRoute(t.app, { method: 'POST', url: MEETUPS_URL, as: await t.tokenFor(actor), body });
 }
 
-/** One `POST /meetups/:id/accept` as `actor`. */
 async function accept(actor: ActorRef, meetupId: string): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'POST',
@@ -239,7 +200,6 @@ async function accept(actor: ActorRef, meetupId: string): Promise<RouteResponse>
   });
 }
 
-/** One `POST /meetups/:id/decline` as `actor`. */
 async function decline(actor: ActorRef, meetupId: string): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'POST',
@@ -248,7 +208,6 @@ async function decline(actor: ActorRef, meetupId: string): Promise<RouteResponse
   });
 }
 
-/** One `POST /meetups/:id/cancel` as `actor`. */
 async function cancel(actor: ActorRef, meetupId: string): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'POST',
@@ -257,12 +216,10 @@ async function cancel(actor: ActorRef, meetupId: string): Promise<RouteResponse>
   });
 }
 
-/** One `POST /meetups/:id/hold` as `actor`. */
 async function retryHold(actor: ActorRef, meetupId: string): Promise<RouteResponse> {
   return callRoute(t.app, { method: 'POST', url: holdUrl(meetupId), as: await t.tokenFor(actor) });
 }
 
-/** One `GET /meetups` as `actor`, with the filters given. */
 async function listMeetups(
   actor: ActorRef,
   query: Readonly<Record<string, string>> = {},
@@ -275,14 +232,10 @@ async function listMeetups(
   });
 }
 
-/** One `GET /meetups/:id` as `actor`. */
 async function readMeetup(actor: ActorRef, meetupId: string): Promise<RouteResponse> {
   return callRoute(t.app, { method: 'GET', url: meetupUrl(meetupId), as: await t.tokenFor(actor) });
 }
 
-/* What the handlers wrote (AAP 0.11.1: state from the tables, never from a second call) */
-
-/** Every column of a meetup this file asserts on. */
 interface MeetupRow {
   readonly status: MeetupStatus;
   readonly cancelReason: string | null;
@@ -298,7 +251,6 @@ interface MeetupRow {
   readonly finalAt: Date | null;
 }
 
-/** The meetup's own columns, read once per assertion group. */
 function meetupRow(meetupId: string): Promise<MeetupRow> {
   return t.services.db.meetup.findUniqueOrThrow({
     where: { id: meetupId },
@@ -319,7 +271,6 @@ function meetupRow(meetupId: string): Promise<MeetupRow> {
   });
 }
 
-/** One deposit, with the columns the hold and settlement cases read. */
 interface DepositRow {
   readonly id: string;
   readonly ownerId: string;
@@ -329,7 +280,6 @@ interface DepositRow {
   readonly currentPaymentIntentId: string | null;
 }
 
-/** A meetup's deposits, keyed by the account that owns each one. */
 async function depositsByOwner(meetupId: string): Promise<Map<string, DepositRow>> {
   const written = await t.services.db.deposit.findMany({
     where: { meetupId },
@@ -345,7 +295,6 @@ async function depositsByOwner(meetupId: string): Promise<Map<string, DepositRow
   return new Map(written.map((deposit) => [deposit.ownerId, deposit]));
 }
 
-/** One deposit out of a meetup's map, or a failure naming the side that holds none. */
 function depositIn(written: Map<string, DepositRow>, owner: ActorRef): DepositRow {
   const deposit = written.get(owner.id);
   if (deposit === undefined) {
@@ -354,12 +303,10 @@ function depositIn(written: Map<string, DepositRow>, owner: ActorRef): DepositRo
   return deposit;
 }
 
-/** One account's deposit on a meetup, or a failure naming what the write did not leave. */
 async function depositOf(meetupId: string, owner: ActorRef): Promise<DepositRow> {
   return depositIn(await depositsByOwner(meetupId), owner);
 }
 
-/** Every analytics row a meetup wrote, oldest first. */
 interface EventRow {
   readonly name: string;
   readonly actorHash: string | null;
@@ -376,7 +323,6 @@ function eventsFor(meetupId: string): Promise<EventRow[]> {
   });
 }
 
-/** The one meetup in the database, which every single-proposal case asserts on. */
 async function onlyMeetupId(): Promise<string> {
   const written = await t.services.db.meetup.findMany({ select: { id: true } });
   expect(written).toHaveLength(1);
@@ -387,7 +333,6 @@ async function onlyMeetupId(): Promise<string> {
   return row.id;
 }
 
-/** A proposal made through the real route, whose hold landed and which the recipient can see. */
 async function visibleProposal(fixture: Proposal): Promise<ProposeResponse> {
   const response = await propose(fixture.initiator, proposeBody(fixture));
   expect(response.status).toBe(201);
@@ -396,12 +341,10 @@ async function visibleProposal(fixture: Proposal): Promise<ProposeResponse> {
   return created;
 }
 
-/** How many analytics rows of `name` a meetup wrote. */
 function countEvent(meetupId: string, name: string): Promise<number> {
   return t.services.db.analyticsEvent.count({ where: { meetupId, name } });
 }
 
-/** The one analytics row of `name` a meetup wrote, or a failure naming what is missing. */
 async function eventOf(meetupId: string, name: string): Promise<EventRow> {
   const event = (await eventsFor(meetupId)).find((row) => row.name === name);
   if (event === undefined) {
@@ -410,12 +353,10 @@ async function eventOf(meetupId: string, name: string): Promise<EventRow> {
   return event;
 }
 
-/** Every deposit status of a meetup, sorted, for the both-sides assertions. */
 async function depositStatuses(meetupId: string): Promise<string[]> {
   return [...(await depositsByOwner(meetupId)).values()].map((row) => row.status).sort();
 }
 
-/** One of a meetup's deposits' operations, with the status it reached. */
 async function operationsOf(
   meetupId: string,
   kind: 'hold' | 'release' | 'capture' | 'refund',
@@ -424,14 +365,12 @@ async function operationsOf(
     where: { meetupId },
     select: { id: true },
   });
-
   return t.services.db.paymentOperation.findMany({
     where: { depositId: { in: deposits.map((deposit) => deposit.id) }, kind },
     select: { status: true },
   });
 }
 
-/** The PaymentIntents the proxy holds for one deposit's attempts, in mock mode alone. */
 async function intentsForDeposit(depositId: string): Promise<{ id: string; status: string }[]> {
   const proxy = t.stripe.proxy;
   if (proxy === null) {
@@ -452,15 +391,14 @@ async function expectAttemptIntents(depositId: string, count: number): Promise<v
 }
 
 /**
- * Assert one side's hold was cancelled by our own release and not lost (AAP 0.5.3), in mock mode
- * alone: `OUR_CANCELLATION_REASON` is the one reason Stripe reports that is not a hold loss.
+ * Assert one side's hold was cancelled by our own release and not lost, in mock mode alone:
+ * `OUR_CANCELLATION_REASON` is the one reason Stripe reports that is not a hold loss.
  */
 async function expectReleasedByUs(deposits: readonly DepositRow[]): Promise<void> {
   const proxy = t.stripe.proxy;
   if (proxy === null) {
     return;
   }
-
   for (const deposit of deposits) {
     const intents = await proxy.paymentIntents({ metadata: { depositId: deposit.id } });
     expect(intents).toHaveLength(1);
@@ -469,25 +407,21 @@ async function expectReleasedByUs(deposits: readonly DepositRow[]): Promise<void
   }
 }
 
-/** The salt the events' actor hash is keyed with, as `analytics/emit.ts` keys it. */
 function hashOf(actor: ActorRef): string {
   return actorHash(t.env.ANALYTICS_SALT, actor.id);
 }
 
-/** One `notification` outbox row's payload, as the worker resolves a recipient from it. */
 interface NotificationRow {
   readonly kind: string | null;
   readonly userId: string | null;
 }
 
-/** Every notification a case's transaction committed, oldest first. */
 async function notifications(): Promise<NotificationRow[]> {
   const written = await t.services.db.outboxMessage.findMany({
     where: { kind: 'notification' },
     select: { payload: true },
     orderBy: { createdAt: 'asc' },
   });
-
   return written.map((row) => {
     const payload = row.payload;
     if (typeof payload !== 'object' || payload === null) {
@@ -501,12 +435,10 @@ async function notifications(): Promise<NotificationRow[]> {
   });
 }
 
-/** The settlement queue's job under `jobId`, or undefined when no timer is there. */
 function jobAt(jobId: string) {
   return t.services.queues.get(QUEUE.settlement).getJob(jobId);
 }
 
-/** Assert one delay job exists under `jobId` with `name`, and answer its delay in milliseconds. */
 async function expectTimer(jobId: string, name: string, expectedDelayMs: number): Promise<number> {
   const job = await jobAt(jobId);
   expect(job?.name).toBe(name);
@@ -517,13 +449,9 @@ async function expectTimer(jobId: string, name: string, expectedDelayMs: number)
   return delay;
 }
 
-/* The provider, reached through the proxy's control routes in mock mode alone (AAP 0.3.2) */
-
 /**
- * The PaymentIntents the proxy holds for one account's customer, in mock mode alone.
- *
- * In `test` mode the provider's objects are the operator's own and this reads nothing; the deposit
- * rows cover the same rules there.
+ * The PaymentIntents the proxy holds for one account's customer, in mock mode alone: in `test` mode
+ * the provider's objects are the operator's own and the deposit rows cover the same rules.
  */
 async function intentsFor(user: UserFixture): Promise<{ id: string; status: string }[]> {
   const proxy = t.stripe.proxy;
@@ -536,10 +464,10 @@ async function intentsFor(user: UserFixture): Promise<{ id: string; status: stri
 
 /**
  * Drop the next PaymentIntent create: the provider's answer to a hold never arrives, which is the
- * ambiguous result of AAP 0.3.2 whose effect stands while no PaymentIntent id is known.
+ * ambiguous result whose effect stands while no PaymentIntent id is known.
  *
- * A `fail` fault is used rather than `dropNextResponse`, which the proxy applies around an answer
- * that a loopback client can still read: a 5xx is what makes the create's outcome unknown to us.
+ * A `fail` fault is used rather than `dropNextResponse`, which the proxy applies around an answer that
+ * a loopback client can still read: a 5xx is what makes the create's outcome unknown to us.
  */
 async function failHoldCreate(): Promise<void> {
   const proxy = t.stripe.proxy;
@@ -552,7 +480,6 @@ async function failHoldCreate(): Promise<void> {
 /** Stripe's published test method that attaches successfully and then refuses the charge. */
 const STRIPE_DECLINED_CARD = 'pm_card_chargeCustomerFail';
 
-/** Attach a card fixture to a customer, in either topology: the control route, or Stripe itself. */
 async function attachCardTo(customer: string, card: string): Promise<void> {
   const proxy = t.stripe.proxy;
   if (proxy !== null) {
@@ -562,7 +489,6 @@ async function attachCardTo(customer: string, card: string): Promise<void> {
     await proxy.attachCard(customer, card);
     return;
   }
-
   const api = stripeApi(t);
   const attached = await api.post<{ id: string }>(
     `/v1/payment_methods/${encodeURIComponent(card)}/attach`,
@@ -573,7 +499,6 @@ async function attachCardTo(customer: string, card: string): Promise<void> {
   });
 }
 
-/** Give `user` a card through the customer its account records. */
 async function attachCard(user: UserFixture, card: string): Promise<void> {
   const customer = user.stripeCustomerId;
   if (customer === null) {
@@ -586,16 +511,12 @@ async function attachCard(user: UserFixture, card: string): Promise<void> {
  * test method that attaches and then declines the charge in `test` (AAP 0.11.2). */
 const DECLINED_CARD: string = MOCK ? TEST_CARDS.chargeDeclined : STRIPE_DECLINED_CARD;
 
-/** The card fixture that authorizes into a capturable hold in either topology. */
 const WORKING_CARD: string = TEST_CARDS.visa;
 
-/** Whether `card` is one of the fixtures the proxy's control route accepts (AAP 0.11.2). */
 function isProxyCard(card: string): card is TestCardId {
   return Object.values(TEST_CARDS).some((id) => id === card);
 }
 
-/** Walk the saved-card step a client completes before retrying, for an account that had none: the
- * customer `POST /me/payment-setup` creates, and a card attached to it. */
 async function setUpCard(actor: ActorRef, card: string): Promise<string> {
   const response = await callRoute(t.app, {
     method: 'POST',
@@ -603,7 +524,6 @@ async function setUpCard(actor: ActorRef, card: string): Promise<string> {
     as: await t.tokenFor(actor),
   });
   expect(response.status).toBe(200);
-
   const row = await t.services.db.user.findUniqueOrThrow({
     where: { id: actor.id },
     select: { stripeCustomerId: true },
@@ -615,9 +535,6 @@ async function setUpCard(actor: ActorRef, card: string): Promise<string> {
   return row.stripeCustomerId;
 }
 
-/* POST /meetups: the guards, in the order AAP 0.5.4 lists them */
-
-/** One guard that runs after `422 self_proposal`, and what makes it apply. */
 interface SelfProposalRow {
   readonly name: string;
   readonly overrides: ProposeOverrides;
@@ -637,7 +554,6 @@ const SELF_PROPOSAL_BREACHES: readonly SelfProposalRow[] = [
   { name: 'an unknown venue beside it', overrides: { venueId: randomUUID() } },
 ];
 
-/** One way the recipient or the venue does not exist for the caller (AAP 0.5.4). */
 interface NotFoundRow {
   readonly name: string;
   readonly missing: 'venue' | 'recipient' | 'blocked-by-recipient' | 'blocked-by-initiator';
@@ -660,7 +576,6 @@ const NOT_FOUND_ROWS: readonly NotFoundRow[] = [
   },
 ];
 
-/** Which side's proof is missing, or is for the wrong city (AAP 0.5.7). */
 interface NoProofRow {
   readonly name: string;
   readonly without: 'initiator' | 'recipient' | 'initiator-elsewhere';
@@ -673,7 +588,6 @@ const NO_PROOF_ROWS: readonly NoProofRow[] = [
   { name: 'an initiator whose proof is for another city', without: 'initiator-elsewhere' },
 ];
 
-/** One deposit level the contract does not offer, and what it is (AAP 0.5.7). */
 interface DepositRefusalRow {
   readonly name: string;
   readonly depositCents: number;
@@ -686,7 +600,6 @@ const DEPOSIT_REFUSALS: readonly DepositRefusalRow[] = [
   { name: 'a deposit below the lowest level', depositCents: 499 },
 ];
 
-/** Which card leaves the initiator's hold unplaceable, and the state it leaves behind (AAP 0.5.4). */
 interface HoldFailureRow {
   readonly name: string;
   readonly card: CardFixture;
@@ -705,7 +618,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
       ...proposeBody(fixture),
       recipientId: fixture.initiator.id,
     });
-
     expectError(response, 422, 'self_proposal');
     expect(await t.services.db.meetup.count()).toBe(0);
     expect(await t.services.db.deposit.count()).toBe(0);
@@ -723,17 +635,14 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
         ...proposeBody(fixture, entry.overrides),
         recipientId: fixture.initiator.id,
       });
-
       expectError(response, 422, 'self_proposal');
       expect(await t.services.db.meetup.count()).toBe(0);
     },
   );
-
   it.each(rows(NOT_FOUND_ROWS))(`${MODE} refuses $name`, async (entry) => {
     const fixture = await proposal();
     let body = proposeBody(fixture);
     let code: ErrorCode = 'user_not_found';
-
     if (entry.missing === 'venue') {
       body = proposeBody(fixture, { venueId: randomUUID() });
       code = 'venue_not_found';
@@ -744,7 +653,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
     } else {
       await makeBlock(t, fixture.initiator, fixture.recipient);
     }
-
     expectError(await propose(fixture.initiator, body), 404, code);
     expect(await t.services.db.meetup.count()).toBe(0);
   });
@@ -753,7 +661,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
     const initiator = await makeUser(t);
     const recipient = await makeUser(t);
     const venue = await makeVenue(t, { cityId: CITY });
-
     if (entry.without === 'initiator') {
       await makeProof(t, recipient, { cityId: CITY });
     } else if (entry.without === 'recipient') {
@@ -762,7 +669,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
       await makeProof(t, initiator, { cityId: OTHER_CITY });
       await makeProof(t, recipient, { cityId: CITY });
     }
-
     expectError(await propose(initiator, bodyAmong(recipient, venue)), 403, 'no_valid_proof');
     expect(await t.services.db.meetup.count()).toBe(0);
   });
@@ -770,7 +676,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
   it(`${MODE} refuses a proposal at a venue that is not an active partner`, async () => {
     const fixture = await proposal();
     const inactive = await makeVenue(t, { cityId: CITY, isActivePartner: false });
-
     expectError(
       await propose(fixture.initiator, proposeBody(fixture, { venueId: inactive.id })),
       422,
@@ -782,7 +687,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
   it(`${MODE} refuses a start in the past, and one past the five-day horizon`, async () => {
     const fixture = await proposal();
     const now = t.time.now();
-
     expectError(
       await propose(fixture.initiator, {
         ...proposeBody(fixture),
@@ -805,19 +709,16 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
   it(`${MODE} accepts a start at exactly five days, the far end of the horizon`, async () => {
     const fixture = await proposal();
     const startsAt = new Date(t.time.now().getTime() + START_HORIZON_DAYS * DAY_MS);
-
     const response = await propose(fixture.initiator, {
       ...proposeBody(fixture),
       startsAt: startsAt.toISOString(),
     });
-
     expect(response.status).toBe(201);
     expect(ProposeResponse.parse(response.json()).status).toBe('proposed');
   });
 
   it.each(rows(DEPOSIT_REFUSALS))(`${MODE} refuses $name`, async (entry) => {
     const fixture = await proposal();
-
     expectError(
       await propose(fixture.initiator, proposeBody(fixture, { depositCents: entry.depositCents })),
       422,
@@ -829,7 +730,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
   it(`${MODE} refuses a second proposal for a pair that already has one open`, async () => {
     const fixture = await proposal();
     expect((await propose(fixture.initiator, proposeBody(fixture))).status).toBe(201);
-
     // The open meetup is found in either initiator/recipient order (AAP 0.5.2).
     expectError(await propose(fixture.initiator, proposeBody(fixture)), 409, 'meetup_exists');
     expectError(
@@ -848,9 +748,7 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
       await makeProof(t, initiator, { cityId: CITY });
       await makeProof(t, recipient, { cityId: CITY });
       const venue = await makeVenue(t, { cityId: CITY });
-
       expectError(await propose(initiator, bodyAmong(recipient, venue)), 402, 'hold_failed');
-
       // The meetup survived the refusal, invisible to the recipient, and the initiator recovers it
       // from its own list — where it shows the failed hold and the retry it needs (AAP 0.5.4).
       const meetupId = await onlyMeetupId();
@@ -858,39 +756,33 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
       expect(stored.status).toBe('proposed');
       expect(stored.proposalVisibleAt).toBeNull();
       expect((await depositOf(meetupId, initiator)).status).toBe('failed');
-
       const own = await listMeetups(initiator, { role: 'initiator', status: 'proposed' });
       expect(own.status).toBe(200);
       const page = MeetupListResponse.parse(own.json());
       expect(page.items.map((item) => item.id)).toEqual([meetupId]);
       expect(page.items[0]?.initiatorHold).toBe('failed');
       expect(page.items[0]?.nextAction).toBe('retry_hold');
-
       // The recipient sees nothing at all: neither the detail nor their own list (AAP 0.5.3).
       expectError(await readMeetup(recipient, meetupId), 404, 'meetup_not_found');
       const theirs = await listMeetups(recipient);
       expect(MeetupListResponse.parse(theirs.json()).items).toHaveLength(0);
     },
   );
-
   it.runIf(MOCK)(
     `${MODE} answers 503 payment_unavailable when the hold create's answer is lost`,
     async () => {
       const fixture = await proposal();
       await failHoldCreate();
-
       expectError(
         await propose(fixture.initiator, proposeBody(fixture)),
         503,
         'payment_unavailable',
       );
-
       const meetupId = await onlyMeetupId();
       const stored = await meetupRow(meetupId);
       expect(stored.status).toBe('proposed');
       expect(stored.proposalVisibleAt).toBeNull();
       expect((await depositOf(meetupId, fixture.initiator)).status).toBe('pending');
-
       // One attempt, and no second authorization: the deposit stays pending until the replay
       // resolves it, and the client recovers through its own list (AAP 0.3.2).
       expect(await t.services.db.deposit.count()).toBe(1);
@@ -900,9 +792,6 @@ describe(`POST ${MEETUPS_URL} — the guard order and the hold (AAP 0.5.4)`, () 
   );
 });
 
-/* The proposal that succeeds: visibility, the recipient deadline, the funnel and its timer */
-
-/** One instant column, read as epoch milliseconds and failing when nothing was written. */
 function instantOf(value: Date | null): number {
   if (value === null) {
     throw new Error('the expected instant was not written');
@@ -910,7 +799,6 @@ function instantOf(value: Date | null): number {
   return value.getTime();
 }
 
-/** The two starts that decide which half of the deadline rule applies (AAP 0.7.3). */
 interface DeadlineRow {
   readonly name: string;
   readonly aheadMs: number;
@@ -928,12 +816,10 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
     const fixture = await proposal();
     const now = t.time.now();
     const response = await propose(fixture.initiator, proposeBody(fixture));
-
     expect(response.status).toBe(201);
     const created = ProposeResponse.parse(response.json());
     expect(created.status).toBe('proposed');
     expect(created.clientSecret).not.toBe('');
-
     const stored = await meetupRow(created.meetupId);
     expect(stored.status).toBe('proposed');
     expect(instantOf(stored.proposalVisibleAt)).toBe(now.getTime());
@@ -941,7 +827,6 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
     expect(stored.lockedAt).toBeNull();
     expect(stored.finalAt).toBeNull();
     expect((await depositOf(created.meetupId, fixture.initiator)).status).toBe('held');
-
     // The recipient can see it now, and reads their own side of it: nothing held, and the
     // acceptance as the one thing left to do (AAP 0.5.4).
     const detail = await readMeetup(fixture.recipient, created.meetupId);
@@ -963,37 +848,30 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
       const fixture = await proposal({ startsAt: new Date(now.getTime() + entry.aheadMs) });
       const response = await propose(fixture.initiator, proposeBody(fixture));
       expect(response.status).toBe(201);
-
       const meetupId = ProposeResponse.parse(response.json()).meetupId;
       const stored = await meetupRow(meetupId);
       const expected =
         entry.expected === 'now+48h'
           ? now.getTime() + RECIPIENT_DEADLINE_HOURS * HOUR_MS
           : fixture.startsAt.getTime();
-
       expect(instantOf(stored.recipientDeadline)).toBe(expected);
       expect(instantOf(stored.recipientDeadline)).toBeLessThanOrEqual(fixture.startsAt.getTime());
-
       // The invisible-window lapse was replaced by one at the deadline it now holds (AAP 0.5.3).
       await expectTimer(lapseJobId(meetupId), JOB.settlement.lapse, expected - now.getTime());
     },
   );
-
   it(`${MODE} notifies the recipient and records the funnel's proposal_sent once`, async () => {
     const fixture = await proposal();
     const created = ProposeResponse.parse(
       (await propose(fixture.initiator, proposeBody(fixture))).json(),
     );
-
     expect(await notifications()).toEqual([
       { kind: NotificationKind.enum.proposal_received, userId: fixture.recipient.id },
     ]);
-
     const events = await eventsFor(created.meetupId);
     expect(events.map((event) => event.name)).toEqual(['proposal_sent']);
     expect(events[0]?.actorHash).toBe(hashOf(fixture.initiator));
     expect(events[0]?.cityId).toBe(CITY);
-
     // The pair's framing variant is fixed here and never recomputed (AAP 0.5.7).
     const stored = await meetupRow(created.meetupId);
     expect(VariantPairing.options).toContain(stored.variantPairing);
@@ -1007,14 +885,12 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
     const fixture = await proposal({ card: '3ds' });
     const response = await propose(fixture.initiator, proposeBody(fixture));
     expect(response.status).toBe(201);
-
     const created = ProposeResponse.parse(response.json());
     const meetupId = created.meetupId;
     const stored = await meetupRow(meetupId);
     expect(stored.proposalVisibleAt).toBeNull();
     expect(stored.recipientDeadline).toBeNull();
     expect((await depositOf(meetupId, fixture.initiator)).status).toBe('requires_action');
-
     if (MOCK) {
       const intents = await intentsFor(fixture.initiator);
       expect(intents).toHaveLength(1);
@@ -1022,13 +898,11 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
       // The secret belongs to the caller's own attempt, and to no other (AAP 0.5.4).
       expect(created.clientSecret.startsWith(intents[0]?.id ?? '')).toBe(true);
     }
-
     expectError(await readMeetup(fixture.recipient, meetupId), 404, 'meetup_not_found');
     const own = await listMeetups(fixture.initiator, { role: 'initiator' });
     const item = MeetupListResponse.parse(own.json()).items[0];
     expect(item?.initiatorHold).toBe('requires_action');
     expect(item?.nextAction).toBe('confirm_hold');
-
     // The invisible window still carries its own lapse, at `createdAt + 48 h` (AAP 0.5.3).
     await expectTimer(
       lapseJobId(meetupId),
@@ -1038,9 +912,6 @@ describe(`POST ${MEETUPS_URL} — the proposal that succeeds (AAP 0.5.3, 0.5.7)`
   });
 });
 
-/* The acceptance: who may lock, and what the lock leaves behind */
-
-/** One caller a route refuses, and the answer it gives (AAP 0.5.4). */
 interface ActorRow {
   readonly name: string;
   readonly actor: 'initiator' | 'stranger';
@@ -1064,7 +935,6 @@ const DECLINE_REFUSALS: readonly ActorRow[] = [
   { name: 'a stranger', actor: 'stranger', httpStatus: 404, code: 'meetup_not_found' },
 ];
 
-/** One status an accept cannot be made from (AAP 0.5.4). */
 interface StatusRow {
   readonly name: string;
   readonly status: MeetupStatus;
@@ -1079,7 +949,6 @@ const NOT_PROPOSED_ROWS: readonly StatusRow[] = [
 describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () => {
   it(`${MODE} answers 404 meetup_not_found for an unknown meetup`, async () => {
     const fixture = await proposal();
-
     expectError(await accept(fixture.recipient, randomUUID()), 404, 'meetup_not_found');
   });
 
@@ -1089,17 +958,14 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
       const fixture = await proposal();
       const created = await visibleProposal(fixture);
       const actor = entry.actor === 'initiator' ? fixture.initiator : await makeUser(t);
-
       expectError(await accept(actor, created.meetupId), entry.httpStatus, entry.code);
       expect((await meetupRow(created.meetupId)).status).toBe('proposed');
       expect(await t.services.db.deposit.count({ where: { role: 'recipient' } })).toBe(0);
     },
   );
-
   it(`${MODE} answers 410 proposal_lapsed past the deadline no pass has acted on`, async () => {
     const fixture = await proposal();
     const created = await visibleProposal(fixture);
-
     // One hour past the 48-hour deadline, with no background pass running in a suite: the meetup is
     // still `proposed`, so the refusal is the deadline's and not a stored status's (AAP 0.5.4).
     t.time.advance({ hours: RECIPIENT_DEADLINE_HOURS + 1 });
@@ -1116,7 +982,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
       recipient: fixture.recipient,
       venue: fixture.venue,
     });
-
     expectError(await accept(fixture.recipient, meetup.id), 410, 'proposal_lapsed');
   });
 
@@ -1129,7 +994,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
       venue: fixture.venue,
       startsAt: fixture.startsAt,
     });
-
     expectError(await accept(fixture.recipient, meetup.id), 409, 'not_proposed');
   });
 
@@ -1137,24 +1001,20 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     const fixture = await proposal();
     const created = await visibleProposal(fixture);
     const now = t.time.now();
-
     const response = await accept(fixture.recipient, created.meetupId);
     expect(response.status).toBe(200);
     const accepted = AcceptResponse.parse(response.json());
     expect(accepted.status).toBe('locked');
     expect(accepted.clientSecret).not.toBe('');
-
     const stored = await meetupRow(created.meetupId);
     expect(stored.status).toBe('locked');
     expect(instantOf(stored.lockedAt)).toBe(now.getTime());
     expect(instantOf(stored.recipientAcceptedAt)).toBe(now.getTime());
     expect(stored.finalAt).toBeNull();
-
     // Both sides hold their deposit, and neither was charged anything (AAP 0.5.3).
     const deposits = await depositsByOwner(created.meetupId);
     expect(deposits.get(fixture.initiator.id)?.status).toBe('held');
     expect(deposits.get(fixture.recipient.id)?.status).toBe('held');
-
     // The funnel: one acceptance, the recipient's own lock, and one `meetup_locked` per participant
     // (AAP 0.5.7). Counted rather than ordered, because the injected clock is frozen and every row
     // of one request shares its instant.
@@ -1173,7 +1033,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     expect(lockedEvents.map((event) => event.actorHash).sort()).toEqual(
       [hashOf(fixture.initiator), hashOf(fixture.recipient)].sort(),
     );
-
     // Both parties are told, and a locked meetup owes no proposal deadline any more.
     const notified = await notifications();
     expect(
@@ -1185,7 +1044,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     expect(instantOf(stored.recipientDeadline)).toBe(
       instantOf(stored.proposalVisibleAt) + RECIPIENT_DEADLINE_HOURS * HOUR_MS,
     );
-
     // The reminder opens the check-in window and the settlement closes it (AAP 0.5.3).
     await expectTimer(
       remindJobId(created.meetupId),
@@ -1202,18 +1060,15 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
   it(`${MODE} answers proposed with the recipient's own secret while 3-D Secure is pending`, async () => {
     const fixture = await proposal({ recipientCard: '3ds' });
     const created = await visibleProposal(fixture);
-
     const first = await accept(fixture.recipient, created.meetupId);
     expect(first.status).toBe(200);
     const answered = AcceptResponse.parse(first.json());
     expect(answered.status).toBe('proposed');
-
     const deposit = await depositOf(created.meetupId, fixture.recipient);
     expect(deposit.status).toBe('requires_action');
     expect(deposit.currentAttempt).toBe(1);
     // The secret is the recipient's own attempt's, and never the initiator's (AAP 0.5.4).
     expect(answered.clientSecret).not.toBe(created.clientSecret);
-
     if (MOCK) {
       const intents = await intentsForDeposit(deposit.id);
       expect(intents).toHaveLength(1);
@@ -1223,7 +1078,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
         answered.clientSecret.startsWith(created.clientSecret.replace(/_secret_.*$/, '')),
       ).toBe(false);
     }
-
     // A repeated accept returns the same secret and creates no second authorization.
     const second = await accept(fixture.recipient, created.meetupId);
     expect(second.status).toBe(200);
@@ -1236,15 +1090,12 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
   it(`${MODE} retries a refused recipient card, releasing the attempt it superseded and locking`, async () => {
     const fixture = await proposal({ recipientCard: 'declining' });
     const created = await visibleProposal(fixture);
-
     expectError(await accept(fixture.recipient, created.meetupId), 402, 'hold_failed');
-
     // The meetup is unchanged, the refusal is recoverable, and the failed attempt stands alone.
     expect((await meetupRow(created.meetupId)).status).toBe('proposed');
     const failed = await depositOf(created.meetupId, fixture.recipient);
     expect(failed.status).toBe('failed');
     expect(failed.currentAttempt).toBe(1);
-
     // The retry supersedes that attempt: this request carries the release out and then places attempt
     // 2 behind it, so the answer is that attempt's own secret — and the money has moved by the time
     // the client reads the meetup again (AAP 0.3.2, 0.5.4).
@@ -1254,7 +1105,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     const answered = AcceptResponse.parse(response.json());
     expect(answered.status).toBe('locked');
     expect(answered.clientSecret.length).toBeGreaterThan(0);
-
     const retried = await depositOf(created.meetupId, fixture.recipient);
     expect(retried.status).toBe('held');
     expect(retried.currentAttempt).toBe(2);
@@ -1264,7 +1114,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     });
     expect(releases.map((row) => row.status)).toEqual(['succeeded']);
     expect(await t.services.db.deposit.count({ where: { role: 'recipient' } })).toBe(1);
-
     // The lock is what that recovery left, and a further accept has nothing to place on it.
     const stored = await meetupRow(created.meetupId);
     expect(stored.status).toBe('locked');
@@ -1282,9 +1131,7 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
       venue: fixture.venue,
       deposits: { initiator: 'held', recipient: 'pending' },
     });
-
     expectError(await accept(fixture.recipient, meetup.id), 409, 'hold_pending');
-
     // Nothing was written: the acceptance is recorded in the transaction that decides the attempt.
     const stored = await meetupRow(meetup.id);
     expect(stored.status).toBe('proposed');
@@ -1294,23 +1141,19 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
     expect(deposit.status).toBe('pending');
     expect(deposit.currentAttempt).toBe(1);
   });
-
   it.runIf(MOCK)(
     `${MODE} answers 503 payment_unavailable when the recipient's first create is unresolved`,
     async () => {
       const fixture = await proposal();
       const created = await visibleProposal(fixture);
       await failHoldCreate();
-
       expectError(await accept(fixture.recipient, created.meetupId), 503, 'payment_unavailable');
-
       // One attempt, and never a second authorization for the same side (AAP 0.5.4). The replay of
       // AAP 0.3.2 runs in this same request, so the client's next read shows what it left.
       const deposit = await depositOf(created.meetupId, fixture.recipient);
       expect(deposit.currentAttempt).toBe(1);
       expect(deposit.status).toBe('held');
       expect(await t.services.db.deposit.count({ where: { role: 'recipient' } })).toBe(1);
-
       const detail = MeetupDto.parse(
         (await readMeetup(fixture.recipient, created.meetupId)).json(),
       );
@@ -1320,9 +1163,6 @@ describe(`POST ${MEETUPS_URL}/:id/accept — the lock (AAP 0.5.3, 0.5.4)`, () =>
   );
 });
 
-/* Decline, cancellation and the initiator's hold retry (AAP 0.5.3, 0.5.4) */
-
-/** One way a cancellation is refused, and the state the meetup is in (AAP 0.5.4). */
 interface CancelRefusalRow {
   readonly name: string;
   readonly situation: 'stranger' | 'unknown' | 'settled' | 'dispute';
@@ -1345,7 +1185,6 @@ const CANCEL_REFUSALS: readonly CancelRefusalRow[] = [
 /** Which side withdraws an unanswered proposal, and the reason it records (AAP 0.5.3). */
 const PROPOSAL_CANCELLERS: readonly ParticipantRole[] = ['initiator', 'recipient'];
 
-/** Which side cancels, and where on the two-hour boundary the clock stands (AAP 0.5.3). */
 interface BoundaryRow {
   readonly name: string;
   readonly canceller: ParticipantRole;
@@ -1384,7 +1223,6 @@ const CANCELLATION_BOUNDARY: readonly BoundaryRow[] = [
   },
 ];
 
-/** One hold-retry refusal, and the state it is made from (AAP 0.5.4). */
 interface HoldRetryRow {
   readonly name: string;
   readonly caller: 'initiator' | 'recipient' | 'stranger';
@@ -1422,7 +1260,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
     const fixture = await proposal();
     const created = await visibleProposal(fixture);
     const actor = entry.actor === 'initiator' ? fixture.initiator : await makeUser(t);
-
     expectError(await decline(actor, created.meetupId), entry.httpStatus, entry.code);
     expect((await meetupRow(created.meetupId)).status).toBe('proposed');
   });
@@ -1435,7 +1272,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
       venue: fixture.venue,
       startsAt: fixture.startsAt,
     });
-
     expectError(await decline(fixture.recipient, meetupId), 409, 'not_proposed');
     expect((await meetupRow(meetupId)).status).toBe('locked');
   });
@@ -1443,11 +1279,9 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
   it(`${MODE} declines a proposal, releases every non-final attempt and notifies the initiator`, async () => {
     const fixture = await proposal();
     const created = await visibleProposal(fixture);
-
     const response = await decline(fixture.recipient, created.meetupId);
     expect(response.status).toBe(200);
     expect(DeclineResponse.parse(response.json()).status).toBe('declined');
-
     const stored = await meetupRow(created.meetupId);
     expect(stored.status).toBe('declined');
     expect(stored.finalAt).not.toBeNull();
@@ -1455,7 +1289,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
     const releases = await operationsOf(created.meetupId, 'release');
     expect(releases.map((row) => row.status)).toEqual(['succeeded']);
     expect(await operationsOf(created.meetupId, 'capture')).toHaveLength(0);
-
     // The refusal names the recipient, and the initiator is told their proposal is off (AAP 0.5.3).
     expect((await eventOf(created.meetupId, 'proposal_declined')).actorHash).toBe(
       hashOf(fixture.recipient),
@@ -1464,7 +1297,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
     expect(notified.filter((row) => row.kind === NotificationKind.enum.proposal_declined)).toEqual([
       { kind: NotificationKind.enum.proposal_declined, userId: fixture.initiator.id },
     ]);
-
     // No timer survives a final status (AAP 0.5.3).
     expect(await jobAt(lapseJobId(created.meetupId))).toBeUndefined();
     expect(await jobAt(settleJobId(created.meetupId))).toBeUndefined();
@@ -1475,7 +1307,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
     const fixture = await proposal();
     let meetupId: string;
     let actor: ActorRef = fixture.initiator;
-
     if (entry.situation === 'unknown') {
       meetupId = randomUUID();
     } else if (entry.situation === 'settled') {
@@ -1501,7 +1332,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
         await makeDispute(t, { id: meetupId }, fixture.initiator, { kind: 'venue_unavailable' });
       }
     }
-
     expectError(await cancel(actor, meetupId), entry.httpStatus, entry.code);
   });
 
@@ -1511,11 +1341,9 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
       const fixture = await proposal();
       const created = await visibleProposal(fixture);
       const canceller = role === 'initiator' ? fixture.initiator : fixture.recipient;
-
       const response = await cancel(canceller, created.meetupId);
       expect(response.status).toBe(200);
       expect(CancelResponse.parse(response.json()).lateCancel).toBe(false);
-
       const stored = await meetupRow(created.meetupId);
       expect(stored.status).toBe('cancelled');
       expect(stored.cancelReason).toBe(role);
@@ -1527,7 +1355,6 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
       expect(await countEvent(created.meetupId, 'cancelled_early')).toBe(0);
     },
   );
-
   it.each(rows(CANCELLATION_BOUNDARY))(
     `${MODE} cancellation by $name is late: $late`,
     async (entry) => {
@@ -1540,21 +1367,16 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
       });
       const canceller = entry.canceller === 'initiator' ? fixture.initiator : fixture.recipient;
       const counterpart = entry.canceller === 'initiator' ? fixture.recipient : fixture.initiator;
-
       // Exactly on the boundary, and one second past it, on the injected clock (AAP 0.5.3).
       t.time.toMeetupPoint({ startsAt: fixture.startsAt }, 'startsAt-2h', entry.offsetMs);
       const cancelledAt = t.time.now();
-
       const response = await cancel(canceller, meetupId);
       expect(response.status).toBe(200);
       expect(CancelResponse.parse(response.json()).lateCancel).toBe(entry.late);
-
       const stored = await meetupRow(meetupId);
       expect(instantOf(stored.finalAt)).toBe(cancelledAt.getTime());
-
       const deposits = await depositsByOwner(meetupId);
       await settleNow(t.services);
-
       if (!entry.late) {
         // A free cancellation releases both holds, and names the caller's own side as the reason.
         expect(stored.status).toBe('cancelled');
@@ -1587,25 +1409,21 @@ describe(`POST ${MEETUPS_URL}/:id/decline and /cancel (AAP 0.5.3, 0.5.4)`, () =>
         expect(settlement.outcome).toBe('late_cancel');
         expect(settlement.status).toBe('complete');
         expect(settlement.appliedAt).not.toBeNull();
-
         expect(
           await t.services.db.tableCreditEntry.findMany({
             where: { meetupId },
             select: { userId: true, kind: true, amountCents: true },
           }),
         ).toEqual([{ userId: counterpart.id, kind: 'grant', amountCents: DEFAULT_DEPOSIT_CENTS }]);
-
         expect(await countEvent(meetupId, 'cancelled_late')).toBe(1);
         expect(await countEvent(meetupId, 'no_show')).toBe(1);
         expect((await eventOf(meetupId, 'cancelled_late')).actorHash).toBe(hashOf(canceller));
         expect((await eventOf(meetupId, 'no_show')).actorHash).toBe(hashOf(canceller));
         expect(await countEvent(meetupId, 'cancelled_early')).toBe(0);
-
         expect(depositIn(deposits, canceller).status).toBe('captured');
         expect(depositIn(deposits, counterpart).status).toBe('released');
         await expectReleasedByUs([depositIn(deposits, counterpart)]);
       }
-
       // Either way the meetup keeps no timer once it is final (AAP 0.5.3).
       expect(await jobAt(settleJobId(meetupId))).toBeUndefined();
       expect(await jobAt(remindJobId(meetupId))).toBeUndefined();
@@ -1619,7 +1437,6 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     async (entry) => {
       const fixture = await proposal();
       let meetupId: string;
-
       if (entry.locked) {
         const locked = await proposeAndLock(t, {
           initiator: fixture.initiator,
@@ -1631,37 +1448,31 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
       } else {
         meetupId = (await visibleProposal(fixture)).meetupId;
       }
-
       const actor =
         entry.caller === 'initiator'
           ? fixture.initiator
           : entry.caller === 'recipient'
             ? fixture.recipient
             : await makeUser(t);
-
       expectError(await retryHold(actor, meetupId), entry.httpStatus, entry.code);
     },
   );
-
   it(`${MODE} refuses a retry whose newly attached card the issuer declines`, async () => {
     const initiator = await makeUser(t, { card: 'none' });
     const recipient = await makeUser(t);
     await makeProof(t, initiator, { cityId: CITY });
     await makeProof(t, recipient, { cityId: CITY });
     const venue = await makeVenue(t, { cityId: CITY });
-
     // The first attempt is refused for having no card at all, so it leaves no authorization behind.
     expectError(await propose(initiator, bodyAmong(recipient, venue)), 402, 'hold_failed');
     const meetupId = await onlyMeetupId();
     const first = await depositOf(meetupId, initiator);
     expect(first.status).toBe('failed');
     expect(first.currentPaymentIntentId).toBeNull();
-
     // The saved-card step, and a card the issuer refuses in its turn. The new attempt reaches the
     // provider inline, because the attempt it supersedes left nothing to release (AAP 0.3.2).
     await setUpCard(initiator, DECLINED_CARD);
     expectError(await retryHold(initiator, meetupId), 402, 'hold_failed');
-
     const retried = await depositOf(meetupId, initiator);
     expect(retried.status).toBe('failed');
     expect(retried.currentAttempt).toBe(2);
@@ -1675,11 +1486,9 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     await makeProof(t, initiator, { cityId: CITY });
     await makeProof(t, recipient, { cityId: CITY });
     const venue = await makeVenue(t, { cityId: CITY });
-
     expectError(await propose(initiator, bodyAmong(recipient, venue)), 402, 'hold_failed');
     const meetupId = await onlyMeetupId();
     await attachCard(initiator, WORKING_CARD);
-
     // The retry carries out the superseded attempt's release and then places attempt 2, so the answer
     // is that attempt's own secret, and the money has moved by the time the client reads the meetup
     // (AAP 0.5.4).
@@ -1690,7 +1499,6 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     expect(retried.status).toBe('proposed');
     expect(retried.initiatorHold).toBe('held');
     expect(retried.clientSecret.length).toBeGreaterThan(0);
-
     const held = await depositOf(meetupId, initiator);
     expect(held.status).toBe('held');
     expect(held.currentAttempt).toBe(2);
@@ -1703,7 +1511,6 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     await expectAttemptIntents(held.id, 2);
     // The recipient can see it now, which is what a successful retry buys (AAP 0.5.3).
     expect((await readMeetup(recipient, meetupId)).status).toBe(200);
-
     // A further retry confirms the attempt that holds the authorization — the provider's own secret
     // for it comes back again — and places no new one.
     const confirmed = await retryHold(initiator, meetupId);
@@ -1724,19 +1531,16 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
     );
     const deposit = await depositOf(created.meetupId, fixture.initiator);
     expect(deposit.status).toBe('requires_action');
-
     const response = await retryHold(fixture.initiator, created.meetupId);
     expect(response.status).toBe(200);
     const retried = HoldRetryResponse.parse(response.json());
     expect(retried.initiatorHold).toBe('requires_action');
     expect(retried.clientSecret).toBe(created.clientSecret);
-
     // No second authorization: the same attempt, and one PaymentIntent (AAP 0.3.2).
     expect(await t.services.db.deposit.count({ where: { meetupId: created.meetupId } })).toBe(1);
     expect((await depositOf(created.meetupId, fixture.initiator)).currentAttempt).toBe(1);
     await expectAttemptIntents(deposit.id, 1);
   });
-
   describe.runIf(MOCK)(`${MODE} hold retries against a lost create`, () => {
     it(`${MODE} answers 409 hold_pending while the attempt is unresolved`, async () => {
       const fixture = await proposal();
@@ -1747,35 +1551,28 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
         'payment_unavailable',
       );
       const meetupId = await onlyMeetupId();
-
       expectError(await retryHold(fixture.initiator, meetupId), 409, 'hold_pending');
-
       const deposit = await depositOf(meetupId, fixture.initiator);
       expect(deposit.status).toBe('pending');
       expect(deposit.currentAttempt).toBe(1);
       expect(await t.services.db.deposit.count()).toBe(1);
       expect((await meetupRow(meetupId)).proposalVisibleAt).toBeNull();
     });
-
     it(`${MODE} answers 503 payment_unavailable for a create the provider cannot answer`, async () => {
       const initiator = await makeUser(t, { card: 'none' });
       const recipient = await makeUser(t);
       await makeProof(t, initiator, { cityId: CITY });
       await makeProof(t, recipient, { cityId: CITY });
       const venue = await makeVenue(t, { cityId: CITY });
-
       expectError(await propose(initiator, bodyAmong(recipient, venue)), 402, 'hold_failed');
       const meetupId = await onlyMeetupId();
       await setUpCard(initiator, WORKING_CARD);
       await failHoldCreate();
-
       expectError(await retryHold(initiator, meetupId), 503, 'payment_unavailable');
-
       // One new attempt only, and no second authorization: the replay resolves this one (AAP 0.3.2).
       const deposit = await depositOf(meetupId, initiator);
       expect(deposit.currentAttempt).toBe(2);
       expect(await t.services.db.deposit.count()).toBe(1);
-
       // The next retry confirms that attempt rather than placing another (AAP 0.5.4).
       const response = await retryHold(initiator, meetupId);
       expect(response.status).toBe(200);
@@ -1785,9 +1582,6 @@ describe(`POST ${MEETUPS_URL}/:id/hold — the initiator's retry (AAP 0.5.4)`, (
   });
 });
 
-/* The two own-meetup reads, and the saved-card setup a first proposal needs (AAP 0.5.4) */
-
-/** One query string `GET /meetups` refuses, and what is wrong with it (AAP 0.5.4). */
 interface BadQueryRow {
   readonly name: string;
   readonly query: Record<string, string>;
@@ -1838,7 +1632,6 @@ const CHECK_IN_SIGNAL_ROWS: readonly CheckInSignalRow[] = [
 describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
   it.each(rows(BAD_QUERIES))(`${MODE} answers 400 invalid_field for $name`, async (entry) => {
     const fixture = await proposal();
-
     expectError(await listMeetups(fixture.initiator, entry.query), 400, 'invalid_field');
   });
 
@@ -1852,25 +1645,21 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
       venue: other.venue,
       startsAt: other.startsAt,
     });
-
     const proposed = MeetupListResponse.parse(
       (await listMeetups(fixture.initiator, { status: 'proposed' })).json(),
     );
     expect(proposed.items.map((item) => item.id)).toEqual([created.meetupId]);
     expect(proposed.items[0]?.role).toBe('initiator');
-
     // `role` selects the caller's own side, so the recipient's list holds the same meetup (AAP 0.5.4).
     const asRecipient = MeetupListResponse.parse(
       (await listMeetups(fixture.recipient, { role: 'recipient' })).json(),
     );
     expect(asRecipient.items.map((item) => item.id)).toEqual([created.meetupId]);
     expect(asRecipient.items[0]?.role).toBe('recipient');
-
     const lockedOnly = MeetupListResponse.parse(
       (await listMeetups(other.initiator, { status: 'locked' })).json(),
     );
     expect(lockedOnly.items.map((item) => item.id)).toEqual([locked.meetupId]);
-
     // A filter that matches nothing is an empty page, not a refusal, and it ends the list.
     const empty = MeetupListResponse.parse(
       (await listMeetups(fixture.initiator, { status: 'completed' })).json(),
@@ -1891,18 +1680,15 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
         startsAt: fixture.startsAt,
         checkIns: entry.passes,
       });
-
       // Both attendees read the same two facts, each from their own side of the meetup (AAP 0.5.4).
       const attendees = [
         { actor: fixture.initiator, expected: entry.expected.initiator },
         { actor: fixture.recipient, expected: entry.expected.recipient },
       ] as const;
-
       for (const { actor, expected } of attendees) {
         const dto = MeetupDto.parse((await readMeetup(actor, meetup.id)).json());
         expect([dto.checkedIn, dto.counterpartCheckedIn], `@${actor.handle}`).toEqual(expected);
       }
-
       // The page read answers the same two fields out of its own single query (AAP 0.5.4, 0.12.2).
       const page = MeetupListResponse.parse(
         (await listMeetups(fixture.initiator, { status: 'locked' })).json(),
@@ -1912,11 +1698,9 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
       ]);
     },
   );
-
   it(`${MODE} pages the caller's own meetups at ${PAGE_SIZE} and continues from the cursor`, async () => {
     const fixture = await proposal();
     const total = PAGE_SIZE + 5;
-
     for (let index = 0; index < total; index += 1) {
       const counterpart = await makeUser(t, { card: 'none' });
       await makeMeetup(t, {
@@ -1926,18 +1710,15 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
         venue: fixture.venue,
       });
     }
-
     const first = await listMeetups(fixture.initiator);
     expect(first.status).toBe(200);
     const page = MeetupListResponse.parse(first.json());
     expect(page.items).toHaveLength(PAGE_SIZE);
     expect(page.nextCursor).not.toBeNull();
-
     const rest = await listMeetups(fixture.initiator, { cursor: page.nextCursor ?? '' });
     const second = MeetupListResponse.parse(rest.json());
     expect(second.items).toHaveLength(total - PAGE_SIZE);
     expect(second.nextCursor).toBeNull();
-
     // Every meetup is served once, and no page carries a secret of any kind.
     expect(new Set([...page.items, ...second.items].map((item) => item.id)).size).toBe(total);
     for (const body of [page, second]) {
@@ -1955,10 +1736,8 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
       startsAt: fixture.startsAt,
     });
     const stranger = await makeUser(t);
-
     expectError(await readMeetup(stranger, locked.id), 403, 'not_participant');
     expectError(await readMeetup(fixture.initiator, randomUUID()), 404, 'meetup_not_found');
-
     // A proposal the initiator's hold has not made visible is answered as if it did not exist, so
     // the route cannot be used to probe for it (AAP 0.5.3).
     const pending = await proposal({ card: '3ds' });
@@ -1978,7 +1757,6 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
     const fixture = await proposal();
     const created = await visibleProposal(fixture);
     expect(await countEvent(created.meetupId, 'proposal_viewed')).toBe(0);
-
     const first = await readMeetup(fixture.recipient, created.meetupId);
     expect(first.status).toBe(200);
     const viewedAt = t.time.now();
@@ -1989,7 +1767,6 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
     expect((await eventOf(created.meetupId, 'proposal_viewed')).actorHash).toBe(
       hashOf(fixture.recipient),
     );
-
     // A second read of the same proposal, and the initiator's own read, write nothing more.
     expect((await readMeetup(fixture.recipient, created.meetupId)).status).toBe(200);
     expect((await readMeetup(fixture.initiator, created.meetupId)).status).toBe(200);
@@ -2001,7 +1778,6 @@ describe(`POST /v1/me/payment-setup (AAP 0.5.4)`, () => {
   it(`${MODE} creates the account's customer once and reuses it on a second call`, async () => {
     const user = await makeUser(t, { card: 'none' });
     expect(user.stripeCustomerId).toBeNull();
-
     const first = await callRoute(t.app, {
       method: 'POST',
       url: '/v1/me/payment-setup',
@@ -2012,14 +1788,12 @@ describe(`POST /v1/me/payment-setup (AAP 0.5.4)`, () => {
     expect(setup.customerId).not.toBe('');
     expect(setup.setupIntentClientSecret).not.toBe('');
     expect(setup.ephemeralKeySecret).not.toBe('');
-
     // The customer is stored on the account, which is what the first proposal's hold reads.
     expect(
       await t.services.db.user
         .findUniqueOrThrow({ where: { id: user.id }, select: { stripeCustomerId: true } })
         .then((row) => row.stripeCustomerId),
     ).toBe(setup.customerId);
-
     const second = await callRoute(t.app, {
       method: 'POST',
       url: '/v1/me/payment-setup',

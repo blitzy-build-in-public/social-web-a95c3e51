@@ -16,7 +16,6 @@ import { formatFinding, isProbablyBinary, scanText, SECRET_PATTERNS } from './ch
 /** The path every sample is scanned under: a finding echoes it, and never the text that matched. */
 const PATH = 'config/tablemate.env';
 
-/** The length of the window the leak check slides across a credential value. */
 const WINDOW = 8;
 
 /** `length` alphanumerics: the body of a Stripe key or webhook secret, assembled, never literal. */
@@ -24,12 +23,10 @@ function alnum(length: number): string {
   return 'aB3'.repeat(Math.ceil(length / 3)).slice(0, length);
 }
 
-/** `length` lower-case hexadecimal characters: the body of a Twilio token or API key SID. */
 function hex(length: number): string {
   return 'a1f9'.repeat(Math.ceil(length / 4)).slice(0, length);
 }
 
-/** `length` upper-case hexadecimal characters, the spelling some `.env` files use. */
 function hexUpper(length: number): string {
   return 'A1F9'.repeat(Math.ceil(length / 4)).slice(0, length);
 }
@@ -40,12 +37,10 @@ function pem(label: string): string {
   return `${dashes}BEGIN ${label}${dashes}`;
 }
 
-/** Concatenates fragments, so no complete credential shape appears in this file's own text. */
 function join(...parts: readonly string[]): string {
   return parts.join('');
 }
 
-/* One constant per credential value the samples cover. */
 const K_LIVE = join('sk', '_', 'live', '_', alnum(24));
 const K_TEST = join('sk', '_', 'test', '_', alnum(24));
 const R_LIVE = join('rk', '_', 'live', '_', alnum(24));
@@ -66,7 +61,6 @@ const PEM_EC = pem('EC PRIVATE KEY');
 const PEM_OPENSSH = pem('OPENSSH PRIVATE KEY');
 const PEM_ENCRYPTED = pem('ENCRYPTED PRIVATE KEY');
 
-/* The four spellings a Twilio auth-token assignment takes, each split from the value it carries. */
 const TOKEN = join('TWILIO_AUTH_TOKEN');
 const TOKEN_ENV = join(TOKEN, '=');
 const TOKEN_YAML = join(TOKEN, ': "');
@@ -139,7 +133,6 @@ const MISSED = [
   ['certificate PEM header', pem('CERTIFICATE')],
 ] as const satisfies readonly (readonly [string, string])[];
 
-/** The two line endings the position report is checked under. */
 const NEWLINES = [
   ['LF', '\n'],
   ['CRLF', '\r\n'],

@@ -3,7 +3,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { Platform, StyleSheet, Switch, Text, View, type SwitchProps } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { MIN_TOUCH_TARGET, colors, fontWeights, spacing, typography } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
@@ -11,23 +11,13 @@ import { isApiError, userMessageFor } from '../../src/api/errors';
 import { markConsented, signOut } from '../../src/auth/session';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
 import { AGE_GATE_CONFIRM, TERMS_SUMMARY, TERMS_VERSION } from '../../src/copy/strings';
-import { Banner, Button, Card, ListItem, Screen, announce } from '../../src/ui';
+import { Banner, Button, Card, ListItem, Screen, Switch, announce } from '../../src/ui';
 const INTRO = 'Tablemate is for adults. Please confirm your age and read how deposits work.';
 const TERMS_LABEL = 'Read the full terms';
 const TERMS_LINK = { label: TERMS_LABEL, role: 'link', testID: 'age-gate-full-terms' } as const;
 const CONTINUE_BUTTON = { label: 'Continue', testID: 'age-gate-submit' } as const;
 const SIGN_OUT_BUTTON = { variant: 'secondary', testID: 'age-gate-sign-out' } as const;
 const ERROR_BANNER = { tone: 'error', testID: 'age-gate-error' } as const;
-const SWITCH = {
-  accessibilityLabel: AGE_GATE_CONFIRM,
-  ios_backgroundColor: colors.border,
-  thumbColor: colors.onPrimary,
-  trackColor: { false: colors.border, true: colors.primary },
-  testID: 'age-gate-adult',
-} as const;
-/** The role and the checked state a native switch carries; react-native-web reports both itself. */
-const switchRoleProps = (checked: boolean): Partial<SwitchProps> =>
-  Platform.OS === 'web' ? {} : { accessibilityRole: 'switch', accessibilityState: { checked } };
 function messageFor(error: unknown): string {
   return userMessageFor(isApiError(error) ? error.code : 'network_error');
 }
@@ -74,7 +64,12 @@ export default function AgeGateScreen(): ReactElement {
           <Text onPress={toggleAdult} style={styles.confirmLabel}>
             {AGE_GATE_CONFIRM}
           </Text>
-          <Switch {...SWITCH} onValueChange={setAdult} value={adult} {...switchRoleProps(adult)} />
+          <Switch
+            accessibilityLabel={AGE_GATE_CONFIRM}
+            onValueChange={setAdult}
+            testID="age-gate-adult"
+            value={adult}
+          />
         </View>
         {failure === null ? null : <Banner {...ERROR_BANNER} message={failure} />}
         <Button {...CONTINUE_BUTTON} onPress={submit} disabled={!adult} busy={pending} />

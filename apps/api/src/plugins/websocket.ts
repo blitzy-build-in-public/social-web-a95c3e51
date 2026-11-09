@@ -1,30 +1,21 @@
 /**
- * WebSocket support for the API (AAP 0.3.3, 0.4.1, 0.5.1): the one registration of
- * `@fastify/websocket` 11.3.7 that both sockets are served by — the browser chat socket
- * `WS /v1/chat` and Twilio's ConversationRelay socket `WS /v1/webhooks/voice/relay` — plus the
- * subprotocol helper those routes and `plugins/auth.ts` share.
+ * WebSocket support for the API (AAP 0.3.3, 0.4.1, 0.5.1): the one registration of `@fastify/websocket` that both
+ * sockets are served by — the browser chat socket `WS /v1/chat` and Twilio's ConversationRelay socket
+ * `WS /v1/webhooks/voice/relay` — plus the subprotocol helper those routes and `plugins/auth.ts` share.
  *
- * A browser `WebSocket` cannot set an `Authorization` header, so the chat client opens the socket
- * as `new WebSocket(url, ['bearer', accessToken])` and the handshake answers with `bearer`: the
- * offered protocols are the only channel the token can travel on, and only the `bearer` entry may
- * ever be echoed back, never the token beside it (AAP 0.3.3). The token is read here and never
- * logged: neither this module nor `plugins/auth.ts` logs the header it came from, and Fastify's
- * request logging records only the method, url, host and IP (AAP 0.11.1). An error raised while a
- * socket is open is reported as a code and the error's name alone, never the error object, whose
- * message and stack pino writes as strings that key-based redaction cannot rewrite (AAP 0.3.2).
+ * A browser `WebSocket` cannot set an `Authorization` header, so the chat client opens the socket as
+ * `new WebSocket(url, ['bearer', accessToken])` and the handshake answers with `bearer`: the offered protocols
+ * are the only channel the token can travel on, and only the `bearer` entry may ever be echoed back, never the
+ * token beside it (AAP 0.3.3). The token is read here and never logged: neither this module nor `plugins/auth.ts`
+ * logs the header it came from (AAP 0.11.1). An error raised while a socket is open is reported as a code and the
+ * error's name alone, never the error object, whose message and stack key-based redaction cannot rewrite
+ * (AAP 0.3.2).
  *
- * Authentication of an upgrade belongs to its route, not to this file: `@fastify/websocket`
- * dispatches an upgrade request through the Fastify router and hijacks the connection only inside
- * the route handler, so `onRequest`/`preValidation` hooks run first — `requireWebSocketBearer` in
- * `plugins/auth.ts` for chat, the Twilio signature check in
- * `modules/voice-agent/relay-ws.ts` for the relay — and a refusal is answered as plain HTTP
- * (401 `token_invalid`, 400 `bad_signature`, 503 while the relay is at capacity) on a connection
- * that is never upgraded.
- *
- * Side-effect free at import: registering the plugin is what opens the WebSocket server, so
- * importing this module in a script that never builds an app costs nothing.
+ * Authentication of an upgrade belongs to its route, not to this file: `@fastify/websocket` hijacks the
+ * connection only inside the route handler, so the route's `onRequest`/`preValidation` hooks run first and a
+ * refusal is answered as plain HTTP on a connection that is never upgraded. Side-effect free at import:
+ * registering the plugin is what opens the WebSocket server.
  */
-
 import websocket from '@fastify/websocket';
 
 import { WS_BEARER_SUBPROTOCOL } from '@tablemate/shared';
@@ -97,14 +88,11 @@ const WS_MAX_PAYLOAD_BYTES = 16_384;
  */
 export function bearerTokenFromProtocolHeader(header: string | undefined): string | null {
   if (header === undefined) return null;
-
   const entries = header.split(',').map((entry) => entry.trim());
   const markerIndex = entries.indexOf(WS_BEARER_SUBPROTOCOL);
   if (markerIndex === -1) return null;
-
   const token = entries.slice(markerIndex + 1).find((entry) => entry.length > 0);
   if (token === undefined || !BEARER_TOKEN_RE.test(token)) return null;
-
   return token;
 }
 

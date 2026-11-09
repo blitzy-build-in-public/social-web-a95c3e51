@@ -72,7 +72,7 @@ export default function SignInScreen(): ReactElement {
     setFieldError(undefined);
     setFormError(undefined);
     void requestMagicLink(address)
-      .then(() => router.push('/check-email'))
+      .then(() => router.navigate('/check-email'))
       .catch((error: unknown) => {
         const message = failureMessage(error);
         if (isApiError(error) && error.code === 'invalid_email') setFieldError(message);

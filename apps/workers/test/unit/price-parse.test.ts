@@ -1,18 +1,5 @@
 /**
  * The locale price parser's unit suite (AAP 0.5.6, "Source gate").
- *
- * The gate keeps an extracted item only when its `priceText` occurs in the source text and
- * `src/menus/price-parse.ts` reads that substring to the same amount: a misread price is a dropped
- * price rather than an invented one, and every stored price string is found in its source — the
- * 100% half of criterion 11 (AAP 0.5.6, 0.8.1). The tables below carry the locale forms the
- * pipeline must read (`1.234,50`, `1,234.50`, `฿120`, `45K`) and the strings one number can never
- * be: a sign, a range, two prices, or no price at all.
- *
- * Every expected amount is `minor(major, currency)`, taken from the module's own
- * `MINOR_UNIT_EXPONENT`, so the ISO 4217 exponents are stated in the module alone and COP and IDR
- * are never assumed to carry the decimals their menus omit. The `€` rows are the exact strings
- * `test/fixtures/sites/{menu-html,activity-tickets}` prints, so this suite and the fixture-driven
- * menu suites share one contract.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,13 +12,11 @@ import {
   type PriceCurrency,
 } from '../../src/menus/price-parse.ts';
 
-/** An accepted string: the text a page produced, its currency, and its amount in whole units. */
 type AcceptedCase = readonly [text: string, currency: PriceCurrency, major: number];
 
 /** A refused string; `currency` stays a plain string, so an unsupported code can be a row. */
 type RefusedCase = readonly [text: string, currency: string];
 
-/** A marker case: the text, the currency it is asked about, and whether it names that currency. */
 type MarkerCase = readonly [text: string, currency: PriceCurrency, explicit: boolean];
 
 /**

@@ -1,43 +1,22 @@
 /**
- * The three city routes (AAP 0.5.1, 0.5.4, 0.5.8): the configured city list, a city's partner
- * venues, and one page of traveler discovery.
+ * The three city routes (AAP 0.5.1, 0.5.4, 0.5.8): the configured city list, a city's partner venues,
+ * and one page of traveler discovery.
  *
- * `GET /cities` answers the launch cities in `config/cities.json` order, `GET /cities/:cityId/venues`
- * answers a city's active partner venues in (name, id) order and bounded by {@link CITY_VENUES_LIMIT},
- * and `GET /cities/:cityId/travelers` answers one page of `Tier0Profile`s. The three differ in what
- * they ask of a caller, and every difference is a rule of AAP 0.5.4 and 0.5.8 rather than a choice made
- * here:
+ * The three differ in what they ask of a caller, and every difference is a rule of AAP 0.5.4 and 0.5.8
+ * rather than a choice made here: the venue list requires no proof, so an unverified traveler browses
+ * where a meetup may be held, while the traveler list keeps answering `403 no_valid_proof` and the
+ * client shows its import banner in the list's place (AAP 0.5.8); discovery delegates its page to
+ * `./discovery.ts`, which owns proof validity, the blocks in either direction, the unverified-reader
+ * rule and the keyset cursor, and this file decides the two errors that precede that call in the order
+ * AAP 0.5.4 lists them — `404 city_not_found`, then `403 no_valid_proof`; and all three carry the
+ * traveler guard at route-group level and none is rate-limited, because AAP 0.5.4 limits the mutating
+ * routes and the two state-writing reads alone.
  *
- *  - The venue list requires no proof, so an unverified traveler browses where a meetup may be held
- *    while the traveler list keeps answering `403 no_valid_proof` and the client shows its import
- *    banner in the list's place (AAP 0.5.8).
- *  - Discovery delegates its page to `./discovery.ts`, which owns proof validity, the blocks in
- *    either direction, the unverified-reader rule and the keyset cursor (AAP 0.5.7). This file
- *    decides the two errors that precede that call, in the order AAP 0.5.4 lists them:
- *    `404 city_not_found` for a slug no configured city carries, then `403 no_valid_proof` for a
- *    caller holding no proof valid for that city at the instant the request is served.
- *  - All three carry the traveler guard at route-group level, and none is rate-limited: they are
- *    plain reads, and AAP 0.5.4 limits the mutating routes and the two state-writing reads alone.
- *    `GET /cities` is guarded although it is additive and reads as public, because the age-gate scope
- *    of AAP 0.5.4 names the public routes and this one is not among them.
- *
- * Every response is built from an explicit field allowlist — a `CityDto` and a `VenueDto` are
- * assembled field by field and an ORM row is never spread — so `Venue.secretLookupHash` and
- * `Venue.secretCiphertext`, which are no fields of `VenueDto`, cannot reach a response however the
- * model grows (AAP 0.5.4). Coordinates come from `readPoints`, because the geography column is an
- * `Unsupported` field Prisma cannot select (AAP 0.5.2), and discovery's profiles come from
- * `tier0Profiles` and are never re-serialized here.
- *
- * The instant a request is judged at is read once, from the injected clock, so the proof check and
- * the page it gates cannot straddle the boundary of a proof's validity (AAP 0.11.1). The two lines
- * this module logs are the warnings for a venue whose location was never written and for a venue list
- * longer than {@link CITY_VENUES_LIMIT}: no user id, proof date or coordinate is ever logged
- * (AAP 0.11.1).
- *
- * @see AAP 0.5.2 for the `City` and `Venue` models and the fixture rule, 0.5.4 for the three routes,
- *   their schemas, their errors and the guard scope, 0.5.7 for proof validity and the discovery
- *   rules, 0.5.8 for the unverified browsing states, 0.11.1 for the injected clock and the logging
- *   rules, and 0.8.1 for this file.
+ * Every response is built from an explicit field allowlist — a `CityDto` and a `VenueDto` are assembled
+ * field by field and an ORM row is never spread — so `Venue.secretLookupHash` and
+ * `Venue.secretCiphertext` cannot reach a response however the model grows (AAP 0.5.4). The instant a
+ * request is judged at is read once, from the injected clock, so the proof check and the page it gates
+ * cannot straddle the boundary of a proof's validity (AAP 0.11.1).
  */
 
 import { readPoints } from '@tablemate/db';
@@ -58,9 +37,7 @@ import { cityBySlug, readCitiesConfig } from '../proofs/registry.ts';
 import { hasValidProof } from '../proofs/validity.ts';
 import { listTravelers } from './discovery.ts';
 
-// Type-only, so this file holds no run-time edge back to the module that registers it: `App` and
-// `AppServices` are the plan's one declaration of the instance and of what it hands its modules, they
-// are erased at compile time, and nothing of `app.ts` is read here at runtime.
+// Type-only, so this file holds no run-time edge back to the module that registers it.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag all three routes group under: a member of the document's own vocabulary (AAP 0.11.2). */
@@ -69,7 +46,6 @@ const CITIES_TAG = 'cities' satisfies OpenApiTag;
 /** What the city list reads: the guarded client, which already narrows fixture rows (AAP 0.5.2). */
 type CityListServices = Pick<AppServices, 'db'>;
 
-/** What the venue list reads: the client, the mode the fixture rule follows, and the logger. */
 type VenueListServices = Pick<AppServices, 'db' | 'env' | 'logger'>;
 
 /**
@@ -83,10 +59,6 @@ type VenueListServices = Pick<AppServices, 'db' | 'env' | 'logger'>;
  * complete. The growth of this list is operator-driven rather than ingestion-driven — venues are
  * onboarded and configured — so the same bound the admin registry reads use
  * (`ADMIN_REGISTRY_LIMIT` in `admin/onboarding.ts`) answers here.
- *
- * The bound changes nothing else: the response schema, the seven `VenueDto` fields, the errors and
- * the ordering's primary key are as they were, and a city holding fewer venues than the bound
- * answers exactly the rows it answered before, in the same order (AAP 0.5.4).
  */
 export const CITY_VENUES_LIMIT = 200;
 
@@ -104,15 +76,12 @@ const CITY_VENUES_TRUNCATED = 'city_venues_truncated';
  * file — while the file fixes their order, so a city the configuration no longer lists sorts after
  * every configured one instead of vanishing from the response.
  *
- * @param services - The guarded database client.
- * @returns Every stored city, each as the five fields of `CityDto`.
  * @throws {ZkConfigurationError} When `config/cities.json` cannot be read.
  */
 async function cityList(services: CityListServices): Promise<CitiesResponse> {
   const rows = await services.db.city.findMany({
     select: { id: true, name: true, countryCode: true, timezone: true, currency: true },
   });
-
   const order = cityOrder();
   const items = rows
     .map((row): CityDto => ({
@@ -123,7 +92,6 @@ async function cityList(services: CityListServices): Promise<CitiesResponse> {
       currency: row.currency,
     }))
     .sort((left, right) => compareCities(left, right, order));
-
   return { items };
 }
 
@@ -143,7 +111,6 @@ function cityOrder(): ReadonlyMap<string, number> {
 function compareCities(left: CityDto, right: CityDto, order: ReadonlyMap<string, number>): number {
   const leftAt = order.get(left.id);
   const rightAt = order.get(right.id);
-
   if (leftAt !== undefined && rightAt !== undefined && leftAt !== rightAt) {
     return leftAt - rightAt;
   }
@@ -180,17 +147,12 @@ function compareCities(left: CityDto, right: CityDto, order: ReadonlyMap<string,
  * coordinates the client maps the venue by and the 150 m check-in geofence is measured from
  * (AAP 0.5.7), and a null coordinate is not a shape the contract has.
  *
- * @param services - The guarded client, the mode the fixture rule follows and the logger.
- * @param cityId - The city slug from the path.
- * @returns The city's active partner venues, each as the seven fields of `VenueDto`: the first
- *   {@link CITY_VENUES_LIMIT} of them in (name, id) order.
  * @throws AppError `city_not_found` (404) when no configured city carries `cityId`.
  */
 async function cityVenues(services: VenueListServices, cityId: string): Promise<VenuesResponse> {
   if (cityBySlug(cityId) === undefined) {
     throw new AppError('city_not_found');
   }
-
   // The client's fixture guard narrows this read outside `test` and `demo`, so a fixture venue is
   // listed in those two environments alone (AAP 0.5.2). The select holds no secret column:
   // `secretLookupHash`, `secretCiphertext` and `secretIssuedAt` are never loaded (AAP 0.5.4).
@@ -200,17 +162,14 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
     orderBy: [{ name: 'asc' }, { id: 'asc' }],
     take: CITY_VENUES_LIMIT + 1,
   });
-
   // The row past the bound is a sentinel: its presence says the city holds more venues than this read
   // answers, and it is dropped here so the id list below can never exceed CITY_VENUES_LIMIT. A list
   // silently cut to this many rows would read as a complete one, so the truncation is logged.
   const truncated = rows.length > CITY_VENUES_LIMIT;
   const venues = truncated ? rows.slice(0, CITY_VENUES_LIMIT) : rows;
-
   if (truncated) {
     services.logger.warn({ event: CITY_VENUES_TRUNCATED, limit: CITY_VENUES_LIMIT });
   }
-
   // The geography column is `Unsupported` in the Prisma schema, so Prisma cannot select it and the
   // coordinates come from the PostGIS helper, which applies the fixture predicate to this table
   // itself (AAP 0.5.2).
@@ -220,12 +179,9 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
     venues.map((venue) => venue.id),
     services.env.APP_ENV,
   );
-
   const items: VenueDto[] = [];
-
   for (const venue of venues) {
     const point = points.get(venue.id);
-
     if (point === undefined) {
       services.logger.warn(
         { event: 'venue_without_location', venueId: venue.id },
@@ -233,7 +189,6 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
       );
       continue;
     }
-
     items.push({
       id: venue.id,
       cityId: venue.cityId,
@@ -244,7 +199,6 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
       isActivePartner: venue.isActivePartner,
     });
   }
-
   return { items };
 }
 
@@ -257,11 +211,6 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
  * other. The page, its keyset cursor and the block and unverified-reader rules belong to
  * `./discovery.ts`, which is also what refuses a malformed cursor as `400 invalid_field`.
  *
- * @param services - The app's services: the client, the clock and everything the page needs.
- * @param viewerId - The authenticated caller, from `request.auth`.
- * @param cityId - The city slug from the path.
- * @param cursor - The previous page's `nextCursor`, or `undefined` for the first page.
- * @returns The page of `Tier0Profile`s and, while rows remain, the cursor to continue from.
  * @throws AppError `city_not_found` (404), `no_valid_proof` (403) when the caller has no proof valid
  *   for this city now, and `invalid_field` (400) for a cursor this API did not write.
  */
@@ -272,15 +221,12 @@ async function cityTravelers(
   cursor: string | undefined,
 ): Promise<TravelersResponse> {
   const now = services.clock.now();
-
   if (cityBySlug(cityId) === undefined) {
     throw new AppError('city_not_found');
   }
-
   if (!(await hasValidProof(services.db, viewerId, cityId, now))) {
     throw new AppError('no_valid_proof');
   }
-
   return listTravelers(services, cityId, viewerId, cursor, now);
 }
 
@@ -292,15 +238,9 @@ async function cityTravelers(
  * Registration is synchronous, as in every plugin the composition root installs — `clock.ts`,
  * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts` and `websocket.ts` all
  * declare a `void` function — and the returned promise is what Fastify's plugin type expects.
- *
- * @param app - The route instance; its `services` carry the guarded database client, the injected
- *   clock, the logger and the configuration the three handlers read.
- * @see AAP 0.5.4 for the routes, their schemas and their errors, 0.5.8 for the unverified browsing
- *   states the client builds on the venue list's freedom from the proof check.
  */
 export default function citiesRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
-
   app.get(
     '/cities',
     {
@@ -312,7 +252,6 @@ export default function citiesRoutes(app: App): Promise<void> {
     },
     async () => cityList(app.services),
   );
-
   app.get(
     '/cities/:cityId/venues',
     {
@@ -331,7 +270,6 @@ export default function citiesRoutes(app: App): Promise<void> {
     },
     async (request) => cityVenues(app.services, request.params.cityId),
   );
-
   app.get(
     '/cities/:cityId/travelers',
     {
@@ -357,7 +295,6 @@ export default function citiesRoutes(app: App): Promise<void> {
       if (request.auth === null) {
         throw new AppError('token_invalid');
       }
-
       return cityTravelers(
         app.services,
         request.auth.userId,
@@ -366,6 +303,5 @@ export default function citiesRoutes(app: App): Promise<void> {
       );
     },
   );
-
   return Promise.resolve();
 }

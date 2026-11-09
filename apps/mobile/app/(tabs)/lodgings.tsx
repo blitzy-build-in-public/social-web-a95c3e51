@@ -17,7 +17,7 @@ import {
   guestCountText,
 } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
-import { Banner, Chip, ListItem, Screen, announce } from '../../src/ui';
+import { Banner, Chip, ListItem, Screen, announce, useAppNoticeMessage } from '../../src/ui';
 
 const styles = StyleSheet.create({
   heading: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },
@@ -74,7 +74,7 @@ const cityMissing = (): Promise<never> => Promise.reject(new Error(COPY.noCity))
 function readFailureMessage(error: unknown): string {
   return userMessageFor(isApiError(error) ? error.code : 'invalid_response');
 }
-function panel(child: ReactElement): ReactElement {
+function panel(child: ReactElement | null): ReactElement {
   return <Screen edges={TAB_EDGES}>{child}</Screen>;
 }
 function lodgingRow(lodging: LodgingSummary): ReactElement {
@@ -102,6 +102,7 @@ function lodgingRow(lodging: LodgingSummary): ReactElement {
 const NO_ROWS = <Text style={styles.note}>{COPY.empty}</Text>;
 export default function LodgingsScreen(): ReactElement {
   const [sort, setSort] = useState<LodgingSort>('activity');
+  const noticeMessage = useAppNoticeMessage();
   const me = useMe();
   const cityId = me.data?.proof.status === VALID_PROOF_STATUS ? me.data.proof.cityId : undefined;
   const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
@@ -113,8 +114,12 @@ export default function LodgingsScreen(): ReactElement {
   const meError = me.error === null ? null : readFailureMessage(me.error);
   const dirMessage = lodgings.error === null ? null : readFailureMessage(lodgings.error);
   const proofRefused = isApiError(lodgings.error) && lodgings.error.code === 'no_valid_proof';
-  const retry = { label: COPY.tryAgain, onPress: () => void me.refetch() };
-  const retryListing = { label: COPY.tryAgain, onPress: () => void lodgings.refetch() };
+  const retry = { label: COPY.tryAgain, onPress: () => void me.refetch(), busy: me.isFetching };
+  const retryListing = {
+    label: COPY.tryAgain,
+    onPress: () => void lodgings.refetch(),
+    busy: lodgings.isFetching,
+  };
   useEffect(() => {
     const message = meError ?? (proofRefused ? null : dirMessage);
     if (message !== null) announce(message);
@@ -122,7 +127,8 @@ export default function LodgingsScreen(): ReactElement {
   useEffect(() => {
     if (proofRefused) void queryClient.invalidateQueries({ queryKey: queryKeys.me });
   }, [proofRefused]);
-  if (me.isPending) return panel(<Text style={styles.note}>{'Loading…'}</Text>);
+  if (me.isPending)
+    return panel(noticeMessage === null ? <Text style={styles.note}>{'Loading…'}</Text> : null);
   if (meError !== null) return panel(<Banner tone="error" message={meError} action={retry} />);
   if (cityId === undefined || proofRefused)
     return panel(

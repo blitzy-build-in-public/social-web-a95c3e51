@@ -1,46 +1,18 @@
 /**
- * The shared dialogue engine: the turn loop of an automated call, the fixed per-language templates it
- * speaks from, and the one exactly-once writer of a call attempt's outcome (AAP 0.5.6, 0.5.3, 0.3.2).
+ * The shared dialogue engine (AAP 0.5.6): the turn loop of an automated call and the one exactly-once
+ * writer of a call attempt's outcome (AAP 0.3.2, 0.5.3).
  *
- * It owns four things and delegates the rest:
+ * Four invariants hold it: the disclosure comes first, in the city's own language; every word spoken comes from an
+ * `./i18n/*.json` template, never from the language model; a value counts only once it has been read back and
+ * confirmed, which is what makes `high` confidence honest and leaves everything else `low`; and
+ * {@link recordAttemptOutcome} is the single writer of an attempt's outcome. Every writer takes {@link lockAttempt}
+ * first and an attempt that already carries an outcome writes nothing, so a racing status callback and a relay
+ * finalize produce one result.
  *
- *  - **The disclosure always comes first.** {@link disclosureFor} is what `twiml.ts` sends as the
- *    ConversationRelay `welcomeGreeting`, so the callee hears that the call is automated before
- *    anything else, in the city's own language (AAP 0.5.6).
- *  - **Every word spoken is a template.** The engine renders `./i18n/*.json` keys and nothing else;
- *    the language model never composes an utterance, it only classifies the callee's speech through
- *    `./understanding.ts` (AAP 0.5.6).
- *  - **A value counts only once it has been read back.** A step's answer is spoken back and confirmed
- *    before it is collected, which is what makes `high` confidence honest and leaves everything else
- *    `low` for an operator (AAP 0.5.6).
- *  - **One result per attempt.** {@link recordAttemptOutcome} is the single writer of an attempt's
- *    outcome, its transcript, its extracted fields and the `apply_call_result` outbox row that
- *    `apps/workers` applies to the task and, for a lodging call, to its claim (AAP 0.3.2, 0.5.3).
- *
- * Who owns an attempt's outcome, and why exactly one result is recorded:
- *
- *  - `twiml.ts` records `no_answer` whenever it answers `<Hangup/>` — a machine, a task that is not
- *    `in_progress`, or a superseded attempt.
- *  - Once ConversationRelay TwiML has been served, {@link DialogueSession.finalize} owns the outcome.
- *  - `status-webhook.ts` records outcomes only for the final statuses `busy`, `no-answer`, `canceled`
- *    and `failed`, and never for `completed`: only an answered call fetches TwiML, so every
- *    `completed` call belongs to the TwiML or relay path.
- *  - The remaining gap belongs to `apps/workers`' `calls/reconcile.ts`: a relay process that dies
- *    mid-call, or a TwiML fetch that fails, can leave an attempt `ended` with a null outcome, which
- *    the worker moves to `needs_review` fifteen minutes after `endedAt`.
- *
- * Every writer takes {@link lockAttempt} first, and {@link recordAttemptOutcome} refuses to write
- * once an outcome is set, so a racing status callback and a relay finalize produce one result.
- *
- * Nothing here logs, returns or throws the callee's words: a log line carries an event name, the
- * attempt id, an outcome and — per turn — the label that turn classified as, which is what lets
- * `voice_call_no_data` tell a call the dialogue never understood from one nobody answered; a booking
- * name is redacted out of the classification window rather than left to the provider's discretion
- * (AAP 0.5.2, AAP 0.11.1, AAP 0.12.2).
- *
- * @see AAP 0.5.6 for the templates, the read-back rule, the caps and the outcomes, 0.5.3 for the
- *   call-task lifecycle the outcomes drive, 0.5.2 for what a call may keep, 0.3.2 for the single
- *   transaction that records a result and the outbox row it writes, and 0.8.1 for this file.
+ * Nothing here logs, returns or throws the callee's words: a log line carries an event name, the attempt id, an
+ * outcome and — per turn — the label that turn classified as, which is what lets `voice_call_no_data` tell a call the
+ * dialogue never understood from one nobody answered; a booking name is redacted out of the classification window
+ * rather than left to the provider's discretion (AAP 0.5.2, AAP 0.11.1).
  */
 
 import {
@@ -120,13 +92,10 @@ export const TEMPLATE_KEYS = [
 /** One template key. A misspelt key in a script fails to compile against this type. */
 export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
 
-/** Every placeholder name the templates use. */
 export const TEMPLATE_VARS = ['dish', 'price', 'bookingName', 'stayFrom', 'stayTo'] as const;
 
-/** One placeholder name: what {@link renderTemplate} substitutes into `{name}`. */
 export type TemplateVar = (typeof TEMPLATE_VARS)[number];
 
-/** The values a template can be rendered with; a template's own placeholders are its keys. */
 export type TemplateVars = Partial<Record<TemplateVar, string>>;
 
 /** The greeting key of each call kind, which is the disclosure the call opens with (AAP 0.5.6). */
@@ -155,17 +124,9 @@ function isTemplateVar(name: string): name is TemplateVar {
 }
 
 /**
- * One language file, asserted against {@link TEMPLATE_KEYS} as the module loads (AAP 0.5.6).
- *
- * A missing key would otherwise render as an empty utterance on a live call and a key no template
- * carries would never be spoken at all, so both are startup errors: a translation that is incomplete
- * fails the process rather than the call.
- *
- * @param language - The pairing the file belongs to, named in the failure.
- * @param file - The parsed JSON file.
- * @returns The same strings, typed by the key set. The assertion holds because the two loops above
- *   have already established it.
- * @throws Error when a key is missing, blank or unknown.
+ * One language file, asserted against {@link TEMPLATE_KEYS} as the module loads (AAP 0.5.6): a
+ * missing key would render as an empty utterance on a live call and a key no template carries would
+ * never be spoken at all, so both fail the process rather than the call.
  */
 function templateFile(
   language: CallLanguage,
@@ -189,17 +150,8 @@ function templateFile(
 const PLACEHOLDER_RE = /\{([A-Za-z]+)\}/g;
 
 /**
- * One template as text, with its placeholders substituted (AAP 0.5.6).
- *
- * The only way an utterance is composed: every word comes from the language file, and the values
- * substituted into it are a dish name, a price as it was heard, the booking name and the two stay
- * dates. A placeholder left without a value throws rather than speaking `{dish}` to a callee.
- *
- * @param language - The language the call is in now, which a mid-call switch changes.
- * @param key - The template to render.
- * @param vars - The values for its placeholders; omit them for a template that has none.
- * @returns The utterance to speak.
- * @throws Error when a placeholder has no value.
+ * One template as text, with its placeholders substituted (AAP 0.5.6) — the only way an utterance is
+ * composed. A placeholder left without a value throws rather than speaking `{dish}` to a callee.
  */
 export function renderTemplate(
   language: CallLanguage,
@@ -216,16 +168,7 @@ export function renderTemplate(
   });
 }
 
-/**
- * The disclosure sentence a call opens with, in the city's own language (AAP 0.5.6).
- *
- * `twiml.ts` writes it as the ConversationRelay `welcomeGreeting` and the session speaks it as its
- * first line, so the callee always learns that the call is automated before anything is asked.
- *
- * @param kind - Which call the greeting belongs to: a price question or a stay verification.
- * @param language - The city's call language.
- * @returns The disclosure sentence.
- */
+/** The disclosure sentence a call opens with, in the city's own language, spoken before anything is asked (AAP 0.5.6). */
 export function disclosureFor(kind: CallTaskKind, language: CallLanguage): string {
   return renderTemplate(language, GREETING_KEYS[kind]);
 }
@@ -234,92 +177,61 @@ export function disclosureFor(kind: CallTaskKind, language: CallLanguage): strin
 // The call and what the app's services give the engine (AAP 0.5.1, 0.5.6)
 // ---------------------------------------------------------------------------------------------
 
-/**
- * What a call is about (AAP 0.5.6): the place a price call asks, or the lodging a stay call asks,
- * with the city both of them belong to.
- */
+/** What a call is about (AAP 0.5.6): the place a price call asks, or the lodging a stay call asks. */
 export interface CallTarget {
-  /** `place` for a `menu_prices` call, `lodging` for a `lodging_stay_verification` call. */
   readonly type: 'place' | 'lodging';
-  /** The `Place.id` or `Lodging.id` the task names. */
   readonly id: string;
-  /** The target's city, which keys its call budget and its language. */
   readonly cityId: string;
 }
 
-/** The city a call is placed in, as the engine needs it (AAP 0.5.2, 0.5.6). */
 export interface CallCity {
-  /** The city's slug id, which keys `call_budget_day`. */
   readonly id: string;
-  /** The speech pairing the call opens in; `CallLanguage` because the row was validated against it. */
   readonly callLanguage: CallLanguage;
-  /** The city's ISO 4217 currency, which a price the callee says is stored in. */
   readonly currency: string;
-  /** The city's IANA zone, from configuration. */
   readonly timezone: string;
 }
 
 /**
- * Everything one call is (AAP 0.5.6): the attempt it belongs to, the task that asked for it, what it
- * is calling, where that is, and — for a stay verification — the claim whose booking name the
- * lodging script decrypts. Read once per socket by {@link loadCallContext}, so a webhook, a TwiML
- * fetch and the relay all work from the same row.
+ * Everything one call is (AAP 0.5.6): the attempt, the task that asked for it, what it is calling and
+ * where that is. Read once per socket by {@link loadCallContext}, so a webhook, a TwiML fetch and the
+ * relay all work from the same row.
  */
 export interface CallContext {
-  /** The `CallAttempt` row, including the dialogue budget it holds. */
   readonly attempt: CallAttempt;
-  /** The `CallTask` the attempt belongs to, whose status gates every turn. */
   readonly task: CallTask;
-  /** The place or lodging being called. */
   readonly target: CallTarget;
-  /** The target's city. */
   readonly city: CallCity;
-  /**
-   * The claim a stay verification belongs to, with its ciphertexts; `null` for a menu call, and for
-   * a stay call whose claim was deleted. It is never decrypted here: the lodging script does that,
-   * only while the claim is open (AAP 0.5.2).
-   */
+  /** The claim a stay verification belongs to; `null` for a menu call. Never decrypted here: the lodging script does that, only while the claim is open (AAP 0.5.2). */
   readonly claim: LodgingClaim | null;
 }
 
 /**
- * What the engine needs from the app's services: a structural subset of the object `buildApp`
- * builds, so the app's own services satisfy it as they stand and a unit test can stand fakes in for
- * the eight it reads.
+ * What the engine needs from the app's services: a structural subset of the object `buildApp` builds,
+ * so the app's own services satisfy it as they stand and a unit test can stand fakes in.
  */
 export interface DialogueServices {
-  /** The guarded database client. */
   readonly db: DbClient;
   /** The injected clock: no `Date` is read anywhere in this file (AAP 0.11.1). */
   readonly clock: Clock;
-  /** The redacting logger. */
   readonly logger: Logger;
-  /** The outbox dispatcher, which {@link transact} reads and kicks once a transaction wrote a row. */
   readonly outbox: TransactServices['outbox'];
   /** The spend meter the dialogue budget is released through (AAP 0.5.6). */
   readonly spend: LlmSpend;
   /** The configured provider, the classifier's only caller. */
   readonly llm: LlmAdapter;
-  /** The process's validated environment, for `LLM_MAX_TURNS_PER_CALL`. */
   readonly env: { readonly LLM_MAX_TURNS_PER_CALL: number };
-  /** The IANA zone of a city, from `config/cities.json` (AAP 0.5.6). */
   readonly timezoneFor: (cityId: string) => string;
 }
 
 /**
- * The relay socket the session speaks through, injected so a unit test runs without one
- * (AAP 0.5.6). Every frame the engine sends comes from a template, and the socket is closed once the
- * closing line has played out.
+ * The relay socket the session speaks through, injected so a unit test runs without one (AAP 0.5.6):
+ * every frame comes from a template, and the socket is closed once the closing line has played out.
  */
 export interface RelayIo {
   /** Send one ConversationRelay frame. A socket that has already gone may throw; the engine logs it. */
   send(frame: RelayOutboundFrame): void;
-  /** Close the relay connection, after the closing line and the `end` frame. */
   close(): void;
-  /**
-   * Wait `ms` for buffered speech to play, defaulting to `setTimeout`. A test passes an immediate
-   * stub, so a closing line does not cost the suite its real playback time.
-   */
+  /** Wait `ms` for buffered speech to play, defaulting to `setTimeout`; a test passes an immediate stub. */
   wait?(ms: number): Promise<void>;
 }
 
@@ -328,32 +240,25 @@ export interface RelayIo {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * One priced item a `menu_prices` call collected (AAP 0.5.6), in the shape
- * `apps/workers/src/jobs/call-results.ts` reads: `slot` decides the stored item's category and
- * alcohol flag, `priceText` is the price as the callee said it, and `amountMinor` is that price in
- * the currency's minor units.
+ * One priced item a `menu_prices` call collected (AAP 0.5.6): `slot` decides the stored item's
+ * category and alcohol flag, and `priceText` is the price as the callee said it, never converted.
  */
 export type MenuPriceItem = {
-  /** Which of the three questions the item answered. */
   readonly slot: 'cheapest_main' | 'priciest_main' | 'coffee' | 'beer';
-  /** The callee's own name for the item. */
   readonly dish: string;
   /** The price exactly as it was heard, never converted. */
   readonly priceText: string;
-  /** The price in minor units of {@link currency}, which the worker copies into the record. */
+  /** The price in minor units of {@link currency}. */
   readonly amountMinor: number;
-  /** The ISO 4217 currency the price was quoted in. */
   readonly currency: string;
   /** Whether the callee confirmed the read-back; an unconfirmed item waits for an operator. */
   readonly confirmed: boolean;
 };
 
 /**
- * `CallAttempt.extractedFields`, the cross-app contract with `apps/workers/src/jobs/call-results.ts`
- * (AAP 0.5.2, 0.5.6). The worker stores `phone_quote` price records from the menu form — coffee
- * non-alcoholic, beer alcoholic, `sourceUrl = tel:<number>` — marks every item with
- * `confirmed: false` as `reviewStatus = needs_review`, and applies the lodging form to the claim:
- * `yes` verifies it, `no` rejects it.
+ * `CallAttempt.extractedFields`, the cross-app contract with `apps/workers`' `call-results`
+ * (AAP 0.5.2, 0.5.6): an item with `confirmed: false` is stored as `reviewStatus = needs_review`, and
+ * the lodging form applies to the claim — `yes` verifies it, `no` rejects it.
  */
 export type ExtractedFields =
   | { readonly kind: 'menu_prices'; readonly items: readonly MenuPriceItem[] }
@@ -364,17 +269,13 @@ export type ExtractedFields =
     };
 
 /**
- * What one call attempt produced (AAP 0.5.3, 0.5.6): the outcome that drives the task's lifecycle,
- * the confidence that decides whether an operator reviews it, the extracted values, the operator's
- * one-line summary, and the transcript that a menu call keeps for thirty days and a lodging call
- * never keeps at all.
+ * What one call attempt produced (AAP 0.5.3, 0.5.6): the outcome that drives the task's lifecycle, the
+ * confidence that decides whether an operator reviews it, the extracted values, the summary, and the
+ * transcript a menu call keeps for thirty days and a lodging call never keeps.
  */
 export interface AttemptResult {
-  /** `completed` only when the script finished with every value confirmed and unambiguous. */
   readonly outcome: CallAttemptOutcome;
-  /** `high` for a completed call, `low` when an operator must review it, `null` with no data. */
   readonly confidence: Confidence | null;
-  /** The extracted values, or `null` when the call produced none. */
   readonly extractedFields: ExtractedFields | null;
   /** The operator's summary; never a phone number, and for a stay call never a booking field. */
   readonly summary: string | null;
@@ -382,10 +283,7 @@ export interface AttemptResult {
   readonly transcript: string | null;
 }
 
-/**
- * What a script reports once the call ends (AAP 0.5.6): {@link AttemptResult} without the transcript,
- * which the engine owns because it is the one holding the dialogue.
- */
+/** What a script reports once the call ends (AAP 0.5.6): {@link AttemptResult} without the transcript, which the engine owns because it holds the dialogue. */
 export type ScriptResult = Pick<
   AttemptResult,
   'outcome' | 'confidence' | 'extractedFields' | 'summary'
@@ -396,72 +294,54 @@ export type ScriptResult = Pick<
  * render, and every string that must never reach the language model.
  */
 export interface ScriptContext {
-  /** The placeholders of this call's templates, rendered in the language the call is in now. */
   readonly vars: (language: CallLanguage) => TemplateVars;
-  /**
-   * Strings the engine replaces in the classification window (AAP 0.5.2): a stay call's booking name
-   * and its parts, empty for a menu call, whose subject is a business rather than a guest.
-   */
+  /** Strings the engine replaces in the classification window (AAP 0.5.2): a stay call's booking name and its parts, empty for a menu call. */
   readonly redactions: readonly string[];
-  /** The currency the city quotes in, which a collected price is stored in. */
   readonly currency: string;
 }
 
-/** One template and the values it renders with, as a step's read-back returns them (AAP 0.5.6). */
+/** One template and the values it renders with, as a step's read-back returns it (AAP 0.5.6). */
 export interface StepReadback {
-  /** The template key to speak. */
   readonly key: TemplateKey;
-  /** The placeholders it needs. */
   readonly vars: TemplateVars;
 }
 
 /**
  * One question of a script (AAP 0.5.6): what it asks, what an answer has to carry, and how the answer
- * is read back. The step decides one thing only — whether a classification named an item and a price
- * it can be asked about again — while the engine owns the turn loop, the retries, the control labels
- * and every closing line.
+ * is read back. The engine owns the turn loop, the retries, the control labels and every closing line.
  */
 export interface ScriptStep<TValue> {
-  /** The `collected` key this step's value is stored under. */
   readonly slot: string;
-  /** The question's template key. */
   readonly ask: TemplateKey;
   /** What the classifier should hear, which is what makes a bare number a price. */
   readonly expected: ExpectedAnswer;
   /**
-   * `'same_answer'` when the read-back restates the question, so the same answer a second time is
-   * the confirmation; omitted when the engine follows a read-back with `confirm.prompt` and reads
-   * the next `yes`. A refused read-back re-asks the step once either way.
+   * `'same_answer'` when the read-back restates the question, so the same answer a second time is the
+   * confirmation; omitted when the engine follows a read-back with `confirm.prompt` and reads the
+   * next `yes`. A refused read-back re-asks the step once either way.
    */
   readonly confirmation?: 'same_answer';
   /**
-   * The value `c` carries, or `null` when the answer named no item and no usable price — which is
-   * what sends the engine back with `retry.unclear` rather than storing a guess.
+   * The value `c` carries, or `null` when the answer named no item and no usable price — which is what
+   * sends the engine back with `retry.unclear` rather than storing a guess.
    */
   accept(c: Classification, ctx: ScriptContext): TValue | null;
-  /** What the engine speaks back before asking for confirmation. */
   readback(value: TValue, ctx: ScriptContext, language: CallLanguage): StepReadback;
 }
 
-/**
- * One whole call script (AAP 0.5.6), implemented by `./scripts/menu-prices.ts` and
- * `./scripts/lodging-stay-verification.ts` and held by the engine with its value erased.
- */
+/** One whole call script (AAP 0.5.6), implemented by `./scripts/*.ts` and held by the engine with its value erased. */
 export interface ScriptDefinition<TValue> {
-  /** Which task kind this script runs; a script refuses a task of another kind from `prepare`. */
   readonly kind: CallTaskKind;
   /**
    * Everything the call needs before it speaks: the claim decrypted and its redactions listed, or
    * `null` when the call must not proceed at all — a claim that is gone, terminal or already erased,
-   * whose booking name the engine answers by recording `no_answer` without asking anything.
+   * which the engine answers by recording `no_answer` without asking anything.
    */
   prepare(services: DialogueServices, ctx: CallContext): Promise<ScriptContext | null>;
-  /** The questions, in the order the call asks them. */
   readonly steps: readonly ScriptStep<TValue>[];
   /**
    * What the call produced once the engine stopped, with every value it collected and whether the
-   * dialogue reached its last step. The engine hands this to {@link recordAttemptOutcome} unchanged,
-   * and it is what decides `completed` against `needs_review` and `no_answer`.
+   * dialogue reached its last step; it is what decides `completed` against `needs_review`.
    */
   result(
     collected: ReadonlyMap<string, { value: TValue; confirmed: boolean }>,
@@ -480,16 +360,9 @@ interface CollectedValue {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The attempt row, locked for the rest of the transaction (AAP 0.3.2).
- *
- * Every writer of an attempt — a relay finalize, the status webhook, a TwiML fetch — takes this first,
- * so two of them are serialized and the second sees the first one's outcome. The columns are aliased
- * to the model's field names, which is what the row type says; the `state` and `outcome` values come
- * back as their enum strings, which the database's own check constraint guarantees.
- *
- * @param tx - The transaction client `transact` opened.
- * @param attemptId - The attempt to lock.
- * @returns The locked row, or `null` when it no longer exists.
+ * The attempt row, locked for the rest of the transaction (AAP 0.3.2): every writer of an attempt — a
+ * relay finalize, the status webhook, a TwiML fetch — takes this first, so two of them are serialized
+ * and the second sees the first one's outcome.
  */
 export async function lockAttempt(tx: DbTx, attemptId: string): Promise<CallAttempt | null> {
   const rows = await tx.$queryRaw<CallAttempt[]>(Prisma.sql`
@@ -517,13 +390,9 @@ export async function lockAttempt(tx: DbTx, attemptId: string): Promise<CallAtte
 
 /**
  * Whether an attempt has had its call content stripped (AAP 0.5.2): a failed dispatch never had a
- * call, and a stripped lodging attempt — one whose claim has resolved — has no `CallSid` left.
- *
- * A caller treats a stripped attempt, and a missing one, the same way: the record exists, the call it
+ * call, and a stripped lodging attempt — one whose claim has resolved — has no `CallSid` left. A
+ * caller treats a stripped attempt, and a missing one, the same way: the record exists, the call it
  * describes does not, and a late callback is acknowledged without effect.
- *
- * @param attempt - The attempt row, or the two fields of it this reads.
- * @returns True when nothing may be recorded on or read from it.
  */
 export function isStripped(attempt: Pick<CallAttempt, 'state' | 'twilioCallSid'>): boolean {
   if (attempt.state === 'dispatch_failed') {
@@ -533,20 +402,12 @@ export function isStripped(attempt: Pick<CallAttempt, 'state' | 'twilioCallSid'>
 }
 
 /**
- * Everything one call is, read from its attempt in a single query (AAP 0.5.6).
+ * Everything one call is, read from its attempt in a single query (AAP 0.5.6) and outside any
+ * transaction. The claim arrives with its ciphertexts and is never decrypted here — the lodging script
+ * decrypts it only while the claim is open (AAP 0.5.2).
  *
- * Read-only and outside any transaction: the relay calls it when a socket opens, the TwiML route when
- * Twilio asks for a script, and the status webhook when a call ends, all on ids they already hold.
- * The claim arrives with its ciphertexts and is never decrypted here — the lodging script decrypts it
- * only while the claim is open (AAP 0.5.2).
- *
- * A call whose task, target or city cannot be resolved refuses to proceed, which its caller answers
- * by closing politely: a call placed on a missing row could only read or write nothing.
- *
- * @param db - The guarded client.
- * @param attemptId - The attempt the callback or the socket names.
- * @returns The call, or `null` when any part of it is missing or its city's language is not one of
- *   the five speech pairings.
+ * A call whose task, target or city cannot be resolved, or whose city's language is not one of the
+ * five speech pairings, returns `null`, which its caller answers by closing politely.
  */
 export async function loadCallContext(
   db: DbClient,
@@ -567,9 +428,7 @@ export async function loadCallContext(
   if (row === null) {
     return null;
   }
-
-  // `attempt` is the row without its included task, so nothing here carries a relation the model does
-  // not declare.
+  // `attempt` is the row without its included task, so nothing here carries a relation the model does not declare.
   const { callTask: task, ...attempt } = row;
   const place = task.place;
   const lodging = task.lodging;
@@ -577,12 +436,10 @@ export async function loadCallContext(
   if (source === null) {
     return null;
   }
-
   const language = CallLanguage.safeParse(source.city.callLanguage);
   if (!language.success) {
     return null;
   }
-
   return {
     attempt,
     task,
@@ -602,16 +459,10 @@ export async function loadCallContext(
 }
 
 /**
- * The dialogue budget a call holds, rebuilt from its attempt (AAP 0.5.6).
- *
- * `apps/workers`' `call-dispatch` reserved it before dialing, on the dispatch-time local day of the
- * city, so the same city and day are what its unused part is released against. A value that is not a
- * positive safe integer reads as no budget at all, which ends the call politely instead of spending
- * past a reservation nobody can vouch for.
- *
- * @param services - The app's services, of which the city's zone is read.
- * @param ctx - The call, whose attempt holds the reserved amount.
- * @returns The reservation the session's turns are metered against.
+ * The dialogue budget a call holds, rebuilt from its attempt (AAP 0.5.6): the reservation was made on
+ * the dispatch-time local day of the city, so the same city and day are what its unused part is
+ * released against. A value that is not a positive safe integer reads as no budget at all, which ends
+ * the call politely instead of spending past a reservation nobody can vouch for.
  */
 export function reservationFor(
   services: Pick<DialogueServices, 'timezoneFor'>,
@@ -632,11 +483,9 @@ const TRANSCRIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export interface AttemptOutcomeOptions {
   /**
    * The dialogue budget the attempt held. The release is booked against its city and local day, which
-   * only the enclosing call knows, so it travels with the outcome rather than being re-derived from a
-   * row this function would have to read again.
+   * only the enclosing call knows, so it travels with the outcome rather than being re-derived.
    */
   readonly reservation: LlmReservation;
-  /** The micro-dollars of that budget the call never spent, released after the commit. */
   readonly unusedMicros: number;
   /**
    * Whether this ending also moves the attempt to `ended` with its `endedAt`, which is set once
@@ -649,26 +498,15 @@ export interface AttemptOutcomeOptions {
  * Record what one call attempt produced, and ask `apps/workers` to apply it — the single writer, and
  * the one place a call's result becomes durable (AAP 0.3.2, 0.5.3, 0.5.6).
  *
- * Call it with the attempt already locked by {@link lockAttempt}, inside the transaction that locks
- * it. The first recorder wins: an attempt that already carries an outcome, or one whose call content
- * was stripped, returns `false` and writes nothing, which is what makes a racing status callback and
- * a relay finalize produce exactly one `apply_call_result` row.
+ * Call it with the attempt already locked by {@link lockAttempt}, inside the transaction that locks it. The first
+ * recorder wins: an attempt that already carries an outcome, or one whose call content was stripped, returns `false`
+ * and writes nothing, which is what makes a racing status callback and a relay finalize produce exactly one
+ * `apply_call_result` row.
  *
- * The transcript follows the attempt's own extracted fields rather than its caller's word: a menu
- * call's transcript is stored with its thirty-day deletion date, and a lodging call's — and a call
- * that extracted nothing — stores none at all (AAP 0.5.2, 0.5.6, 0.12.2).
- *
- * The outbox row is written in the same transaction as the outcome, so the work it announces becomes
- * durable with the result it describes; the unused dialogue budget is released after the commit,
- * through `after`, because it is a statement on another connection (AAP 0.3.2).
- *
- * @param tx - The transaction client, with the attempt already locked.
- * @param services - The app's services: the clock, the spend meter and the logger.
- * @param after - The transaction's after-commit registration.
- * @param attempt - The locked attempt row.
- * @param result - What the call produced.
- * @param opts - The release and whether this ending also ends the attempt.
- * @returns `true` when this call recorded the outcome, `false` when an earlier writer had.
+ * The transcript follows the attempt's own extracted fields rather than its caller's word: a menu call's transcript
+ * is stored with its thirty-day deletion date, and a lodging call's — and a call that extracted nothing — stores
+ * none (AAP 0.5.2). The outbox row is written in the same transaction as the outcome; the unused dialogue budget is
+ * released after the commit, through `after`, because it is a statement on another connection (AAP 0.3.2).
  */
 export async function recordAttemptOutcome(
   tx: DbTx,
@@ -681,10 +519,8 @@ export async function recordAttemptOutcome(
   if (attempt.outcome !== null || isStripped(attempt)) {
     return false;
   }
-
   const now = services.clock.now();
   const transcript = result.extractedFields?.kind === 'menu_prices' ? result.transcript : null;
-
   const data: Prisma.CallAttemptUpdateInput = {
     outcome: result.outcome,
     confidence: result.confidence,
@@ -699,16 +535,13 @@ export async function recordAttemptOutcome(
     data.state = 'ended';
     data.endedAt = attempt.endedAt ?? now;
   }
-
   await tx.callAttempt.update({ where: { id: attempt.id }, data });
   await writeOutbox(tx, 'apply_call_result', { callAttemptId: attempt.id });
-
   if (opts.unusedMicros > 0) {
     const reservation = opts.reservation;
     const unusedMicros = opts.unusedMicros;
     after(() => services.spend.releaseLlm(reservation, unusedMicros));
   }
-
   services.logger.info(
     { event: 'voice_call_outcome', attemptId: attempt.id, outcome: result.outcome },
     'voice_call_outcome',
@@ -726,14 +559,7 @@ const SCRIPTS: Readonly<Record<CallTaskKind, ScriptDefinition<unknown>>> = {
   lodging_stay_verification: lodgingStayVerificationScript,
 };
 
-/**
- * The script a task's kind selects.
- *
- * @param kind - The call task's kind.
- * @returns The script the engine runs.
- * @throws Error when no script runs that kind, which the record above makes unreachable at compile
- *   time while still keeping the lookup honest at runtime.
- */
+/** The script a task's kind selects; a kind with no script is unreachable at compile time and throws here (AAP 0.5.6). */
 export function scriptFor(kind: CallTaskKind): ScriptDefinition<unknown> {
   const script = SCRIPTS[kind];
   if (script === undefined) {
@@ -781,29 +607,22 @@ const CONTROL_ACTIONS: Readonly<Partial<Record<UtteranceLabel, ControlAction>>> 
   do_not_call: 'end_do_not_call',
 };
 
-/** What one control label asks for (AAP 0.5.6). */
 type ControlAction = 'switch_english' | 'end_refused' | 'end_do_not_call';
 
 /**
  * An ending the engine decides itself, overriding what the script would have reported (AAP 0.5.3,
- * 0.5.6): a refusal, a do-not-call request and a refusal to spend more dialogue budget are outcomes
- * of the call rather than of what it collected.
+ * 0.5.6): a refusal, a do-not-call request and a refusal to spend more dialogue budget.
  */
 interface EndingOverride {
   readonly outcome: CallAttemptOutcome;
   readonly confidence: Confidence | null;
 }
 
-/** A callee who asked to speak to a person or to end the call (AAP 0.5.6). */
 const REFUSED_ENDING: EndingOverride = { outcome: 'refused', confidence: null };
 
-/** A callee who asked never to be called again (AAP 0.5.6). */
 const DO_NOT_CALL_ENDING: EndingOverride = { outcome: 'do_not_call', confidence: null };
 
-/**
- * An ending caused by the dialogue budget: the call has data to review or none, but it certainly has
- * no more budget, so the task is queued for an operator rather than a redial (AAP 0.5.6).
- */
+/** The dialogue budget is gone: the call has no more budget, so the task is queued for an operator rather than redialled (AAP 0.5.6). */
 const BUDGET_ENDING: EndingOverride = { outcome: 'needs_review', confidence: 'low' };
 
 /** Where a step stands between its question and its collected value (AAP 0.5.6). */
@@ -826,34 +645,27 @@ interface PendingAnswer {
 }
 
 /**
- * How a call ended, once {@link DialogueSession.finalize} has recorded it (AAP 0.5.6): `completed`
- * when the dialogue reached its own end — the last step resolved, or the callee asked to stop —
- * `app_closing` when the app ended it (nothing to ask, a model failure, no budget left), and the two
- * the socket and the task decide for themselves.
+ * How a call ended (AAP 0.5.6): `completed` when the dialogue reached its own end, `app_closing` when
+ * the app ended it (nothing to ask, a model failure, no budget left), and the two the socket and the
+ * task decide for themselves.
  */
 export type FinalizeReason = 'completed' | 'socket_closed' | 'superseded' | 'app_closing';
 
 /**
- * One automated call: the turn loop that turns a callee's speech into a recorded outcome
- * (AAP 0.5.6).
+ * One automated call: the turn loop that turns a callee's speech into a recorded outcome (AAP 0.5.6). The session is
+ * driven from outside — {@link start} once, then {@link onPrompt} per transcribed utterance — and speaks only
+ * through its injected socket. Four invariants hold it:
  *
- * The session is driven from outside — {@link start} once, then {@link onPrompt} per transcribed
- * utterance — and speaks only through its injected socket, so a unit test runs a whole scenario
- * without Twilio. Four invariants hold it together:
- *
- *  - **One turn at a time.** Turns are chained, so a classification is never in flight while another
- *    begins, whatever order the socket delivers prompts in, and the script's preparation runs on that
- *    same chain, so a prompt delivered while `prepare` is still in flight waits for the first
- *    question instead of meeting a call that has asked nothing.
- *  - **The task decides.** Before every turn the task's status and the attempt's `superseded` flag are
- *    re-read, so a task cancelled while the call runs ends the dialogue politely instead of talking to
- *    a caller nobody wants a result from (AAP 0.5.3).
- *  - **The budget bounds it.** No more than `LLM_MAX_TURNS_PER_CALL` turns are taken — an utterance
- *    the relay cut at its own byte bound counts as one without reaching the provider — and every turn
- *    that is classified is metered against the call's own reservation, so the reserved dialogue
- *    budget cannot be crossed (AAP 0.5.6).
- *  - **The closing line plays out.** `end` cuts buffered speech, so the session waits for the closing
- *    line, sends the frame, records the outcome and only then closes the socket.
+ *  - **One turn at a time.** Turns are chained, so a classification is never in flight while another begins, and the
+ *    script's preparation runs on that same chain, so a prompt delivered during `prepare` waits for the first
+ *    question.
+ *  - **The task decides.** Before every turn the task's status and the attempt's `superseded` flag are re-read, so a
+ *    task cancelled while the call runs ends the dialogue politely (AAP 0.5.3).
+ *  - **The budget bounds it.** No more than `LLM_MAX_TURNS_PER_CALL` turns are taken — an utterance the relay cut at
+ *    its own byte bound counts as one without reaching the provider — and every classified turn is metered against
+ *    the call's own reservation, so the reserved dialogue budget cannot be crossed (AAP 0.5.6).
+ *  - **The closing line plays out.** `end` cuts buffered speech, so the session waits for the closing line, sends
+ *    the frame, records the outcome and only then closes the socket.
  */
 export class DialogueSession {
   private readonly services: DialogueServices;
@@ -882,15 +694,7 @@ export class DialogueSession {
   private finalizeReason: FinalizeReason | null = null;
   private chain: Promise<void> = Promise.resolve();
 
-  /**
-   * Build the session for one attempt (AAP 0.5.6).
-   *
-   * @param services - The app's services: the database, the clock, the logger, the outbox, the spend
-   *   meter, the provider, `LLM_MAX_TURNS_PER_CALL` and the city zones.
-   * @param ctx - The call, as {@link loadCallContext} read it.
-   * @param script - The script to run, or `undefined` to take the one the task's kind selects.
-   * @param io - The relay socket, injected so a test runs without one.
-   */
+  /** Build the session for one attempt (AAP 0.5.6). */
   constructor(
     services: DialogueServices,
     ctx: CallContext,
@@ -916,20 +720,14 @@ export class DialogueSession {
   }
 
   /**
-   * The call's opening as text: the disclosure, first, then the first question (AAP 0.5.6).
+   * The call's opening as text: the disclosure, first, then the first question (AAP 0.5.6). The question
+   * joins it once it can be rendered: a menu question has no placeholder, while a stay question names
+   * the guest and the dates, known only after the script has decrypted the claim.
    *
-   * The disclosure is always the first line, whatever the script. The question joins it once it can
-   * be rendered: a menu question has no placeholder, so it is there before {@link start} has run,
-   * while a stay question names the guest and the dates, which are known only after the script has
-   * decrypted the claim.
-   *
-   * Nothing in production reads it, deliberately: the opening reaches the callee in two halves on two
-   * surfaces, `twiml.ts` speaking {@link disclosureFor} as the ConversationRelay `welcomeGreeting`
-   * and {@link start} speaking the first question alone, so this member is the one place the pair
-   * exists in process. The planned `apps/api/test/unit/voice-dialogue.test.ts` (AAP 0.8.1) asserts
-   * the disclosure-first rule AAP 0.12.2 records — the first utterance of a call is the disclosure,
-   * in each language — through it; `understanding.ts` names that suite as the one driving this
-   * module with fakes.
+   * Nothing in production reads it: the opening reaches the callee in two halves on two surfaces —
+   * `twiml.ts` speaks {@link disclosureFor} as the `welcomeGreeting` and {@link start} speaks the first
+   * question alone — so this member is the one place the pair exists in process, and it is what the unit
+   * suite asserts the disclosure-first rule through (AAP 0.12.2).
    */
   openingLines(): readonly string[] {
     const disclosure = disclosureFor(this.kind, this.language);
@@ -949,18 +747,11 @@ export class DialogueSession {
   }
 
   /**
-   * Prepare the script and ask its first question (AAP 0.5.6).
-   *
-   * Twilio has already spoken the disclosure as the `welcomeGreeting`, so this speaks the first
-   * question and nothing before it. The preparation runs on {@link onPrompt}'s own chain, so a prompt
-   * that arrives while `prepare` is still in flight waits for the first question rather than meeting
-   * a call that has asked nothing. The promise returned here still rejects to its caller — the
-   * socket's own failure path — while the chain keeps a settled one, so a preparation that threw
-   * leaves the turns after it runnable.
-   *
-   * A script that refuses the call — a claim that is gone, terminal or already erased — closes
-   * politely with `no_answer`, which leaves the task to retry where it can and to the operator queue
-   * where it cannot.
+   * Prepare the script and ask its first question (AAP 0.5.6). The disclosure has already been spoken as
+   * the `welcomeGreeting`, so this speaks the first question and nothing before it, on
+   * {@link onPrompt}'s own chain: a prompt that arrives while `prepare` is still in flight waits for the
+   * first question rather than meeting a call that has asked nothing. A script that refuses the call
+   * closes politely with `no_answer`, which leaves the task to retry where it can (AAP 0.5.3).
    */
   start(): Promise<void> {
     // Enqueued on the turn chain, so no prompt is handled between this call and the first question.
@@ -982,7 +773,6 @@ export class DialogueSession {
         'voice_prepare_failed',
       );
     }
-
     this.scriptContext = prepared;
     const step = this.step();
     if (prepared === null || step === undefined) {
@@ -1019,10 +809,8 @@ export class DialogueSession {
   }
 
   /**
-   * Note that the callee started speaking over the agent (AAP 0.5.6).
-   *
-   * Nothing is replayed and no log line is written: the turn was cut short, which the call's own
-   * transcript records and the classification window does not.
+   * Note that the callee started speaking over the agent (AAP 0.5.6): nothing is replayed and no log
+   * line is written, because the turn was cut short.
    */
   onInterrupt(): void {
     if (this.keepsTranscript) {
@@ -1046,21 +834,16 @@ export class DialogueSession {
   }
 
   /**
-   * Record what the call produced and end it (AAP 0.5.6).
-   *
-   * Idempotent: the first call wins, and a second one — a socket that closes while the closing line
-   * plays out, a task cancelled mid-call — changes nothing. It never throws: a failure is logged as
-   * `voice_finalize_failed` and left to `apps/workers`' reconcile, which moves an attempt left
-   * `ended` with no outcome to `needs_review` (AAP 0.5.3).
-   *
-   * @param reason - How the call ended.
+   * Record what the call produced and end it (AAP 0.5.6). Idempotent: the first call wins, and a second
+   * one — a socket that closes while the closing line plays out, a task cancelled mid-call — changes
+   * nothing. It never throws: a failure is logged as `voice_finalize_failed` and left to `apps/workers`'
+   * reconcile, which moves an attempt left `ended` with no outcome to `needs_review` (AAP 0.5.3).
    */
   async finalize(reason: FinalizeReason): Promise<void> {
     if (this.finalizeReason !== null) {
       return;
     }
     this.finalizeReason = reason;
-
     try {
       const scripted = this.script.result(this.collected, this.finished);
       const ending = this.ending;
@@ -1072,7 +855,6 @@ export class DialogueSession {
         transcript: this.transcriptText(),
       };
       const unusedMicros = Math.max(0, this.reservedMicros - this.chargedMicros);
-
       let recorded = false;
       await transact(this.services, async (tx, after) => {
         const attempt = await lockAttempt(tx, this.ctx.attempt.id);
@@ -1085,14 +867,10 @@ export class DialogueSession {
           endCall: true,
         });
       });
-
-      // A call that ran and ended with nothing to apply. `no_answer` is the outcome the AAP fixes
-      // for a call that produced no data, and `CallAttempt.outcome` and `CallTask.blockedReason`
-      // carry no value that could say why (AAP 0.5.2, 0.5.3), so the reason is recorded here: the
-      // callee answered and every one of this call's turns classified `unclear`, which is what
-      // `LLM_PROVIDER=fake` does. An operator reads this line to tell a call the dialogue never
-      // understood from one nobody answered, whose `no_answer` is written with no turn classified
-      // (AAP 0.11.1).
+      // A call that ran and ended with nothing to apply. `no_answer` is the outcome the AAP fixes for a
+      // call that produced no data, so the reason is recorded here: the callee answered and every turn
+      // of this call classified `unclear`, which is what lets an operator tell a call the dialogue never
+      // understood from one nobody answered (AAP 0.11.1).
       if (recorded && result.outcome === 'no_answer' && this.classifications > 0) {
         this.services.logger.info(
           {
@@ -1117,7 +895,6 @@ export class DialogueSession {
     if (this.closed) {
       return;
     }
-
     // The task decides: a task that stopped being `in_progress`, or an attempt superseded mid-call,
     // ends the dialogue here. `apps/workers` records a superseded attempt's result on the attempt and
     // never applies it to the task (AAP 0.5.3).
@@ -1126,29 +903,24 @@ export class DialogueSession {
       await this.close('closing.thanks', null, 'superseded');
       return;
     }
-
     // The check order matters here. A refusal of the call belongs to `start`, which takes the
     // preparation onto this same chain: by the time a turn runs, a refusal has already closed the
-    // session, and the `closed` check above returns on it. A null context therefore means the script
-    // is not ready — a session driven before `start` — and a turn must not end a call the script has
-    // not spoken into yet.
+    // session, and the `closed` check above returns on it. A null context therefore means the script is
+    // not ready, and a turn must not end a call the script has not spoken into yet.
     const context = this.scriptContext;
     if (context === null) {
       return;
     }
-
     const step = this.step();
     if (step === undefined) {
       // A script with no steps has nothing to ask, so the call is closed as kindly as it began.
       await this.close('closing.thanks', null, 'app_closing');
       return;
     }
-
     if (this.classifications >= this.maxTurns) {
       await this.close('closing.budget', BUDGET_ENDING, 'app_closing');
       return;
     }
-
     // An overlong utterance is nothing the callee said: it is this socket's own bound having been
     // reached, so none of it is appended — it would otherwise enter the classification window and a
     // menu call's transcript as speech nobody spoke (AAP 0.5.6).
@@ -1156,7 +928,6 @@ export class DialogueSession {
       this.appendCallee(text);
     }
     this.classifications += 1;
-
     let classification: Classification;
     if (overlong) {
       // Unusable rather than classified: no request is counted, sent or charged against the dialogue
@@ -1188,11 +959,9 @@ export class DialogueSession {
         return;
       }
     }
-
     // The turn's own label, written before the control check so a refusal and a do-not-call are
-    // recorded like any other turn. A call that collected nothing is where this matters: with
-    // `LLM_PROVIDER=fake` every turn classifies `unclear`, so the attempt's `no_answer` would
-    // otherwise read as a line nobody answered (AAP 0.11.1).
+    // recorded like any other turn, and so an attempt whose every turn classified `unclear` does not
+    // read as a line nobody answered (AAP 0.11.1).
     this.services.logger.debug(
       {
         event: 'voice_turn',
@@ -1203,7 +972,6 @@ export class DialogueSession {
       },
       'voice_turn',
     );
-
     const control = CONTROL_ACTIONS[classification.label];
     if (control !== undefined) {
       await this.handleControl(control, step, context);
@@ -1257,12 +1025,10 @@ export class DialogueSession {
       this.speak(this.questionText(step, context));
       return;
     }
-
     if (action === 'end_refused') {
       await this.close('closing.refused', REFUSED_ENDING, 'completed');
       return;
     }
-
     // The do-not-call effects are committed before the closing line, so a socket that dies during it
     // cannot lose the request (AAP 0.5.6).
     await this.markTargetDoNotCall();
@@ -1276,7 +1042,6 @@ export class DialogueSession {
     context: ScriptContext,
   ): Promise<void> {
     const state = this.stepState;
-
     if (state.kind === 'confirming') {
       // The same answer a second time confirms a read-back that restates the question; `yes` answers
       // `confirm.prompt` for the others.
@@ -1292,7 +1057,6 @@ export class DialogueSession {
         return;
       }
     }
-
     const value = step.accept(c, context);
     if (value === null) {
       if (state.kind === 'confirming') {
@@ -1306,7 +1070,6 @@ export class DialogueSession {
       await this.failStep(step, context, null);
       return;
     }
-
     this.readBack(step, value, c.label, context);
   }
 
@@ -1319,7 +1082,6 @@ export class DialogueSession {
   ): void {
     const readback = step.readback(value, context, this.language);
     this.speak(renderTemplate(this.language, readback.key, readback.vars));
-
     const style = step.confirmation === 'same_answer' ? 'same_answer' : 'prompt';
     if (style === 'prompt') {
       this.speak(renderTemplate(this.language, 'confirm.prompt'));
@@ -1354,7 +1116,6 @@ export class DialogueSession {
       await this.advance(context);
       return;
     }
-
     this.stepState = ASKING;
     // A refused read-back is answered by asking the question again; an answer that fitted nothing is
     // answered by asking the callee to repeat it.
@@ -1370,7 +1131,6 @@ export class DialogueSession {
     this.stepState = ASKING;
     this.failedTries = 0;
     this.stepIndex += 1;
-
     const next = this.step();
     if (next === undefined) {
       this.finished = true;
@@ -1405,19 +1165,14 @@ export class DialogueSession {
 
   /**
    * Honour a request never to be called again (AAP 0.5.3, 0.5.6): the target is marked, every other
-   * task of it is cancelled, and every attempt that may still be on a live call is superseded.
-   *
-   * One transaction, before the closing line, so the request survives the socket. This attempt is
-   * left to its own outcome: `call-results` reads `do_not_call` from the recorded result and closes
-   * the task, and a sibling task already in the queue is cancelled here.
+   * task of it is cancelled, and every attempt that may still be on a live call is superseded. One
+   * transaction, before the closing line, so the request survives the socket.
    */
   private async markTargetDoNotCall(): Promise<void> {
     const { target, task } = this.ctx;
-
     await transact(this.services, async (tx) => {
       const taskFilter = { id: { not: task.id }, status: { in: CANCELLABLE_TASK_STATUSES } };
       const attemptFilter = { superseded: false, state: { in: LIVE_ATTEMPT_STATES } };
-
       if (target.type === 'place') {
         await tx.place.update({ where: { id: target.id }, data: { doNotCall: true } });
         await tx.callTask.updateMany({
@@ -1430,7 +1185,6 @@ export class DialogueSession {
         });
         return;
       }
-
       await tx.lodging.update({ where: { id: target.id }, data: { doNotCall: true } });
       await tx.callTask.updateMany({
         where: { ...taskFilter, lodgingId: target.id },
@@ -1468,9 +1222,9 @@ export class DialogueSession {
   }
 
   /**
-   * Replace every redaction in a window line (AAP 0.5.2): a lodging call's booking name and its
-   * parts become `<guest>` before the line can reach the provider, longest entry first so the whole
-   * name goes before its parts and a part cannot carry the guest.
+   * Replace every redaction in a window line (AAP 0.5.2): a lodging call's booking name and its parts
+   * become `<guest>` before the line can reach the provider, longest entry first so the whole name goes
+   * before its parts.
    */
   private redact(text: string): string {
     const redactions = this.scriptContext?.redactions ?? [];
@@ -1504,9 +1258,8 @@ export class DialogueSession {
   }
 
   /**
-   * Speak a closing line, let it play out, end the relay session and record the outcome
-   * (AAP 0.5.6). The first close wins: a socket that closes while the line plays, or a task that is
-   * cancelled, finds the call already ended.
+   * Speak a closing line, let it play out, end the relay session and record the outcome (AAP 0.5.6).
+   * The first close wins: a socket that closes while the line plays finds the call already ended.
    */
   private async close(
     closing: TemplateKey,
@@ -1518,7 +1271,6 @@ export class DialogueSession {
     }
     this.closed = true;
     this.ending = ending;
-
     const line = renderTemplate(this.language, closing);
     this.speak(line);
     await this.waitOutSpeech(line);

@@ -2,17 +2,6 @@
  * The venue check-in code's unit suite (AAP 0.5.7, 0.12.2): the RFC 4226 truncation, the HKDF
  * derivation, the code's own shape and expiry, the one-step tolerance in either direction, and the
  * fact that no device-supplied instant reaches validation.
- *
- * The rule under test is `key = HKDF-SHA256(secret, info "tablemate-checkin-v1")` with counter
- * `T = floor(t / 60)` truncated to six digits, counters `T-1`, `T` and `T+1` accepted and `T-2`
- * refused as `422 invalid_code`. The venue secret is generated here in the shape `issueSecret`
- * produces and is never written down; the only literal keying material is RFC 4226's own Appendix D
- * secret, which is public test data rather than a credential.
- *
- * Every instant comes from integer arithmetic on a step counter, so the suite is reproducible in a
- * plain `vitest` run with no clock control. A caller inside the API passes `request.receivedAt`, set
- * once per request by `plugins/clock.ts` (AAP 0.11.1), which is why the argument these functions take
- * IS the server instant — and why the arity rows below assert no fourth, device-supplied one exists.
  */
 
 import { hkdfSync, randomBytes } from 'node:crypto';
@@ -116,15 +105,12 @@ describe('hotp — the RFC 4226 truncation', () => {
   it.each(RFC_VECTORS)('counter %i truncates to %s', (counter, code) => {
     expect(hotp(RFC_SECRET_KEY, counter)).toBe(code);
   });
-
   it('carries the counter in all eight bytes, not in the low 32 bits', () => {
     const bigCounter = 2 ** 33 + 5;
-
     expect(hotp(RFC_SECRET_KEY, bigCounter)).toMatch(CODE_PATTERN);
     // A 32-bit read of the big-endian block would make these two the same code.
     expect(hotp(RFC_SECRET_KEY, bigCounter)).not.toBe(hotp(RFC_SECRET_KEY, bigCounter % 2 ** 32));
   });
-
   it('refuses a counter it cannot encode', () => {
     expect(() => hotp(RFC_SECRET_KEY, -1)).toThrow(RangeError);
   });
@@ -140,7 +126,6 @@ describe('deriveKey — HKDF-SHA256 over the issued secret', () => {
     const other = Buffer.from(
       hkdfSync('sha256', Buffer.from(secret, 'utf8'), Buffer.alloc(0), `${HKDF_INFO}-other`, 32),
     );
-
     expect(CHECKIN_HKDF_INFO).toBe(HKDF_INFO);
     expect(derived).toEqual(expected);
     expect(derived).toHaveLength(32);
@@ -154,30 +139,25 @@ describe('codeFor — the code a venue displays, and when it expires', () => {
     const secret = newSecret();
     const at = stepInstant(STEP_COUNT, offsetMs);
     const { code, expiresAt } = codeFor(secret, at);
-
     expect(counterAt(at)).toBe(STEP_COUNT);
     expect(code).toBe(hotp(deriveKey(secret), STEP_COUNT));
     expect(code).toMatch(CODE_PATTERN);
     // The console polls at this instant, which is the first millisecond of the next step.
     expect(expiresAt.getTime()).toBe((STEP_COUNT + 1) * STEP_MS);
   });
-
   it('pads a code whose truncation needs it', () => {
     const secret = newSecret();
     const found = firstZeroPaddedCode(deriveKey(secret), 1_000);
-
     expect(found.code).toHaveLength(CODE_DIGITS);
     expect(found.code.startsWith('0')).toBe(true);
     expect(codeFor(secret, stepInstant(found.counter)).code).toBe(found.code);
   });
-
   it('gives each venue its own code, and a new one as the step advances', () => {
     const first = newSecret();
     const second = newSecret();
     const steps = [0, 1, 2, 3, 4];
     const codesFor = (secret: string): string[] =>
       steps.map((step) => codeFor(secret, stepInstant(STEP_COUNT + step)).code);
-
     expect(deriveKey(first)).not.toEqual(deriveKey(second));
     expect(new Set(codesFor(first)).size).toBeGreaterThan(1);
     // Over five steps at least one differs, which ties the code to the secret without the
@@ -193,16 +173,13 @@ describe('verifyCode — the one-step tolerance', () => {
       const secret = newSecret();
       const at = stepInstant(STEP_COUNT, 1_000);
       const code = hotp(deriveKey(secret), STEP_COUNT + offset);
-
       expect(verifyCode(secret, code, at)).toBe(accepted);
     },
   );
-
   it("measures the tolerance from the step edge, not from the code's age", () => {
     const secret = newSecret();
     const key = deriveKey(secret);
     const previous = hotp(key, STEP_COUNT - 1);
-
     // The last millisecond of step T still accepts step T-1 ...
     expect(verifyCode(secret, previous, stepInstant(STEP_COUNT, STEP_MS - 1))).toBe(true);
     // ... and the first millisecond of T+1 refuses it, because there it is T'-2.
@@ -210,20 +187,16 @@ describe('verifyCode — the one-step tolerance', () => {
     // A code a console is about to display is accepted at the start of its own step.
     expect(verifyCode(secret, hotp(key, STEP_COUNT + 1), stepInstant(STEP_COUNT))).toBe(true);
   });
-
   it.each(MALFORMED_ROWS)('refuses %s without throwing', (_described, code) => {
     const secret = newSecret();
     const at = stepInstant(STEP_COUNT, 1_000);
-
     expect(verifyCode(secret, code, at)).toBe(false);
     expect(() => verifyCode(secret, code, at)).not.toThrow();
   });
-
   it('refuses the current code with anything surrounding it', () => {
     const secret = newSecret();
     const at = stepInstant(STEP_COUNT, 1_000);
     const code = codeFor(secret, at).code;
-
     expect(verifyCode(secret, `${code} `, at)).toBe(false);
     expect(verifyCode(secret, ` ${code}`, at)).toBe(false);
     expect(verifyCode(secret, code, at)).toBe(true);
@@ -237,7 +210,6 @@ describe("no clock but the server's", () => {
     expect(verifyCode.length).toBe(3);
     expect(codeFor.length).toBe(2);
   });
-
   it.each(SKEW_ROWS)('refuses a code a console %s would display', (_described, offset) => {
     const secret = newSecret();
     const at = stepInstant(STEP_COUNT, 1_000);
@@ -246,14 +218,11 @@ describe("no clock but the server's", () => {
     // countdown and nothing else; `apps/mobile/e2e/playwright/console-clock.spec.ts` covers that
     // browser side.
     const skewed = hotp(deriveKey(secret), counterAt(at) + offset);
-
     expect(verifyCode(secret, skewed, at)).toBe(false);
   });
-
   it('is deterministic: the same instant always yields the same code', () => {
     const secret = newSecret();
     const at = stepInstant(STEP_COUNT, 30_000);
-
     expect(codeFor(secret, at)).toEqual(codeFor(secret, new Date(at.getTime())));
     expect(verifyCode(secret, codeFor(secret, at).code, at)).toBe(true);
   });

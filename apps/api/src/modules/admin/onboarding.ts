@@ -5,46 +5,19 @@
  * The route guard answers `403 operator_only` before any function here runs (AAP 0.5.4); none of them
  * reads `role`.
  *
- * **The lodging registry pages (AAP 0.5.4).** `GET /admin/lodgings` is the one registry read whose
- * route carries a query — a city filter, a name search, a page size and a cursor — because the weekly
- * refresh adds a row to that table with every element it finds (AAP 0.5.6), and a bound would leave
- * the operator unable to reach a lodging it hid. {@link listLodgings} answers one page in its own
- * (city, name, id) order with the number of rows its filters match; {@link listVenues} is unchanged
- * and keeps its own bound and its own warning.
+ * Console secrets (AAP 0.3.2): the issue routes mint 32 random bytes through `consoles/secrets.ts`,
+ * store them as a SHA-256 lookup hash beside an AES-256-GCM ciphertext, and answer the plaintext
+ * once in `SecretIssued`. Re-issuing replaces both stored forms, so the previous secret stops
+ * authenticating `X-Venue-Secret` and `X-Lodging-Secret` at once. Neither the plaintext nor either
+ * stored form is ever selected into a DTO or logged: every query names its columns, and every log
+ * line carries an event name and an id and nothing else (AAP 0.11.1).
  *
- * **Console secrets (AAP 0.3.2).** The issue routes mint 32 random bytes through
- * `consoles/secrets.ts`, store them as a SHA-256 lookup hash beside an AES-256-GCM ciphertext — the
- * shape the seed writes for seeded consoles — and answer the plaintext once in `SecretIssued`, with
- * `Cache-Control: no-store` set by the route. Re-issuing replaces both stored forms, so the previous
- * secret stops authenticating `X-Venue-Secret` and `X-Lodging-Secret` at once. Neither the plaintext
- * nor either stored form is ever selected into a DTO or logged: every query below names its columns,
- * and every log line carries an event name and an id and nothing else.
- *
- * **Place refresh (AAP 0.5.6).** A new partner venue and a lodging that has just become one change
- * what the weekly OpenStreetMap refresh covers, so both enqueue that city's `place-refresh` job. The
- * enqueue runs in `after`, never inside the transaction, and a queue that cannot be reached is logged
- * and swallowed: the weekly scheduler is the backstop, and onboarding a venue must not fail because
- * Redis was busy (AAP 0.3.2).
- *
- * **Error codes.** AAP 0.5.4 fixes `404` for an unknown target. This module separates the two cases
- * the routes can meet, as every other city lookup does: an unknown city is `404 city_not_found`, and
- * an unknown venue, lodging or place is the generic `404 not_found`. `lat` without its `lng` is a
- * second `400 invalid_field` at this layer, so the rule holds however the function is reached.
- *
- * **Coordinates.** `location` is a PostGIS `geography` column Prisma cannot write, so each create
- * inserts its row and writes the point through `setPoint(tx, …)` in the same transaction
- * (AAP 0.2.1). Every DTO here requires `lat` and `lng`, so a row whose location is NULL has no
- * representable answer: a registry read leaves it out and logs it, and an update of one asks the
- * operator for the coordinates rather than answering with an invented point.
- *
- * **Time (AAP 0.11.1).** Every timestamp is the caller's `now` — `createdAt`, `updatedAt` and
- * `secretIssuedAt` — never Prisma's `@default(now())`/`@updatedAt`, so a test that advances the
- * injected clock sees these rows move with it, as the seed's fixtures do.
- *
- * @see AAP 0.3.2 for the console-secret format and the after-commit rule, 0.5.2 for the `Venue` and
- *   `Lodging` columns and the fixture guard these reads pass through, 0.5.4 for the routes and DTOs,
- *   0.5.6 for the place refresh and the manually entered lodging ingestion never touches, and 0.7.1
- *   item 10 for operator-led onboarding.
+ * `location` is a PostGIS `geography` column Prisma cannot write, so each create inserts its row and
+ * writes the point through `setPoint(tx, …)` in the same transaction (AAP 0.2.1); a row whose
+ * location is NULL has no representable answer, so a registry read leaves it out and logs it, and an
+ * update of one asks the operator for the coordinates rather than answering an invented point.
+ * Every timestamp is the caller's `now`, never Prisma's `@default(now())`/`@updatedAt`, so a test
+ * that advances the injected clock sees these rows move with it (AAP 0.11.1).
  */
 
 import type { Queue } from 'bullmq';
@@ -75,20 +48,7 @@ import { issueSecret } from '../consoles/secrets.ts';
 import { transact } from '../outbox/write.ts';
 import type { TransactServices } from '../outbox/write.ts';
 
-/**
- * What every function here needs from the app's services.
- *
- * It extends `TransactServices` — the `db`, `clock`, `logger` and `outbox` `transact` reads off the
- * object it is handed — and adds the three capabilities this module uses itself: the configuration's
- * `APP_ENV`, the BullMQ producers and the keyring. `db`, `clock` and `logger` are restated so their
- * own types are named here rather than inherited from the app's type. The composition root declares
- * the app's services type in `apps/api/src/app.ts`, which this file's dependency whitelist does not
- * admit, so the shape is stated here as the sibling admin modules state theirs (`admin/reports.ts`,
- * `admin/price-jobs.ts`, `admin/metrics.ts`): the app's services object satisfies it structurally,
- * and a test can stand a smaller double in for one member.
- */
 export interface OnboardingServices extends TransactServices {
-  /** The guarded Prisma client; its `city`, `place`, `venue` and `lodging` delegates are read. */
   readonly db: DbClient;
   /** The validated configuration, of which only `APP_ENV` is read: it decides fixture visibility. */
   readonly env: Pick<CommonEnv, 'APP_ENV'>;
@@ -197,14 +157,9 @@ const LODGING_SELECT = {
 } as const;
 
 /**
- * One registry row as the dashboard reads it (AAP 0.5.4).
  *
  * Fields are copied one by one rather than spread, so a column added to `Venue` cannot reach an
  * operator without a change here.
- *
- * @param row - The selected venue columns.
- * @param point - The venue's own coordinates, read from its geography column.
- * @returns The venue as `GET /admin/venues` and the create and update routes answer it.
  */
 export function toAdminVenueDto(row: AdminVenueRow, point: LatLng): AdminVenueDto {
   return {
@@ -221,11 +176,6 @@ export function toAdminVenueDto(row: AdminVenueRow, point: LatLng): AdminVenueDt
 }
 
 /**
- * One lodging as `GET /admin/lodgings` and the lodging create route answer it (AAP 0.5.4).
- *
- * @param row - The selected lodging columns.
- * @param point - The lodging's own coordinates, read from its geography column.
- * @returns The lodging, with its phone source and do-not-call flag spelled out.
  */
 export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLodgingDto {
   return {
@@ -244,12 +194,7 @@ export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLod
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reads (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * The venue registry.
  *
  * Ordered by city, then name, with the id breaking a same-name tie so two reads agree. Active
  * partners and paused ones are both listed — pausing a venue is a status change, not a withdrawal
@@ -261,10 +206,6 @@ export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLod
  * paged: the first {@link ADMIN_REGISTRY_LIMIT} rows in the (city, name, id) order above are answered,
  * and a registry holding more than that is reported through `admin_venues_truncated` rather than
  * answered as if it were complete (AAP 0.11.1).
- *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @returns The first {@link ADMIN_REGISTRY_LIMIT} venues the process may see, in (city, name, id)
- *   order, with their coordinates and their secret issue time.
  */
 export async function listVenues(services: OnboardingServices): Promise<AdminVenuesResponse> {
   const rows = await services.db.venue.findMany({
@@ -272,47 +213,34 @@ export async function listVenues(services: OnboardingServices): Promise<AdminVen
     orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
     take: ADMIN_REGISTRY_LIMIT + 1,
   });
-
   // The row past the bound is a sentinel: its presence says there are more venues than this read
   // answers, and it is dropped here so the id list below can never exceed ADMIN_REGISTRY_LIMIT.
   const truncated = rows.length > ADMIN_REGISTRY_LIMIT;
   const page = truncated ? rows.slice(0, ADMIN_REGISTRY_LIMIT) : rows;
-
   if (truncated) {
     services.logger.warn({ event: ADMIN_VENUES_TRUNCATED, limit: ADMIN_REGISTRY_LIMIT });
   }
-
   const points = await readPoints(
     services.db,
     'venue',
     page.map((row) => row.id),
     services.env.APP_ENV,
   );
-
   const items: AdminVenueDto[] = [];
-
   for (const row of page) {
     const point = points.get(row.id);
-
     if (point === undefined) {
       // No coordinate, so no DTO: the row is reported and left out rather than answered with a point
       // it does not have.
       services.logger.warn({ event: VENUE_LOCATION_MISSING, venueId: row.id });
       continue;
     }
-
     items.push(toAdminVenueDto(row, point));
   }
-
   return { items };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The lodging read's keyset cursor (AAP 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * The one payload shape of a lodging cursor: the id of the row the page ended on.
  *
  * A strict object, so a cursor carrying a second key — or a payload of any other shape — is refused
  * rather than interpreted, and the field is named `i` to keep the encoded form short as the shared
@@ -323,13 +251,9 @@ export async function listVenues(services: OnboardingServices): Promise<AdminVen
  */
 const LodgingsCursor = z.strictObject({ i: Uuid });
 
-/** Where a lodging page continues from: the boundary row's sort key, resolved against the database. */
 interface LodgingsCursorPosition {
-  /** The boundary row's city, the first column of the read's order. */
   readonly cityId: string;
-  /** The boundary row's name, the second column of the read's order. */
   readonly name: string;
-  /** The boundary row's id, the tie-breaker under the name. */
   readonly id: string;
 }
 
@@ -340,17 +264,12 @@ interface LodgingsCursorPosition {
  * the canonical base64url of what it decodes to, because a value this read did not write re-encodes
  * to something else, and what it decodes to has to be JSON. Nothing is trusted beyond that here; the
  * payload's own shape is checked by the caller's schema.
- *
- * @param value - The `cursor` query parameter.
- * @returns The payload it carries, or null when the value is not canonical base64url of JSON.
  */
 function decodeCursorPayload(value: string): unknown {
   const text = Buffer.from(value, 'base64url').toString('utf8');
-
   if (Buffer.from(text, 'utf8').toString('base64url') !== value) {
     return null;
   }
-
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -359,26 +278,18 @@ function decodeCursorPayload(value: string): unknown {
 }
 
 /**
- * Encodes the row a page ended on as the opaque cursor that continues the read.
- *
- * @param id - The boundary row's id.
- * @returns The cursor that continues after that row.
  */
 function encodeLodgingsCursor(id: string): string {
   return Buffer.from(JSON.stringify(LodgingsCursor.parse({ i: id })), 'utf8').toString('base64url');
 }
 
 /**
- * The row one cursor continues after, with the sort key the next page's bound compares.
  *
  * The key is read from the row rather than carried in the cursor, which is what the call-task queue
  * does with the exact instant of the row a page ended on: what reaches the statement as a bound is
  * this row's stored `(cityId, name)`, never text the client supplied, so no caller can steer the next
  * page to a position the previous one did not end at.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param id - The id the cursor carries.
- * @returns The boundary row's city, name and id.
  * @throws {AppError} `invalid_field` (400) when the cursor names no lodging the process may read,
  *   which is the contract's answer for a query value it cannot use — a row a refresh removed, or a
  *   fixture row outside `test` and `demo`, leaves a cursor this read cannot continue from (AAP 0.5.2).
@@ -391,11 +302,9 @@ async function lodgingCursorBoundary(
     where: { id },
     select: { cityId: true, name: true },
   });
-
   if (row === null) {
     throw new AppError('invalid_field', 'The cursor names no lodging this registry lists.');
   }
-
   return { cityId: row.cityId, name: row.name, id };
 }
 
@@ -403,9 +312,6 @@ async function lodgingCursorBoundary(
  * The keyset half of the lodging read: every row ordered after `position` by `(cityId asc, name asc,
  * id asc)` (AAP 0.5.4).
  *
- * A row of a later city comes next, then a row of the same city under a later name, then a row of the
- * same city and name under a larger id — exactly the order the read states, so a page continued from
- * this bound holds the rows that follow the boundary one and none of the rows before it.
  */
 function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhereInput {
   return {
@@ -418,7 +324,6 @@ function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhe
 }
 
 /**
- * One page of the lodging registry, in (city, name, id) order, narrowed by the request's filters.
  *
  * A lodging an OpenStreetMap refresh found missing carries `osmMissingAt` and has left the public
  * directory, so it is left out here too; its claims, activity facts and console secret stay attached,
@@ -426,14 +331,6 @@ function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhe
  * `osmType`, no `osmId` and `phoneSource = operator`, which is what keeps the refresh from replacing
  * its phone number or removing it (AAP 0.5.6).
  *
- * The filter is one `AND` list so each piece stands on its own and the fixtures guard's own narrowing
- * composes with it rather than replacing it, which is what keeps a row the guard hides out of both the
- * page and the count (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2). `q` matches the name
- * case-insensitively, so an operator finds a lodging by whatever part of its name they remember, and
- * `cityId` narrows the registry to one city. `limit + 1` rows are read, so the presence of a next page
- * is known without a second query: the extra row proves another page follows and is not returned, and
- * the cursor is built from the page's last row read whether or not its DTO could be built, so paging
- * can never stand still on a row it cannot carry.
  *
  * `total` counts the lodgings the request's filters match with the cursor ignored, so an operator reads
  * how many rows the page leaves behind. A row whose location is NULL has no `AdminLodgingDto` — the DTO
@@ -441,11 +338,6 @@ function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhe
  * {@link LODGING_LOCATION_MISSING} with its own id, which makes `items` one element shorter than
  * `total`; the page it sits in still counts toward the bound, so the row after it is reached.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param query - The parsed query string: the city, name, page size and cursor filters.
- * @returns One page of current lodgings the process may see in (city, name, id) order with their
- *   coordinates and phone facts, the number of lodgings the filters match, and the cursor that
- *   continues the read — null on the last page.
  * @throws {AppError} `invalid_field` (400) for a cursor this read did not write, or one naming a
  *   lodging it can no longer continue from.
  */
@@ -455,29 +347,22 @@ export async function listLodgings(
 ): Promise<AdminLodgingsResponse> {
   const limit = query.limit ?? ADMIN_REGISTRY_LIMIT;
   const filters: Prisma.LodgingWhereInput[] = [{ osmMissingAt: null }];
-
   if (query.cityId !== undefined) {
     filters.push({ cityId: query.cityId });
   }
-
   if (query.q !== undefined) {
     filters.push({ name: { contains: query.q, mode: 'insensitive' } });
   }
-
   // Taken before the keyset half joins the list, and as a copy of it: `total` is how many lodgings the
   // request's filters match, never how many of them follow the cursor (AAP 0.5.4).
   const matching: Prisma.LodgingWhereInput = { AND: [...filters] };
-
   if (query.cursor !== undefined) {
     const payload = LodgingsCursor.safeParse(decodeCursorPayload(query.cursor));
-
     if (!payload.success) {
       throw new AppError('invalid_field', 'The cursor is malformed.');
     }
-
     filters.push(afterLodgingCursor(await lodgingCursorBoundary(services, payload.data.i)));
   }
-
   const [rows, total] = await Promise.all([
     services.db.lodging.findMany({
       where: { AND: filters },
@@ -487,32 +372,25 @@ export async function listLodgings(
     }),
     services.db.lodging.count({ where: matching }),
   ]);
-
   // The row past the page is the sentinel: its presence says another page follows, it is dropped
   // before the ids reach `readPoints`, and the cursor continues after the last row the page holds.
   const page = rows.slice(0, limit);
   const boundary = rows.length > limit ? page[page.length - 1] : undefined;
-
   const points = await readPoints(
     services.db,
     'lodging',
     page.map((row) => row.id),
     services.env.APP_ENV,
   );
-
   const items: AdminLodgingDto[] = [];
-
   for (const row of page) {
     const point = points.get(row.id);
-
     if (point === undefined) {
       services.logger.warn({ event: LODGING_LOCATION_MISSING, lodgingId: row.id });
       continue;
     }
-
     items.push(toAdminLodgingDto(row, point));
   }
-
   return {
     items,
     total,
@@ -520,12 +398,7 @@ export async function listLodgings(
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Writes (AAP 0.5.4, 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Onboards one venue as a partner (requirement 10).
  *
  * The city must be configured, and a `placeId` must name a place of that same city: the link is what
  * lets the price pipeline find the venue's neighbours, and a place of another city would silently
@@ -534,11 +407,6 @@ export async function listLodgings(
  * because a venue is onboarded so that meetups can be held there (`422 venue_not_partner` is what
  * rejects a proposal anywhere else).
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param operatorId - The acting operator, whose row the write fence is taken on (AAP 0.5.3).
- * @param body - The validated `CreateVenueRequest`.
- * @param now - The injected clock's instant, stored as `createdAt` and `updatedAt`.
- * @returns The new venue, as the route's `201` body.
  * @throws {AppError} `city_not_found` for a city that is not configured, `not_found` for a `placeId`
  *   that names no place of that city.
  */
@@ -552,22 +420,18 @@ export async function createVenue(
     services,
     async (tx, after) => {
       const city = await tx.city.findUnique({ where: { id: body.cityId }, select: { id: true } });
-
       if (city === null) {
         throw new AppError('city_not_found');
       }
-
       if (body.placeId !== undefined) {
         const place = await tx.place.findFirst({
           where: { id: body.placeId, cityId: body.cityId },
           select: { id: true },
         });
-
         if (place === null) {
           throw new AppError('not_found');
         }
       }
-
       const row = await tx.venue.create({
         data: {
           cityId: body.cityId,
@@ -581,16 +445,13 @@ export async function createVenue(
         },
         select: VENUE_SELECT,
       });
-
       const point: LatLng = { lat: body.lat, lng: body.lng };
       await setPoint(tx, 'venue', row.id, point);
-
       // After the commit, so the refresh reads the venue that is actually stored (AAP 0.3.2).
       after(() => enqueuePlaceRefresh(services, row.cityId));
       after(() => {
         services.logger.info({ event: VENUE_CREATED, venueId: row.id, cityId: row.cityId });
       });
-
       return toAdminVenueDto(row, point);
     },
     { fenceUserId: operatorId },
@@ -598,7 +459,6 @@ export async function createVenue(
 }
 
 /**
- * Edits one venue's name, address, coordinates or partner status.
  *
  * Only the fields the request carries are written, so an operator changing a name cannot clear an
  * address by omission. `lat` and `lng` are supplied together — the request schema enforces it and so
@@ -609,12 +469,6 @@ export async function createVenue(
  * A venue with no stored location must be given coordinates by this request, because no field of
  * `AdminVenueDto` can carry the absence of one.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param operatorId - The acting operator, whose row the write fence is taken on (AAP 0.5.3).
- * @param venueId - The venue to edit.
- * @param body - The validated `UpdateVenueRequest`, holding at least one field.
- * @param now - The injected clock's instant, stored as `updatedAt`.
- * @returns The venue as it stands after the edit.
  * @throws {AppError} `not_found` for an unknown venue — or a fixture venue, which the guard hides
  *   outside `test` and `demo` — and `invalid_field` for `lat` without `lng` or for an edit that
  *   leaves a venue with no stored location without supplying one.
@@ -632,27 +486,22 @@ export async function updateVenue(
       if ((body.lat === undefined) !== (body.lng === undefined)) {
         throw new AppError('invalid_field');
       }
-
       const current = await tx.venue.findUnique({
         where: { id: venueId },
         select: { id: true, isActivePartner: true },
       });
-
       if (current === null) {
         throw new AppError('not_found');
       }
-
       const supplied =
         body.lat !== undefined && body.lng !== undefined
           ? { lat: body.lat, lng: body.lng }
           : undefined;
       const stored = (await readPoints(tx, 'venue', [venueId], services.env.APP_ENV)).get(venueId);
       const point = supplied ?? stored;
-
       if (point === undefined) {
         throw new AppError('invalid_field', 'Supply `lat` and `lng`: the venue has no location.');
       }
-
       const row = await tx.venue.update({
         where: { id: venueId },
         data: {
@@ -663,26 +512,21 @@ export async function updateVenue(
         },
         select: VENUE_SELECT,
       });
-
       if (supplied !== undefined) {
         await setPoint(tx, 'venue', venueId, supplied);
       }
-
       // The refresh matters when the venue moved, or when it became one more place a meetup can be
       // held at: both change the distance bands and the neighbours the price pipeline walks
       // (AAP 0.5.6, 0.5.7).
       const moved =
         supplied !== undefined &&
         (stored === undefined || stored.lat !== supplied.lat || stored.lng !== supplied.lng);
-
       if (moved || (body.isActivePartner === true && !current.isActivePartner)) {
         after(() => enqueuePlaceRefresh(services, row.cityId));
       }
-
       after(() => {
         services.logger.info({ event: VENUE_UPDATED, venueId: row.id, cityId: row.cityId });
       });
-
       return toAdminVenueDto(row, point);
     },
     { fenceUserId: operatorId },
@@ -690,17 +534,11 @@ export async function updateVenue(
 }
 
 /**
- * Issues — or re-issues — one venue's console secret (AAP 0.3.2).
  *
  * The plaintext is answered once and never stored in the clear; re-issuing replaces both stored
  * forms, so the console that used the previous secret stops authenticating at once. An operator does
  * this when a secret is lost, when a console device is replaced, or when one may have leaked.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param operatorId - The acting operator, whose row the write fence is taken on (AAP 0.5.3).
- * @param venueId - The venue whose secret is issued.
- * @param now - The injected clock's instant, stored as `secretIssuedAt`.
- * @returns The plaintext secret, for that one answer.
  * @throws {AppError} `not_found` for an unknown venue — or a fixture venue, which the guard hides
  *   outside `test` and `demo`.
  */
@@ -714,13 +552,10 @@ export async function issueVenueSecret(
     services,
     async (tx, after) => {
       const venue = await tx.venue.findUnique({ where: { id: venueId }, select: { id: true } });
-
       if (venue === null) {
         throw new AppError('not_found');
       }
-
       const material = issueSecret(services);
-
       await tx.venue.update({
         where: { id: venueId },
         data: {
@@ -731,11 +566,9 @@ export async function issueVenueSecret(
         },
         select: { id: true },
       });
-
       after(() => {
         services.logger.info({ event: VENUE_SECRET_ISSUED, venueId });
       });
-
       return { secret: material.secret };
     },
     { fenceUserId: operatorId },
@@ -743,7 +576,6 @@ export async function issueVenueSecret(
 }
 
 /**
- * Enters one lodging by hand (requirement 15).
  *
  * The row is stored with no OpenStreetMap identity and with `phoneSource = operator`, which is what
  * makes the weekly refresh leave it alone: it never overwrites an operator-supplied number, never
@@ -754,11 +586,6 @@ export async function issueVenueSecret(
  * No place refresh is enqueued: a manually entered lodging is not a partner until a console secret is
  * issued to it, which {@link issueLodgingSecret} reacts to.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param operatorId - The acting operator, whose row the write fence is taken on (AAP 0.5.3).
- * @param body - The validated `CreateLodgingRequest`.
- * @param now - The injected clock's instant, stored as `createdAt` and `updatedAt`.
- * @returns The new lodging, as the route's `201` body.
  * @throws {AppError} `city_not_found` for a city that is not configured.
  */
 export async function createLodging(
@@ -771,11 +598,9 @@ export async function createLodging(
     services,
     async (tx, after) => {
       const city = await tx.city.findUnique({ where: { id: body.cityId }, select: { id: true } });
-
       if (city === null) {
         throw new AppError('city_not_found');
       }
-
       const row = await tx.lodging.create({
         data: {
           cityId: body.cityId,
@@ -793,14 +618,11 @@ export async function createLodging(
         },
         select: LODGING_SELECT,
       });
-
       const point: LatLng = { lat: body.lat, lng: body.lng };
       await setPoint(tx, 'lodging', row.id, point);
-
       after(() => {
         services.logger.info({ event: LODGING_CREATED, lodgingId: row.id, cityId: row.cityId });
       });
-
       return toAdminLodgingDto(row, point);
     },
     { fenceUserId: operatorId },
@@ -808,17 +630,11 @@ export async function createLodging(
 }
 
 /**
- * Issues — or re-issues — one lodging's console secret (AAP 0.3.2, 0.5.6).
  *
  * Issuing a secret is what makes a lodging a partner: its console can read the leaderboard standings,
  * places within 2 km of it enter the price pipeline, and the weekly refresh covers its city's
  * lodgings. That is why the refresh is enqueued here and not when the lodging row was created.
  *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param operatorId - The acting operator, whose row the write fence is taken on (AAP 0.5.3).
- * @param lodgingId - The lodging whose secret is issued.
- * @param now - The injected clock's instant, stored as `secretIssuedAt`.
- * @returns The plaintext secret, for that one answer.
  * @throws {AppError} `not_found` for an unknown lodging — or a fixture lodging, which the guard
  *   hides outside `test` and `demo`.
  */
@@ -835,13 +651,10 @@ export async function issueLodgingSecret(
         where: { id: lodgingId },
         select: { id: true, cityId: true },
       });
-
       if (lodging === null) {
         throw new AppError('not_found');
       }
-
       const material = issueSecret(services);
-
       await tx.lodging.update({
         where: { id: lodgingId },
         data: {
@@ -852,24 +665,17 @@ export async function issueLodgingSecret(
         },
         select: { id: true },
       });
-
       after(() => enqueuePlaceRefresh(services, lodging.cityId));
       after(() => {
         services.logger.info({ event: LODGING_SECRET_ISSUED, lodgingId });
       });
-
       return { secret: material.secret };
     },
     { fenceUserId: operatorId },
   );
 }
 
-// ---------------------------------------------------------------------------------------------
-// Place refresh (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Enqueues one city's place refresh, after the change that made it necessary has committed.
  *
  * Called only from an `after` callback, so no transaction is still open and no row lock is held while
  * Redis is spoken to (AAP 0.3.2). No custom `jobId` is passed: a stable id would suppress a second
@@ -879,21 +685,15 @@ export async function issueLodgingSecret(
  * the backstop for exactly this case, and an operator's onboarding must not fail because the queue is
  * unreachable. The log carries the city alone — a queue error can quote the connection string, which
  * holds the Redis password (AAP 0.11.1).
- *
- * @param services - The app's services (see {@link OnboardingServices}).
- * @param cityId - The city whose places, lodgings and distance bands are refreshed.
- * @returns Nothing; the work is the job's.
  */
 async function enqueuePlaceRefresh(services: OnboardingServices, cityId: string): Promise<void> {
   const queueName = QUEUE.placeRefresh;
   const jobName = JOB[queueName].refresh;
   const queue = services.queues.get(queueName);
-
   if (queue === undefined) {
     services.logger.error({ event: PLACE_REFRESH_ENQUEUE_FAILED, cityId });
     return;
   }
-
   try {
     await queue.add(
       jobName,

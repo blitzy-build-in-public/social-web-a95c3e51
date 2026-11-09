@@ -2,16 +2,6 @@
  * The scripted telephony simulator's Twilio REST client: the transport the twilio 6.2.0 SDK
  * dispatches through when `TELEPHONY_MODE=simulator`, so automated call traffic never leaves the
  * host (AAP 0.5.6, AAP 0.11.2).
- *
- * `packages/server-core/src/telephony/twilio-client.ts` takes this client through its `httpClient`
- * option, so the SDK still builds each request — method, path, query string, form fields,
- * credentials — and this file only routes it to a {@link SimCallTarget}, which plays the call
- * against the API. The simulator's HTTP server (`simulator.ts`) answers the requests server-core's
- * built-in transport forwards to `VOICE_SIM_URL` with the same {@link handleTwilioRequest}, so both
- * paths behave identically.
- *
- * No network I/O, no logger, and no call content in a response or an error: a message names a
- * parameter, a path or an error code, never a number (AAP 0.11.1).
  */
 
 import { Buffer } from 'node:buffer';
@@ -134,9 +124,6 @@ export interface SimCallTarget {
   /**
    * Whether the vendor refuses calls. The answer `true` when the target's global switch is on, when
    * `to` maps to a scenario whose `vendor` is `down`, or when the default scenario is `vendor-down`.
-   *
-   * `to` is optional because only a create names a callee: a fetch or a list is answered by the
-   * global switch alone.
    */
   isVendorDown(to?: string): boolean;
 }
@@ -161,11 +148,6 @@ export function vendorDownError(): Error {
  * Answer one Twilio REST request from `target` (AAP 0.5.6). Both the injected transport of
  * {@link createSimulatorHttpClient} and the simulator's HTTP server call this, so a request the SDK
  * sends directly and one it forwards to `VOICE_SIM_URL` are routed identically.
- *
- * A vendor-down simulator throws {@link vendorDownError} before anything else is read or created —
- * before authentication, and before any `SimCall` exists — so a down vendor can never leave a call
- * behind (AAP 0.12.1 criterion 17). A request that does not authenticate as the simulator account
- * answers `401`; a path this router does not serve answers `404`.
  */
 export async function handleTwilioRequest(
   target: SimCallTarget,
@@ -175,7 +157,6 @@ export async function handleTwilioRequest(
   const route = matchCallsRoute(request.method.toLowerCase(), url.pathname);
   const form = parseTwilioForm(request.data);
   const to = route?.kind === 'create' ? readText(form, 'To') : null;
-
   if (target.isVendorDown(to ?? undefined)) {
     throw vendorDownError();
   }
@@ -185,7 +166,6 @@ export async function handleTwilioRequest(
   if (route === null) {
     return notFoundResponse(url.pathname);
   }
-
   if (route.kind === 'create') {
     const parsed = readCallParams(form);
     if ('error' in parsed) {
@@ -197,12 +177,10 @@ export async function handleTwilioRequest(
       callResource(created.sid, created.status, route.accountSid, parsed.params),
     );
   }
-
   if (route.kind === 'fetch') {
     const call = target.fetchCall(route.callSid);
     return call === null ? notFoundResponse(url.pathname) : jsonResponse(200, call);
   }
-
   return jsonResponse(200, callsPage(target, readQuery(url, request.params)));
 }
 

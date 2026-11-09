@@ -17,10 +17,6 @@
  * Failure isolation (AAP 0.3.2): the read behind this route touches stored prices alone, so any
  * failure in it is answered `503 suggestions_unavailable` on this route alone, and proposing,
  * locking, checking in and settling are untouched.
- *
- * @see AAP 0.5.4 for the route, its errors and their order, 0.5.7 for the filtering, estimation,
- *   ranking and budget rules that `candidates.ts` and `rank.ts` apply, 0.7.3 for the eligibility
- *   reading, 0.3.2 for the failure isolation, and 0.8.1 for this file.
  */
 
 import {
@@ -43,8 +39,7 @@ import { transact } from '../outbox/write.ts';
 import { assertBudgetInRange, effectiveBudget } from './budget.ts';
 import { suggest, type SuggestResult } from './candidates.ts';
 
-// Type-only, as in every sibling plugin and route module: `App` is the plan's one declaration of the
-// instance, it is erased at compile time, and nothing of that module is read here at runtime.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 import type { FastifyRequest } from 'fastify';
 
@@ -59,8 +54,6 @@ const SUGGESTIONS_TAG = 'suggestions' satisfies OpenApiTag;
  * a `TypeError` to be answered as `500 internal_error` where the contract requires `401
  * token_invalid`, and no compiler check would catch it.
  *
- * @param request - The request the traveler guard admitted.
- * @returns The acting account's id.
  * @throws AppError `token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
@@ -79,11 +72,6 @@ function callerId(request: FastifyRequest): string {
  * a pair who met can still read the plan they made. Everything else is refused with
  * `409 meetup_not_locked`, including `proposed`, `forfeited`, `unattended`, `lock_lost`, `no_fault`,
  * and a `completed` meetup settled longer ago.
- *
- * @param status - The meetup's current status.
- * @param settledAt - When its outcome was applied, or `null` while it has none.
- * @param now - The instant eligibility is judged at, from the caller's injected clock.
- * @returns True when the route may answer with suggestions.
  */
 export function suggestionsEligible(
   status: MeetupStatus,
@@ -93,11 +81,9 @@ export function suggestionsEligible(
   if (status === 'locked') {
     return true;
   }
-
   if (status !== 'completed' || settledAt === null) {
     return false;
   }
-
   return now.getTime() - settledAt.getTime() <= SUGGESTIONS_SETTLED_ELIGIBLE_HOURS * HOUR_MS;
 }
 
@@ -112,14 +98,9 @@ export function suggestionsEligible(
  * The guard is installed on this plugin's context, never globally, so `GET /me`, the public routes,
  * the provider webhooks, the console routes, `/admin/*` and the test-control routes cannot inherit
  * the age gate by accident (AAP 0.5.4).
- *
- * @param app - The route instance; its `services` carry the guarded database client, the injected
- *   clock, the logger and the outbox the state-writing part commits through.
- * @see AAP 0.5.7 for the rules each handler delegates to.
  */
 export default function suggestionsRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
-
   app.get(
     '/meetups/:id/suggestions',
     {
@@ -148,23 +129,19 @@ export default function suggestionsRoutes(app: App): Promise<void> {
       const userId = callerId(request);
       const now = request.receivedAt;
       const { id } = request.params;
-
       // The caller's own meetup, or `404 meetup_not_found` / `403 not_participant`; a proposal the
       // recipient cannot see yet reads as one that does not exist (AAP 0.5.3, 0.5.4).
       const { meetup } = await loadForParticipant(app.services.db, id, userId);
-
       // Checked before anything is written, in the order the contract lists the route's errors.
       if (!suggestionsEligible(meetup.status, meetup.settledAt, now)) {
         throw new AppError('meetup_not_locked');
       }
-
       // `SuggestionsQuery` accepts any integer, so the accepted range is enforced here, after the
       // `409` and before the state write (AAP 0.5.4).
       const supplied = request.query.perPersonBudgetCents;
       if (supplied !== undefined) {
         assertBudgetInRange(supplied);
       }
-
       // One transaction for whichever of the two writes is due, and none at all when neither is: a
       // repeat read that already stamped the first view skips the fence and the round trip. No meetup
       // row lock is taken and no analytics event is written, because this is not a status transition
@@ -180,7 +157,6 @@ export default function suggestionsRoutes(app: App): Promise<void> {
                 data: { budgetCents: supplied, budgetUpdatedBy: userId },
               });
             }
-
             // Stamped once, by whichever read arrives first, and never moved afterwards.
             await tx.meetup.updateMany({
               where: { id: meetup.id, suggestionsFirstViewedAt: null },
@@ -190,13 +166,11 @@ export default function suggestionsRoutes(app: App): Promise<void> {
           { fenceUserId: userId },
         );
       }
-
       // The value supplied now, or the one either attendee stored, or the default the deposit level
       // selects. The deposit itself is never spent (AAP 0.5.7, 0.7.3).
       const budgetCents =
         supplied ??
         effectiveBudget({ budgetCents: meetup.budgetCents, depositCents: meetup.depositCents });
-
       let result: SuggestResult;
       try {
         // One read, outside the transaction, over places and their stored prices alone.
@@ -210,7 +184,6 @@ export default function suggestionsRoutes(app: App): Promise<void> {
         if (isAppError(err) && err.code === 'suggestions_unavailable') {
           throw err;
         }
-
         // Any other failure of the read — a statement row that does not match its shape, a venue in a
         // city the configuration does not name, an unreadable hours value, the database itself —
         // stays on this route (AAP 0.3.2). It travels as the thrown error's `cause`, which the errors
@@ -219,7 +192,6 @@ export default function suggestionsRoutes(app: App): Promise<void> {
         // cause chain, and never a budget, a coordinate or a place list (AAP 0.11.1).
         throw new AppError('suggestions_unavailable', undefined, { cause: err });
       }
-
       // Field by field, never a spread: the response carries places, their estimate and the
       // provenance of the prices it was built from, and no user data at all (AAP 0.5.4, 0.5.7). Both
       // instants are UTC `Z` forms, which the shared `IsoDateTime` requires.
@@ -246,7 +218,6 @@ export default function suggestionsRoutes(app: App): Promise<void> {
           sourceUrl: item.sourceUrl,
         })),
       }));
-
       // `emptyReason` is added only when the read produced one: the contract's key is optional and the
       // compiler option `exactOptionalPropertyTypes` is on.
       return result.emptyReason === undefined
@@ -254,6 +225,5 @@ export default function suggestionsRoutes(app: App): Promise<void> {
         : { items, budgetCents, emptyReason: result.emptyReason };
     },
   );
-
   return Promise.resolve();
 }

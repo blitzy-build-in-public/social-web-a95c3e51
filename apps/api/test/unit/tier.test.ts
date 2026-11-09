@@ -1,12 +1,6 @@
 /**
  * The tier-computation unit suite (AAP 0.5.7, 0.5.4): `tierFrom`'s whole rule as a table, one row
  * per case, in the order the rule applies.
- *
- * A block in either direction -> `'blocked'`; `completedCount >= 2` -> 3; `completedCount >= 1`
- * -> 2; a shared meetup in `locked` whose two deposits are `held` -> 1; otherwise 0 (AAP 0.5.7).
- * `tierFrom` is pure and total, so this suite needs no database, no container and no environment:
- * the SQL that produces the facts, and the block direction `PairFacts` does not carry, are covered
- * by `integration/disclosure.test.ts`.
  */
 
 import { describe, expect, it } from 'vitest';

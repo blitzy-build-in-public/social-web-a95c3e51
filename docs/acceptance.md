@@ -153,27 +153,27 @@ area; the documents area is over its own 3,000-line budget in the same run (+105
 
 <!-- BEGIN loc -->
 
-| Area                                   |   Lines | Budget |    Delta | Status     |
-| -------------------------------------- | ------: | -----: | -------: | ---------- |
-| prover module                          |   1,161 |  1,200 |      -39 | ok         |
-| app screens                            |   9,402 |  9,000 |     +402 | over       |
-| tests and e2e                          |   8,117 |  2,500 |   +5,617 | over_limit |
-| configuration and src                  |  11,231 |  5,000 |   +6,231 | over_limit |
-| tests                                  |  34,596 | 15,000 |  +19,596 | over_limit |
-| source and scripts                     |  45,872 | 16,000 |  +29,872 | over_limit |
-| tests, fixtures, eval                  |  11,033 |  5,500 |   +5,533 | over_limit |
-| source                                 |  18,867 |  5,500 |  +13,367 | over_limit |
-| console app                            |   2,104 |    900 |   +1,204 | over_limit |
-| contracts and constants                |   5,707 |  4,000 |   +1,707 | over_limit |
-| schema, migrations and seed            |   5,237 |  2,800 |   +2,437 | over_limit |
-| server utilities                       |   8,826 |  2,500 |   +6,326 | over_limit |
-| circuits and registry                  |  14,059 |  5,500 |   +8,559 | over_limit |
-| system tests                           |   4,006 |  1,800 |   +2,206 | over_limit |
-| cities, fixtures, registries           |     690 |  1,000 |     -310 | ok         |
-| documents and results                  |   3,105 |  3,000 |     +105 | over       |
-| root files, scripts/, infra/, patches/ |   5,160 |  2,100 |   +3,060 | over_limit |
-| **Total**                              | 189,173 | 83,300 | +105,873 | failing    |
+| Area                                   |   Lines | Budget |   Delta | Status     |
+| -------------------------------------- | ------: | -----: | ------: | ---------- |
+| prover module                          |   1,161 |  1,200 |     -39 | ok         |
+| app screens                            |  10,471 |  9,000 |  +1,471 | over_limit |
+| tests and e2e                          |   8,426 |  2,500 |  +5,926 | over_limit |
+| configuration and src                  |  11,340 |  5,000 |  +6,340 | over_limit |
+| tests                                  |  32,586 | 15,000 | +17,586 | over_limit |
+| source and scripts                     |  40,114 | 16,000 | +24,114 | over_limit |
+| tests, fixtures, eval                  |   9,916 |  5,500 |  +4,416 | over_limit |
+| source                                 |  15,734 |  5,500 | +10,234 | over_limit |
+| console app                            |   2,071 |    900 |  +1,171 | over_limit |
+| contracts and constants                |   4,920 |  4,000 |    +920 | over_limit |
+| schema, migrations and seed            |   4,386 |  2,800 |  +1,586 | over_limit |
+| server utilities                       |   6,828 |  2,500 |  +4,328 | over_limit |
+| circuits and registry                  |  13,005 |  5,500 |  +7,505 | over_limit |
+| system tests                           |   3,344 |  1,800 |  +1,544 | over_limit |
+| cities, fixtures, registries           |     690 |  1,000 |    -310 | ok         |
+| documents and results                  |   3,314 |  3,000 |    +314 | over_limit |
+| root files, scripts/, infra/, patches/ |   5,126 |  2,100 |  +3,026 | over_limit |
+| **Total**                              | 173,432 | 83,300 | +90,132 | failing    |
 
-Total 189,173 / 83,300 budget / 100,000 ceiling.
-Run 2026-11-09 at commit 33bb261.
+Total 173,432 / 83,300 budget / 100,000 ceiling.
+Run 2026-11-09 at commit c1ef432-dirty.
 <!-- END loc -->

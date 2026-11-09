@@ -35,9 +35,6 @@
  * {@link domainKey} and `isBlocklisted` are defined in `./blocklist.ts`, which this module imports,
  * and the host key is re-exported below so `import { domainKey } from './crawl-policy.ts'` keeps
  * working for every consumer of this folder.
- *
- * @see AAP 0.5.6 for the site-terms policy and the phone fallback, 0.5.4 for the review routes,
- *   0.5.2 for the `CrawlDomainPolicy` model, and 0.8.1 for this file.
  */
 
 import { isIP } from 'node:net';
@@ -157,17 +154,12 @@ const COUNTRY_CODE_LABEL = /^[a-z]{2}$/;
  *
  * Keys arrive from {@link domainKey}, so they are lower case already and no country code is missed
  * for its case.
- *
- * @param lastTwo The key's last two labels, dot-joined.
- * @returns True when a registrable domain sits one label above them.
  */
 function isPublicSuffix(lastTwo: string): boolean {
   if (MULTI_LABEL_SUFFIXES.has(lastTwo)) {
     return true;
   }
-
   const dot = lastTwo.indexOf('.');
-
   return (
     dot !== -1 &&
     SUFFIX_CATEGORY_LABELS.has(lastTwo.slice(0, dot)) &&
@@ -188,21 +180,15 @@ function isPublicSuffix(lastTwo: string): boolean {
  * a fixture host reached as `127.0.0.1` is then keyed exactly as the seed recorded it. A host with no
  * label before its suffix yields the key itself — `com.ar` derives `com.ar` — because there is no
  * site above the suffix to name; {@link domainDecision} refuses such a host rather than recording it.
- *
- * @param host A host name, a registrable domain or an IP literal, with or without brackets.
- * @returns The domain an operator decision and the review queue are scoped to.
  */
 export function registrableDomain(host: string): string {
   const key = domainKey(host);
   const labels = key.split('.');
-
   if (isIP(key) !== 0 || labels.length < 2) {
     return key;
   }
-
   const lastTwo = labels.slice(-2).join('.');
   const lastThree = labels.length >= 3 ? labels.slice(-3).join('.') : lastTwo;
-
   return isPublicSuffix(lastTwo) ? lastThree : lastTwo;
 }
 
@@ -227,9 +213,6 @@ export interface CrawlPolicyRow {
 export interface CrawlPolicyStore {
   /**
    * Reads the rows recorded for the given domains.
-   *
-   * @param domains The candidate domains, most specific first.
-   * @returns The rows that exist; a domain with none is absent from the result rather than `null`.
    */
   find(domains: readonly string[]): Promise<CrawlPolicyRow[]>;
   /**
@@ -251,9 +234,6 @@ export interface CrawlPolicyStore {
  *
  * `find` selects `domain` and `decision` alone: `reason`, `checkedAt` and `overriddenBy` belong to
  * the review screen, and a crawler that never loads them cannot put them in a log.
- *
- * @param db The Prisma client or transaction from `@tablemate/db`.
- * @returns The store {@link domainDecision} and `./safe-fetch.ts` consult.
  */
 export function createPrismaCrawlPolicyStore(db: DbClient | DbTx): CrawlPolicyStore {
   return {
@@ -263,7 +243,6 @@ export function createPrismaCrawlPolicyStore(db: DbClient | DbTx): CrawlPolicySt
         select: { domain: true, decision: true },
       });
     },
-
     async upsertProhibited(domain: string, reason: string, now: Date): Promise<void> {
       await db.crawlDomainPolicy.upsert({
         where: { domain },
@@ -271,7 +250,6 @@ export function createPrismaCrawlPolicyStore(db: DbClient | DbTx): CrawlPolicySt
         update: { decision: 'prohibited', reason, checkedAt: now, overriddenBy: null },
       });
     },
-
     async insertUncertain(domain: string, now: Date): Promise<void> {
       await db.crawlDomainPolicy.createMany({
         data: [{ domain, decision: 'uncertain', reason: REASON_AWAITING_REVIEW, checkedAt: now }],
@@ -288,7 +266,6 @@ export function createPrismaCrawlPolicyStore(db: DbClient | DbTx): CrawlPolicySt
  */
 function decisionChain(key: string, registrable: string): string[] {
   const registrableLabels = registrable.split('.').length;
-
   return domainSuffixes(key).filter((suffix) => suffix.split('.').length >= registrableLabels);
 }
 
@@ -307,12 +284,6 @@ function decisionChain(key: string, registrable: string): string[] {
  *
  * An existing decision is only ever overwritten by step 2: an operator's `allowed` stands until an
  * operator changes it, and the decision is never rechecked automatically.
- *
- * @param store The recorded decisions.
- * @param host The host of the request, from the URL about to be fetched.
- * @param now The time to record on a row this call writes, from the injected clock (AAP 0.11.1).
- * @param blocklist The blocklist `./blocklist.ts` loaded at startup.
- * @returns `allowed`, `prohibited` or `uncertain`.
  */
 export async function domainDecision(
   store: CrawlPolicyStore,
@@ -321,7 +292,6 @@ export async function domainDecision(
   blocklist: Blocklist,
 ): Promise<CrawlDecision> {
   const key = domainKey(host);
-
   // A public-suffix host is no site at all: `com.ar`, `co.nz` and `co.uk` are where a registry places
   // registrations, so a row keyed on one would stand for every site beneath it, and an operator's
   // `allowed` would cover all of them with none of their own terms read. Refused without a row, so
@@ -329,30 +299,23 @@ export async function domainDecision(
   if (key.split('.').length === 2 && isPublicSuffix(key)) {
     return 'prohibited';
   }
-
   const registrable = registrableDomain(key);
   const chain = decisionChain(key, registrable);
   const rows = await store.find(chain);
   const recorded = new Map(rows.map((row): [string, CrawlDecision] => [row.domain, row.decision]));
-
   if (isBlocklisted(key, blocklist)) {
     if (recorded.get(registrable) !== 'prohibited') {
       await store.upsertProhibited(registrable, REASON_BLOCKLIST, now);
     }
-
     return 'prohibited';
   }
-
   for (const candidate of chain) {
     const decision = recorded.get(candidate);
-
     if (decision !== undefined) {
       return decision;
     }
   }
-
   await store.insertUncertain(registrable, now);
-
   return 'uncertain';
 }
 
@@ -364,9 +327,6 @@ export async function domainDecision(
  *
  * The clock is read per call rather than captured, so a test clock moved between two fetches moves
  * the `checkedAt` the store records.
- *
- * @param deps The store, the injected clock and the loaded blocklist.
- * @returns A policy taking a host and answering `allowed`, `prohibited` or `uncertain`.
  */
 export function createDomainPolicy(deps: {
   store: CrawlPolicyStore;
@@ -384,9 +344,6 @@ export function createDomainPolicy(deps: {
  *
  * The switch is exhaustive over `CrawlDecision`, so a decision added to the contract fails the
  * build here instead of silently reaching a default.
- *
- * @param decision The decision {@link domainDecision} returned for the host.
- * @returns `fetch` for `allowed`, `phone_fallback` otherwise.
  */
 export function fallbackFor(decision: CrawlDecision): 'fetch' | 'phone_fallback' {
   switch (decision) {

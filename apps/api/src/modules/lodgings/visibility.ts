@@ -1,51 +1,37 @@
 /**
- * The "I'm staying here" guest list: the opt-in toggle behind `PUT /me/lodging-visibility` and the
- * opted-in guests a lodging's detail returns (AAP 0.5.1, 0.5.4, 0.5.7).
- *
- * Where a traveler sleeps is the most sensitive disclosure in the product, so it is opt-in twice
- * over: nothing is listed until they turn `showStaying` on, and the toggle can be turned on only for
- * a claim that is `verified` and still inside its stay. Hiding always succeeds — a traveler can
- * always take themselves off a guest list (AAP 0.5.7 "Lodging visibility", 0.12.2 "Guest list
+ * Where a traveler sleeps is the most sensitive disclosure in the product, so it is opt-in twice over:
+ * nothing is listed until they turn `showStaying` on, and the toggle can be turned on only for a claim
+ * that is `verified` and still inside its stay (AAP 0.5.7 "Lodging visibility", 0.12.2 "Guest list
  * opt-in, off by default, with a safety warning"; the warning itself is the client's, in
- * `apps/mobile/app/profile/stay.tsx`).
+ * `apps/mobile/app/profile/stay.tsx`). Hiding always succeeds.
  *
- * {@link setVisibility} is the write. It runs inside one transaction behind the account-deletion
- * write fence (AAP 0.5.3), so a traveler whose deletion has been requested cannot opt in, and it
- * re-points the visibility row at the claim the opt-in was granted for on every turn-on, so a new
- * stay never inherits an older stay's consent. It writes no outbox row, emits no analytics event and
- * touches no cache: a guest list is read live, and the leaderboard's guest count counts every
- * current verified guest whether or not they opted in.
+ * {@link setVisibility} is the write: one transaction behind the account-deletion write fence (AAP
+ * 0.5.3), so a traveler whose deletion has been requested cannot opt in, and it re-points the visibility
+ * row at the claim the opt-in was granted for on every turn-on, so a new stay never inherits an older
+ * stay's consent. It writes no outbox row, emits no analytics event and touches no cache: a guest list is
+ * read live, and the leaderboard's guest count counts every current verified guest whether or not they
+ * opted in.
  *
- * {@link guestsFor} is the read: the opted-in travelers currently staying at one lodging, as
- * tier-0 profiles — the same shape a stranger sees in discovery, and never a room number, a stay
- * date, a booking field or a claim id (AAP 0.5.4). It answers a viewer who holds a valid proof for
- * the lodging's city, which the route checks before calling; here a deleted or deletion-requested
- * traveler, and every pair with a block in either direction, are absent from the list. The list is
- * bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, and the count shown beside it is what says so.
+ * {@link guestsFor} is the read: the opted-in travelers currently staying at one lodging, as tier-0
+ * profiles — the same shape a stranger sees in discovery, and never a room number, a stay date, a booking
+ * field or a claim id (AAP 0.5.4) — answered to a viewer holding a valid proof for the lodging's city.
+ * A deleted or deletion-requested traveler, and every pair with a block in either direction, are absent.
  *
- * Four invariants the SQL keeps:
- *
- * - The toggle's claim lookup and the guest list share {@link currentStayPredicate}, so "active"
- *   means the lodging's local today in both and the two cannot disagree about who is staying: a
- *   stay stops counting at the end of its `stayTo` in city time, before the daily `stay-expiry` job
- *   in `apps/workers` gets round to turning the flag off.
- * - Both statements read `lodging`, and a raw query bypasses the guarded client's fixture extension,
- *   so each adds {@link fixturePredicate} for that alias (AAP 0.5.2), as `leaderboard.ts` does.
- * - The guest list is bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, the most recently
- *   resolved stay first, and the bound is visible in the answer rather than silent: the DTO's own
- *   `guestCount` counts every current verified guest, so a list shorter than that number reads as a
- *   cut list rather than as a claim that nobody else is staying there (AAP 0.5.4, 0.5.7).
- * - The opt-in is written under a share lock on the claim row it names, so a claim deleted between
- *   the lookup and the upsert makes the upsert wait rather than fail on the foreign key.
+ * Four invariants the SQL keeps: the toggle's claim lookup and the guest list share
+ * {@link currentStayPredicate}, so "active" means the lodging's local today in both, and a stay stops
+ * counting at the end of its `stayTo` in city time, before the daily `stay-expiry` job in `apps/workers`
+ * gets round to turning the flag off; both statements read `lodging`, and each adds
+ * {@link fixturePredicate} for that alias because a raw query bypasses the guarded client's fixture
+ * extension (AAP 0.5.2); the guest list is bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, the most
+ * recently resolved stay first, with the bound visible rather than silent, because the DTO's own
+ * `guestCount` counts every current verified guest, so a shorter list reads as a cut list and not as a
+ * claim that nobody else is staying there (AAP 0.5.4, 0.5.7); and the opt-in is written under a share
+ * lock on the claim row it names, so a claim deleted between the lookup and the upsert makes the upsert
+ * wait rather than fail on the foreign key.
  *
  * The services each function takes is the app's own services object narrowed structurally, the way
  * `lodgings/leaderboard.ts` narrows it, rather than the composition root's `AppServices` type:
- * `apps/api/src/app.ts` is another file's deliverable, it is not on this file's dependency
- * whitelist, and the narrowed types state exactly the capabilities these two functions use.
- *
- * @see AAP 0.5.7 for the visibility, claim and leaderboard rules, 0.5.4 for
- *   `PUT /me/lodging-visibility` and the lodging DTOs, 0.5.3 for the write fence, 0.5.2 for
- *   retention, 0.8.1 for this file.
+ * `apps/api/src/app.ts` is another file's deliverable and is not on this file's dependency whitelist.
  */
 
 import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';
@@ -57,22 +43,12 @@ import { transact, type TransactServices } from '../outbox/write.ts';
 import { tier0Profiles, type ReaderServices } from '../users/disclosure/serialize.ts';
 import { currentStayPredicate } from './leaderboard.ts';
 
-// ---------------------------------------------------------------------------------------------
-// Table aliases (AAP 0.5.2, 0.5.7)
-// ---------------------------------------------------------------------------------------------
-
-/** The alias {@link currentStayPredicate} expects for `lodging_claim`. */
 const CLAIM_ALIAS = 'c';
 
-/** The alias {@link currentStayPredicate} expects for `city`. */
 const CITY_ALIAS = 'ci';
 
 /** The alias both statements give `lodging`, the table that carries the fixture predicate. */
 const LODGING_ALIAS = 'l';
-
-// ---------------------------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------------------------
 
 /**
  * What {@link setVisibility} needs of the app's services (AAP 0.5.3, 0.5.4): the database, injected
@@ -93,19 +69,13 @@ export type GuestListServices = ReaderServices & {
   readonly env: Pick<CommonEnv, 'APP_ENV'>;
 };
 
-/** One row of the claim lookup: only the id the visibility row has to name. */
 interface ClaimIdRow {
   readonly id: string;
 }
 
-/** One row of the guest statement: only the id whose tier-0 profile is wanted. */
 interface GuestRow {
   readonly user_id: string;
 }
-
-// ---------------------------------------------------------------------------------------------
-// setVisibility — PUT /me/lodging-visibility (AAP 0.5.4, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Turns the caller's staying visibility on or off and answers the state recorded (AAP 0.5.4).
@@ -127,14 +97,9 @@ interface GuestRow {
  * while this request is in flight makes the upsert wait for the deletion and then follow it into
  * oblivion through the foreign key, rather than failing the request on a violated reference.
  *
- * @param services - The app's services: database, clock, logger, outbox and environment.
- * @param userId - The caller's id, from the authenticated session; it is the visibility row's key.
- * @param showStaying - The requested state: `true` opts in, `false` hides.
- * @returns A fresh `VisibilityResponse` holding the state the server recorded.
  * @throws AppError `no_verified_claim` (`409`) when `showStaying` is `true` and no verified, active
  *   claim exists.
  * @throws AppError `token_invalid` (`401`) when the account's deletion has been requested.
- * @see AAP 0.5.7 for the opt-in rule, 0.5.4 for the route, 0.5.3 for the fence.
  */
 export async function setVisibility(
   services: VisibilityWriteServices,
@@ -142,31 +107,25 @@ export async function setVisibility(
   showStaying: boolean,
 ): Promise<VisibilityResponse> {
   const now = services.clock.now();
-
   return await transact(
     services,
     async (tx) => {
       if (!showStaying) {
-        // Only a row that is currently shown needs writing; an absent row is already hidden.
         await tx.lodgingVisibility.updateMany({
           where: { userId, showStaying: true },
           data: { showStaying: false },
         });
         return { showStaying: false };
       }
-
       const claimId = await activeVerifiedClaimId(tx, userId, now, services.env.APP_ENV);
-
       if (claimId === null) {
         throw new AppError('no_verified_claim');
       }
-
       await tx.lodgingVisibility.upsert({
         where: { userId },
         create: { userId, lodgingClaimId: claimId, showStaying: true },
         update: { lodgingClaimId: claimId, showStaying: true },
       });
-
       return { showStaying: true };
     },
     { fenceUserId: userId },
@@ -185,13 +144,6 @@ export async function setVisibility(
  * `FOR SHARE OF "c"` is what makes the caller's decision hold until it is written: the row cannot be
  * deleted between this read and the `lodgingVisibility` upsert that references it. The city is
  * reached through the lodging because a claim carries no city of its own.
- *
- * @param tx - The transaction client `transact`'s `fn` received.
- * @param userId - The traveler whose claim is wanted.
- * @param now - The instant the city-local day is derived from; from `services.clock`.
- * @param appEnv - The process's `APP_ENV`; the statement reads `lodging`, so it needs the fixture
- *   predicate that a raw query cannot inherit from the guarded client (AAP 0.5.2).
- * @returns The claim's id, or `null` when no such claim exists.
  */
 async function activeVerifiedClaimId(
   tx: DbTx,
@@ -211,13 +163,8 @@ async function activeVerifiedClaimId(
      LIMIT 1
        FOR SHARE OF "c"
   `);
-
   return rows[0]?.id ?? null;
 }
-
-// ---------------------------------------------------------------------------------------------
-// guestsFor — the guest list of one lodging (AAP 0.5.4, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * How many guests one lodging's detail lists (AAP 0.5.4, 0.5.7).
@@ -264,14 +211,6 @@ export const LODGING_GUEST_LIST_LIMIT = 100;
  * property of the lodging. The bound never claims to be the whole guest list: the sibling
  * `guestCount` of the same DTO counts every current verified guest, so a list shorter than that
  * count is a cut list, and its first entries are the stays the lodging resolved most recently.
- *
- * @param services - The app's services: database, keyring, logger and environment.
- * @param lodgingId - The lodging whose guest list is wanted; the route has already resolved it.
- * @param viewerId - The traveler looking, whose blocks are excluded in both directions.
- * @param now - The instant the city-local day is derived from; from the caller's injected clock.
- * @returns The opted-in guests' tier-0 profiles, most recently resolved stay first, at most
- *   {@link LODGING_GUEST_LIST_LIMIT} of them; empty when nobody has opted in.
- * @see AAP 0.5.7 for the visibility rule, 0.5.4 for `LodgingDetail.guests`, 0.5.2 for erasure.
  */
 export async function guestsFor(
   services: GuestListServices,
@@ -302,14 +241,12 @@ export async function guestsFor(
      ORDER BY "c"."resolved_at" DESC, "c"."user_id"
      LIMIT ${LODGING_GUEST_LIST_LIMIT + 1}
   `);
-
   // The row past the bound is the sentinel the statement reads to know the list was cut: it is
   // dropped here rather than listed. Nothing is logged for it, because the DTO's own `guestCount`
   // already reports every current verified guest and is what makes the shorter list honest
   // (`LODGING_GUEST_LIST_LIMIT`, AAP 0.5.7).
   const listed =
     rows.length > LODGING_GUEST_LIST_LIMIT ? rows.slice(0, LODGING_GUEST_LIST_LIMIT) : rows;
-
   return await tier0Profiles(
     services,
     listed.map((row: GuestRow) => row.user_id),

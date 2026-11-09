@@ -1,19 +1,13 @@
 /**
- * Pseudonymous handles and avatar seeds, minted when an account is created
- * (AAP 0.1.1 requirement 1, AAP 0.5.1 Auth component). Trust in Tablemate comes from a verified
- * itinerary proof and a venue-witnessed check-in, never from identity disclosure (AAP 0.7.2), so a
- * handle is drawn from the closed vocabulary below and never from an email address, a name or any
- * other user input.
+ * Pseudonymous handles and avatar seeds: drawn from the closed vocabularies below, never from an
+ * email address, a name or any other user input (AAP 0.1.1, 0.5.1, 0.7.2).
  */
 import { randomBytes, randomInt } from 'node:crypto';
 
 /**
- * The adjectives a handle may start with: neutral, friendly words, each 3 to 8 lowercase ASCII
- * letters so that every minted handle matches {@link HANDLE_PATTERN}, and none of them a name, a
- * brand or a place in any launch language.
- *
- * `prettier-ignore` keeps the closed lists compact: they are one word per line under Prettier's
- * rules, which alone would cost 64 lines of a module budgeted at about 60.
+ * Adjectives a handle may start with: 3 to 8 lowercase ASCII letters, so every handle matches
+ * {@link HANDLE_PATTERN}, and none a name, brand or place. `prettier-ignore` keeps the closed list
+ * compact; Prettier would otherwise expand it to one word per line.
  */
 // prettier-ignore
 export const ADJECTIVES = [
@@ -32,28 +26,18 @@ export const NOUNS = [
   'tide', 'walnut',
 ] as const;
 
-/**
- * The shape of every handle this module mints: one adjective, one noun and a four-digit suffix, so
- * at most 22 characters, which fits `Tier0Profile.handle` and the dashboard's columns.
- */
+/** One adjective, one noun and a four-digit suffix: at most 22 characters, the width `Tier0Profile.handle` allows. */
 export const HANDLE_PATTERN = /^[a-z]{3,8}-[a-z]{3,8}-\d{4}$/;
 
-/**
- * How many times account creation may retry with a fresh handle before it gives up. Uniqueness is
- * not checked here — the unique index on `User.handle` enforces it (AAP 0.5.2) — and with 32 x 32 x
- * 10,000 possible handles the caller's retry resolves the rare collision.
- */
+/** Retries before account creation gives up: uniqueness comes from the unique index on `User.handle` (AAP 0.5.2), not from a check here. */
 export const MAX_HANDLE_ATTEMPTS = 5;
 
 /** Exclusive upper bound of the handle's four-digit suffix. */
 const SUFFIX_RANGE = 10_000;
 
 /**
- * A new pseudonymous handle, such as `quiet-heron-4821`. Randomness comes from `node:crypto`, never
- * `Math.random`, because a guessable handle would let one traveler impersonate another.
- *
- * The function is pure apart from that randomness — no I/O, no clock, no database — and it checks
- * no uniqueness, so an account-creating caller retries at most {@link MAX_HANDLE_ATTEMPTS} times.
+ * A new pseudonymous handle. Randomness comes from `node:crypto`, never `Math.random`, because a
+ * guessable handle would let one traveler impersonate another.
  */
 export function generateHandle(): string {
   const adjective = pick(ADJECTIVES);
@@ -63,8 +47,7 @@ export function generateHandle(): string {
 }
 
 /**
- * A new avatar seed: 32 lowercase hex characters from 16 random bytes. The value is opaque, since
- * the client derives a generated avatar from it and the server never renders one, and it carries no
+ * A new avatar seed: 32 lowercase hex characters from 16 random bytes, opaque and carrying no
  * personal information, so it is safe to disclose at tier 0.
  */
 export function newAvatarSeed(): string {
@@ -72,9 +55,8 @@ export function newAvatarSeed(): string {
 }
 
 /**
- * One word of a vocabulary, chosen uniformly at random. `noUncheckedIndexedAccess` types an indexed
- * read as `string | undefined`, and a vocabulary literal is never empty, so an `undefined` here is
- * impossible and is rejected rather than becoming a malformed handle.
+ * One word of a vocabulary, chosen uniformly at random; a vocabulary literal is never `undefined`,
+ * so the `noUncheckedIndexedAccess` read is rejected rather than becoming a malformed handle.
  */
 function pick(words: readonly string[]): string {
   const word = words[randomInt(0, words.length)];

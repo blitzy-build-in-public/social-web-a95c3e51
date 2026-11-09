@@ -1,31 +1,28 @@
 /**
  * The itinerary circuit's adversarial suite: one change at a time away from an honest witness, and the
- * circuit must refuse every one of them (AAP 0.5.5 "Adversarial circuit tests", AAP 0.12.2 "One booking
- * backs one proof").
+ * circuit must refuse every one of them (AAP 0.5.5 "Adversarial circuit tests", AAP 0.12.2 "One booking backs
+ * one proof"). Six classes of substitution are exercised:
  *
- * Six classes of substitution are exercised here and nowhere else:
- *
- *   - the key that verified the signature is outside the published registry, or the registry leaf the
- *     path names holds a different modulus;
- *   - any anchor, anchor length, terminator, charset or date format differs from the registered
- *     template, with the signed email untouched;
+ *   - the key that verified the signature is outside the published registry, or the registry leaf the path
+ *     names holds a different modulus;
+ *   - any anchor, anchor length, terminator, charset or date format differs from the registered template, with
+ *     the signed email untouched;
  *   - the city alias, the city id, the leaf type domain tag or a Merkle path bit is substituted;
  *   - an anchor index, a value length or the body window is moved by one step;
  *   - an anchor occurs twice in the window, or only in the headers a body extraction never reads;
- *   - a date no calendar has, a second value length over one booking reference, or a non-zero byte
- *     written past a value's length.
+ *   - a date no calendar has, a second value length over one booking reference, or a non-zero byte written
+ *     past a value's length.
  *
- * Every body-changing case is DKIM-signed by `scripts/make-test-fixtures.ts` with the test issuer's
- * key, and each one's honest signature is asserted to verify first, so a refusal here demonstrates the
- * extraction, uniqueness, date or window constraint rather than a broken signature. Nothing in this
- * file writes to the repository: `build/` is only read, and the one temporary wrapper the padding case
- * needs is compiled in an `os.tmpdir()` directory removed in `afterAll`.
+ * Every body-changing case is DKIM-signed by `scripts/make-test-fixtures.ts` with the test issuer's key, and
+ * each one's honest signature is asserted to verify first, so a refusal here demonstrates the extraction,
+ * uniqueness, date or window constraint rather than a broken signature. Nothing here writes to the
+ * repository: `build/` is only read, and the one temporary wrapper the padding case needs is compiled in an
+ * `os.tmpdir()` directory removed in `afterAll`.
  *
- * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible
- * instead of a green suite over an unproved circuit. A witness of this circuit carries about 2.5
- * million constraints, so a run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`); a test
- * file cannot raise its own, and `execArgv` in the root `vitest.config.ts`, which this file does not
- * own, is the other place it can be set.
+ * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a
+ * green suite over an unproved circuit. A witness of this circuit carries about 2.5 million constraints, so a
+ * run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a test file cannot raise for
+ * itself.
  */
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
@@ -243,7 +240,6 @@ beforeAll(async () => {
   );
   demand(existsSync(CIRCUIT_WASM), `${CIRCUIT_WASM} is missing: run pnpm circuits:compile`);
   demand(existsSync(CIRCUIT_SYMBOLS), `${CIRCUIT_SYMBOLS} is missing: run pnpm circuits:compile`);
-
   // `recompile: false` reads the compile's own wasm, so nothing here depends on circom agreeing with
   // the build's flags beyond the version checked above. The include array is copied because
   // circom_tester appends the source's directory to whatever array it is handed.
@@ -318,11 +314,9 @@ const honestWindow: Uint8Array = honestParts.decodedEmailBodyIn;
  */
 function slotOf(name: (typeof TEMPLATE_FIELD_ORDER)[number]): 0 | 1 | 2 | 3 {
   const slot = TEMPLATE_FIELD_ORDER.indexOf(name);
-
   if (slot !== 0 && slot !== 1 && slot !== 2 && slot !== 3) {
     throw new Error(`TEMPLATE_FIELD_ORDER carries no ${name} slot`);
   }
-
   return slot;
 }
 
@@ -372,11 +366,9 @@ function cityEntryFor(alias: string): RegistryFile['cities'][number] {
 /** The city text one field location carries, over the `valueLength` bytes that hold it. */
 function textOf(field: FieldLocation): string {
   let text = '';
-
   for (let index = 0; index < field.valueLength; index += 1) {
     text += String.fromCharCode(field.value[index] ?? 0);
   }
-
   return text;
 }
 
@@ -453,7 +445,6 @@ function messageOf(file: FixturePath): FixtureMessage {
   const parsed = parseEml(bytes);
   const sig = signatureOf(parsed);
   const parts = buildEmailVerifierInputs(bytes, [issuer]);
-
   return { bytes, parsed, sig, parts, decoded: parts.decodedEmailBodyIn };
 }
 
@@ -480,12 +471,10 @@ function assertHonestSignature(bytes: Uint8Array, publicKey: KeyObject): void {
   const parsed = parseEml(bytes);
   const sig = signatureOf(parsed);
   const header = canonicalSignedHeader(parsed, sig);
-
   expect(
     verifySignature('sha256', header, publicKey, sig.b),
     'the fixture’s RSA-SHA256 signature does not verify under the key it names',
   ).toBe(true);
-
   expect(
     createHash('sha256').update(canonicalizeBody(parsed.body, sig.c.body)).digest().equals(sig.bh),
     'the fixture’s body does not hash to the bh= its signature commits to',
@@ -524,12 +513,10 @@ function outsideModulusBase64(): string {
   if (field === undefined) {
     throw new Error('other-issuer.eml carries no X-Tablemate-Fixture-Key header');
   }
-
   let text = '';
   for (const byte of field.raw) {
     text += String.fromCharCode(byte);
   }
-
   return text.slice(text.indexOf(':') + 1).replace(/\s+/g, '');
 }
 
@@ -542,7 +529,6 @@ function outsideModulusBase64(): string {
  */
 function rogueIssuer(): IssuerConfig {
   const sig = signatureOf(parseEml(fixture('other-issuer.eml')));
-
   return IssuerConfig.parse({
     issuerId: issuer.issuerId,
     displayName: issuer.displayName,
@@ -587,7 +573,6 @@ describe('the witness every substitution case starts from', () => {
     'satisfies every constraint and names the published registry root, salt and ids',
     async () => {
       const witness = await expectAccepted(honest.inputs);
-
       // The witness's first eight entries are the constant 1, the five outputs in
       // `PUBLIC_SIGNAL_NAMES` order and the two public inputs, so a circuit that reordered or dropped
       // one moves these values before any proof is made.
@@ -607,32 +592,27 @@ describe('a key the published registry does not hold', () => {
     async () => {
       const bytes = fixture('other-issuer.eml');
       assertHonestSignature(bytes, publicKeyOf(outsideModulusBase64()));
-
       // The registry the AAP's rogue-issuer procedure builds: the same cities, the same issuer id and
       // the same template, with the outside key's modulus in place of the registered one.
       const rogue = buildRegistry({ name: 'test', issuers: [rogueIssuer()], cities }).registry;
       expect(rogue.root).not.toBe(registry.root);
-
       // Self-consistent first: under its own root the message proves, so what the second verdict shows
       // is the published root refusing the key, not a message that was broken on the way in.
       const built = buildCircuitInputs(bytes, [rogueIssuer()], rogue, {
         nullifierSalt: NULLIFIER_SALT,
       });
       await expectAccepted(built.inputs);
-
       // The in-circuit counterpart of the API's `422 issuer_not_allowlisted`: the same witness, folded
       // against the root the server publishes, reaches no leaf.
       await expectRejected({ ...built.inputs, registryRoot: registry.root });
     },
     WITNESS_TIMEOUT_MS,
   );
-
   it(
     'is refused when the path names the registered leaf but the modulus is another key’s',
     async () => {
       const bytes = fixture('other-issuer.eml');
       assertHonestSignature(bytes, publicKeyOf(outsideModulusBase64()));
-
       // `EmailVerifier.pubkeyHash` is computed in-circuit from the modulus the prover submits, so a
       // registered issuer leaf can only be reached by the very key that leaf commits to. The message
       // here is honest, its signature verifies, and the leaf is the published one: the only thing that
@@ -640,7 +620,6 @@ describe('a key the published registry does not hold', () => {
       const parts = buildEmailVerifierInputs(bytes, [rogueIssuer()]);
       const fields = locateFields(parts.decodedEmailBodyIn, params);
       const city = cityEntryFor(textOf(at(fields, slotOf('city'), 'the outside-key city field')));
-
       await expectRejected(
         inputsFromParts(parts, parts.decodedEmailBodyIn, fields, {
           issuerPath: pathOf(issuerEntry().leafIndex),
@@ -695,7 +674,6 @@ const TEMPLATE_CASES: readonly MutationCase[] = [
       const mutated = copy(inputs);
       const index = slotOf('city');
       const length = Number(at(mutated.anchorLength, index, 'the anchor lengths'));
-
       // The anchor loses its last byte, which is zeroed: the value it locates then starts one byte
       // earlier, and the parameters no longer hash to the leaf's template hash.
       anchorAt(mutated, 'city')[length - 1] = '0';
@@ -741,12 +719,10 @@ describe('a template that is not the registered one', () => {
     expect(honest.inputs.terminator).toEqual(params.terminator.map(String));
     expect(honest.inputs.charset).toEqual(params.charset.map(String));
     expect(honest.inputs.dateFormat).toBe(String(DATE_FORMAT_CODE[templateOf(issuer).dateFormat]));
-
     // The two parameters the rows below widen and move, as the configuration records them.
     expect(honest.inputs.charset[slotOf('reference')]).toBe(String(CHARSET_CODE.alnum));
     expect(honest.inputs.terminator[slotOf('reference')]).toBe(String(CR));
   });
-
   it.each(TEMPLATE_CASES)(
     'is refused when $what, the signed email unchanged',
     async ({ mutate }) => {
@@ -780,7 +756,6 @@ function withPath(
   path: MerklePath,
 ): CircuitInputs {
   const mutated = copy(inputs);
-
   if (which === 'issuer') {
     mutated.issuerPathElements = path.pathElements.map(String);
     mutated.issuerPathIndices = path.pathIndices.map(String);
@@ -788,7 +763,6 @@ function withPath(
     mutated.cityPathElements = path.pathElements.map(String);
     mutated.cityPathIndices = path.pathIndices.map(String);
   }
-
   return mutated;
 }
 
@@ -875,9 +849,7 @@ describe('a leaf or a path the registry does not hold', () => {
       issuers: [issuer],
       cities: withoutAlias,
     }).registry;
-
     expect(rebuilt.cities.some((entry) => entry.alias === honestCityText)).toBe(false);
-
     // The code that puts "This booking site isn't supported yet." on the import screen, and the
     // off-circuit counterpart of the witness rows below (AAP 0.5.8).
     let thrown: unknown;
@@ -888,11 +860,9 @@ describe('a leaf or a path the registry does not hold', () => {
     } catch (error) {
       thrown = error;
     }
-
     expect(thrown).toBeInstanceOf(CircuitInputError);
     expect((thrown as CircuitInputError).code).toBe('city_not_supported');
   });
-
   it.each(REGISTRY_CASES)(
     'is refused when $what',
     async ({ mutate }) => {
@@ -914,7 +884,6 @@ function anchorNeedle(slot: number): Uint8Array {
 function anchorPositions(haystack: Uint8Array, slot: number): number[] {
   const needle = anchorNeedle(slot);
   const positions: number[] = [];
-
   for (
     let found = indexOfBytes(haystack, needle);
     found >= 0;
@@ -922,7 +891,6 @@ function anchorPositions(haystack: Uint8Array, slot: number): number[] {
   ) {
     positions.push(found);
   }
-
   return positions;
 }
 
@@ -945,11 +913,9 @@ function slotWithOccurrences(decoded: Uint8Array, count: number): number {
 function valueLengthAt(bytes: Uint8Array, slot: number, start: number, what: string): number {
   const terminator = at(params.terminator, slot, 'the terminators');
   const from = start + at(params.anchorLength, slot, 'the anchor lengths');
-
   for (let length = 1; length <= MAX_VALUE_BYTES; length += 1) {
     if ((bytes[from + length - 1] ?? 0) === terminator) return length - 1;
   }
-
   throw new Error(
     `${what}: no terminator follows the anchor inside the ${MAX_VALUE_BYTES}-byte bound`,
   );
@@ -960,11 +926,9 @@ function locationAt(bytes: Uint8Array, slot: number, start: number, what: string
   const valueLength = valueLengthAt(bytes, slot, start, what);
   const value = new Uint8Array(MAX_VALUE_BYTES);
   const from = start + at(params.anchorLength, slot, 'the anchor lengths');
-
   for (let index = 0; index < valueLength; index += 1) {
     value[index] = bytes[from + index] ?? 0;
   }
-
   return { anchorIndex: start, valueLength, value };
 }
 
@@ -988,12 +952,10 @@ describe('a field boundary one step from the honest one', () => {
       const mutated = copy(honest.inputs);
       const index = Number(at(mutated.anchorIndex, slot, 'the anchor indexes'));
       mutated.anchorIndex[slot] = String(index + step);
-
       await expectRejected(mutated);
     },
     WITNESS_TIMEOUT_MS,
   );
-
   it.each(
     FIELD_SLOTS.flatMap((slot) =>
       BOUNDARY_STEPS.map((step) => ({ slot, step, name: TEMPLATE_FIELD_ORDER[slot] })),
@@ -1004,7 +966,6 @@ describe('a field boundary one step from the honest one', () => {
       const mutated = copy(honest.inputs);
       const length = Number(at(mutated.valueLength, slot, 'the value lengths'));
       mutated.valueLength[slot] = String(length + step);
-
       await expectRejected(mutated);
     },
     WITNESS_TIMEOUT_MS,
@@ -1057,20 +1018,17 @@ const duplicatedWhere = { ...honestWhere(), cityPath: pathOf(duplicatedCity.leaf
 describe('an anchor that occurs twice in the window', () => {
   it('is refused off-circuit, and its anchor is the one the window holds twice', () => {
     assertHonestSignature(duplicated.bytes, testKey);
-
     let thrown: unknown;
     try {
       locateFields(duplicated.decoded, params);
     } catch (error) {
       thrown = error;
     }
-
     expect(thrown).toBeInstanceOf(CircuitInputError);
     expect((thrown as CircuitInputError).code).toBe('field_ambiguous');
     expect((thrown as CircuitInputError).field).toBe(TEMPLATE_FIELD_ORDER[duplicatedSlot]);
     expect(duplicatedPositions).toHaveLength(2);
   });
-
   it.each(duplicatedPositions.map((start) => ({ start })))(
     'is refused when the duplicated anchor is read at position $start',
     async ({ start }) => {
@@ -1083,7 +1041,6 @@ describe('an anchor that occurs twice in the window', () => {
         'the duplicated anchor',
       );
       const fields = fieldsExcept(duplicated.decoded, duplicatedSlot, override);
-
       await expectRejected(
         inputsFromParts(duplicated.parts, duplicated.decoded, fields, duplicatedWhere),
       );
@@ -1095,24 +1052,20 @@ describe('an anchor that occurs twice in the window', () => {
 describe('a field that occurs only in the headers', () => {
   it('is refused off-circuit, and its anchor does occur in the canonical signed header', () => {
     assertHonestSignature(headerOnly.bytes, testKey);
-
     let thrown: unknown;
     try {
       locateFields(headerOnly.decoded, params);
     } catch (error) {
       thrown = error;
     }
-
     expect(thrown).toBeInstanceOf(CircuitInputError);
     expect((thrown as CircuitInputError).code).toBe('field_not_found');
     expect((thrown as CircuitInputError).field).toBe(TEMPLATE_FIELD_ORDER[headerOnlySlot]);
-
     // The statement places every stay field in the body, so a header extraction has no position at
     // all: the anchor is in the signed headers, which the circuit never reads for it.
     expect(headerOnlyAnchorAt).toBeGreaterThan(0);
     expect(anchorPositions(headerOnly.decoded, headerOnlySlot)).toHaveLength(0);
   });
-
   it.each([0, headerOnlyAnchorAt].map((start) => ({ start })))(
     'is refused when the header-only anchor is offered at position $start',
     async ({ start }) => {
@@ -1127,7 +1080,6 @@ describe('a field that occurs only in the headers', () => {
       );
       const atPosition = { ...override, anchorIndex: start };
       const fields = fieldsExcept(headerOnly.decoded, headerOnlySlot, atPosition);
-
       await expectRejected(
         inputsFromParts(headerOnly.parts, headerOnly.decoded, fields, honestWhere()),
       );
@@ -1153,7 +1105,6 @@ interface NarrowedWindow {
 function narrowedWindow(step: number): NarrowedWindow {
   const parsed = parseEml(fixture('valid.eml'));
   const body = canonicalizeBody(parsed.body, signatureOf(parsed).c.body);
-
   // A body whose minimal padding is wider than the circuit's body bound needs a larger buffer to pad
   // into; the window is cut down to the bound either way, exactly as `build-inputs.ts` does it.
   const maxLength = Math.max(MAX_BODY_LENGTH, 64 * Math.ceil((body.length + 9) / 64));
@@ -1164,7 +1115,6 @@ function narrowedWindow(step: number): NarrowedWindow {
     honestParts.precomputeCut + step,
     MAX_BODY_LENGTH,
   );
-
   return {
     emailBody: bodyRemaining,
     emailBodyLength: bodyRemainingLength,
@@ -1183,10 +1133,8 @@ describe('a body window the email did not fix', () => {
       // would let a prover pick which occurrence of an anchor its extraction can reach.
       const window = narrowedWindow(WINDOW_STEP_BYTES);
       expect(window.emailBodyLength).toBe(MAX_BODY_WINDOW - WINDOW_STEP_BYTES);
-
       const fields = locateFields(window.decoded, params);
       expect(fields).toHaveLength(TEMPLATE_FIELD_ORDER.length);
-
       await expectRejected(
         inputsFromParts({ ...honestParts, ...window }, window.decoded, fields, honestWhere()),
       );
@@ -1229,7 +1177,6 @@ describe('a date no calendar has', () => {
     async ({ file }) => {
       const message = messageOf(file);
       assertHonestSignature(message.bytes, testKey);
-
       // The client refuses it first, naming the field's slot and never its text, so a device never
       // spends a proving run on a value the circuit cannot read.
       let thrown: unknown;
@@ -1238,11 +1185,9 @@ describe('a date no calendar has', () => {
       } catch (error) {
         thrown = error;
       }
-
       expect(thrown).toBeInstanceOf(CircuitInputError);
       expect((thrown as CircuitInputError).code).toBe('field_invalid');
       expect((thrown as CircuitInputError).field).toBe(TEMPLATE_FIELD_ORDER[slotOf('arrival')]);
-
       // Handed to the circuit anyway, which is the authority: every byte of the value is inside the
       // arrival field's charset and the extraction locates it, so what refuses this witness is
       // `lib/date_parse.circom`'s calendar rule rather than a boundary or a signature.
@@ -1265,14 +1210,12 @@ describe('a second value length over one booking reference', () => {
     },
     WITNESS_TIMEOUT_MS,
   );
-
   it('holds one length only: the honest witness’s length is the terminator’s own offset', () => {
     const field = honestField('reference');
     const terminatorAt =
       field.anchorIndex +
       at(params.anchorLength, slotOf('reference'), 'the anchor lengths') +
       field.valueLength;
-
     expect(byteAt(honestWindow, terminatorAt, 'the honest window')).toBe(
       at(params.terminator, slotOf('reference'), 'the terminators'),
     );
@@ -1293,10 +1236,8 @@ function signalIndex(compiled: WasmCircuit, name: string): number {
 describe('a non-zero byte written past a value’s length', () => {
   let extractor: WasmCircuit | undefined;
   let workDir: string | undefined;
-
   beforeAll(async () => {
     workDir = mkdtempSync(path.join(os.tmpdir(), 'tablemate-adversarial-'));
-
     // `FieldExtract` on its own, around the honest window: the padding is what the circuit computes
     // past `valueLength`, so this is the one case that cannot be injected through the inputs of the
     // whole circuit. No test circuit is committed — the file lives in a temporary directory that
@@ -1312,24 +1253,20 @@ describe('a non-zero byte written past a value’s length', () => {
       ].join('\n'),
       'utf8',
     );
-
     const compiled = await circomTester.wasm(source, { output: workDir, include: [...INCLUDE] });
     await compiled.loadSymbols();
     extractor = compiled;
   }, CIRCUIT_TIMEOUT_MS);
-
   afterAll(() => {
     if (workDir !== undefined) {
       rmSync(workDir, { recursive: true, force: true });
     }
   });
-
   it(
     'is zero in an honest witness, and refused by the constraints the moment it is not',
     async () => {
       const compiled = extractor;
       demand(compiled !== undefined, 'the FieldExtract wrapper was not compiled: its hook failed');
-
       const slot = slotOf('reference');
       const field = honestField('reference');
       const witness = await compiled.calculateWitness(
@@ -1344,23 +1281,19 @@ describe('a non-zero byte written past a value’s length', () => {
         },
         true,
       );
-
       // The honest witness satisfies the extraction's constraints, and every byte from `valueLength` on
       // is zero: that zero fill is what makes a packed value canonical, so two references that differ
       // only past the length cannot be confused for one another.
       await expect(compiled.checkConstraints(witness)).resolves.toBeUndefined();
-
       for (let byte = field.valueLength; byte < MAX_VALUE_BYTES; byte += 1) {
         expect(at(witness, signalIndex(compiled, `main.value[${byte}]`), 'the witness')).toBe(0n);
       }
-
       // The one tampering below is the witness rather than the inputs: `value[]` is an output of the
       // extraction, so no input can put a byte there. Writing one into a witness the circuit accepted
       // and asking the compiled constraints again is what shows the padding is constrained rather than
       // merely computed.
       const tampered = [...witness];
       tampered[signalIndex(compiled, `main.value[${field.valueLength}]`)] = BigInt(TAMPER_BYTE);
-
       await expect(compiled.checkConstraints(tampered)).rejects.toThrow();
     },
     WITNESS_TIMEOUT_MS,

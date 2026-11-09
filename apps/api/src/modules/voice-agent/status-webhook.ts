@@ -1,48 +1,36 @@
 /**
  * The Twilio call-status callback: `POST /v1/webhooks/voice?attemptId=` (AAP 0.3.2, 0.3.3, 0.5.3).
  *
- * Twilio posts the lifecycle of a dispatched call here — `initiated`, `ringing`, `in-progress` and
- * one terminal status — form-encoded, carrying the `CallAttempt` id in the query this route's URL
- * was built with. The route authenticates the callback by signature alone ({@link twilioSignatureHook},
- * AAP 0.3.3), resolves the attempt by that id and never by the `CallSid` — a `calls.list` match may
- * belong to another dispatch and an empty listing proves nothing, while a signed callback carrying
- * the attempt id is the evidence that adopts a `dispatch_unknown` attempt (AAP 0.3.2) — and answers
- * `204` for every callback it accepts, including one it deliberately does nothing about, so the
- * provider never retries a no-op.
+ * Twilio posts the lifecycle of a dispatched call here — `initiated`, `ringing`, `in-progress` and one
+ * terminal status — form-encoded, carrying the `CallAttempt` id in the query this route's URL was built
+ * with. The route authenticates by signature alone ({@link twilioSignatureHook}, AAP 0.3.3), resolves
+ * the attempt by that id and never by the `CallSid` — a `calls.list` match may belong to another
+ * dispatch, while a signed callback carrying the attempt id is the evidence that adopts a
+ * `dispatch_unknown` attempt (AAP 0.3.2) — and answers `204` for every callback it accepts, including
+ * one it deliberately does nothing about, so the provider never retries a no-op.
  *
  * Four rules shape what it does with that evidence:
  *
- *  - **One transaction, one record.** The whole handler is a single {@link transact} (AAP 0.3.2), so
- *    a callback is either fully recorded or not recorded at all, and neither Redis nor Twilio's REST
- *    API is touched inside it (AAP 0.3.2's failure isolation, and the "no external call inside a
- *    transaction" rule of `../outbox/write.ts`).
+ *  - **One transaction, one record.** The whole handler is a single {@link transact} (AAP 0.3.2), and
+ *    neither Redis nor Twilio's REST API is touched inside it (AAP 0.3.2's failure isolation).
  *  - **Deduplicated on `(CallSid, CallStatus, SequenceNumber)`.** `voice_callback_event` carries that
- *    unique key, and the insert is what decides: a callback whose key is already recorded has no
- *    second effect. It goes through the model API rather than a hand-written `INSERT`, because `id`
- *    is filled by the schema's client-side `uuid(7)` generator (AAP 0.5.2) and `skipDuplicates` is
- *    that table's `ON CONFLICT DO NOTHING`, so the insert reports no row exactly when the key was
- *    already there.
- *  - **Forward-only state.** Callbacks may arrive out of order, so `dispatching`/`dispatch_unknown`
- *    and `dialing`, `in_progress` and `ended` only ever move forward, and `endedAt` is written once,
- *    by whichever writer reached `ended` first (AAP 0.3.2, 0.5.3).
- *  - **The outcome only for an unanswered call.** This route records `no_answer` and `unreachable`
- *    ({@link mapFinalStatus}); an answered call belongs to `twiml.ts` and to the ConversationRelay
- *    session, and the gap those two can leave — a relay process that died mid-call — is
- *    `apps/workers`' `calls/reconcile.ts`'s (AAP 0.5.3).
+ *    unique key and the insert decides it: a callback whose key is already recorded has no second
+ *    effect. It goes through the model API rather than a hand-written `INSERT`, because `skipDuplicates`
+ *    is that table's `ON CONFLICT DO NOTHING`.
+ *  - **Forward-only state.** Callbacks may arrive out of order, so the state only ever moves forward,
+ *    and `endedAt` is written once, by whichever writer reached `ended` first (AAP 0.3.2, 0.5.3).
+ *  - **The outcome only for an unanswered call** ({@link mapFinalStatus}, AAP 0.5.3): an answered call
+ *    belongs to `twiml.ts` and to the ConversationRelay session, and the gap those two can leave is the
+ *    workers' reconciliation's.
  *
- * A recorded outcome is what `apps/workers`' `call-results` applies to the task and, for a lodging
- * call, to its claim (AAP 0.3.2, 0.5.3): `no_answer` with attempts left requeues the task a day
- * later, a second `no_answer` makes it `unreachable`, and `unreachable` blocks it with
- * `invalid_number`. The whole dialogue budget the call held is released with the outcome, because a
- * call that was never answered spent no turn of it (AAP 0.5.6).
+ * A recorded outcome is what the workers' `call-results` applies to the task and its claim: `no_answer`
+ * with attempts left requeues the task a day later, a second `no_answer` makes it `unreachable`, which
+ * blocks it with `invalid_number`. The whole dialogue budget the call held is released with the outcome,
+ * because a call that was never answered spent no turn of it (AAP 0.5.6).
  *
- * Nothing here logs a phone number, a `CallSid`, a posted field or the body: a log line carries an
- * event name, the attempt id and Twilio's status word, and the outcome's own line is written by
+ * Nothing here logs a phone number, a `CallSid`, a posted field or the body: a log line carries an event
+ * name, the attempt id and Twilio's status word, and the outcome's own line is written by
  * {@link recordAttemptOutcome} (AAP 0.11.1).
- *
- * @see AAP 0.3.2 for the dedupe key, the adoption rule and the single transaction, 0.3.3 for the
- *   Twilio integration row, 0.5.3 for the call-task and attempt lifecycles this drives, 0.5.2 for
- *   what a call attempt may keep, 0.5.6 for the dialogue budget, and 0.8.1 for this file.
  */
 
 import { z } from 'zod';
@@ -69,18 +57,17 @@ import { transact } from '../outbox/write.ts';
 import { isStripped, lockAttempt, recordAttemptOutcome, type AttemptResult } from './dialogue.ts';
 import { twilioSignatureHook } from './signature.ts';
 
-// Type-only: `app.ts` is the plan's one declaration of the app's type and of what it hands its
-// modules, it is erased at compile time, and nothing of that module is read here at runtime (the
-// same import every sibling module of `apps/api/src` takes).
+// Type-only: `app.ts` is the app's one declaration of its type and of what it hands its modules, and
+// nothing of that module is read here at runtime.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag the route groups under: a member of the document's own vocabulary, never a new string. */
 const VOICE_TAG = 'webhooks' satisfies OpenApiTag;
 
 /**
- * The statuses that end a call: the five `CallStatus` values Twilio never follows with another
- * callback for the same call. A call Twilio reports as `in-progress` was answered, and its later
- * `completed` is left to the writers named in this file's header.
+ * The statuses that end a call: the five `CallStatus` values Twilio never follows with another callback
+ * for the same call. A call Twilio reports as `in-progress` was answered, and its later `completed` is
+ * left to the writers named in this file's header.
  */
 const FINAL_STATUSES: ReadonlySet<TwilioCallStatus> = new Set([
   'completed',
@@ -91,61 +78,45 @@ const FINAL_STATUSES: ReadonlySet<TwilioCallStatus> = new Set([
 ]);
 
 /**
- * Twilio's error codes for a destination number that cannot exist (AAP 0.5.3), confirmed against
- * twilio.com/docs/api/errors: `21211` an invalid `To`, `21217` a number that does not appear valid,
- * `13223` a malformed destination in a `<Dial>`.
+ * Twilio's error codes for a destination number that cannot exist (AAP 0.5.3): `21211` an invalid `To`,
+ * `21217` a number that does not appear valid, `13223` a malformed destination in a `<Dial>`.
  *
- * `13224` and `13225` are deliberately absent, and so is every code that is not here. `13224`
- * ("Twilio does not support calling this number or the number is invalid") also covers a number
- * Twilio cannot complete because of a local carrier outage, and `13225` ("Call blocked by Twilio")
- * is a fraud or regulatory block on the account; neither says the number cannot exist, so both are
- * treated as an unanswered call and the task keeps its retry. An unrecognized failure is treated the
- * same way, which is the safe direction: membership here ends a task's attempts, so a code is
- * admitted only when it means the number itself is unusable.
+ * `13224` and `13225` are deliberately absent, and so is every other code: `13224` also covers a local
+ * carrier outage and `13225` a fraud or regulatory block on the account, neither of which says the
+ * number cannot exist. Membership here ends a task's attempts, so a code is admitted only when it means
+ * the number itself is unusable.
  */
 const INVALID_NUMBER_ERROR_CODES: ReadonlySet<string> = new Set(['13223', '21211', '21217']);
 
 /**
- * The SIP response codes that mean the destination does not exist (AAP 0.5.3). Twilio documents
- * `404` on a call's terminal status callback as the destination number being unreachable, and
- * publishes no meaning of its own for `484` (RFC 3261 address incomplete) or `604` (does not exist
- * anywhere), whose RFC 3261 meanings are the ones relied on here.
+ * The SIP response codes that mean the destination does not exist (AAP 0.5.3): Twilio documents `404` on
+ * a terminal status callback as the destination being unreachable, and publishes no meaning of its own
+ * for `484` (RFC 3261 address incomplete) or `604` (does not exist anywhere).
  *
- * The value is read defensively ({@link sipResponseCode}): Twilio documents `SipResponseCode` as a
- * terminal-event parameter of the Call resource, and `@tablemate/shared`'s `TwilioStatusCallback`
- * does not declare it, so it reaches this route through the schema's loose object unvalidated — a
- * field the shared schema could gain later. `ErrorCode` is the same kind of value for a different
- * reason: Twilio documents it in the Debugger rather than as a status-callback parameter, which is
- * why the shared schema keeps it optional and this route reads it as a possibly absent string.
+ * The value is read defensively ({@link sipResponseCode}): `@tablemate/shared`'s
+ * `TwilioStatusCallback` does not declare `SipResponseCode`, so it reaches this route through the
+ * schema's loose object unvalidated — as `ErrorCode` does, that one because Twilio documents it in the
+ * Debugger rather than as a callback parameter.
  */
 const INVALID_NUMBER_SIP_CODES: ReadonlySet<number> = new Set([404, 484, 604]);
 
 /**
  * The media type Twilio posts every one of its callbacks as (AAP 0.3.3), and the only one this route
- * accepts: `@fastify/formbody` is what parses it, and a body in any other form is refused
- * `400 invalid_field` before the callback is read. Twilio posts no other shape, so a JSON body here
- * is a caller that is not Twilio — and the signature check upstream is what authenticates the ones
- * that are.
+ * accepts: `@fastify/formbody` is what parses it, and a body in any other form is refused `400
+ * invalid_field` before the callback is read. Twilio posts no other shape, so a JSON body here is a
+ * caller that is not Twilio — and the signature check upstream is what authenticates the ones that are.
  */
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 
 /**
- * Registers the voice status callback (AAP 0.5.1, 0.5.4).
- *
- * Registered by `./twiml.ts` inside the encapsulated voice-agent context, after `@fastify/formbody`
- * is registered there: Twilio posts every callback as `application/x-www-form-urlencoded`, which
- * Fastify 5 does not parse by default, and the parser belongs to the context that serves all three
- * Twilio URLs rather than to this one route (AAP 0.3.3).
+ * Registers the voice status callback (AAP 0.5.1, 0.5.4). Registered by `./twiml.ts` inside the
+ * encapsulated voice-agent context, after `@fastify/formbody` is registered there: Twilio posts every
+ * callback as `application/x-www-form-urlencoded`, which Fastify 5 does not parse by default, and the
+ * parser belongs to the context that serves all three Twilio URLs (AAP 0.3.3).
  *
  * The route carries no bearer guard and no age gate — a provider signed it, so there is no caller to
- * authenticate (AAP 0.5.4) — and it takes only the webhook per-IP counter, because a provider's
- * traffic arrives from a handful of addresses. Registration is synchronous, as in every plugin of
- * this module: the route is queued on the context and every value the handler needs is resolved per
- * request.
- *
- * @param app - The voice-agent context; its `services` carry the guarded database client, the
- *   injected clock, the logger, the outbox dispatcher, the spend meter and the city zone lookup that
- *   recording a callback and releasing its dialogue budget need.
+ * authenticate (AAP 0.5.4) — and it takes only the webhook per-IP counter, because a provider's traffic
+ * arrives from a handful of addresses. Registration is synchronous, as in every plugin of this module.
  */
 export function registerStatusWebhook(app: App): void {
   app.post(
@@ -176,7 +147,6 @@ export function registerStatusWebhook(app: App): void {
       if (!isFormEncoded(request.headers)) {
         throw new AppError('invalid_field');
       }
-
       // The attempt id and Twilio's own status word, never a number or a `CallSid` (AAP 0.11.1).
       request.log.debug(
         {
@@ -186,7 +156,6 @@ export function registerStatusWebhook(app: App): void {
         },
         'voice_status',
       );
-
       // The instant this request was stamped with, so every timestamp the callback writes comes from
       // one read of the injected clock (AAP 0.11.1).
       await recordStatusCallback(
@@ -195,17 +164,15 @@ export function registerStatusWebhook(app: App): void {
         request.body,
         request.receivedAt,
       );
-
       reply.code(204).send(null);
     },
   );
 }
 
 /**
- * Whether this request carries the form body Twilio posts (AAP 0.3.3).
- *
- * The header is matched by substring, because Twilio sends the media type with a charset parameter
- * as often as without one; a request with no content type at all is not a form body either.
+ * Whether this request carries the form body Twilio posts (AAP 0.3.3). The header is matched by
+ * substring, because Twilio sends the media type with a charset parameter as often as without one; a
+ * request with no content type at all is not a form body either.
  */
 function isFormEncoded(headers: { readonly 'content-type'?: string | undefined }): boolean {
   return headers['content-type']?.toLowerCase().includes(FORM_MEDIA_TYPE) === true;
@@ -216,38 +183,23 @@ function isFormEncoded(headers: { readonly 'content-type'?: string | undefined }
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Record one status callback, in one transaction, and apply what it says (AAP 0.3.2, 0.5.3).
- *
- * The order of the steps below is the order the decisions have to be taken in:
+ * Record one status callback, in one transaction, and apply what it says (AAP 0.3.2, 0.5.3). The order
+ * of the steps below is the order the decisions have to be taken in:
  *
  *  1. **Lock the attempt.** {@link lockAttempt} takes `SELECT … FOR UPDATE` on the row, which is what
- *     serializes this callback against the ConversationRelay session's own ending of the same call,
- *     a TwiML fetch and `apps/workers`' reconciliation: the second writer sees the first one's
- *     outcome. An attempt that no longer exists, or one whose call content was stripped (AAP 0.5.2 —
- *     a failed dispatch, or a lodging attempt whose claim has resolved), is answered without effect:
- *     the record exists, the call it describes does not.
- *  2. **Check and adopt the `CallSid`.** A callback whose `CallSid` contradicts the attempt's own is
- *     not this attempt's callback, and one whose `CallSid` another attempt already holds cannot be
- *     adopted; both are answered without effect ({@link callSidRefusal}). An attempt still
- *     `dispatching` or `dispatch_unknown` adopts the `CallSid` from this signed, attempt-id-carrying
- *     callback — the only evidence AAP 0.3.2 accepts for an ambiguous dispatch — and moves to
- *     `dialing`.
+ *     serializes this callback against the ConversationRelay session's own ending of the same call, a
+ *     TwiML fetch and the workers' reconciliation: the second writer sees the first one's outcome. An
+ *     attempt that no longer exists, or whose call content was stripped (AAP 0.5.2), is answered
+ *     without effect.
+ *  2. **Check and adopt the `CallSid`** ({@link callSidRefusal}). An attempt still `dispatching` or
+ *     `dispatch_unknown` adopts the `CallSid` from this signed, attempt-id-carrying callback — the only
+ *     evidence AAP 0.3.2 accepts for an ambiguous dispatch — and moves to `dialing`.
  *  3. **Deduplicate.** The `voice_callback_event` insert decides it: no row means this exact
- *     `(CallSid, CallStatus, SequenceNumber)` was already recorded, so the callback has no second
- *     effect.
- *  4. **Move the state forward.** One update writes what Twilio reported — the final status, the
- *     duration, the `CallSid`, the forward-only state and an `endedAt` if none is set — before the
- *     outcome, so the row is already the provider's when the outcome's own write joins it.
+ *     `(CallSid, CallStatus, SequenceNumber)` was already recorded.
+ *  4. **Move the state forward.** One update writes what Twilio reported before the outcome, so the row
+ *     is already the provider's when the outcome's own write joins it.
  *  5. **Record the outcome of an unanswered call** ({@link mapFinalStatus}), which also releases the
- *     dialogue budget the call held and writes the `apply_call_result` row that `apps/workers`
- *     applies to the task and its claim.
- *
- * @param services - The app's services: the database, the clock, the logger, the outbox dispatcher,
- *   the spend meter and the city zone lookup.
- * @param attemptId - The `CallAttempt` id from the callback's query, which is what the attempt is
- *   resolved by.
- * @param body - The validated callback.
- * @param now - The instant the request was stamped with.
+ *     dialogue budget the call held and writes the `apply_call_result` row that `apps/workers` applies.
  */
 async function recordStatusCallback(
   services: AppServices,
@@ -260,13 +212,11 @@ async function recordStatusCallback(
     if (attempt === null || isStripped(attempt)) {
       return;
     }
-
     const adoption = await callSidDecision(tx, attempt, body.CallSid);
     if (adoption === 'refused') {
       callSidRefusal(services, attempt.id);
       return;
     }
-
     const recorded = await tx.voiceCallbackEvent.createManyAndReturn({
       data: [
         {
@@ -283,18 +233,15 @@ async function recordStatusCallback(
     if (recorded.length === 0) {
       return;
     }
-
     const written = await writeReportedStatus(tx, attempt, body, adoption === 'adopted', now);
     if (!written) {
       callSidRefusal(services, attempt.id);
       return;
     }
-
     const outcome = mapFinalStatus(body);
     if (outcome === null) {
       return;
     }
-
     const reservation = await dialogueReservation(tx, services, attempt);
     const result: AttemptResult = {
       outcome,
@@ -303,9 +250,7 @@ async function recordStatusCallback(
       summary: null,
       transcript: null,
     };
-
-    // `endCall: false`: this route has already moved the attempt to `ended` with its `endedAt`, so
-    // the recorder is told not to do it again — the option exists for the caller that has not, and
+    // `endCall: false`: this route has already moved the attempt to `ended` with its `endedAt`, and
     // `endedAt` is set once (AAP 0.5.3). The whole budget is unused, because a call that was never
     // answered held no dialogue turn (AAP 0.5.6).
     await recordAttemptOutcome(tx, services, after, attempt, result, {
@@ -317,20 +262,15 @@ async function recordStatusCallback(
 }
 
 /**
- * Whether this callback may adopt its `CallSid` (AAP 0.3.2).
- *
- * Three answers, and only one of them lets the callback do anything:
- *
- *  - `'matches'` — the attempt already holds this `CallSid`, so nothing is adopted.
- *  - `'adopted'` — the attempt holds none, and no other attempt holds this one either.
- *  - `'refused'` — the attempt holds a different `CallSid`, which means Twilio routed a callback for
- *    another call here; or another attempt already holds this `CallSid`. Both are answered without
- *    effect, and logged as {@link callSidRefusal}'s one event.
+ * Whether this callback may adopt its `CallSid` (AAP 0.3.2). Three answers, and only one of them lets
+ * the callback do anything: `'matches'` — the attempt already holds this `CallSid`; `'adopted'` — the
+ * attempt holds none and no other attempt holds this one; `'refused'` — the attempt holds a different
+ * `CallSid`, or another attempt already holds this one, both answered without effect.
  *
  * The owner is looked up before the update rather than left to the unique index, because a unique
  * violation raised inside the transaction aborts it: PostgreSQL refuses every later statement of an
- * aborted transaction, and the driver reports the violation as an error where this case is an
- * ordinary one. The unique index is still the guarantee — {@link writeReportedStatus} treats its
+ * aborted transaction, and the driver reports the violation as an error where this case is an ordinary
+ * one. The unique index is still the guarantee — {@link writeReportedStatus} treats its violation as
  * this same refusal — so two callbacks racing to adopt one `CallSid` cannot both succeed.
  */
 async function callSidDecision(
@@ -341,7 +281,6 @@ async function callSidDecision(
   if (attempt.twilioCallSid !== null) {
     return attempt.twilioCallSid === callSid ? 'matches' : 'refused';
   }
-
   const owner = await tx.callAttempt.findFirst({
     where: { twilioCallSid: callSid },
     select: { id: true },
@@ -354,15 +293,8 @@ async function callSidDecision(
  *
  * A callback that ends the call also ends the attempt, and `endedAt` is set only when it is still
  * empty: a ConversationRelay session that ended the call has already stamped it, and the provider's
- * later callback must not move it. `durationSec` is written only when Twilio sent one.
- *
- * @param tx - The transaction, with the attempt already locked.
- * @param attempt - The locked attempt row, which carries the `endedAt` this reads.
- * @param body - The validated callback.
- * @param adopts - Whether this callback adopts the attempt's `CallSid`.
- * @param now - The instant the request was stamped with.
- * @returns `false` when another attempt took this `CallSid` first, which leaves the caller to answer
- *   the callback without effect.
+ * later callback must not move it. `durationSec` is written only when Twilio sent one, and `false` comes
+ * back when another attempt took this `CallSid` first, which leaves the caller to answer without effect.
  */
 async function writeReportedStatus(
   tx: DbTx,
@@ -387,15 +319,13 @@ async function writeReportedStatus(
       data.endedAt = now;
     }
   }
-
   try {
     await tx.callAttempt.update({ where: { id: attempt.id }, data });
     return true;
   } catch (error) {
-    // The adopt above lost a race to another attempt over the same `CallSid`, which the table's
-    // unique index is there to catch. Nothing was written yet, so the aborted transaction the
-    // database is left in rolls back to the state this callback found, and the callback is answered
-    // without effect. Any other failure is the caller's to surface.
+    // The adopt above lost a race to another attempt over the same `CallSid`, which the table's unique
+    // index is there to catch: nothing was written yet, so the aborted transaction rolls back to the
+    // state this callback found, and the callback is answered without effect.
     if (adopts && isUniqueViolation(error, 'twilio_call_sid')) {
       return false;
     }
@@ -409,8 +339,8 @@ async function writeReportedStatus(
  * Forward-only, because Twilio's callbacks are not ordered: a `ringing` that arrives after an
  * `in-progress` describes a call that has already been answered, and an `ended` attempt is never
  * reopened by a late event. Only these three moves exist — `initiated`/`ringing` reach `dialing`,
- * `in-progress` reaches `in_progress`, and a final status reaches `ended` — and Twilio's `queued`
- * (the number is queued at Twilio, before anything is dialed) moves nothing.
+ * `in-progress` reaches `in_progress`, and a final status reaches `ended` — and Twilio's `queued` moves
+ * nothing.
  */
 function forwardState(current: CallAttemptState, status: TwilioCallStatus): CallAttemptState {
   if (FINAL_STATUSES.has(status)) {
@@ -433,19 +363,14 @@ function forwardState(current: CallAttemptState, status: TwilioCallStatus): Call
  * (AAP 0.5.3).
  *
  * `busy`, `no-answer` and `canceled` are `no_answer` — the call reached nobody, so the task keeps the
- * retry AAP 0.5.3 gives it. A `failed` status is `unreachable` when the destination number cannot
- * exist ({@link isInvalidNumber}) and `no_answer` otherwise, which covers a carrier failure, a
- * blocked call and every code this route does not recognize. `completed` is `null`: the call was
- * answered, so its script — not its transport — decided the outcome.
+ * retry AAP 0.5.3 gives it. A `failed` status is `unreachable` when the destination number cannot exist
+ * ({@link isInvalidNumber}) and `no_answer` otherwise, which covers a carrier failure, a blocked call
+ * and every code this route does not recognize. `completed` is `null`: the call was answered, so its
+ * script — not its transport — decided the outcome.
  *
- * A call that was answered and then dropped, or one answered by a machine, is *not* mapped here even
- * though AAP 0.5.3 lists both as `no_answer`: a machine or an unanswerable task is recorded by
- * `twiml.ts` when it answers `<Hangup/>`, and a drop mid-script is the relay's, which knows how much
- * of the dialogue it collected before the socket went. Both record through
- * {@link recordAttemptOutcome}, which refuses a second outcome on the same attempt.
- *
- * @param body - The validated callback.
- * @returns The outcome to record, or `null` when another writer owns this ending.
+ * A call that was answered and then dropped, or one answered by a machine, is *not* mapped here: a
+ * machine or an unanswerable task is recorded by `twiml.ts` when it answers `<Hangup/>`, and a drop
+ * mid-script is the relay's, which knows how much of the dialogue it collected.
  */
 function mapFinalStatus(body: TwilioStatusCallback): CallAttemptOutcome | null {
   switch (body.CallStatus) {
@@ -462,9 +387,7 @@ function mapFinalStatus(body: TwilioStatusCallback): CallAttemptOutcome | null {
 
 /**
  * Whether Twilio said the destination number itself cannot exist (AAP 0.5.3): one of
- * {@link INVALID_NUMBER_ERROR_CODES} or one of {@link INVALID_NUMBER_SIP_CODES}.
- *
- * Both values are read as what they are — a string Twilio posts, which may be absent — and neither is
+ * {@link INVALID_NUMBER_ERROR_CODES} or one of {@link INVALID_NUMBER_SIP_CODES}. Neither value is
  * trusted to be well formed: a value that is not a bare code, and a failure code this route does not
  * recognize, both read as "not an invalid number", which leaves the task its retry.
  */
@@ -493,11 +416,9 @@ function sipResponseCode(body: TwilioStatusCallback): number | null {
 }
 
 /**
- * One field of a callback the shared schema does not declare.
- *
- * `TwilioStatusCallback` is a loose object, so a field it does not name is kept unvalidated and
- * untyped: this reads such a field without asserting a shape onto it, and the reader decides what
- * the value may be.
+ * One field of a callback the shared schema does not declare: `TwilioStatusCallback` is a loose object,
+ * so a field it does not name is kept unvalidated and untyped, and this reads such a field without
+ * asserting a shape onto it — the reader decides what the value may be.
  */
 function readField(body: unknown, field: string): unknown {
   return typeof body === 'object' && body !== null
@@ -508,19 +429,16 @@ function readField(body: unknown, field: string): unknown {
 /**
  * The dialogue budget a call holds, rebuilt from the attempt that holds it (AAP 0.5.6).
  *
- * `apps/workers`' `call-dispatch` reserved it before dialing, on the dispatch-time local day of the
- * city, and stored it on the attempt; releasing the unused part has to name that same city and day,
- * or the release would land on a counter nothing reserved against. The city comes from the task's
- * target rather than from `./dialogue.ts`'s `loadCallContext`, which would also read the task,
- * the target row and a lodging claim's ciphertexts that a status callback never uses; one indexed
- * join reads the single column the release needs.
+ * The reservation was made before dialing, on the dispatch-time local day of the city, so releasing the
+ * unused part has to name that same city and day, or the release would land on a counter nothing
+ * reserved against. The city comes from the task's target rather than from `./dialogue.ts`'s
+ * `loadCallContext`, which would also read the target row and a lodging claim's ciphertexts a status
+ * callback never uses.
  *
- * The amount is read from the locked row, so two writers cannot release the same budget: the first
- * one to record the outcome zeroes it, and the second already sees it zero.
- *
- * @throws Error when the task names no resolvable city, which its foreign keys make unreachable: a
- *   task always names exactly one target and a target always belongs to a city. A callback that
- *   cannot release against a counter is refused and retried rather than recorded against none.
+ * The amount is read from the locked row, so two writers cannot release the same budget: the first one
+ * to record the outcome zeroes it, and the second already sees it zero. A task naming no resolvable city
+ * throws, which its foreign keys make unreachable, and a callback that cannot release against a counter
+ * is refused and retried rather than recorded against none.
  */
 async function dialogueReservation(
   tx: DbTx,
@@ -537,7 +455,6 @@ async function dialogueReservation(
   if (cityId === undefined) {
     throw new Error('voice_status_webhook_target_missing');
   }
-
   const micros = Number(attempt.llmReservedMicros);
   return {
     cityId,

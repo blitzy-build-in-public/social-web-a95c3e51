@@ -12,6 +12,7 @@ import type { AnyTierProfile, ReportRequest } from '@tablemate/shared';
 
 import { apiClient } from '../src/api/client';
 import { isApiError, userMessageFor } from '../src/api/errors';
+import { REASON_FIELD_LABEL, remainingCharsText } from '../src/copy/strings';
 import { queryClient, queryKeys } from '../src/state/meetup-store';
 import { Banner, Button, Screen, TextField, announce } from '../src/ui';
 
@@ -40,10 +41,6 @@ export function exitFrom(canGoBack: boolean, meetupId: string | string[] | undef
   return { kind: 'replace', path: '/discover' };
 }
 
-export function remainingCharsText(reason: string): string {
-  const remaining = REASON_MAX_CHARS - reason.length;
-  return remaining === 1 ? '1 character left' : `${remaining} characters left`;
-}
 const cachedHandle = (userId: string): string | null =>
   queryClient.getQueryData<AnyTierProfile>(queryKeys.user(userId))?.handle ?? null;
 
@@ -87,10 +84,10 @@ export default function ReportScreen(): ReactElement {
         {handle === null ? null : <Text style={styles.target}>{`Report @${handle}`}</Text>}
         {failure ? <Banner tone="error" message={failure} testID="report-error" /> : null}
         <TextField
-          label="What happened?"
+          label={REASON_FIELD_LABEL}
           value={reason}
           onChangeText={setReason}
-          hint={remainingCharsText(reason)}
+          hint={remainingCharsText(reason, REASON_MAX_CHARS)}
           {...REASON_FIELD}
           testID="report-reason"
         />

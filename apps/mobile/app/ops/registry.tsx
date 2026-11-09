@@ -1,23 +1,25 @@
 /** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
-/** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
  * venue and lodging onboarding, console secrets and price jobs. The lodging list is the registry's one
  * paged read: its city filter and search run on the server and its rows continue with the read's own
  * cursor, so a registry holding more rows than one page shows is still reachable (AAP 0.5.4). */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { Platform, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
-import type { SwitchProps } from 'react-native';
+import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import type { ViewStyle } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import {
   CreateLodgingRequest,
   CreateVenueRequest,
+  Latitude,
   LodgingKind,
+  Longitude,
   MIN_TOUCH_TARGET,
   PriceJobRequest,
   UpdateVenueRequest,
   borderWidths,
   colors,
   fontWeights,
+  layout,
   radii,
   spacing,
   typography,
@@ -33,7 +35,8 @@ import type {
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
-import { Banner, Button, Card, Chip, Screen, TextField, announce } from '../../src/ui';
+import { Banner, Button, Card, Chip, Screen, Switch, TextField, announce } from '../../src/ui';
+import type { SwitchProps } from '../../src/ui';
 
 const SCREEN_TITLE = 'Operator registry';
 const NO_FIELD_ERRORS: FieldErrors = {};
@@ -51,6 +54,9 @@ const ADDRESS_LABEL = 'Address';
 const LAT_LABEL = 'Latitude';
 const LNG_LABEL = 'Longitude';
 const PHONE_HINT = 'For example +351… Leave it empty when the lodging has no callable number.';
+const PHONE_LABEL = 'Phone (E.164)';
+const PHONE_FORM_MESSAGE =
+  'Enter the number in international form, starting with + and the country code.';
 const CITY_LABEL = 'City';
 const KIND_LABEL = 'Kind';
 const ACTIVE_PARTNER_LABEL = 'Active partner';
@@ -75,19 +81,78 @@ const LODGING_SECRET_HINT =
   'Issuing a console secret makes this lodging a partner and adds nearby places to the price pipeline.';
 const LODGING_KIND_LABEL = { guesthouse: 'Guest house', hostel: 'Hostel', hotel: 'Hotel' };
 const SECTION_HEADING = { 'aria-level': 2, role: 'heading' } as const;
+/** A card fills the cell it sits in: inside a wrapping row the cell is as tall as the row's tallest
+ * one, so every card on that row ends where its neighbours do (QA qa8b-24). */
+const FILL_SLOT: ViewStyle = { flexGrow: 1 };
 const BLANK_DRAFT = { address: '', cityId: '', lat: '', lng: '', name: '' };
 const EMPTY_VENUE_DRAFT: VenueDraft = { ...BLANK_DRAFT, isActivePartner: true };
 const EMPTY_LODGING_DRAFT: LodgingDraft = { ...BLANK_DRAFT, kind: 'hostel', phone: '' };
+// The caps the admin schemas impose on the two text fields, read from the schemas themselves so a
+// hint, a rejection and an input's `maxLength` can never drift from the rule the API enforces
+// (AAP 0.11.1: one schema per shape, imported where used and never redeclared). The edit form
+// validates with `UpdateVenueRequest`, which carries the same cap inside an optional, so all three
+// schemas must agree on it.
+const NAME_MAX = cappedAt(
+  CreateVenueRequest.shape.name,
+  CreateLodgingRequest.shape.name,
+  UpdateVenueRequest.shape.name.unwrap(),
+);
+const ADDRESS_MAX = cappedAt(
+  CreateVenueRequest.shape.address,
+  CreateLodgingRequest.shape.address,
+  UpdateVenueRequest.shape.address.unwrap(),
+);
+const NAME_HINT = `Up to ${NAME_MAX} characters.`;
+const ADDRESS_HINT = `Up to ${ADDRESS_MAX} characters.`;
+const LATITUDE_RANGE = between(Latitude);
+const LONGITUDE_RANGE = between(Longitude);
+type TextRule = Readonly<{ cap: number; empty: string; over: (limit: number) => string }>;
+/** What a rejected text field says (QA qa8b-25): what to enter while it is empty, and the sentence
+ * for a value over the schema's own cap. */
+const TEXT_RULES: Readonly<Record<'address' | 'name', TextRule>> = {
+  address: {
+    cap: ADDRESS_MAX,
+    empty: 'Enter the address.',
+    over: (limit) => `Use ${limit} characters or fewer in the address.`,
+  },
+  name: {
+    cap: NAME_MAX,
+    empty: 'Enter a name.',
+    over: (limit) => `Use ${limit} characters or fewer in the name.`,
+  },
+};
+/** The range each coordinate states. An empty or unparsable value fails before Zod checks a bound,
+ * so both bounds come from the schema rather than from the issue, which carries at most one. */
+const COORDINATE_MESSAGES = {
+  lat: `Enter a latitude between ${LATITUDE_RANGE[0]} and ${LATITUDE_RANGE[1]}.`,
+  lng: `Enter a longitude between ${LONGITUDE_RANGE[0]} and ${LONGITUDE_RANGE[1]}.`,
+} as const;
 const VENUE_FIELDS = [
-  { input: { inputMode: 'text' }, key: 'name', label: NAME_LABEL },
-  { input: { inputMode: 'text' }, key: 'address', label: ADDRESS_LABEL },
+  {
+    input: { hint: NAME_HINT, inputMode: 'text', maxLength: NAME_MAX },
+    key: 'name',
+    label: NAME_LABEL,
+  },
+  {
+    input: { hint: ADDRESS_HINT, inputMode: 'text', maxLength: ADDRESS_MAX },
+    key: 'address',
+    label: ADDRESS_LABEL,
+  },
   { input: { inputMode: 'decimal' }, key: 'lat', label: LAT_LABEL },
   { input: { inputMode: 'decimal' }, key: 'lng', label: LNG_LABEL },
 ] as const;
 const LODGING_FIELDS = [
-  { input: { inputMode: 'text' }, key: 'name', label: NAME_LABEL },
-  { input: { inputMode: 'text' }, key: 'address', label: ADDRESS_LABEL },
-  { input: { hint: PHONE_HINT, inputMode: 'tel' }, key: 'phone', label: 'Phone (E.164)' },
+  {
+    input: { hint: NAME_HINT, inputMode: 'text', maxLength: NAME_MAX },
+    key: 'name',
+    label: NAME_LABEL,
+  },
+  {
+    input: { hint: ADDRESS_HINT, inputMode: 'text', maxLength: ADDRESS_MAX },
+    key: 'address',
+    label: ADDRESS_LABEL,
+  },
+  { input: { hint: PHONE_HINT, inputMode: 'tel' }, key: 'phone', label: PHONE_LABEL },
   { input: { inputMode: 'decimal' }, key: 'lat', label: LAT_LABEL },
   { input: { inputMode: 'decimal' }, key: 'lng', label: LNG_LABEL },
 ] as const;
@@ -101,11 +166,23 @@ const CHIP_GROUPS = {
   venueNew: { label: CITY_LABEL, prefix: 'ops-venue-new-city' },
 } as const;
 
+// A pending grid shows a few card-sized surfaces, tall enough to read as the cards that follow; the
+// count is fixed and never a count of the data, and the height is a multiple of the touch target.
+const PENDING_SLOTS = [0, 1, 2] as const;
+const PENDING_CARD_MIN_HEIGHT = MIN_TOUCH_TARGET * 5;
+
 type ChipGroup = { readonly all?: boolean; readonly label: string; readonly prefix: string };
 type ChipOption = { readonly id: string | null; readonly name: string };
 const ALL_CITIES: ChipOption = { id: null, name: 'All cities' };
 type FieldErrors = Readonly<Record<string, string>>;
 type FieldName = 'address' | 'lat' | 'lng' | 'name' | 'phone';
+/** The parts of a Zod issue this screen reads: which field failed, why, and any bound it carries. */
+type FieldIssue = Readonly<{
+  code: string;
+  maximum?: number | bigint;
+  message: string;
+  path: readonly PropertyKey[];
+}>;
 type FieldDraft = Partial<Record<FieldName, string>>;
 type FieldSpec = (typeof VENUE_FIELDS)[number] | (typeof LODGING_FIELDS)[number];
 type FieldWiring = readonly [FieldErrors, IdOf, FieldDraft, WriteField];
@@ -154,9 +231,69 @@ function failFields(errors: FieldErrors, setErrors: (errors: FieldErrors) => voi
   announce('Check the highlighted fields.');
 }
 const isFieldKey = (key: PropertyKey | undefined): key is string => typeof key === 'string';
-function fieldErrorsFrom(issues: readonly { path: readonly PropertyKey[] }[]): FieldErrors {
-  const keys = issues.map((issue) => issue.path[0]).filter(isFieldKey);
-  return Object.fromEntries(keys.map((key) => [key, 'Check this value.'] as const));
+/**
+ * The character cap the given admin schemas put on one field, read from the schemas themselves so
+ * no number is written twice in the app. A schema that stops carrying the cap, or two that disagree
+ * about it, fails here — at import, in the test run — rather than showing an operator a limit the
+ * API no longer enforces.
+ */
+function cappedAt(...schemas: readonly { readonly maxLength?: number | null }[]): number {
+  const caps = schemas.map((schema) => schema.maxLength);
+  const cap = caps[0];
+  if (typeof cap !== 'number' || caps.some((other) => other !== cap)) {
+    throw new Error('These admin schemas no longer share one character cap for this field.');
+  }
+  return cap;
+}
+/** The range a coordinate schema allows, read from the schema for the reason `cappedAt` gives. */
+function between(schema: {
+  readonly maxValue?: number | null;
+  readonly minValue?: number | null;
+}): readonly [number, number] {
+  const { maxValue, minValue } = schema;
+  if (typeof minValue !== 'number' || typeof maxValue !== 'number') {
+    throw new Error('This coordinate schema no longer carries a numeric range.');
+  }
+  return [minValue, maxValue];
+}
+/** The bound a rejection states: the number Zod reports on the issue, or the schema's own cap when
+ * the value failed before any bound was checked, as an empty one does. */
+function limitOf(issue: FieldIssue, cap: number): number {
+  return typeof issue.maximum === 'number' ? issue.maximum : cap;
+}
+/**
+ * What one rejected field shows (QA qa8b-25): the rule it broke and the limit that rule sets, in the
+ * field's own terms — what to enter, how many characters are allowed, which range a coordinate takes,
+ * which form a phone number takes. Anything else repeats the message the shared schema itself gives,
+ * which is what its cross-field refinements say, such as "Supply `lat` and `lng` together."
+ */
+function fieldMessage(issue: FieldIssue): string {
+  const field = issue.path[0];
+  if (field === 'name' || field === 'address') {
+    const rule = TEXT_RULES[field];
+    if (issue.code === 'too_small') return rule.empty;
+    return issue.code === 'too_big' ? rule.over(limitOf(issue, rule.cap)) : issue.message;
+  }
+  if (field === 'lat' || field === 'lng') {
+    const offRange =
+      issue.code === 'too_big' || issue.code === 'too_small' || issue.code === 'invalid_type';
+    return offRange ? COORDINATE_MESSAGES[field] : issue.message;
+  }
+  const badPhone = field === 'phone' && issue.code === 'invalid_format';
+  return badPhone ? PHONE_FORM_MESSAGE : issue.message;
+}
+function fieldErrorsFrom(issues: readonly FieldIssue[]): FieldErrors {
+  const entries: [string, string][] = [];
+  for (const issue of issues) {
+    const field = issue.path[0];
+    if (isFieldKey(field)) entries.push([field, fieldMessage(issue)]);
+  }
+  return Object.fromEntries(entries);
+}
+/** The same errors without one field's, leaving every other field's message as it was (QA qa8b-25). */
+function withoutField(errors: FieldErrors, field: string): FieldErrors {
+  if (errors[field] === undefined) return errors;
+  return Object.fromEntries(Object.entries(errors).filter(([key]) => key !== field));
 }
 function secretStatus(secretIssuedAt: string | null): string {
   if (secretIssuedAt === null) return 'No console secret';
@@ -173,21 +310,13 @@ function clipboardWriter(): { writeText(text: string): Promise<void> } | null {
 }
 function ignoreText(): void {}
 type SwitchWiring = readonly [boolean, boolean, string, (next: boolean) => void, string];
-function switchProps([on, busy, label, set, id]: SwitchWiring): Partial<SwitchProps> {
-  const look = {
-    ios_backgroundColor: colors.border,
-    thumbColor: colors.onPrimary,
-    trackColor: { false: colors.border, true: colors.primary },
-  };
-  const control = { accessibilityLabel: label, onValueChange: set, testID: id, value: on };
-  if (Platform.OS === 'web') return { ...look, ...control, disabled: busy };
-  return {
-    ...look,
-    ...control,
-    disabled: busy,
-    accessibilityRole: 'switch',
-    accessibilityState: { checked: on, disabled: busy },
-  };
+/**
+ * What one registry switch takes: the state the row holds, the label the row shows, the setter the
+ * mutation owns and the test handle the operator's own specs name. A busy mutation blocks the control
+ * until it answers, which is what `disabled` carries.
+ */
+function switchProps([on, busy, label, set, id]: SwitchWiring): SwitchProps {
+  return { accessibilityLabel: label, disabled: busy, onValueChange: set, testID: id, value: on };
 }
 function venueDraftOf(venue: AdminVenueDto): VenueDraft {
   const { address, cityId, isActivePartner, name } = venue;
@@ -215,8 +344,19 @@ function lodgingPayload(draft: LodgingDraft): CreateLodgingRequest {
   const dial = phone.trim();
   return { ...trimmed, ...numbers, cityId, kind, phone: dial === '' ? null : dial };
 }
-function fieldWriter<T extends object>(set: (update: (draft: T) => T) => void) {
-  return (field: string, value: string): void => set((draft) => ({ ...draft, [field]: value }));
+/**
+ * Writes one field of a draft and drops that field's rejection as it changes, so a message an
+ * operator has just acted on does not sit under the field they are retyping (QA qa8b-25). Only the
+ * field whose value changed can have stopped breaking its own rule; every other message stays.
+ */
+function fieldWriter<T extends object>(
+  set: (update: (draft: T) => T) => void,
+  clear: (field: string) => void,
+) {
+  return (field: string, value: string): void => {
+    clear(field);
+    set((draft) => ({ ...draft, [field]: value }));
+  };
 }
 function idOf(prefix: string): IdOf {
   return (field: string) => `${prefix}-${field}`;
@@ -334,9 +474,32 @@ function ReadState({ error, pending, retry, testID }: ReadProps): ReactElement {
 }
 const errorBanner = (message: string | null, testID: string): ReactElement | null =>
   message === null ? null : <Banner message={message} testID={testID} tone="error" />;
+type PendingGridProps = Readonly<{ minHeight: number; testID: string; wide: boolean }>;
+/**
+ * The room a card grid holds while its query is pending (QA qa8b-26). The grid is the tallest thing
+ * on this screen — a few thousand pixels of venue cards on the web and one column of them four
+ * times that on a phone — so a grid that renders nothing until its data lands pushes the create
+ * form and every section after it down by that height, and the operator watches the page jump.
+ * Reserving a viewport of space keeps everything below the grid below the fold until the cards
+ * arrive, so nothing visible moves.
+ *
+ * The surfaces are the card's own tokens and carry nothing to read: `ReadState`'s "Loading…" line
+ * stays the announced loading state, and no placeholder invents a name or a count.
+ */
+function PendingGrid({ minHeight, testID, wide }: PendingGridProps): ReactElement {
+  const container = [styles.cards, wide ? styles.cardsRow : null, { minHeight }];
+  return (
+    <View aria-busy={true} style={container} testID={testID}>
+      {PENDING_SLOTS.map((slot) => (
+        <View key={slot} style={[wide ? styles.slot : null, styles.pendingCard]} />
+      ))}
+    </View>
+  );
+}
 
 export default function OperatorRegistryScreen(): ReactElement {
-  const wide = useWindowDimensions().width >= 900;
+  const { height: viewportHeight, width: viewportWidth } = useWindowDimensions();
+  const wide = viewportWidth >= 900;
   const cardsStyle = [styles.cards, wide ? styles.cardsRow : null];
   const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
   const venues = useQuery({ queryFn: apiClient.admin.listVenues, queryKey: queryKeys.adminVenues });
@@ -373,8 +536,12 @@ export default function OperatorRegistryScreen(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<Readonly<Record<string, string>>>({});
   const [jobBusy, setJobBusy] = useState<string | null>(null);
-  const writeVenue = fieldWriter(setVenueDraft);
-  const writeLodging = fieldWriter(setLodgingDraft);
+  const clearVenueError = (field: string): void =>
+    setVenueErrors((errors) => withoutField(errors, field));
+  const clearLodgingError = (field: string): void =>
+    setLodgingErrors((errors) => withoutField(errors, field));
+  const writeVenue = fieldWriter(setVenueDraft, clearVenueError);
+  const writeLodging = fieldWriter(setLodgingDraft, clearLodgingError);
   const venueRows: readonly AdminVenueDto[] = venues.data?.items ?? [];
   const lodgingRows = (lodgings.data?.pages ?? []).flatMap((page) => page.items);
   const lodgingTotal = lodgings.data?.pages[0]?.total ?? 0;
@@ -528,7 +695,13 @@ export default function OperatorRegistryScreen(): ReactElement {
   }
   function writeEdit(field: string, value: string): void {
     setEdit((open) =>
-      open === null ? null : { ...open, draft: { ...open.draft, [field]: value } },
+      open === null
+        ? null
+        : {
+            ...open,
+            draft: { ...open.draft, [field]: value },
+            errors: withoutField(open.errors, field),
+          },
     );
   }
   function saveVenueEdit(): void {
@@ -578,18 +751,20 @@ export default function OperatorRegistryScreen(): ReactElement {
       editing === null ? null : ([editing.errors, editID, editing.draft, writeEdit] as const);
     return (
       <View key={venue.id} style={wide ? styles.slot : null}>
-        <Card {...card}>
+        <Card {...card} style={FILL_SLOT}>
           <Text style={styles.meta}>{meta}</Text>
-          <View style={styles.switchRow}>
-            <Text style={styles.switchLabel}>{ACTIVE_PARTNER_LABEL}</Text>
-            <Switch {...switchProps([on, busy, label, change, id('active')])} />
+          <View style={styles.footer}>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>{ACTIVE_PARTNER_LABEL}</Text>
+              <Switch {...switchProps([on, busy, label, change, id('active')])} />
+            </View>
+            {editFields === null ? null : VENUE_FIELDS.map((field) => fieldRow(field, editFields))}
+            <View style={styles.actions}>
+              <Button {...editButton} />
+              {editing === null ? null : <Button {...save} />}
+            </View>
+            <SecretControls {...secretControls(venue, 'venue')} />
           </View>
-          {editFields === null ? null : VENUE_FIELDS.map((field) => fieldRow(field, editFields))}
-          <View style={styles.actions}>
-            <Button {...editButton} />
-            {editing === null ? null : <Button {...save} />}
-          </View>
-          <SecretControls {...secretControls(venue, 'venue')} />
         </Card>
       </View>
     );
@@ -607,11 +782,13 @@ export default function OperatorRegistryScreen(): ReactElement {
     const card = { subtitle, testID: id, title: lodging.name, trailing: badges };
     return (
       <View key={lodging.id} style={wide ? styles.slot : null}>
-        <Card {...card}>
+        <Card {...card} style={FILL_SLOT}>
           <Text style={styles.meta}>{lodging.address ?? 'No address'}</Text>
           <Text style={styles.meta}>{`${phone} · ${secretStatus(lodging.secretIssuedAt)}`}</Text>
           <Text style={styles.meta}>{LODGING_SECRET_HINT}</Text>
-          <SecretControls {...secretControls(lodging, 'lodging')} />
+          <View style={styles.footer}>
+            <SecretControls {...secretControls(lodging, 'lodging')} />
+          </View>
         </Card>
       </View>
     );
@@ -699,7 +876,11 @@ export default function OperatorRegistryScreen(): ReactElement {
           {chips(CHIP_GROUPS.venueCity, venueFilter, setVenueFilter)}
           {readState(venues.error, venues.isPending, () => void venues.refetch(), 'ops-venues')}
           {errorBanner(venueFailureMessage, 'ops-venues-failure')}
-          <View style={cardsStyle}>{venueShown.map(renderVenue)}</View>
+          {venues.isPending ? (
+            <PendingGrid minHeight={viewportHeight} testID="ops-venues-pending" wide={wide} />
+          ) : (
+            <View style={cardsStyle}>{venueShown.map(renderVenue)}</View>
+          )}
           {venuesEmpty ? <Text style={styles.meta}>{VENUES_EMPTY}</Text> : null}
           {renderVenueForm()}
         </View>
@@ -715,7 +896,11 @@ export default function OperatorRegistryScreen(): ReactElement {
           {lodgingsCountLine}
           {readState(lodgings.error, lodgings.isPending, refetchLodgings, 'ops-lodgings')}
           {errorBanner(lodgingFailureMessage, 'ops-lodgings-failure')}
-          <View style={cardsStyle}>{lodgingRows.map(renderLodging)}</View>
+          {lodgings.isPending ? (
+            <PendingGrid minHeight={viewportHeight} testID="ops-lodgings-pending" wide={wide} />
+          ) : (
+            <View style={cardsStyle}>{lodgingRows.map(renderLodging)}</View>
+          )}
           {lodgingsEmpty ? <Text style={styles.meta}>{LODGINGS_EMPTY}</Text> : null}
           {lodgings.hasNextPage ? <Button {...lodgingsMore} testID="ops-lodgings-more" /> : null}
           {renderLodgingForm()}
@@ -752,10 +937,22 @@ const styles = StyleSheet.create({
   cards: { gap: spacing.lg },
   cardsRow: { flexDirection: 'row', flexWrap: 'wrap' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  // The card's own gap is `spacing.md`, so grouping these children with the same gap leaves the
+  // spacing between them as it was when there is no room to spare; when the card is stretched to a
+  // taller neighbour, `marginTop` takes that room and anchors the group to the card's bottom edge,
+  // which is what puts the switch line and the buttons on one line across a row (QA qa8b-24).
+  footer: { gap: spacing.md, marginTop: 'auto' },
   meta: { ...typography.body, color: colors.textMuted },
+  pendingCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: borderWidths.edge,
+    minHeight: PENDING_CARD_MIN_HEIGHT,
+  },
   section: { gap: spacing.lg },
   sectionTitle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
-  slot: { flexBasis: 340, flexGrow: 1 },
+  slot: { flexBasis: layout.panelBasis, flexGrow: 1 },
   switchLabel: { ...LABEL_STYLE, flexShrink: 1 },
   switchRow: { ...CENTERED_ROW, gap: spacing.md, justifyContent: 'space-between' },
 });

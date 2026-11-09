@@ -1,39 +1,3 @@
-/**
- * The shared language-model spend cap (AAP 0.5.6).
- *
- * `api`'s voice relay and `workers`' menu extraction draw on one per-city counter, so every request
- * takes the same four steps: count the identical payload with `LlmAdapter.countInputTokens`, reserve
- * that worst case — the counted input tokens plus `maxTokens`, priced in micro-dollars and rounded
- * up — against `CAP_LLM_USD_PER_CITY_DAY` for the city's local day, send it, then charge what the
- * provider reported and release the remainder. A request whose count fails is never sent, and
- * neither is one that does not fit: `menu-ingest` defers its job to 00:05 local the next day, and a
- * voice turn that does not fit the call's remaining dialogue budget ends the call politely. An error
- * or timeout without reported usage charges the whole reservation, because the tokens may already
- * have been billed.
- *
- * A reported input count that differs from the count reserved for means the evidence that a
- * reservation bounds the spend no longer holds: the difference is charged in full,
- * `llm_count_mismatch` is logged with counts only, and use is suspended in every city until an
- * operator re-enables it ({@link SuspensionStore.clear}).
- *
- * Money arithmetic is integer throughout: a cost is one `BigInt` ceiling over the exact sum, exposed
- * as micro-dollars only once `Number.isSafeInteger` holds. Time comes only from the injected
- * `Clock`, so a test can move the local day. Nothing here reads `process.env`, and no log line
- * carries a prompt, a menu, a transcript, callee speech or model output (AAP 0.11.1, AAP 0.12.2).
- *
- * Stores are injected, so this package holds no database or Redis client: {@link createSqlSpendStore}
- * is the only SQL in it, as tagged templates over a caller's executor (AAP 0.11.2), and
- * {@link createRedisSuspensionStore} is the operator-visible flag. One call's remaining dialogue
- * budget lives in `call_attempt.llm_reserved_micros`, which the relay rebuilds into an
- * {@link LlmReservation} for {@link LlmSpend.runMeteredWithin}.
- *
- * Raw-SQL contract with `packages/db/prisma/schema.prisma` (model `CallBudgetDay`, table
- * `call_budget_day`, primary key `(city_id, local_date)`): `city_id` text, `local_date` date, `calls`
- * int default 0, `llm_spend_micros` bigint default 0, `llm_reserved_micros` bigint default 0. Those
- * names are load-bearing, and no further column may be added without a default, or the ensure-row
- * insert fails. `apps/workers/src/calls/caps.ts` reserves call slots on the same row.
- */
-
 import type { Clock } from '../clock.ts';
 import type { Logger } from '../logger.ts';
 import { localDateKey } from '../time/city-time.ts';
@@ -54,19 +18,12 @@ export interface LlmPrices {
   outputUsdPerMTok: string;
 }
 
-/** A price the meter accepts: a positive decimal of at most six places, no sign and no exponent. */
 const USD_PER_MTOK_RE = /^(0|[1-9]\d*)(\.\d{1,6})?$/;
 
-/**
- * The price scale, and the divisor of a cost: USD per million tokens equals micro-dollars per token,
- * so a price times this is the integer micro-cost of one counted token.
- */
 const PRICE_SCALE = 1_000_000n;
 
 /**
  * A price scaled by {@link PRICE_SCALE}, or `RangeError('invalid_llm_price')` for anything else.
- * `src/env/modes.ts` calls this at startup to validate both price variables (AAP 0.5.6), so a
- * malformed price fails the process rather than a request.
  */
 export function parseUsdPerMTok(value: string): bigint {
   if (!USD_PER_MTOK_RE.test(value)) {
@@ -82,10 +39,8 @@ export function parseUsdPerMTok(value: string): bigint {
   return scaled;
 }
 
-/** Parsed prices, so the hot path prices a request without repeating the parse (AAP 0.5.6). */
 const parsedPrices = new Map<string, bigint>();
 
-/** The scaled price of `value`, parsed once. Throws as {@link parseUsdPerMTok} does. */
 function scaledPrice(value: string): bigint {
   const cached = parsedPrices.get(value);
   if (cached !== undefined) {
@@ -97,12 +52,8 @@ function scaledPrice(value: string): bigint {
 }
 
 /**
- * The cost of a request in micro-dollars, rounded up (AAP 0.5.6): one ceiling over
- * `input × inputPrice + output × outputPrice`, computed exactly in `BigInt`. One token at `0.4`
- * costs one micro-dollar and a million tokens at `0.4` cost exactly 400,000.
- *
- * @throws RangeError when either count is not a non-negative safe integer, when a price is
- * malformed, or when the exact result exceeds `Number.MAX_SAFE_INTEGER`.
+ * The cost of a request in micro-dollars, rounded up (AAP 0.5.6): one ceiling over `input ×
+ * inputPrice + output × outputPrice`, computed exactly in `BigInt`.
  */
 export function costMicros(inputTokens: number, outputTokens: number, prices: LlmPrices): number {
   assertCount(inputTokens, 'inputTokens');
@@ -115,9 +66,7 @@ export function costMicros(inputTokens: number, outputTokens: number, prices: Ll
 
 /**
  * The reservation bound of a request in micro-dollars: its counted input tokens at the input price
- * plus `maxTokens` at the output price, rounded up (AAP 0.5.6). It is an upper bound because the
- * actual output can only be smaller — `maxTokens` covers every generated token, reasoning tokens
- * included (AAP 0.2.3) — and the actual input equals the count, or the mismatch rule applies.
+ * plus `maxTokens` at the output price, rounded up (AAP 0.5.6).
  */
 export function boundMicros(
   countedInputTokens: number,
@@ -127,14 +76,12 @@ export function boundMicros(
   return costMicros(countedInputTokens, maxTokens, prices);
 }
 
-/** A token figure the meter can price, or a `RangeError` naming the field. */
 function assertCount(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative safe integer, received ${value}`);
   }
 }
 
-/** A micro-dollar amount the meter can expose as a `number`. */
 function microsOf(value: bigint): number {
   if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new RangeError('llm_cost_out_of_range');
@@ -142,18 +89,13 @@ function microsOf(value: bigint): number {
   return Number(value);
 }
 
-/** A micro-dollar amount, validated before any store sees it or any SQL is issued. */
 function assertMicros(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative safe integer, received ${value}`);
   }
 }
 
-/**
- * One reservation as plain data (AAP 0.5.6). The API relay rebuilds one from
- * `CallAttempt.llmReservedMicros` and `localDateKey(cityTz, attempt.startedAt)` to spend the
- * dialogue budget a call already holds.
- */
+/** One reservation as plain data (AAP 0.5.6). */
 export interface LlmReservation {
   /** The city whose local day the reservation was made against. */
   readonly cityId: string;
@@ -163,17 +105,11 @@ export interface LlmReservation {
   readonly micros: number;
 }
 
-/**
- * The counter the cap is kept in (AAP 0.5.6). It is an interface because this package owns no
- * database client: `api` and `workers` inject {@link createSqlSpendStore} over their own connection,
- * and a suite injects a memory implementation of the same predicates.
- */
+/** The counter the cap is kept in (AAP 0.5.6). */
 export interface SpendStore {
   /**
-   * Add `micros` to the day's reserved total, but only while `spent + reserved + micros <= capMicros`
-   * still holds.
-   *
-   * @returns `true` when the row was updated, `false` when the request does not fit the cap.
+   * Add `micros` to the day's reserved total, but only while `spent + reserved + micros <=
+   * capMicros` still holds; `false` when the request does not fit.
    */
   tryReserve(args: {
     cityId: string;
@@ -183,45 +119,26 @@ export interface SpendStore {
   }): Promise<boolean>;
   /**
    * Settle `chargedMicros`: add it to the day's spent total and remove `min(chargedMicros,
-   * reservation.micros)` from the reserved total, so any remainder stays reserved. Reserved never
-   * drops below zero.
+   * reservation.micros)` from the reserved total, so a remainder stays reserved.
    */
   charge(reservation: LlmReservation, chargedMicros: number): Promise<void>;
   /** Remove `micros` from the day's reserved total, never below zero. */
   release(reservation: LlmReservation, micros: number): Promise<void>;
 }
 
-/**
- * A tagged-template SQL executor: `(strings, ...values) => rows`. Every statement in this file goes
- * through it, so all SQL is parameterized and no database client is needed (AAP 0.11.2).
- *
- * @example
- * ```ts
- * const store = createSqlSpendStore(<T,>(strings: TemplateStringsArray, ...values: unknown[]) =>
- *   prisma.$queryRaw<T>(strings, ...values));
- * ```
- */
+/** A tagged-template SQL executor: `(strings, ...values) => rows`. */
 export type SpendSqlExecutor = <T = unknown>(
   strings: TemplateStringsArray,
   ...values: unknown[]
 ) => Promise<T>;
 
-/** The one column a {@link SpendSqlExecutor} result is read for: whether a row was touched. */
 interface BudgetRow {
   city_id: string;
 }
 
 /**
- * The Postgres-backed counter (AAP 0.5.6), over the `call_budget_day` row of the city and local day.
- *
- * The reserve statement carries its check in its own `WHERE`, which is what makes concurrent
- * reservations at the boundary safe: PostgreSQL re-evaluates the predicate under the row lock it
- * took to update, so of two requests racing for the last of the cap only one updates a row and the
- * other finds none and is refused. An ensure-row insert precedes it, because a day with no traffic
- * yet has no row for that update to find.
- *
- * @param sql - the caller's tagged-template executor, over its own pooled connection.
- * @returns a store whose counters are the database's, not this process's.
+ * The Postgres-backed counter (AAP 0.5.6), over the `call_budget_day` row of the city and local
+ * day.
  */
 export function createSqlSpendStore(sql: SpendSqlExecutor): SpendStore {
   const ensureRow = async (cityId: string, localDate: string): Promise<void> => {
@@ -231,7 +148,6 @@ export function createSqlSpendStore(sql: SpendSqlExecutor): SpendStore {
       ON CONFLICT (city_id, local_date) DO NOTHING
       RETURNING city_id`;
   };
-
   return {
     async tryReserve(args: {
       cityId: string;
@@ -252,7 +168,6 @@ export function createSqlSpendStore(sql: SpendSqlExecutor): SpendStore {
         RETURNING city_id`;
       return rows.length > 0;
     },
-
     async charge(reservation: LlmReservation, chargedMicros: number) {
       assertMicros(chargedMicros, 'chargedMicros');
       await sql<BudgetRow[]>`
@@ -267,7 +182,6 @@ export function createSqlSpendStore(sql: SpendSqlExecutor): SpendStore {
            AND local_date = CAST(${reservation.localDate} AS date)
         RETURNING city_id`;
     },
-
     async release(reservation: LlmReservation, micros: number) {
       assertMicros(micros, 'micros');
       if (micros === 0) {
@@ -287,19 +201,13 @@ export function createSqlSpendStore(sql: SpendSqlExecutor): SpendStore {
 export type LlmSuspensionReason = 'llm_count_mismatch';
 
 /**
- * The global suspension flag (AAP 0.5.6: a mismatch suspends use in every city "until an operator
- * re-enables it"). The requirement names no store, so this interface draws the process boundary:
- * `api` and `workers` share the Redis key through {@link createRedisSuspensionStore}, and the
- * operator re-enable step is {@link SuspensionStore.clear}, documented in `docs/operations.md`.
+ * The global suspension flag (AAP 0.5.6): a count mismatch suspends use in every city until an
+ * operator re-enables it.
  */
 export interface SuspensionStore {
   /**
-   * Whether use is currently suspended anywhere.
-   *
-   * A store that cannot read the flag rejects instead of answering. {@link createLlmSpend} is what
-   * fails closed on that: it treats the unreadable flag as suspended and logs one
-   * `llm_suspension_store_unavailable` line carrying a `code`, so an outage is never
-   * indistinguishable from an operator suspension.
+   * Whether use is currently suspended anywhere. A store that cannot read the flag rejects instead
+   * of answering, and {@link createLlmSpend} fails closed on that.
    */
   isSuspended(): Promise<boolean>;
   /** Suspend every city for `reason` as of `since`, counting the event for the dashboard. */
@@ -310,11 +218,7 @@ export interface SuspensionStore {
   mismatchCount(): Promise<number>;
 }
 
-/**
- * The commands {@link createRedisSuspensionStore} needs. A real ioredis `Redis` satisfies it —
- * `createRedisConnection(url, 'client')` from `../queues/connection.ts`, which fails fast rather
- * than queueing behind an outage — and a suite substitutes a small fake.
- */
+/** The commands {@link createRedisSuspensionStore} needs. */
 export interface SuspensionRedis {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<unknown>;
@@ -322,38 +226,26 @@ export interface SuspensionRedis {
   del(key: string): Promise<number>;
 }
 
-/** The suspension flag's key: set means suspended, absent means running. No TTL, it is a stop. */
+/** The suspension flag's key: set means suspended, absent means running. */
 export const LLM_SUSPENDED_KEY = 'llm:suspended';
 
 /** The cumulative mismatch counter's key, read by the operator dashboard. */
 export const LLM_COUNT_MISMATCHES_KEY = 'llm:count_mismatches';
 
-/**
- * The Redis-backed suspension flag (AAP 0.5.6), shared by every process through one key.
- *
- * A read failure propagates: the store never converts an unreadable flag into an answer, so a Redis
- * outage cannot pass for an operator suspension. {@link createLlmSpend} is what fails closed on it —
- * it treats the unreadable flag as suspended, because sending a request whose reservation cannot be
- * checked may cross the city cap, while a request that is not sent only defers a job, and leaves one
- * `llm_suspension_store_unavailable` line naming the cause with a `code`. `suspend` writes the flag
- * before it counts the event, so a failure part-way through cannot lose the suspension.
- */
+/** The Redis-backed suspension flag (AAP 0.5.6), shared by every process through one key. */
 export function createRedisSuspensionStore(redis: SuspensionRedis): SuspensionStore {
   return {
     async isSuspended() {
       return (await redis.get(LLM_SUSPENDED_KEY)) !== null;
     },
-
     async suspend(reason: LlmSuspensionReason, since: Date) {
       const value = JSON.stringify({ since: since.toISOString(), reason });
       await redis.set(LLM_SUSPENDED_KEY, value);
       await redis.incr(LLM_COUNT_MISMATCHES_KEY);
     },
-
     async clear() {
       await redis.del(LLM_SUSPENDED_KEY);
     },
-
     async mismatchCount() {
       const raw = await redis.get(LLM_COUNT_MISMATCHES_KEY);
       if (raw === null) {
@@ -365,12 +257,7 @@ export function createRedisSuspensionStore(redis: SuspensionRedis): SuspensionSt
   };
 }
 
-/**
- * What {@link createLlmSpend} needs (AAP 0.5.6). Stores and the clock are injected, so this file
- * keeps no client of its own. `timezoneFor` comes from city configuration and throws for an unknown
- * city, which propagates: a request for a city this deployment does not have has no budget to book
- * against.
- */
+/** What {@link createLlmSpend} needs (AAP 0.5.6). */
 export interface CreateLlmSpendDeps {
   /** The per-city-local-day counter. */
   store: SpendStore;
@@ -427,15 +314,14 @@ export interface MeteredWithinOptions {
 }
 
 /**
- * The spend meter its callers use (AAP 0.5.1, AAP 0.5.6): the relay and `call-dispatch` work through
- * reservations, while `menu-ingest` and the menu evaluation call {@link LlmSpend.runMetered}.
+ * The spend meter its callers use (AAP 0.5.1, AAP 0.5.6): the relay and `call-dispatch` work
+ * through reservations, while `menu-ingest` and the menu evaluation call {@link
+ * LlmSpend.runMetered}.
  */
 export interface LlmSpend {
   /**
-   * Reserve `micros` against `cityId`'s budget for its current local day.
-   *
-   * @returns the reservation, or `null` when use is suspended or the request does not fit
-   * `capMicros`. A store failure throws, so a job retries rather than reading as a refusal.
+   * Reserve `micros` against `cityId`'s budget for its current local day; `null` when use is
+   * suspended or the request does not fit `capMicros`.
    */
   reserveLlm(cityId: string, micros: number): Promise<LlmReservation | null>;
   /** Settle a reservation against reported usage, or charge it in full for `null` usage. */
@@ -443,15 +329,8 @@ export interface LlmSpend {
   /** Release `micros` of unused reservation, defaulting to all of it: a dialogue budget at end. */
   releaseLlm(reservation: LlmReservation, micros?: number): Promise<void>;
   /**
-   * The counted bound of a request without reserving or sending it; the count endpoint is free.
-   *
-   * The classification template is owned by the voice agent, and `apps/workers` cannot import
-   * `apps/api`: the template whose bound `call-dispatch` needs must live where both processes can
-   * reach it, which is not this file. It is placed in `apps/workers/src/calls/caps.ts`, whose
-   * `buildClassificationRequest` builds it and whose `dialogueBudgetMicros` turns the largest
-   * counted per-turn bound into a call's dialogue budget by multiplying it by
-   * `LLM_MAX_TURNS_PER_CALL` (AAP 0.5.6). The relay's own copy of that template is in
-   * `apps/api/src/modules/voice-agent/understanding.ts`.
+   * The counted bound of a request without reserving or sending it; the count endpoint is free, and
+   * the classification template is owned by the voice agent.
    */
   countBound(
     adapter: LlmAdapter,
@@ -474,16 +353,7 @@ export interface LlmSpend {
   ): Promise<LlmTurnCharge>;
 }
 
-/**
- * Build the spend meter over the injected stores (AAP 0.5.6).
- *
- * @param deps - the counter, the suspension flag, the clock, the cap, the prices, the city zone
- * lookup and the logger.
- * @returns an {@link LlmSpend} whose every request is counted before it is reserved and charged
- * against the reservation it held.
- * @throws RangeError when `capMicros` is not a positive safe integer or either price is malformed,
- * so a misconfigured process fails at startup rather than mid-request.
- */
+/** Build the spend meter over the injected stores (AAP 0.5.6). */
 export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
   const { store, suspension, clock, timezoneFor, logger, prices } = deps;
   const capMicros = deps.capMicros;
@@ -492,18 +362,15 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
   }
   parseUsdPerMTok(prices.inputUsdPerMTok);
   parseUsdPerMTok(prices.outputUsdPerMTok);
-
   /** The call options for a send, with `signal` omitted rather than set to `undefined`. */
   const callOptions = (timeoutMs: number, signal: AbortSignal | undefined): LlmCallOptions =>
     signal === undefined ? { timeoutMs } : { timeoutMs, signal };
-
   /**
    * What is left of `timeoutMs` since `startedMs`, never below 1 ms: the count and the send of one
-   * request share one deadline (AAP 0.5.6), so a turn gets 3 s for both together.
+   * request share one deadline (AAP 0.5.6).
    */
   const elapsed = (startedMs: number, timeoutMs: number): number =>
     Math.max(1, timeoutMs - (clock.nowMs() - startedMs));
-
   /** Whether every city is suspended; an unreadable flag reads as suspended (fail closed). */
   const suspended = async (): Promise<boolean> => {
     try {
@@ -513,15 +380,9 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       return true;
     }
   };
-
   /**
    * The provider's authoritative count for `request`. A count failure means the request is not sent
-   * and nothing is reserved for it (AAP 0.5.6), so every failure becomes an `LlmCountError`: the
-   * vocabulary's own error passes through, anything else is wrapped with its cause, and a figure
-   * that is not a count is an invalid count.
-   *
-   * The caller's deadline and its own `signal` carry over, so a relay connection that closed or a
-   * cancelled job cancels the count too.
+   * and nothing is reserved for it (AAP 0.5.6), so every failure becomes an `LlmCountError`.
    */
   const count = async (
     adapter: LlmAdapter,
@@ -545,12 +406,10 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     return value;
   };
-
   /**
-   * What to charge for a completed request, and whether the count profile held (AAP 0.5.6). No
-   * reported usage charges the whole bound; a reported input count other than the reserved one, an
-   * output past `maxTokens`, or a usage that cannot be priced as it stands each charge at least the
-   * bound and count as a mismatch.
+   * What to charge for a completed request, and whether the count profile held (AAP 0.5.6): no
+   * reported usage charges the whole bound, and a reported input count other than the reserved one
+   * is a mismatch.
    */
   const reconcile = (
     counted: number,
@@ -569,12 +428,9 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     return { chargedMicros: reported, mismatch: false };
   };
-
   /**
    * Record a mismatch: one warning carrying counts and the provider identity and nothing of the
    * request, then the suspension that stops every city until an operator re-enables it (AAP 0.5.6).
-   * A suspension that cannot be written is logged, and the failed write leaves use running: only a
-   * flag that is set stops traffic.
    */
   const onMismatch = async (
     adapter: LlmAdapter,
@@ -600,7 +456,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       logger.error({ event: 'llm_suspension_failed', code: errorCode(error) });
     }
   };
-
   const reserveLlm = async (cityId: string, micros: number): Promise<LlmReservation | null> => {
     assertMicros(micros, 'micros');
     if (await suspended()) {
@@ -610,7 +465,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     const granted = await store.tryReserve({ cityId, localDate, micros, capMicros });
     return granted ? { cityId, localDate, micros } : null;
   };
-
   const settleLlm = async (
     reservation: LlmReservation,
     usage: LlmUsage | null,
@@ -626,7 +480,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     return charged;
   };
-
   const releaseLlm = async (
     reservation: LlmReservation,
     micros: number = reservation.micros,
@@ -637,7 +490,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     await store.release(reservation, micros);
   };
-
   const countBound = async (
     adapter: LlmAdapter,
     request: LlmRequest,
@@ -649,7 +501,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       boundMicros: boundMicros(countedInputTokens, request.maxTokens, prices),
     };
   };
-
   const dialogueBudgetMicros = (turnBoundMicros: number, maxTurns: number): number => {
     assertMicros(turnBoundMicros, 'turnBoundMicros');
     assertMicros(maxTurns, 'maxTurns');
@@ -659,7 +510,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     return budget;
   };
-
   const runMetered = async (
     adapter: LlmAdapter,
     request: LlmRequest,
@@ -676,14 +526,15 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     const bound = boundMicros(countedInputTokens, request.maxTokens, prices);
     const reservation = await reserveLlm(options.cityId, bound);
     if (reservation === null) {
-      // The request was counted once and is not sent. A refusal that turns out to be a suspension
-      // reports the suspension, so the caller does not retry into a stopped meter.
+      /**
+       * The request was counted once and is not sent; a refusal that turns out to be a suspension
+       * reports the suspension, so the caller does not retry into a stopped meter.
+       */
       if (await suspended()) {
         throw new LlmSuspendedError();
       }
       throw new LlmBudgetRefusedError({ boundMicros: bound, scope: 'city_cap' });
     }
-
     let result: LlmResult;
     try {
       result = await adapter.complete(
@@ -700,7 +551,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       }
       throw chargedFailure(error, reservation.micros);
     }
-
     const { chargedMicros, mismatch } = reconcile(countedInputTokens, request, result);
     await store.charge(reservation, chargedMicros);
     if (mismatch) {
@@ -713,7 +563,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
     }
     return { result, chargedMicros, countedInputTokens };
   };
-
   const runMeteredWithin = async (
     adapter: LlmAdapter,
     request: LlmRequest,
@@ -723,8 +572,10 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       throw new LlmSuspendedError();
     }
     assertMicros(options.remainingMicros, 'remainingMicros');
-    // Nothing is reserved here: the call already holds its dialogue budget, and a turn only moves
-    // part of it from reserved to spent, so the city cap cannot be crossed mid-call.
+    /**
+     * Nothing is reserved here: the call already holds its dialogue budget, and a turn only moves
+     * part of it from reserved to spent (AAP 0.5.6).
+     */
     const scope: LlmReservation = {
       cityId: options.reservation.cityId,
       localDate: options.reservation.localDate,
@@ -744,7 +595,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
         scope: 'reservation',
       });
     }
-
     let result: LlmResult;
     try {
       result = await adapter.complete(
@@ -759,7 +609,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       }
       throw chargedFailure(error, bound);
     }
-
     const { chargedMicros, mismatch } = reconcile(countedInputTokens, request, result);
     await store.charge(scope, chargedMicros);
     if (mismatch) {
@@ -772,7 +621,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
       remainingMicros: scope.micros - Math.min(chargedMicros, scope.micros),
     };
   };
-
   return {
     reserveLlm,
     settleLlm,
@@ -784,7 +632,6 @@ export function createLlmSpend(deps: CreateLlmSpendDeps): LlmSpend {
   };
 }
 
-/** Whether a reported usage can be priced as it stands: both figures non-negative safe integers. */
 function representable(usage: LlmUsage): boolean {
   return (
     Number.isSafeInteger(usage.inputTokens) &&
@@ -794,18 +641,11 @@ function representable(usage: LlmUsage): boolean {
   );
 }
 
-/** A loggable code from a caught value — an `Error`'s `code`, or `'unknown'` (AAP 0.11.1). */
 function errorCode(error: unknown): string {
   const code: unknown = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : 'unknown';
 }
 
-/**
- * The error to rethrow once a send has failed, carrying the micro-dollars that failure consumed
- * (AAP 0.5.6). The vocabulary's own timeout and provider errors keep their identity and gain
- * `chargedMicros`, which is how the relay learns what an errored turn cost; anything else becomes an
- * `LlmProviderError` with the original as its cause, never in its message.
- */
 function chargedFailure(error: unknown, micros: number): Error {
   if (error instanceof LlmTimeoutError || error instanceof LlmProviderError) {
     error.chargedMicros = micros;

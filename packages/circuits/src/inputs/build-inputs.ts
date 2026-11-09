@@ -2,24 +2,21 @@
  * The `.eml` → `TablemateItinerary` witness-input generator: the device side of the itinerary proof
  * (AAP 0.5.1, AAP 0.5.5).
  *
- * {@link buildCircuitInputs} is what `apps/mobile` calls with the published ZK configuration in place
- * of a DNS lookup: the DKIM key is selected from the registry by the signature's own `d=` and `s=`. The
- * email never leaves the device, and only `{ proof, publicSignals }` is sent to the API (AAP 0.12.2).
+ * {@link buildCircuitInputs} is what `apps/mobile` calls with the published ZK configuration in place of a
+ * DNS lookup: the DKIM key is selected from the registry by the signature's own `d=` and `s=`. The email never
+ * leaves the device, and only `{ proof, publicSignals }` is sent to the API (AAP 0.12.2).
  *
- * {@link buildEmailVerifierInputs} builds the EmailVerifier half of the witness the way
- * `@zk-email/helpers` 6.4.2 does with `maxHeadersLength` 1,024, `maxBodyLength` 960 and soft line
- * breaks removed, cutting the SHA-256 precompute at the window's start; `test/inputs.test.ts` compares
- * the two against that oracle.
+ * {@link buildEmailVerifierInputs} builds the EmailVerifier half of the witness the way `@zk-email/helpers`
+ * 6.4.2 does with `maxHeadersLength` 1,024, `maxBodyLength` 960 and soft line breaks removed, cutting the
+ * SHA-256 precompute at the window's start; `test/inputs.test.ts` compares the two against that oracle.
  *
- * Client-safe: it runs under Hermes (React Native 0.76.9), in the browser Web Worker and in Node tests,
- * so it imports `./`, `../registry/` and the shared contract types and nothing else — no Node built-in,
- * no global `Buffer`, no `TextEncoder`/`TextDecoder`, no `atob`, no DOM API, no randomness, no I/O and
- * no logging. Its only module-load work is declaring the constants and the one regular expression
- * below.
+ * Client-safe: it runs under Hermes (React Native 0.76.9), in the browser Web Worker and in Node tests, so it
+ * imports `./`, `../registry/` and the shared contract types and nothing else — no Node built-in, no global
+ * `Buffer`, no `TextEncoder`/`TextDecoder`, no `atob`, no DOM API, no randomness, no I/O and no logging.
  *
- * Privacy: every refusal is a {@link CircuitInputError} carrying a code and, for a stay field, that
- * field's template slot name. No error, return value or intermediate of this module carries email
- * bytes, header text, a field value, the guest name or the booking reference.
+ * Privacy: every refusal is a {@link CircuitInputError} carrying a code and, for a stay field, that field's
+ * template slot name. No error, return value or intermediate here carries email bytes, header text, a field
+ * value, the guest name or the booking reference.
  */
 import type { DkimKey, IssuerConfig, RegistryFile } from '@tablemate/shared';
 
@@ -82,12 +79,12 @@ const ARRIVAL_FIELD = 1;
 const DEPARTURE_FIELD = 2;
 
 /**
- * The matcher the circuit's `BodyHashRegex` implies, read against the signature line alone: zk-regex
- * 2.3.x's `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`, which `@zk-email/circuits`
- * 6.3.4 uses to reveal the `bh=` value. It is anchored at the line's start and case-sensitive, so it
- * refuses a `c=simple` header canonicalization (whose field name is not lowercased), a folded `bh=` and
- * every other tag separator — none of which the circuit could reveal. Checking it here reports one code
- * instead of failing later inside witness generation.
+ * The matcher the circuit's `BodyHashRegex` implies, read against the signature line alone: zk-regex 2.3.x's
+ * `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`, which `@zk-email/circuits` 6.3.4 uses to
+ * reveal the `bh=` value. It is anchored at the line's start and case-sensitive, so it refuses a `c=simple`
+ * header canonicalization (whose field name is not lowercased), a folded `bh=` and every other tag separator —
+ * none of which the circuit could reveal. Checking it here reports one code instead of failing later inside
+ * witness generation.
  */
 const BODY_HASH_PATTERN = /^dkim-signature:([a-z]+=[^;]+; )+bh=([a-zA-Z0-9+/=]+);/;
 
@@ -181,12 +178,10 @@ export interface BuildCircuitInputsResult {
 /**
  * The EmailVerifier half of a witness, before it is stringified: what `./sha-partial.ts`,
  * `./dkim-canonicalize.ts` and the RSA limb split produce, plus what the registry checks of
- * {@link buildCircuitInputs} need.
- *
- * Exported so `test/inputs.test.ts` can compare each value against `@zk-email/helpers`, and so
- * `test/adversarial.test.ts` can re-check the signed header's RSA signature with `node:crypto`: hence
- * `canonicalHeader`, unpadded, and `precomputeCut`, the block boundary the oracle has to precompute
- * from to select the same window.
+ * {@link buildCircuitInputs} need. Exported so `test/inputs.test.ts` can compare each value against
+ * `@zk-email/helpers`, and so `test/adversarial.test.ts` can re-check the signed header's RSA signature with
+ * `node:crypto`: hence `canonicalHeader`, unpadded, and `precomputeCut`, the block boundary the oracle has to
+ * precompute from to select the same window.
  */
 export interface EmailVerifierParts {
   /** The canonical signed header, zero-padded to {@link MAX_HEADER_LENGTH}. */
@@ -292,11 +287,9 @@ function mapped<T>(code: CircuitInputError['code'], compute: () => T): T {
 /** Reads `values[index]`, or throws for a missing entry: every array read here has a fixed length. */
 function entryAt<T>(values: readonly T[], index: number, signal: string): T {
   const value = values[index];
-
   if (value === undefined) {
     throw new RangeError(`${signal} has no entry ${index}`);
   }
-
   return value;
 }
 
@@ -312,7 +305,6 @@ function matchingKey(
   selector: string,
 ): DkimKey | undefined {
   if (issuer.template === null) return undefined;
-
   return issuer.keys.find(
     (key) => key.domain.toLowerCase() === domain && key.selector.toLowerCase() === selector,
   );
@@ -340,23 +332,19 @@ function selectSignature(
 ): SelectedSignature {
   for (const sig of parsed.signatures) {
     const selector = sig.s.toLowerCase();
-
     for (const issuer of issuers) {
       const key = matchingKey(issuer, sig.d, selector);
       if (key !== undefined) return { sig, issuer, key };
     }
   }
-
   for (const rejected of parsed.rejectedSignatures) {
     const { d, s } = rejected;
     if (d === undefined || s === undefined) continue;
-
     const selector = s.toLowerCase();
     if (issuers.some((issuer) => matchingKey(issuer, d, selector) !== undefined)) {
       throw new CircuitInputError(rejected.code);
     }
   }
-
   return fail('unsupported_issuer');
 }
 
@@ -365,7 +353,6 @@ function lastLineStart(bytes: Uint8Array): number {
   for (let i = bytes.length - 2; i >= 0; i -= 1) {
     if (bytes[i] === CR && bytes[i + 1] === LF) return i + 2;
   }
-
   return 0;
 }
 
@@ -373,43 +360,36 @@ function lastLineStart(bytes: Uint8Array): number {
  * Where the `bh=` value starts in the canonical signed header: the circuit's `bodyHashIndex`.
  *
  * The signature is the header's last field, so its line is the bytes after the last CRLF, and
- * {@link BODY_HASH_PATTERN} requires that line to carry a tag list the circuit can reveal. The value
- * the match locates must be the `bh=` the signature carries, 44 base64 characters long and contiguous:
- * the circuit reveals it between two fixed anchors, so a folded `bh=` cannot be located at all.
- * `@zk-email/helpers` 6.4.2 computes the first occurrence of the same value as a character index into
- * the same ASCII header, which is this byte offset for every fixture.
+ * {@link BODY_HASH_PATTERN} requires that line to carry a tag list the circuit can reveal. The value the match
+ * locates must be the `bh=` the signature carries, 44 base64 characters long and contiguous: the circuit
+ * reveals it between two fixed anchors, so a folded `bh=` cannot be located at all. `@zk-email/helpers` 6.4.2
+ * computes the first occurrence of the same value as a character index into the same ASCII header, which is
+ * this byte offset for every fixture.
  */
 function bodyHashIndexIn(canonicalHeader: Uint8Array, sig: DkimSignature): number {
   if (sig.bh.length !== SHA256_BYTES || sig.bhBase64.length !== BODY_HASH_BASE64_LENGTH) {
     fail('dkim_unsupported');
   }
-
   const lineStart = lastLineStart(canonicalHeader);
   const match = BODY_HASH_PATTERN.exec(bytesToLatin1(canonicalHeader, lineStart));
-
   if (match === null) fail('dkim_unsupported');
-
   const line = match[0] ?? '';
   const value = match[2];
   if (value === undefined || value.length !== BODY_HASH_BASE64_LENGTH) fail('dkim_unsupported');
-
   // The match starts at the line's start and ends with the tag's `;`, so the value begins this far into
   // it. Comparing the bytes there with the signature's own `bh=` is what makes the offset trustworthy.
   const index = lineStart + line.length - value.length - 1;
   if (bytesToLatin1(canonicalHeader, index, index + BODY_HASH_BASE64_LENGTH) !== sig.bhBase64) {
     fail('dkim_unsupported');
   }
-
   return index;
 }
 
 /**
  * The padded body window the circuit hashes, mirroring `circuits/lib/body_window.circom`: the longest
- * 64-byte-aligned padded suffix of at most {@link MAX_BODY_WINDOW} bytes, which is the whole padded body
- * when it fits and otherwise exactly 960 bytes.
- *
- * The email's own SHA-256 length field, not the prover, fixes that cut, and with it every occurrence of
- * a field's anchor the extraction can reach at all.
+ * 64-byte-aligned padded suffix of at most {@link MAX_BODY_WINDOW} bytes, which is the whole padded body when
+ * it fits and otherwise exactly 960 bytes. The email's own SHA-256 length field, not the prover, fixes that
+ * cut, and with it every occurrence of a field's anchor the extraction can reach at all.
  */
 function bodyWindowOf(canonicalBody: Uint8Array): {
   emailBody: Uint8Array;
@@ -428,7 +408,6 @@ function bodyWindowOf(canonicalBody: Uint8Array): {
     precomputeCut,
     MAX_BODY_LENGTH,
   );
-
   return {
     emailBody: bodyRemaining,
     emailBodyLength: bodyRemainingLength,
@@ -440,12 +419,11 @@ function bodyWindowOf(canonicalBody: Uint8Array): {
 /**
  * Builds the EmailVerifier half of a witness from a booking confirmation (AAP 0.5.5).
  *
- * It mirrors `@zk-email/helpers` 6.4.2's `generateEmailVerifierInputsFromDKIMResult` with
- * `maxHeadersLength` 1,024, `maxBodyLength` 960, `removeSoftLineBreaks` on and the precompute selector
- * placed at {@link EmailVerifierParts.precomputeCut}, but with no Node API and no DNS lookup: the key
- * comes from `issuers`, selected by the signature's own `d=`/`s=`. RSA verification is deliberately
- * absent — the circuit's `EmailVerifier` is the authority on the signature, and the fixtures are signed
- * by `scripts/make-test-fixtures.ts` for exactly that check.
+ * It mirrors `@zk-email/helpers` 6.4.2's `generateEmailVerifierInputsFromDKIMResult` with `maxHeadersLength`
+ * 1,024, `maxBodyLength` 960, `removeSoftLineBreaks` on and the precompute selector placed at
+ * {@link EmailVerifierParts.precomputeCut}, but with no Node API and no DNS lookup: the key comes from
+ * `issuers`, selected by the signature's own `d=`/`s=`. RSA verification is deliberately absent — the
+ * circuit's `EmailVerifier` is the authority on the signature.
  *
  * @param eml - The message bytes, as the file picker, the share sheet or a test fixture supplied them.
  * @param issuers - The supported issuers of the published configuration.
@@ -459,32 +437,25 @@ export function buildEmailVerifierInputs(
 ): EmailVerifierParts {
   const parsed = parseEml(eml);
   const { sig, issuer, key } = selectSignature(parsed, issuers);
-
   // zk-email's RSA verifier at n = 121, k = 17 targets 2,048-bit keys, so a key outside that shape is
   // refused here rather than inside witness generation; `pnpm circuits:samples` is the authority on the
   // shape of a real issuer's modulus.
   const modulus = mapped('dkim_unsupported', () => modulusFromBase64(key.modulusBase64));
-
   const canonicalHeader = canonicalSignedHeader(parsed, sig);
   const bodyHashIndex = bodyHashIndexIn(canonicalHeader, sig);
   const { padded, paddedLength } = mapped('header_too_long', () =>
     sha256Pad(canonicalHeader, MAX_HEADER_LENGTH),
   );
-
   // This is the check that refuses `fixtures/test-issuer/tampered.eml`, before anything is proved.
   const canonicalBody = canonicalizeBody(parsed.body, sig.c.body);
   verifyBodyHash(canonicalBody, sig);
-
   const window = bodyWindowOf(canonicalBody);
   const decodedEmailBodyIn = removeSoftLineBreaks(window.emailBody, MAX_BODY_LENGTH);
-
   // An unsigned draft — `b=`, which RFC 6376 allows in the field the signer is about to fill — and a
   // signature at or above the modulus are both refused before the limbs are split.
   if (sig.b.length === 0) fail('dkim_unsupported');
-
   const signatureInt = bytesToBigIntBE(sig.b);
   if (signatureInt >= modulus) fail('dkim_unsupported');
-
   return {
     emailHeader: padded,
     emailHeaderLength: paddedLength,
@@ -530,15 +501,12 @@ export function buildCircuitInputs(
 ): BuildCircuitInputsResult {
   const nullifierSalt = mapped('registry_mismatch', () => parseFieldElement(options.nullifierSalt));
   const ev = buildEmailVerifierInputs(eml, issuerConfig);
-
   // Selection only ever returns an issuer that carries a template, so a null one here means the
   // published configuration and this generator disagree: a registry problem, not an email one.
   const template = ev.issuer.template;
   if (template === null) fail('registry_mismatch');
-
   const params = mapped('registry_mismatch', () => templateParams(template));
   const fields: FieldLocation[] = locateFields(ev.decodedEmailBodyIn, params);
-
   // Both dates are parsed from the template's one layout, so a value the circuit could not read is
   // refused here, with the field's slot name and never its text.
   const arrival = entryAt(fields, ARRIVAL_FIELD, 'buildCircuitInputs: stay fields');
@@ -549,18 +517,15 @@ export function buildCircuitInputs(
   if (parseDateValue(departure.value, departure.valueLength, params.dateFormat) === null) {
     fail('field_invalid', TEMPLATE_FIELD_ORDER[DEPARTURE_FIELD]);
   }
-
   // The city is the alias the signed body carried, byte for byte, quoted-printable escapes included.
   const cityLocation = entryAt(fields, CITY_FIELD, 'buildCircuitInputs: stay fields');
   const cityBytes = cityLocation.value.subarray(0, cityLocation.valueLength);
   const cityEntry = registry.cities.find((entry) => bytesEqual(utf8Encode(entry.alias), cityBytes));
   if (cityEntry === undefined) fail('city_not_supported');
-
   const aliasHash = mapped('registry_mismatch', () => cityAliasHash(cityBytes));
   if (mapped('registry_mismatch', () => parseFieldElement(cityEntry.aliasHash)) !== aliasHash) {
     fail('registry_mismatch');
   }
-
   // The key the signature verified under and the template the extraction used, both as the registry
   // records them for this issuer.
   const issuerEntry = registry.issuers.find(
@@ -570,7 +535,6 @@ export function buildCircuitInputs(
       entry.selector.toLowerCase() === ev.signatureSelector,
   );
   if (issuerEntry === undefined) fail('unsupported_issuer');
-
   const keyHash = mapped('registry_mismatch', () => pubkeyHash(ev.modulus));
   const templateHashValue = mapped('registry_mismatch', () => templateHash(params));
   if (mapped('registry_mismatch', () => parseFieldElement(issuerEntry.pubkeyHash)) !== keyHash) {
@@ -582,28 +546,22 @@ export function buildCircuitInputs(
   ) {
     fail('registry_mismatch');
   }
-
   // One tree, built once, both paths taken from it: the circuit folds each path to the one root its
   // `registryRoot` input names.
   if (registry.depth !== REGISTRY_DEPTH) fail('registry_mismatch');
-
   const leaves = registry.leaves.map((leaf) =>
     mapped('registry_mismatch', () => parseFieldElement(leaf)),
   );
   const tree = mapped('registry_mismatch', () => buildMerkleTree(leaves));
-
   if (tree.root !== mapped('registry_mismatch', () => parseFieldElement(registry.root))) {
     fail('registry_mismatch');
   }
-
   const issuerLeafValue = mapped('registry_mismatch', () =>
     issuerLeaf(ev.issuer.issuerId, keyHash, templateHashValue),
   );
   const cityLeafValue = mapped('registry_mismatch', () => cityLeaf(cityEntry.cityId, aliasHash));
-
   if (issuerEntry.leafIndex >= leaves.length) fail('registry_mismatch');
   if (cityEntry.leafIndex >= leaves.length) fail('registry_mismatch');
-
   if (
     entryAt(leaves, issuerEntry.leafIndex, 'buildCircuitInputs: registry leaves') !==
     issuerLeafValue
@@ -615,7 +573,6 @@ export function buildCircuitInputs(
   ) {
     fail('registry_mismatch');
   }
-
   const inputs = assembleInputs({
     emailVerifier: {
       emailHeader: ev.emailHeader,
@@ -637,26 +594,23 @@ export function buildCircuitInputs(
     registryRoot: tree.root,
     nullifierSalt,
   });
-
   return { inputs, issuerId: ev.issuer.issuerId, cityId: cityEntry.cityId };
 }
 
 /**
  * Stringifies a witness, and does nothing else: it sizes, zero-pads and prints every signal, so
- * `packages/circuits/test/*` can build deliberately invalid witnesses — a tampered window, a shifted
- * index, a rogue registry, non-binary path bits, a 1,024-byte window — and assert that the circuit
- * refuses them. No semantic rule is repeated here; {@link buildCircuitInputs} is where the checks that a
- * real proof depends on live.
+ * `packages/circuits/test/*` can build deliberately invalid witnesses — a tampered window, a shifted index, a
+ * rogue registry, non-binary path bits, a 1,024-byte window — and assert that the circuit refuses them. No
+ * semantic rule is repeated here; {@link buildCircuitInputs} is where the checks a real proof depends on live.
  *
  * @param parts - The witness's values, already sized by their producers.
  * @returns The circuit inputs, every array at the size its signal declares, in signal order.
- * @throws {RangeError} When an array is longer than its signal or a number is not a non-negative safe
- *   integer; the message names the signal, never a value.
+ * @throws {RangeError} When an array is longer than its signal or a number is not a non-negative safe integer;
+ *   the message names the signal, never a value.
  */
 export function assembleInputs(parts: AssembleInputsParts): CircuitInputs {
   const { emailVerifier, fields, template } = parts;
   const anchors: string[][] = [];
-
   for (let index = 0; index < TEMPLATE_FIELD_ORDER.length; index += 1) {
     anchors.push(
       decimalBytes(
@@ -666,7 +620,6 @@ export function assembleInputs(parts: AssembleInputsParts): CircuitInputs {
       ),
     );
   }
-
   return {
     emailHeader: decimalBytes(emailVerifier.emailHeader, MAX_HEADER_LENGTH, 'emailHeader'),
     emailHeaderLength: decimal(emailVerifier.emailHeaderLength, 'emailHeaderLength'),
@@ -719,7 +672,6 @@ export function assembleInputs(parts: AssembleInputsParts): CircuitInputs {
 function decimal(value: number | bigint, signal: string): string {
   if (typeof value === 'bigint') return value.toString();
   if (Number.isSafeInteger(value) && value >= 0) return value.toString();
-
   throw new RangeError(`assembleInputs: ${signal} is not a non-negative safe integer`);
 }
 
@@ -732,12 +684,10 @@ function decimalArray(
   if (values.length > size) {
     throw new RangeError(`assembleInputs: ${signal} exceeds ${size}`);
   }
-
   const out: string[] = [];
   for (let index = 0; index < size; index += 1) {
     out.push(decimal(values[index] ?? 0n, signal));
   }
-
   return out;
 }
 
@@ -746,12 +696,10 @@ function decimalBytes(bytes: Uint8Array, size: number, signal: string): string[]
   if (bytes.length > size) {
     throw new RangeError(`assembleInputs: ${signal} exceeds ${size}`);
   }
-
   const out: string[] = [];
   for (let index = 0; index < size; index += 1) {
     out.push(String(bytes[index] ?? 0));
   }
-
   return out;
 }
 
@@ -762,11 +710,9 @@ function fourEntries<T>(
   project: (entry: T) => string,
 ): string[] {
   const out: string[] = [];
-
   for (let index = 0; index < TEMPLATE_FIELD_ORDER.length; index += 1) {
     out.push(project(entryAt(values, index, `assembleInputs: ${signal}`)));
   }
-
   return out;
 }
 
@@ -776,7 +722,6 @@ function fourEntries<T>(
  */
 function printedField(value: bigint | string, signal: string): string {
   if (typeof value !== 'string') return value.toString();
-
   try {
     return parseFieldElement(value).toString();
   } catch (error) {

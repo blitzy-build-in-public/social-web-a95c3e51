@@ -546,6 +546,14 @@
                           ],
                           "additionalProperties": false
                         },
+                        "validCityIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 40,
+                            "pattern": "^[a-z]+(-[a-z]+)*$"
+                          }
+                        },
                         "tableCreditCents": {
                           "type": "integer",
                           "minimum": 0,
@@ -658,6 +666,7 @@
                         "variant",
                         "consents",
                         "proof",
+                        "validCityIds",
                         "tableCreditCents",
                         "reputation",
                         "activeLodgingClaim"
@@ -1983,6 +1992,14 @@
                       ],
                       "additionalProperties": false
                     },
+                    "validCityIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 40,
+                        "pattern": "^[a-z]+(-[a-z]+)*$"
+                      }
+                    },
                     "tableCreditCents": {
                       "type": "integer",
                       "minimum": 0,
@@ -2095,6 +2112,7 @@
                     "variant",
                     "consents",
                     "proof",
+                    "validCityIds",
                     "tableCreditCents",
                     "reputation",
                     "activeLodgingClaim"
@@ -2707,6 +2725,14 @@
                       ],
                       "additionalProperties": false
                     },
+                    "validCityIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 40,
+                        "pattern": "^[a-z]+(-[a-z]+)*$"
+                      }
+                    },
                     "tableCreditCents": {
                       "type": "integer",
                       "minimum": 0,
@@ -2819,6 +2845,7 @@
                     "variant",
                     "consents",
                     "proof",
+                    "validCityIds",
                     "tableCreditCents",
                     "reputation",
                     "activeLodgingClaim"
@@ -3472,6 +3499,14 @@
                       ],
                       "additionalProperties": false
                     },
+                    "validCityIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 40,
+                        "pattern": "^[a-z]+(-[a-z]+)*$"
+                      }
+                    },
                     "tableCreditCents": {
                       "type": "integer",
                       "minimum": 0,
@@ -3584,6 +3619,7 @@
                     "variant",
                     "consents",
                     "proof",
+                    "validCityIds",
                     "tableCreditCents",
                     "reputation",
                     "activeLodgingClaim"

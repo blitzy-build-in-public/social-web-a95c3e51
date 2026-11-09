@@ -1,18 +1,17 @@
 /**
- * The registry suite (AAP 0.5.5): the committed `config/registry/{production,test}.json`, the
- * off-circuit encodings of `src/registry`, and their parity with the Circom templates the itinerary
- * circuit instantiates.
+ * The registry suite (AAP 0.5.5): the committed `config/registry/{production,test}.json`, the off-circuit
+ * encodings of `src/registry`, and their parity with the Circom templates the itinerary circuit instantiates.
  *
- * The committed registries are reproduced byte for byte from `config/`, production carrying no leaf
- * for an issuer that is not `verified` or for the synthetic test issuer; every leaf, index and root
- * is re-derived from configuration, so an edited registry fails here rather than at verification
- * time; the boundary cases of the packing the leaf and the nullifier both rest on are pinned in
- * TypeScript; and each mirror is compared with its template through a generated wrapper, because a
- * mirror that is only self-consistent still lets the device produce a proof the server cannot verify,
- * and the domain tags and path bits are the substitution attacks that would follow.
+ * The committed registries are reproduced byte for byte from `config/`, production carrying no leaf for an
+ * issuer that is not `verified` or for the synthetic test issuer; every leaf, index and root is re-derived
+ * from configuration, so an edited registry fails here rather than at verification time; the boundary cases of
+ * the packing the leaf and the nullifier both rest on are pinned in TypeScript; and each mirror is compared
+ * with its template through a generated wrapper, because a mirror that is only self-consistent still lets the
+ * device produce a proof the server cannot verify, and the domain tags and path bits are the substitution
+ * attacks that would follow.
  *
- * The parity suite needs circom 2.1.9 on `PATH` and is never skipped, its failure naming the install
- * command. The other cases need no compiler and sit outside its `describe`.
+ * The parity suite needs circom 2.1.9 on `PATH` and is never skipped, its failure naming the install command.
+ * The other cases need no compiler and sit outside its `describe`.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -291,7 +290,6 @@ function fixtureKeyModulus(): bigint {
   if (field === undefined) {
     throw new Error(`${OTHER_ISSUER_EML}: no ${FIXTURE_KEY_HEADER} header`);
   }
-
   const raw = bytesToLatin1(field.raw);
   return modulusFromBase64(raw.slice(raw.indexOf(':') + 1).replace(/\s+/g, ''));
 }
@@ -306,30 +304,25 @@ describe('the committed registries', () => {
     (name) => {
       const issuers = name === 'production' ? PRODUCTION_ISSUERS : TEST_ISSUERS;
       const { registry } = buildRegistry({ name, issuers, cities: CITIES });
-
       // The exact bytes `scripts/build-registry.ts` writes, which `--check` and every reader of the
       // committed file depend on.
       expect(`${JSON.stringify(registry, null, 2)}\n`).toBe(REGISTRIES[name].text);
     },
   );
-
   it('gives production a leaf only to a verified issuer other than the test one', () => {
     const leafIssuerIds = new Set(
       REGISTRIES.production.file.issuers.map((entry) => entry.issuerId),
     );
-
     for (const { stem, config } of ISSUERS) {
       const recordsLeaf =
         stem !== TEST_ISSUER_STEM &&
         config.verificationStatus === 'verified' &&
         usableKeys(config).keys.length > 0;
-
       // Both directions, so an issuer that should have no leaf cannot acquire one: Booking.com and
       // Airbnb, awaiting samples with no key and no template, have no entry at all.
       expect(leafIssuerIds.has(config.issuerId)).toBe(recordsLeaf);
     }
   });
-
   it.each<[RegistryName]>([['production'], ['test']])(
     'registers every configured city alias of %s under its computed hash',
     (name) => {
@@ -345,7 +338,6 @@ describe('the committed registries', () => {
           hash: cityAliasHash(utf8Encode(alias)).toString(),
         })),
       );
-
       // Sizes first, so an alias the configuration does not hold is a failure too.
       expect(hashes.size).toBe(expected.length);
       for (const { key, hash } of expected) {
@@ -353,7 +345,6 @@ describe('the committed registries', () => {
       }
     },
   );
-
   it.each<[RegistryName]>([['production'], ['test']])(
     'places every %s entry at the leaf its index names and holds its path to the root',
     (name) => {
@@ -361,11 +352,9 @@ describe('the committed registries', () => {
       const leaves = file.leaves.map((leaf) => BigInt(leaf));
       const tree = buildMerkleTree(leaves);
       const indexes = [...file.issuers, ...file.cities].map((entry) => entry.leafIndex);
-
       expect(leaves.length).toBe(file.issuers.length + file.cities.length);
       expect(tree.root.toString()).toBe(file.root);
       expect(new Set(indexes).size).toBe(indexes.length);
-
       for (const entry of file.issuers) {
         expect(at(leaves, entry.leafIndex, 'a leaf')).toBe(
           issuerLeaf(entry.issuerId, BigInt(entry.pubkeyHash), BigInt(entry.templateHash)),
@@ -381,10 +370,8 @@ describe('the committed registries', () => {
       }
     },
   );
-
   it('derives the test registry leaf from the configured key and template', () => {
     const entry = at(REGISTRIES.test.file.issuers, 0, 'the test issuer entry');
-
     expect(entry.pubkeyHash).toBe(KEY_HASH.toString());
     expect(entry.templateHash).toBe(TEMPLATE_HASH.toString());
   });
@@ -395,17 +382,14 @@ describe('the committed registries', () => {
 describe('the off-circuit encodings', () => {
   it('tags the two leaf types apart over the same numbers', () => {
     const id = TEST_ISSUER.issuerId;
-
     // The issuer tag over the city leaf's preimage, which a city leaf must not equal.
     expect(cityLeaf(id, ALIAS_HASH)).not.toBe(poseidon3([ISSUER_LEAF_TAG, BigInt(id), ALIAS_HASH]));
     expect(issuerLeaf(id, KEY_HASH, TEMPLATE_HASH)).not.toBe(cityLeaf(id, KEY_HASH));
     expect(issuerLeaf(id, KEY_HASH, TEMPLATE_HASH)).not.toBe(cityLeaf(id, TEMPLATE_HASH));
   });
-
   it('hashes the key outside the registry to a different limb hash', () => {
     expect(FIXTURE_KEY_HASH).not.toBe(KEY_HASH);
   });
-
   it.each([
     { what: 'byte 31 from 0x01 to 0x02', before: 0x01, after: 0x02 },
     { what: 'byte 31 from 0xFE to 0xFF', before: 0xfe, after: 0xff },
@@ -416,7 +400,6 @@ describe('the off-circuit encodings', () => {
       const a = withByte31(before);
       const b = withByte31(after);
       const params = templateParams(TEST_TEMPLATE);
-
       // One booking, one nullifier: byte 31 reaches the hash as `pack[1]`, never as weight inside
       // `pack[0]`, so two references differing there cannot collide.
       expect(nullifierOf(a, SALT)).not.toBe(nullifierOf(b, SALT));
@@ -429,21 +412,16 @@ describe('the off-circuit encodings', () => {
       );
     },
   );
-
   it('packs 31 bytes into a zero high half, 32 into their last byte, and refuses 33', () => {
     const [, highShort] = packBytes(new Uint8Array(31).fill(0x41));
     expect(highShort).toBe(0n);
-
     const [, highLong] = packBytes(withByte31(0x7f));
     expect(highLong).toBe(0x7fn);
-
     expect(() => packBytes(new Uint8Array(33))).toThrow(RangeError);
   });
-
   it('keeps a trailing zero byte distinct through the length it is hashed with', () => {
     const three = new Uint8Array([0x41, 0x42, 0x43]);
     const four = new Uint8Array([0x41, 0x42, 0x43, 0x00]);
-
     // The two pack alike — which is why a packed value is always hashed together with its length.
     expect(packBytes(three)).toEqual(packBytes(four));
     expect(nullifierOf(three, SALT)).not.toBe(nullifierOf(four, SALT));
@@ -545,7 +523,6 @@ async function compileWrapper(
     '',
   ];
   writeFileSync(file, source.join('\n'), 'utf8');
-
   const circuit = await wasmTester(file, { output: tmpDir, include: [...INCLUDE] });
   await circuit.loadSymbols();
   return circuit;
@@ -553,11 +530,9 @@ async function compileWrapper(
 
 describe('the circom templates', () => {
   let wrappers: Wrappers;
-
   beforeAll(async () => {
     assertCircom();
     tmpDir = mkdtempSync(path.join(os.tmpdir(), 'tablemate-registry-'));
-
     // Sequentially, because each compilation is one `circom` process over the same include paths.
     wrappers = {
       pack: await compileWrapper('checked-pack', [ANCHOR_EXTRACT_LIB], 'CheckedPackBytes(32)'),
@@ -585,13 +560,11 @@ describe('the circom templates', () => {
       ),
     };
   }, COMPILE_TIMEOUT_MS);
-
   afterAll(() => {
     if (tmpDir !== '') {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
-
   it.each<{ what: string; bytes: number[]; ok: boolean }>([
     { what: '31 ASCII bytes', bytes: ascii(31), ok: true },
     { what: '32 bytes with a non-zero byte 31', bytes: [...ascii(31), 0x2a], ok: true },
@@ -606,13 +579,11 @@ describe('the circom templates', () => {
       await expect(wrappers.pack.calculateWitness(input, true)).rejects.toThrow(ASSERT_FAILED);
       return;
     }
-
     const witness = await wrappers.pack.calculateWitness(input, true);
     const [low, high] = packBytes(new Uint8Array(row));
     expect(signalOf(wrappers.pack, 'main.out[0]', witness)).toBe(low);
     expect(signalOf(wrappers.pack, 'main.out[1]', witness)).toBe(high);
   });
-
   it.each([
     { what: 'a configured city alias', value: at(CITY.aliases, 0, 'a city alias') },
     { what: 'a 31-byte alias', value: 'x'.repeat(31) },
@@ -626,7 +597,6 @@ describe('the circom templates', () => {
       }),
     ).toBe(cityAliasHash(bytes));
   });
-
   it.each([
     { what: 'the registered test-issuer template', params: templateParams(TEST_TEMPLATE) },
     { what: 'a template with 32-byte anchors', params: wideAnchors(templateParams(TEST_TEMPLATE)) },
@@ -635,7 +605,6 @@ describe('the circom templates', () => {
       templateHash(params),
     );
   });
-
   it.each([
     { what: 'a 31-byte reference', value: 'R'.repeat(31) },
     { what: 'a 32-byte reference', value: 'R'.repeat(32) },
@@ -649,14 +618,12 @@ describe('the circom templates', () => {
       }),
     ).toBe(nullifierOf(bytes, SALT));
   });
-
   it.each([0, 1, COMMITTED_LEAVES.length - 1, 255].map((index) => ({ index })))(
     'folds the committed path at index $index onto the committed root',
     async ({ index }) => {
       const proof = COMMITTED_TREE.proof(index);
       const leaf =
         index < COMMITTED_LEAVES.length ? at(COMMITTED_LEAVES, index, 'a leaf') : EMPTY_LEAF;
-
       expect(
         await compute(wrappers.inclusion, 'main.root', {
           leaf: String(leaf),
@@ -666,7 +633,6 @@ describe('the circom templates', () => {
       ).toBe(COMMITTED_TREE.root);
     },
   );
-
   it.each<{ what: string; bits: string[]; ok: boolean }>([
     {
       what: 'the honest committed path',
@@ -684,7 +650,6 @@ describe('the circom templates', () => {
       pathElements: COMMITTED_TREE.proof(1).pathElements.map(String),
       pathIndices: bits,
     };
-
     // `bit · (bit − 1) === 0` is what makes a path bit one of two children rather than any index.
     if (ok) {
       expect(await compute(wrappers.inclusion, 'main.root', input)).toBe(COMMITTED_TREE.root);
@@ -692,7 +657,6 @@ describe('the circom templates', () => {
     }
     await expect(wrappers.inclusion.calculateWitness(input, true)).rejects.toThrow(ASSERT_FAILED);
   });
-
   it.each([
     { what: 'the test issuer modulus', modulus: modulusFromBase64(TEST_KEY.modulusBase64) },
     { what: 'the key outside the registry', modulus: fixtureKeyModulus() },
@@ -703,7 +667,6 @@ describe('the circom templates', () => {
       }),
     ).toBe(pubkeyHash(modulus));
   });
-
   it.each<{ what: string; input: Record<string, unknown>; ok: boolean }>([
     { what: 'the honest two-leaf witness', input: HONEST_MEMBERSHIP, ok: true },
     {

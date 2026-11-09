@@ -3,11 +3,10 @@
  * one of them renders inside (AAP 0.5.8, AAP 0.8.1).
  */
 import type { ReactElement } from 'react';
-import { Platform } from 'react-native';
 import { Tabs } from 'expo-router';
 import { MIN_TOUCH_TARGET, borderWidths, colors, fontWeights, typography } from '@tablemate/shared';
 
-import { renderWebHeaderLeft } from '../../src/ui/HeaderBackButton';
+import { NavButton, navigationHeaderOptions } from '../../src/ui';
 
 const TABS = [
   { name: 'discover', label: 'Discover' },
@@ -30,9 +29,8 @@ export default function TabsLayout(): ReactElement {
     <Tabs
       screenOptions={{
         headerShown: true,
-        headerStyle: { backgroundColor: colors.surface },
-        headerTintColor: colors.text,
-        headerTitleStyle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
+        // The tab screens are this navigator's roots: the chrome carries no back control here.
+        ...navigationHeaderOptions('surface', { back: false }),
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
@@ -45,9 +43,27 @@ export default function TabsLayout(): ReactElement {
         tabBarLabelStyle: { ...typography.label, fontWeight: fontWeights.medium },
         tabBarItemStyle: { minHeight: MIN_TOUCH_TARGET },
         tabBarAllowFontScaling: true,
-        // Web only: a tab screen that inherits a back entry draws the same control, so no header of
-        // this navigator requests the navigator's own PNG. Native keeps the platform header (AAP 0.5.8).
-        ...(Platform.OS === 'web' ? { headerLeft: renderWebHeaderLeft } : {}),
+        // The bar's items are this app's own button, so they paint its focus ring rather than the
+        // browser's outline. The framework hands its button the anchor target, the accessible name
+        // it computed, the tab's role and selected state, its own label node and the item's
+        // geometry; `hoverEffect` and `pressOpacity` are `PlatformPressable`'s own and are left
+        // behind, together with the iOS large-content-viewer hints, which are a platform extra for
+        // a label the bar already shows.
+        tabBarButton: (props) => (
+          <NavButton
+            accessibilityLabel={props['aria-label']}
+            androidRipple={props.android_ripple}
+            href={props.href}
+            onLongPress={props.onLongPress}
+            onPress={props.onPress}
+            role={props.role ?? 'tab'}
+            selected={props['aria-selected']}
+            style={props.style}
+            testID={props.testID}
+          >
+            {props.children}
+          </NavButton>
+        ),
       }}
     >
       {TABS.map((tab) => (

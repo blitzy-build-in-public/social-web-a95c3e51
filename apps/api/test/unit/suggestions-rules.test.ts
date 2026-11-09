@@ -2,13 +2,6 @@
  * The day-plan suggestion rules' unit suite (AAP 0.5.7 "Budget", "Cost estimation", "Ranking" and the
  * `emptyReason` order of "Suggestion filtering"), plus the 24-hour eligibility reading of AAP 0.7.3
  * that `GET /meetups/:id/suggestions` applies through `suggestionsEligible`.
- *
- * Every unit under test is pure — `budget.ts`, `estimate.ts`, `rank.ts` and that eligibility helper
- * read no database, no clock and no connection — so the suite runs in process in the `unit` project
- * with nothing started (AAP 0.11.2). Importing `routes.ts` loads the module's plugins but opens
- * nothing, and `candidates.ts`, the one file of the module that touches SQL, PostGIS and
- * `opening_hours`, is deliberately not imported. Every instant is derived from one `NOW`, and money is
- * integer USD cents throughout (AAP 0.11.1).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -194,51 +187,42 @@ describe('the budget rules', () => {
     expect(SUGGESTIONS_PER_CATEGORY_MAX).toBe(3);
     expect(SUGGESTION_BUDGET_FIT_LOW).toBe(0.7);
   });
-
   const DEFAULT_CASES: readonly DefaultBudgetCase[] = [
     [500, 1500],
     [1000, 3000],
     [2000, 6000],
   ];
-
   it.each(DEFAULT_CASES)('defaults a %i-cent deposit to a %i-cent budget', (deposit, budget) => {
     expect(defaultBudgetFor(deposit)).toBe(budget);
   });
-
   it('refuses a deposit that is not one of the three levels', () => {
     // Unreachable through the API — `POST /meetups` answers `422 deposit_invalid` — so this branch is
     // an invariant violation of ours and throws a plain Error rather than an `AppError`.
     expect(() => defaultBudgetFor(750)).toThrowError('deposit_not_a_level');
   });
-
   const EFFECTIVE_CASES: readonly EffectiveBudgetCase[] = [
     [{ budgetCents: null, depositCents: 1000 }, 3000],
     [{ budgetCents: 2500, depositCents: 1000 }, 2500],
     [{ budgetCents: 500, depositCents: 2000 }, 500],
   ];
-
   it.each(EFFECTIVE_CASES)(
     'ranks against the stored budget %j, else the deposit default',
     (meetup, budget) => {
       expect(effectiveBudget(meetup)).toBe(budget);
     },
   );
-
   const RANGE_CASES: readonly RangeCase[] = [
     [499, false],
     [500, true],
     [10_000, true],
     [10_001, false],
   ];
-
   it.each(RANGE_CASES)('reads the budget %i as in range: %s', (cents, accepted) => {
     expect(isBudgetInRange(cents)).toBe(accepted);
-
     if (accepted) {
       expect(thrownBy(() => assertBudgetInRange(cents))).toBeNull();
       return;
     }
-
     const error = thrownBy(() => assertBudgetInRange(cents));
     expect(error).toBeInstanceOf(AppError);
     expect((error as AppError).code).toBe('budget_out_of_range');
@@ -265,26 +249,21 @@ describe('freshness and the current price set', () => {
     ['operator_entry', FRESHNESS_PHONE_OPERATOR_DAYS * DAY_MS, true],
     ['operator_entry', 61 * DAY_MS, false],
   ];
-
   it.each(FRESHNESS_CASES)('reads a %s price of %i ms as fresh: %s', (source, ageMs, fresh) => {
     expect(isFresh(source, new Date(NOW.getTime() - ageMs), NOW)).toBe(fresh);
   });
-
   it('keeps only the most recent capture batch of each source', () => {
     const older = capture('batch-a', 'online_menu', ago(10), [
       { name: 'pasta', cents: 1200 },
       { name: 'soup', cents: 500 },
     ]);
     const newer = capture('batch-b', 'online_menu', ago(2), [{ name: 'pasta', cents: 1300 }]);
-
     const set = currentSet([...older, ...newer], NOW);
-
     // The older batch is superseded whole: its pasta loses to the newer capture, and its soup, absent
     // from the newer batch, goes with it rather than keeping a stale price alive.
     expect(names(set)).toEqual(['pasta']);
     expect(set[0]?.priceUsdCents).toBe(1300);
   });
-
   it('keeps one batch per source and the latest capture of an item across them', () => {
     const rows = [
       ...pastaBatch('batch-online', 'online_menu', ago(5)),
@@ -293,7 +272,6 @@ describe('freshness and the current price set', () => {
         { name: 'coffee', cents: 300, category: 'drink', alcoholic: false },
       ]),
     ];
-
     // Both sources count, and the phone's newer pasta supersedes the online one. The set is ordered by
     // category, so the drink comes first (AAP 0.5.7).
     expect(currentSet(rows, NOW).map((row) => `${row.normalizedName}:${row.source}`)).toEqual([
@@ -301,20 +279,16 @@ describe('freshness and the current price set', () => {
       'pasta:phone_quote',
     ]);
   });
-
   const TIE_CASES: readonly TieCase[] = [
     [['online_menu', 'phone_quote'], 'phone_quote'],
     [['online_menu', 'operator_entry'], 'operator_entry'],
     [['phone_quote', 'operator_entry'], 'operator_entry'],
   ];
-
   it.each(TIE_CASES)(
     'breaks a capture-time tie between %j by the source order',
     (sources, winner) => {
       const rows = sources.flatMap((source) => pastaBatch(`batch-${source}`, source, ago(3)));
-
       const set = currentSet(rows, NOW);
-
       expect(set).toHaveLength(1);
       expect(set[0]?.source).toBe(winner);
       // The same order `priceSource` reads: operator_entry, then phone_quote, then online_menu.
@@ -322,20 +296,17 @@ describe('freshness and the current price set', () => {
       expect(SOURCE_PRIORITY.phone_quote).toBeLessThan(SOURCE_PRIORITY.online_menu);
     },
   );
-
   it('drops a record waiting for operator review, and a batch past its freshness window', () => {
     const waiting = capture('batch-phone', 'phone_quote', ago(1), [
       { name: 'pasta', cents: 1200, reviewStatus: 'needs_review' },
       { name: 'soup', cents: 600 },
     ]);
     const stale = pastaBatch('batch-old', 'online_menu', ago(FRESHNESS_ONLINE_DAYS, 1));
-
     // A phone quote stored `needs_review` waits for an operator instead of feeding an estimate
     // (AAP 0.5.6); a batch past its window is not a price the pair can plan on at all (AAP 0.5.7).
     expect(names(currentSet(waiting, NOW))).toEqual(['soup']);
     expect(currentSet(stale, NOW)).toEqual([]);
   });
-
   it('counts an item once however often it was captured', () => {
     // Three captures of one source in a row, then the same item captured again from each source in
     // turn: either way the set holds exactly one pasta record.
@@ -347,7 +318,6 @@ describe('freshness and the current price set', () => {
       ...pastaBatch('batch-phone', 'phone_quote', ago(3)),
       ...pastaBatch('batch-operator', 'operator_entry', ago(2)),
     ];
-
     expect(currentSet(repeats, NOW)).toHaveLength(1);
     expect(currentSet(acrossSources, NOW)).toHaveLength(1);
   });
@@ -369,7 +339,6 @@ describe('medianHalfUp', () => {
     [[101, 102], 102],
     [[1, 2, 3, 4], 3],
   ];
-
   it.each(MEDIAN_CASES)('reads the median of %j as %i cents', (values, median) => {
     // An even count takes the mean of the two middle values rounded half up, so 1,100.5 cents is
     // 1,101 and 101.5 cents is 102 (AAP 0.5.7).
@@ -390,12 +359,10 @@ describe('the food and drink estimate', () => {
     { name: 'salad', cents: 400, category: 'starter' },
     { name: 'cake', cents: 450, category: 'dessert' },
   ]);
-
   it.each(['restaurant', 'cafe', 'bar'] as const)(
     'estimates a %s from its mains and its non-alcoholic drinks',
     (category) => {
       const estimate = mustEstimate(category, FOOD_ROWS);
-
       // The median main (1,200) plus the median non-alcoholic drink (the 350 of water and tea), and
       // the range from the cheapest pair to the dearest (1,000 + 300 to 1,500 + 400). The provenance
       // holds exactly those five rows: the beer and the unknown-flag juice are excluded for their
@@ -406,7 +373,6 @@ describe('the food and drink estimate', () => {
       expect(names(estimate.itemsUsed)).toEqual(['water', 'tea', 'pasta', 'curry', 'steak']);
     },
   );
-
   const DRINK_CASES: readonly DrinkCase[] = [
     [
       'an unknown alcohol flag',
@@ -414,7 +380,6 @@ describe('the food and drink estimate', () => {
     ],
     ['an alcoholic drink', [{ name: 'beer', cents: 900, category: 'drink', alcoholic: true }]],
   ];
-
   it.each(DRINK_CASES)(
     'estimates a meal whose only drink has %s from its main alone',
     (_, drinks) => {
@@ -422,36 +387,30 @@ describe('the food and drink estimate', () => {
         'restaurant',
         capture('batch-1', 'online_menu', ago(1), [{ name: 'pasta', cents: 1200 }, ...drinks]),
       );
-
       expect(estimate.estimateCents).toBe(1200);
       expect(estimate.lowCents).toBe(1200);
       expect(estimate.highCents).toBe(1200);
       expect(names(estimate.itemsUsed)).toEqual(['pasta']);
     },
   );
-
   it('estimates a meal with no drink priced from its mains alone', () => {
     const rows = capture('batch-1', 'online_menu', ago(1), [
       { name: 'pasta', cents: 1000 },
       { name: 'curry', cents: 1200 },
       { name: 'steak', cents: 1500 },
     ]);
-
     const estimate = mustEstimate('bar', rows);
-
     expect(estimate.estimateCents).toBe(1200);
     expect(estimate.lowCents).toBe(1000);
     expect(estimate.highCents).toBe(1500);
     expect(names(estimate.itemsUsed)).toEqual(['pasta', 'curry', 'steak']);
   });
-
   it.each(['restaurant', 'cafe', 'bar'] as const)('leaves a %s with no main out', (category) => {
     const rows = capture('batch-1', 'online_menu', ago(1), [
       { name: 'water', cents: 300, category: 'drink', alcoholic: false },
       { name: 'salad', cents: 400, category: 'starter' },
       { name: 'cake', cents: 450, category: 'dessert' },
     ]);
-
     // A price is never guessed: a place the estimate cannot price is left out (AAP 0.5.7).
     expect(estimatePlace(category, rows, NOW)).toBeNull();
   });
@@ -478,10 +437,8 @@ describe('the activity estimate', () => {
       ticketType: 'standard',
     },
   ]);
-
   it('estimates an activity from its cheapest standard per-person ticket', () => {
     const estimate = mustEstimate('activity', TICKET_ROWS);
-
     // Concession, group and non-per-person fares never enter: the estimate is the lowest standard
     // adult fare and the range runs between the standard adult fares (AAP 0.5.6, 0.5.7).
     expect(estimate.estimateCents).toBe(1500);
@@ -489,12 +446,10 @@ describe('the activity estimate', () => {
     expect(estimate.highCents).toBe(2000);
     expect(names(estimate.itemsUsed)).toEqual(['adult-day', 'adult-night']);
   });
-
   it('leaves an activity out when only concession or group fares are priced', () => {
     const rows = TICKET_ROWS.filter(
       (row) => row.ticketType !== 'standard' || row.perPerson !== true,
     );
-
     expect(estimatePlace('activity', rows, NOW)).toBeNull();
   });
 });
@@ -517,18 +472,15 @@ describe('the estimate provenance', () => {
       { name: 'coffee', cents: 300, category: 'drink', alcoholic: false },
       { name: 'tea', cents: 400, category: 'drink', alcoholic: false },
     ]);
-
     // Two items each: the phone quote wins, as it outranks the online menu (AAP 0.5.7).
     const tie = mustEstimate('cafe', [...twoOnline, ...twoDrinks]);
     expect(names(tie.itemsUsed)).toHaveLength(4);
     expect(tie.priceSource).toBe('phone_quote');
-
     // Three items against one: the majority source wins, whatever its rank.
     const majority = mustEstimate('restaurant', [...threeOnline, ...onePhone]);
     expect(names(majority.itemsUsed)).toHaveLength(4);
     expect(majority.priceSource).toBe('online_menu');
   });
-
   it('dates the estimate by the oldest capture among the items used', () => {
     const rows = [
       ...pastaBatch('batch-online', 'online_menu', ago(10)),
@@ -536,9 +488,7 @@ describe('the estimate provenance', () => {
         { name: 'water', cents: 300, category: 'drink', alcoholic: false },
       ]),
     ];
-
     const estimate = mustEstimate('restaurant', rows);
-
     expect(estimate.priceVerifiedAt.getTime()).toBe(ago(10).getTime());
     expect(estimate.priceSource).toBe('phone_quote');
   });
@@ -579,7 +529,6 @@ describe('the budget filter and the ranking band', () => {
     [3000, true, true],
     [3001, false, false],
   ];
-
   it.each(FIT_CASES)(
     'reads the estimate %i as fitting %s and in band %s',
     (estimate, fits, band) => {
@@ -587,10 +536,8 @@ describe('the budget filter and the ranking band', () => {
       expect(inFitBand(estimate, BUDGET_CENTS)).toBe(band);
     },
   );
-
   it('starts the band at 70% of the budget, both ends inclusive', () => {
     const bandFloor = Math.floor(SUGGESTION_BUDGET_FIT_LOW * BUDGET_CENTS);
-
     expect(bandFloor).toBe(2100);
     expect(inFitBand(bandFloor, BUDGET_CENTS)).toBe(true);
     expect(inFitBand(bandFloor - 1, BUDGET_CENTS)).toBe(false);
@@ -621,12 +568,10 @@ describe('rankSuggestions', () => {
     ['n-act-2', 'activity', false, 120, 1800],
     ['n-rest-over', 'restaurant', false, 10, 3100],
   ];
-
   it('ranks the partners, then the band, then distance, and applies both limits', () => {
     const inputs = rankItems(CANDIDATE_CASES);
     const ranked = rankSuggestions(inputs, BUDGET_CENTS);
     const kept = ranked.map((item) => item.placeId);
-
     // The five partner venues come first in ascending distance, then the in-band non-partners, then
     // the cheaper ones. `n-rest-1` is the fourth restaurant and is skipped by the per-category limit,
     // the ten results are reached at `n-cafe-2`, and `n-rest-over` — above the budget — was dropped by
@@ -648,16 +593,13 @@ describe('rankSuggestions', () => {
     expect(kept).not.toContain('n-rest-1');
     expect(kept).not.toContain('n-rest-2');
     expect(kept).not.toContain('n-act-2');
-
     for (const category of ['restaurant', 'cafe', 'bar', 'activity'] as const) {
       const inCategory = ranked.filter((item) => item.category === category);
       expect(inCategory.length).toBeLessThanOrEqual(SUGGESTIONS_PER_CATEGORY_MAX);
     }
-
     // The candidates are ordered without mutating the caller's array.
     expect(inputs.map((item) => item.placeId)).toEqual(CANDIDATE_CASES.map(([placeId]) => placeId));
   });
-
   it('orders on the four ranking keys, the place id last', () => {
     // A partner cheaper than the band, two partners identical but for their ids, an in-band
     // non-partner, and a cheaper non-partner nearer than every other candidate.
@@ -668,7 +610,6 @@ describe('rankSuggestions', () => {
       ['c-partner-band', 'cafe', true, 700, 3000],
       ['d-partner-twin', 'activity', true, 700, 3000],
     ];
-
     expect(RANK_KEYS).toHaveLength(4);
     expect(
       rankSuggestions(rankItems(orderCases), BUDGET_CENTS).map((item) => item.placeId),
@@ -679,7 +620,6 @@ describe('rankSuggestions', () => {
       'a-band-far',
       'z-cheap-near',
     ]);
-
     const left: RankInput = {
       placeId: 'x-1',
       category: 'bar',
@@ -688,7 +628,6 @@ describe('rankSuggestions', () => {
       estimateCents: 2000,
     };
     const right: RankInput = { ...left, placeId: 'y-2' };
-
     expect(compareRank(left, right, BUDGET_CENTS)).toBeLessThan(0);
     expect(compareRank(right, left, BUDGET_CENTS)).toBeGreaterThan(0);
     expect(compareRank(left, { ...left }, BUDGET_CENTS)).toBe(0);
@@ -703,7 +642,6 @@ describe('emptyReasonFor', () => {
     [{ pricedCount: 4, openCount: 2, fittingCount: 1 }, undefined],
     [{ pricedCount: 0, openCount: 3, fittingCount: 3 }, 'no_priced_places'],
   ];
-
   it.each(EMPTY_CASES)('names %j as %s', (counts, reason) => {
     // The stages are nested, so the first zero count is the reason: no priced place is
     // `no_priced_places` even where the later counts are zero as well (AAP 0.5.7).
@@ -734,14 +672,12 @@ describe('suggestionsEligible', () => {
     ['lock_lost', 1 * HOUR_MS, false],
     ['no_fault', 1 * HOUR_MS, false],
   ];
-
   it.each(ELIGIBILITY_CASES)(
     'reads a %s meetup settled %s ms ago as eligible: %s',
     (status, settledAgoMs, eligible) => {
       // A locked meetup is always served; a completed one only until 24 hours have passed since its
       // outcome was applied, both ends inclusive; every other status carries no plan (AAP 0.7.3).
       const settledAt = settledAgoMs === null ? null : new Date(NOW.getTime() - settledAgoMs);
-
       expect(suggestionsEligible(status, settledAt, NOW)).toBe(eligible);
     },
   );

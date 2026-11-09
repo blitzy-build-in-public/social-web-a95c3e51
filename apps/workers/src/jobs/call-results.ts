@@ -1,44 +1,26 @@
 /**
- * The `call-results` queue: applying the result the API recorded on a `CallAttempt` (AAP 0.3.2,
- * 0.5.3, 0.5.6).
+ * The `call-results` queue: applying the result the API recorded on a `CallAttempt` (AAP 0.3.2, 0.5.3, 0.5.6).
  *
- * The dialogue runs in the API, because Twilio's ConversationRelay socket terminates there, and the
- * relay records what a call produced on the attempt in the transaction that writes the
- * `apply_call_result` outbox row. This job consumes that row: it reads the attempt, decides what its
- * outcome means for the task and, for a lodging call, for the claim, and writes both in one
- * transaction. Nothing here calls a third party — the call is over by the time this runs, so
- * PostgreSQL is the only I/O.
+ * The dialogue runs in the API, because Twilio's ConversationRelay socket terminates there, and the relay records
+ * what a call produced on the attempt in the transaction that writes the `apply_call_result` outbox row. This job
+ * consumes that row: it reads the attempt, decides what its outcome means for the task and, for a lodging call, for
+ * the claim, and writes both in one transaction. Nothing here calls a third party — the call is over by the time
+ * this runs, so PostgreSQL is the only I/O.
  *
- * Five rules shape it:
+ * Five rules shape it: a result is applied once, because the transaction locks the attempt, the
+ * task and the claim and refuses anything unless the task is still `in_progress` (AAP 0.3.2);
+ * terminal tasks stay terminal, whether an operator resolved them, their claim cancelled them or a
+ * later attempt superseded them (AAP 0.5.3); a covered currency with no rate reaching back to the
+ * capture day raises {@link FxRateUnavailableError} so the queue retries rather than converting
+ * through a rate nobody published (AAP 0.5.6); the last delivery never leaves a task `in_progress`,
+ * because nothing then moves it while it blocks every later call for its place (AAP 0.5.3); and a
+ * claim and its task move together through `resolveClaim` — a confirmed answer sets the task
+ * `completed` with the claim `verified` or `rejected`, anything less returns the claim to
+ * `pending_call` (AAP 0.5.3).
  *
- *   - **A result is applied once.** The transaction locks the attempt, the task and, for a
- *     `lodging_stay_verification` task, the claim, and refuses to apply anything unless the task is
- *     still `in_progress`, so a redelivered outbox job writes nothing at all (AAP 0.3.2).
- *   - **Terminal tasks stay terminal** (AAP 0.5.3): a result for a task an operator resolved, one
- *     cancelled with its claim, or an attempt marked `superseded` or replaced by a later one is
- *     refused and leaves every row as it stands.
- *   - **A missing rate is not a missing price.** A menu call's prices convert through the FX table of
- *     their capture day; a covered currency with no row reaching back to that day raises
- *     {@link FxRateUnavailableError} so the queue retries, and no price is converted through a rate
- *     nobody published (AAP 0.5.6).
- *   - **The last delivery never leaves a task `in_progress`.** The delivery the queue will not retry
- *     has nothing to hand a failure to, so a result it could not apply joins the operator queue as
- *     `needs_review` instead. A task left `in_progress` there has no route back: nothing re-delivers
- *     the outbox row, `reconcile` reads only an attempt with no outcome, the operator route accepts
- *     only `needs_review` and `unreachable`, and no dispatch dials it again — while it blocks every
- *     later call for its place (AAP 0.5.3).
- *   - **A claim and its task move together.** A confirmed answer sets the task `completed` and the
- *     claim `verified` or `rejected` in one transaction, through `lodging-claims.ts`'s
- *     `resolveClaim`; anything less returns the claim to `pending_call`, so the claimant sees it
- *     pending and the task joins the operator queue (AAP 0.5.3).
- *
- * The result's shape is the cross-app contract of `apps/api/src/modules/voice-agent/dialogue.ts`,
- * mirrored below as {@link ExtractedFieldsSchema} because `apps/workers` may not import
- * `@tablemate/api` (AAP 0.11.1). No booking field is read or logged here: a stay attempt's extracted
- * fields carry the answer alone (AAP 0.5.2).
- *
- * @see AAP 0.5.6 for the queue and the per-task-kind rules, 0.5.3 for both lifecycles, 0.3.2 for the
- *   outbox row and the idempotence it needs, 0.5.7 for `outcomeAt`, 0.8.1 for this file.
+ * The result's shape is the cross-app contract of the API's `dialogue.ts`, mirrored below as
+ * {@link ExtractedFieldsSchema} because `apps/workers` may not import `@tablemate/api` (AAP 0.11.1),
+ * and no booking field is read or logged here (AAP 0.5.2).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -63,10 +45,6 @@ import { normalizeItemName } from './menu-ingest.ts';
 // Type-only on purpose: `queues.ts` value-imports this file's `process`, so a value import back
 // would close a runtime cycle. A type-only import is erased on emit.
 import type { WorkerContext } from '../queues.ts';
-
-// ---------------------------------------------------------------------------------------------
-// The rules, as values (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /** The task statuses still outstanding, so a do-not-call reply cancels them (AAP 0.5.3). */
 const OUTSTANDING_TASK_STATUSES = [
@@ -107,15 +85,11 @@ const RETRY_DELAY_MS = CALL_RETRY_SPACING_HOURS * HOUR_MS;
 const CALL_RESULT_UNAPPLIED = 'call_result_unapplied';
 
 /**
- * How many places and how many lodgings one do-not-call reply may flag (AAP 0.5.3, 0.5.6).
- *
- * The flag belongs to the number, not to the row the call was dialed from, so every target sharing
- * the caller's number is flagged — and that is exactly why a bound exists: a switchboard number
- * shared by hundreds of rows in tables that grow with OSM ingestion would otherwise turn one reply
- * into two unbounded scans. A call is answered by one business in one city, so a real share of a
- * number is a handful of rows — a hotel, its restaurant, its bar — and this limit sits far above any
- * of them. A lookup that reaches it is a data fault worth a warning, because the reply then flagged
- * only part of the number.
+ * How many places and how many lodgings one do-not-call reply may flag (AAP 0.5.3, 0.5.6). The flag
+ * belongs to the number, not to the row the call was dialed from, so every target sharing the
+ * caller's number is flagged — which is exactly why a bound exists: a switchboard number shared by
+ * hundreds of rows in tables that grow with OSM ingestion would otherwise turn one reply into two
+ * unbounded scans, and a lookup that reaches the bound then flagged only part of the number.
  */
 const DO_NOT_CALL_TARGET_LIMIT = 500;
 
@@ -124,10 +98,6 @@ const DO_NOT_CALL_TARGET_LIMIT = 500;
  * a stalled connection fails the job into BullMQ's retry instead of holding a lock indefinitely.
  */
 const TRANSACTION_TIMEOUT_MS = 15_000;
-
-// ---------------------------------------------------------------------------------------------
-// The extraction contract (AAP 0.5.2, 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * One priced item a menu call collected, as `menu-prices.ts` reports it: `amountMinor` is the price
@@ -154,13 +124,9 @@ const StayExtractionSchema = z.strictObject({
 });
 
 /**
- * `CallAttempt.extractedFields`, mirrored from `ExtractedFields` in the API's `dialogue.ts`, which is
- * the source of this contract; the two change together.
- *
- * A payload this refuses is treated as no extraction at all, so a malformed result sends the task to
- * the operator queue rather than storing a price nobody can trace. The menu form is the four slots a
- * call collects with the price as heard and the confirmation its read-back earned; the stay form is
- * reception's answer and whether the read-back confirmed it.
+ * `CallAttempt.extractedFields`, mirrored from `ExtractedFields` in the API's `dialogue.ts`, which is the source of
+ * this contract; the two change together. A payload this refuses is treated as no extraction at all, so a malformed
+ * result sends the task to the operator queue rather than storing a price nobody can trace.
  */
 export const ExtractedFieldsSchema = z.discriminatedUnion('kind', [
   MenuExtractionSchema,
@@ -187,11 +153,6 @@ export class FxRateUnavailableError extends Error {
   readonly currency: string;
   /** The capture date the rate had to reach back to, `YYYY-MM-DD`. */
   readonly captureDate: string;
-
-  /**
-   * @param currency - The price's ISO 4217 code.
-   * @param captureDate - The attempt's own UTC day.
-   */
   constructor(currency: string, captureDate: string) {
     super(`no FX rate for ${currency} on or before ${captureDate}`);
     this.name = 'FxRateUnavailableError';
@@ -200,15 +161,10 @@ export class FxRateUnavailableError extends Error {
   }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The job and what it reports (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * The `call-results` job as a processor receives it: a structural subset of BullMQ's `Job`, so a
- * test can call {@link process} with a plain object. Its data is `{ outboxId, callAttemptId }`, of
- * which the attempt is the only field read here; its two retry fields are what
- * {@link isFinalDelivery} reads to tell a delivery the queue will retry from the last one it will not.
+ * The `call-results` job as a processor receives it: a structural subset of BullMQ's `Job`, so a test can call
+ * {@link process} with a plain object. Its data is `{ outboxId, callAttemptId }`, of which the attempt is the only
+ * field read here, and its two retry fields are what {@link isFinalDelivery} reads.
  */
 export interface CallResultsJob {
   /** BullMQ's job id — `outbox-<outboxId>`, the stable id of AAP 0.3.2. */
@@ -240,12 +196,10 @@ export type CallResultsRefusal =
   | 'outcome_missing'
   | 'claim_missing'
   | 'target_missing';
-
 /** What one run of this queue's processor reports. */
 export type CallResultsResult =
   | { readonly applied: true; readonly taskStatus: CallTaskStatus }
   | { readonly applied: false; readonly reason: CallResultsRefusal };
-
 /** One row of the attempt lock: the fields every branch below reads. */
 interface LockedAttemptRow {
   readonly id: string;
@@ -306,47 +260,26 @@ interface ResultContext {
   readonly endedAt: Date;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Processing a job (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * Applies the result the API recorded on one call attempt (AAP 0.3.2, 0.5.3, 0.5.6).
  *
- * The whole decision runs in one transaction, so the task, the claim, the stored prices and the
- * notification a claim's resolution writes commit together or not at all. Ids come in and ids go out:
- * the outcome is logged with the task and attempt ids, never with a phone number, a dish, a summary
- * or a transcript (AAP 0.11.1).
+ * The whole decision runs in one transaction, so the task, the claim, the stored prices and the notification a
+ * claim's resolution writes commit together or not at all. Ids come in and ids go out: the outcome is logged with
+ * the task and attempt ids, never with a phone number, a dish, a summary or a transcript (AAP 0.11.1).
  *
- * A failure on a delivery the queue will retry is thrown as it always was, which is what a throw is
- * for (AAP 0.5.6). On the last delivery that throw would leave the task `in_progress` for good — no
- * retry, no dispatch, no operator route and no reconciliation reads it there again — so that delivery
- * reports the decision instead: it hands the task to the operator queue through
- * {@link handResultToOperator} and returns `{ applied: true, taskStatus: 'needs_review' }`.
- *
- * @param job - The `call-results` / `apply` job, whose data names the attempt to apply and whose
- *   retry policy says whether this run is the one that has to decide the task's state.
- * @param ctx - The worker context: the injected clock, the logger and the client the transaction runs
- *   on. This job reads no configuration of its own.
- * @returns `{ applied: true, taskStatus }` once the result decided the task's status — `needs_review`
- *   included, for a last delivery that could not apply it — and `{ applied: false, reason }` when it
- *   was refused.
- * @throws QueuePayloadError when the job name is not this queue's `apply`, or when its data is not
- *   `{ outboxId, callAttemptId }`. {@link FxRateUnavailableError} when a collected price cannot be
- *   converted yet, on a delivery the queue still has a retry for.
- * @see AAP 0.5.3 for every mapping, 0.5.6 for the queue.
+ * A failure on a delivery the queue will retry is thrown, which is what a throw is for (AAP 0.5.6); on the last
+ * delivery that throw would leave the task `in_progress` for good, so it reports the decision instead: it hands the
+ * task to the operator queue through {@link handResultToOperator} and returns `{ applied: true, taskStatus:
+ * 'needs_review' }`.
  */
 export async function process(job: CallResultsJob, ctx: WorkerContext): Promise<CallResultsResult> {
   const queue = QUEUE.callResults;
-
   // A name this queue does not accept has no schema to parse against, so it is refused here rather
   // than parsed as the one job this queue carries: a foreign job arriving here is a wiring fault.
   if (!isJobName(queue, job.name)) {
     throw new QueuePayloadError(`${queue}/${job.name}`);
   }
-
   const { callAttemptId } = parseJobData(queue, job.name, job.data);
-
   try {
     return await ctx.db.$transaction(async (tx) => await applyResult(tx, ctx, callAttemptId), {
       isolationLevel: 'ReadCommitted',
@@ -359,31 +292,18 @@ export async function process(job: CallResultsJob, ctx: WorkerContext): Promise<
     if (!isFinalDelivery(job)) {
       throw error;
     }
-
     return await handResultToOperator(ctx, callAttemptId, error);
   }
 }
 
 /**
- * Whether this run is the last delivery BullMQ will start for the job.
- *
- * `attemptsMade` counts up after each run — after a failure, with the retry already decided, and
- * after a success — so the first delivery is started with `0` and BullMQ asks for a retry only while
- * `attemptsMade + 1 < opts.attempts` (`shouldRetryJob` in BullMQ's `Job`). A run whose `attemptsMade`
- * is one short of the allowance is therefore the one no retry follows, and the one that has to end
- * the task's state itself.
- *
- * A job whose retry policy is not readable reads as retryable. Every job this queue carries is added
- * through `jobOptionsFor`, which always sets `attempts`, so an absent one means the caller built the
- * job outside the queue — and leaving the state to a retry that may never come is the reading that
- * changes nothing about how such a job already behaves.
- *
- * @param job - The job this run is processing.
- * @returns `true` when no retry follows this run.
+ * Whether this run is the last delivery BullMQ will start for the job. `attemptsMade` counts up
+ * after each run, so a run one short of the allowance is the one no retry follows, and the one that
+ * has to end the task's state itself. A job whose retry policy is not readable reads as retryable:
+ * every job this queue carries is added through `jobOptionsFor`, which always sets `attempts`.
  */
 function isFinalDelivery(job: CallResultsJob): boolean {
   const attempts = job.opts?.attempts;
-
   return attempts !== undefined && (job.attemptsMade ?? 0) + 1 >= attempts;
 }
 
@@ -391,19 +311,9 @@ function isFinalDelivery(job: CallResultsJob): boolean {
  * Hands a result that could not be applied to the operator queue (AAP 0.5.3, 0.5.7).
  *
  * `needs_review` is the one status a `menu_prices` task is resolved from by an operator, and clearing
- * `blocked_reason` is what puts it in that queue rather than the blocked panel: the task is not
- * blocked, it is waiting for a person. `outcomeAt` is dated by the attempt's own end, as it is on
- * every other status a call result reaches.
- *
- * The guards are the ones {@link applyResult} applies, in the same order, and each refusal writes
- * nothing: an attempt or task that is gone, or a task an operator or the claim's resolution already
- * moved off `in_progress`, is a state this hand-off must not overwrite.
- *
- * @param ctx - The worker context: the logger the failure is reported through and the transaction's
- *   client.
- * @param attemptId - The attempt the job names, which the hand-off locks and reads for its task.
- * @param error - The failure that stopped the application; only its short token is logged.
- * @returns `{ applied: true, taskStatus: 'needs_review' }`, or why the task was not there to hand over.
+ * `blocked_reason` is what puts it in that queue rather than the blocked panel: the task is not blocked, it is
+ * waiting for a person. `outcomeAt` is dated by the attempt's own end, as on every other status a call result
+ * reaches, and the guards are the ones {@link applyResult} applies, in the same order, each refusal writing nothing.
  */
 async function handResultToOperator(
   ctx: WorkerContext,
@@ -414,25 +324,19 @@ async function handResultToOperator(
     { event: CALL_RESULT_UNAPPLIED, attemptId, code: failureToken(error) },
     CALL_RESULT_UNAPPLIED,
   );
-
   return await ctx.db.$transaction(
     async (tx): Promise<CallResultsResult> => {
       const attempt = await lockAttempt(tx, attemptId);
-
       if (attempt === null) {
         return refuse('attempt_missing');
       }
-
       const task = await lockTask(tx, attempt.call_task_id);
-
       if (task === null) {
         return refuse('task_missing');
       }
-
       if (task.status !== 'in_progress') {
         return refuse('task_not_in_progress');
       }
-
       await setTaskStatus(tx, attempt.call_task_id, {
         status: 'needs_review',
         blockedReason: null,
@@ -440,7 +344,6 @@ async function handResultToOperator(
         // {@link applyResult} dates its own `outcomeAt` (AAP 0.5.7).
         outcomeAt: attempt.ended_at ?? ctx.clock.now(),
       });
-
       return { applied: true, taskStatus: 'needs_review' };
     },
     { isolationLevel: 'ReadCommitted', timeout: TRANSACTION_TIMEOUT_MS },
@@ -448,42 +351,22 @@ async function handResultToOperator(
 }
 
 /**
- * The short token one unapplied result is logged by (AAP 0.11.1): the failure's own name, which names
- * the class of failure, and never its message, which a driver or a provider can fill with a number, a
- * URL or a query. A name that is not a plain identifier — some libraries set one from their input —
- * reads as `unknown` rather than reaching a log line as it stands.
- *
- * `calls/reconcile.ts`'s `errorName` narrows a failure the same way for the reconciliation pass. The
- * two stay separate rather than shared, because neither is exported and neither module may import the
- * other's internals.
- *
- * @param error - The value that was thrown.
- * @returns The name, or `unknown` when it is absent or not an identifier.
+ * The short token one unapplied result is logged by (AAP 0.11.1): the failure's own name, which
+ * names the class of failure, never its message, which a driver or a provider can fill with a
+ * number, a URL or a query. A name that is not a plain identifier reads as `unknown`.
  */
 function failureToken(error: unknown): string {
   const name = error instanceof Error ? error.name : '';
-
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'unknown';
 }
 
 /**
- * Locks the attempt, the task and, for a lodging call, the claim, then applies the outcome.
- *
- * The order of the guards is the order the questions have to be asked in:
- *
- *   1. **The attempt exists**, under `SELECT … FOR UPDATE`; a purged attempt's outbox row is not a
- *      fault.
- *   2. **The task is still `in_progress`**, under its own lock: every other status has been decided,
- *      by an earlier run of this job, by an operator or by the claim's resolution, which is the guard
- *      that makes a redelivered job a no-op (AAP 0.3.2).
- *   3. **The attempt still counts**: not `superseded`, not stripped of its call content, not followed
- *      by a later attempt on the same task.
- *   4. **The attempt carries an outcome**; a row with none is nothing to apply.
- *
- * @param tx - The transaction, which holds every lock below until it commits.
- * @param ctx - The worker context.
- * @param attemptId - The attempt the job names.
- * @returns What the result decided, or why it was refused.
+ * Locks the attempt, the task and, for a lodging call, the claim, then applies the outcome. The
+ * order of the guards is the order the questions have to be asked in: the attempt exists, because a
+ * purged attempt's outbox row is not a fault; the task is still `in_progress`, because every other
+ * status has been decided by an earlier run of this job, by an operator or by the claim's resolution
+ * (AAP 0.3.2); the attempt still counts — not `superseded`, not stripped of its call content, not
+ * followed by a later attempt on the same task; and it carries an outcome to apply.
  */
 async function applyResult(
   tx: DbTx,
@@ -491,29 +374,22 @@ async function applyResult(
   attemptId: string,
 ): Promise<CallResultsResult> {
   const attempt = await lockAttempt(tx, attemptId);
-
   if (attempt === null) {
     return refuse('attempt_missing');
   }
-
   const task = await lockTask(tx, attempt.call_task_id);
-
   if (task === null) {
     return refuse('task_missing');
   }
-
   if (task.status !== 'in_progress') {
     return refuse('task_not_in_progress');
   }
-
   if (attempt.superseded) {
     return refuse('attempt_superseded');
   }
-
   if (isStrippedLodgingAttempt(attempt, task)) {
     return refuse('attempt_stripped');
   }
-
   if (attempt.outcome === null) {
     ctx.logger.warn(
       { event: 'call_result_without_outcome', attemptId: attempt.id, taskId: task.id },
@@ -521,11 +397,9 @@ async function applyResult(
     );
     return refuse('outcome_missing');
   }
-
   if (await hasLaterAttempt(tx, attempt)) {
     return refuse('attempt_superseded');
   }
-
   const result: ResultContext = {
     attempt,
     task,
@@ -534,26 +408,15 @@ async function applyResult(
     // treated as having ended now, so `outcomeAt` is still the attempt's own end (AAP 0.5.7).
     endedAt: attempt.ended_at ?? ctx.clock.now(),
   };
-
   return task.kind === LODGING_VERIFICATION_KIND
     ? await applyStayResult(tx, ctx, result)
     : await applyMenuResult(tx, ctx, result);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Row locks and guards (AAP 0.3.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Locks one attempt row for the rest of the caller's transaction, or reports it gone.
- *
- * The lock serializes this job against the API's own writers of the attempt — the relay that recorded
- * the outcome, and the status webhook that may still be recording one — so this job reads the row the
- * first writer left rather than a half-written one.
- *
- * @param tx - The transaction the lock is held in.
- * @param attemptId - The attempt to lock.
- * @returns The locked row, or `null` when the attempt no longer exists.
+ * Locks one attempt row for the rest of the caller's transaction, or reports it gone. The lock serializes this job
+ * against the API's own writers of the attempt — the relay that recorded the outcome and the status webhook that may
+ * still be recording one — so this job reads the row the first writer left rather than a half-written one.
  */
 async function lockAttempt(tx: DbTx, attemptId: string): Promise<LockedAttemptRow | null> {
   const rows = await tx.$queryRaw<LockedAttemptRow[]>(Prisma.sql`
@@ -570,19 +433,13 @@ async function lockAttempt(tx: DbTx, attemptId: string): Promise<LockedAttemptRo
      WHERE "a"."id" = ${attemptId}::uuid
        FOR UPDATE
   `);
-
   return rows[0] ?? null;
 }
 
 /**
- * Locks one call-task row for the rest of the caller's transaction (AAP 0.5.3).
- *
- * The task's status under this lock is the job's single decision point: an operator resolving the
- * task, a claim's resolution cancelling it and this job are serialized, so exactly one of them acts.
- *
- * @param tx - The transaction the lock is held in.
- * @param taskId - The task to lock.
- * @returns The locked row, or `null` when the task no longer exists.
+ * Locks one call-task row for the rest of the caller's transaction (AAP 0.5.3): the task's status under this lock is
+ * the job's single decision point, so an operator resolving the task, a claim's resolution cancelling it and this job
+ * are serialized and exactly one of them acts.
  */
 async function lockTask(tx: DbTx, taskId: string): Promise<LockedTaskRow | null> {
   const rows = await tx.$queryRaw<LockedTaskRow[]>(Prisma.sql`
@@ -597,18 +454,13 @@ async function lockTask(tx: DbTx, taskId: string): Promise<LockedTaskRow | null>
      WHERE "t"."id" = ${taskId}::uuid
        FOR UPDATE
   `);
-
   return rows[0] ?? null;
 }
 
 /**
  * Locks one lodging-claim row for the rest of the caller's transaction (AAP 0.5.3), the same lock
- * `lodging-claims.ts` takes before resolving a claim, so a call result, an operator's resolution and
- * the 72-hour expiry cannot each write a different outcome.
- *
- * @param tx - The transaction the lock is held in.
- * @param claimId - The claim to lock.
- * @returns The locked row, or `null` when the claim no longer exists.
+ * `lodging-claims.ts` takes before resolving a claim, so a call result, an operator's resolution and the 72-hour
+ * expiry cannot each write a different outcome.
  */
 async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | null> {
   const rows = await tx.$queryRaw<LockedClaimRow[]>(Prisma.sql`
@@ -623,19 +475,13 @@ async function lockClaim(tx: DbTx, claimId: string): Promise<LockedClaimRow | nu
      WHERE "c"."id" = ${claimId}::uuid
        FOR UPDATE
   `);
-
   return rows[0] ?? null;
 }
 
 /**
- * Whether another attempt of the same task started after `attempt` (AAP 0.5.3).
- *
- * A retry creates a second attempt only after the first one ended, so a first attempt whose result is
- * applied late must not decide a task its successor is already handling.
- *
- * @param tx - The caller's transaction.
- * @param attempt - The locked attempt.
- * @returns True when a later attempt exists, so this result is not the task's latest.
+ * Whether another attempt of the same task started after `attempt` (AAP 0.5.3): a retry creates a second attempt
+ * only after the first one ended, so a first attempt whose result is applied late must not decide a task its
+ * successor is already handling.
  */
 async function hasLaterAttempt(tx: DbTx, attempt: LockedAttemptRow): Promise<boolean> {
   const later = await tx.callAttempt.findFirst({
@@ -646,19 +492,13 @@ async function hasLaterAttempt(tx: DbTx, attempt: LockedAttemptRow): Promise<boo
     },
     select: { id: true },
   });
-
   return later !== null;
 }
 
 /**
- * Whether a lodging attempt has had its call content stripped (AAP 0.5.2): `data-expiry` strips the
- * call rows of a resolved claim — the attempt loses its `CallSid`, its extracted fields and its
- * summary, and the task loses its claim link — so a result arriving afterwards has no claim to decide
- * and is refused exactly as a superseded one is.
- *
- * @param attempt - The locked attempt.
- * @param task - The locked task.
- * @returns True when this attempt's call content is gone for good.
+ * Whether a lodging attempt has had its call content stripped (AAP 0.5.2). `data-expiry` strips the call rows of a
+ * resolved claim — the attempt loses its `CallSid`, its extracted fields and its summary, and the task loses its
+ * claim link — so a result arriving afterwards has no claim to decide and is refused exactly as a superseded one is.
  */
 function isStrippedLodgingAttempt(attempt: LockedAttemptRow, task: LockedTaskRow): boolean {
   return (
@@ -696,27 +536,14 @@ function report(
     },
     'call_outcome',
   );
-
   return { applied: true, taskStatus };
 }
 
-// ---------------------------------------------------------------------------------------------
-// A menu call's result (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Applies a `menu_prices` attempt's outcome to its task (AAP 0.5.3, 0.5.6).
- *
- * A call that collected its prices with every one confirmed stores them as one `phone_quote` batch
- * and completes the task; anything less stores what was collected as `needs_review` records and sends
- * the task to the operator queue, which is what keeps an unverified price out of suggestions. The
- * four non-collecting outcomes share {@link finishWithoutAnswer} with a stay call.
- *
- * @param tx - The caller's transaction, holding the task and attempt locks.
- * @param ctx - The worker context.
- * @param result - The locked attempt and task, the outcome and the instant the call ended.
- * @returns What the result decided, or why it was refused.
- * @throws FxRateUnavailableError when a collected price cannot be converted yet.
+ * Applies a `menu_prices` attempt's outcome to its task (AAP 0.5.3, 0.5.6). A call that collected its prices with
+ * every one confirmed stores them as one `phone_quote` batch and completes the task; anything less stores what was
+ * collected as `needs_review` records and sends the task to the operator queue, which is what keeps an unverified
+ * price out of suggestions.
  */
 async function applyMenuResult(
   tx: DbTx,
@@ -724,20 +551,16 @@ async function applyMenuResult(
   result: ResultContext,
 ): Promise<CallResultsResult> {
   const { task } = result;
-
   if (task.place_id === null) {
     return refuse('target_missing');
   }
-
   const place = await tx.place.findUnique({
     where: { id: task.place_id },
     select: { id: true, phone: true, isFixture: true },
   });
-
   if (place === null) {
     return refuse('target_missing');
   }
-
   const taskStatus =
     result.outcome === 'completed' || result.outcome === 'needs_review'
       ? await settleMenuPrices(tx, ctx, result, place)
@@ -746,27 +569,15 @@ async function applyMenuResult(
           id: place.id,
           phone: place.phone,
         });
-
   return report(ctx, result, taskStatus);
 }
 
 /**
- * Stores what a menu call collected and moves its task on (AAP 0.5.3, 0.5.6).
- *
- * One `captureBatchId` per call, as one fetch is one batch on the online path, because the estimate
- * reads the newest batch per source (AAP 0.5.7).
- *
- * The call is fully collected only when the attempt's outcome is `completed` with `high` confidence —
- * which the script's rule makes equivalent to every value having been confirmed on read-back — every
- * item in the payload is marked `confirmed`, and every one of them was stored: an item the FX or
+ * Stores what a menu call collected and moves its task on (AAP 0.5.3, 0.5.6). One `captureBatchId`
+ * per call, as one fetch is one batch on the online path, because the estimate reads the newest batch
+ * per source (AAP 0.5.7). The call is fully collected only when the outcome is `completed` with `high`
+ * confidence, every item is marked `confirmed` and every one of them was stored: an item the FX or
  * currency rules dropped leaves the task for an operator rather than completing it on partial data.
- *
- * @param tx - The caller's transaction.
- * @param ctx - The worker context.
- * @param result - The locked attempt and task, and the instant the call ended.
- * @param place - The place the call was made to.
- * @returns The status the task reached: `completed` or `needs_review`.
- * @throws FxRateUnavailableError when a collected price cannot be converted yet.
  */
 async function settleMenuPrices(
   tx: DbTx,
@@ -778,19 +589,16 @@ async function settleMenuPrices(
   // The number called is the price's source, and a place whose number has since been cleared has
   // nothing to attribute the price to, so the items stay with the operator: `sourceUrl` is required.
   const sourceUrl = place.phone === null ? null : `tel:${place.phone}`;
-
   const priced =
     items.length === 0 || sourceUrl === null
       ? { rows: [], dropped: 0 }
       : await phonePriceRows(tx, ctx, result, place, items, sourceUrl);
-
   const convinced =
     result.outcome === 'completed' &&
     result.attempt.confidence === 'high' &&
     items.length > 0 &&
     items.every((item) => item.confirmed) &&
     priced.rows.length === items.length;
-
   const rows = convinced
     ? priced.rows.map((row) => ({
         ...row,
@@ -798,13 +606,10 @@ async function settleMenuPrices(
         reviewStatus: 'approved' as const,
       }))
     : priced.rows;
-
   if (rows.length > 0) {
     await tx.priceRecord.createMany({ data: rows });
   }
-
   const status: CallTaskStatus = convinced ? 'completed' : 'needs_review';
-
   await setTaskStatus(tx, result.task.id, {
     status,
     blockedReason: null,
@@ -813,28 +618,17 @@ async function settleMenuPrices(
     // to an operator, whose resolution records itself as such (AAP 0.5.2, 0.5.3).
     ...(convinced ? { resolvedBy: 'agent' as const } : {}),
   });
-
   return status;
 }
 
 /**
- * The `phone_quote` rows of one call (AAP 0.5.6), as `needs_review` for the caller to promote.
- *
- * Each item keeps the price as it was heard and the same price in the currency's minor units,
- * converted through the FX row of the capture day — the attempt's own UTC day, which is also the
- * `fxDate` stored with the record, so a repeat of the same conversion cannot drift.
- *
- * Two ways an item is left out, and neither invents a price: a currency the FX table does not cover
- * at all, counted in the batch's `dropped` as the online pipeline drops it too, and a covered
- * currency whose rate has not arrived, which throws so the queue retries.
- *
- * @param tx - The caller's transaction.
- * @param ctx - The worker context, for the drop count.
- * @param result - The locked attempt and task, and the instant the call ended.
- * @param place - The place the call was made to.
- * @param items - The items the payload carried, in the order the call asked them.
- * @param sourceUrl - `tel:<number>`, the number the price was collected from.
- * @throws FxRateUnavailableError when a covered currency has no rate for the capture date.
+ * The `phone_quote` rows of one call (AAP 0.5.6), as `needs_review` for the caller to promote. Each
+ * item keeps the price as it was heard and the same price in the currency's minor units, converted
+ * through the FX row of the capture day — the attempt's own UTC day, which is also the `fxDate` stored
+ * with the record, so a repeat of the same conversion cannot drift. Two ways an item is left out, and
+ * neither invents a price: a currency the FX table does not cover at all, counted in the batch's
+ * `dropped` as the online pipeline drops it too, and a covered currency whose rate has not arrived,
+ * which throws so the queue retries.
  */
 async function phonePriceRows(
   tx: DbTx,
@@ -849,16 +643,13 @@ async function phonePriceRows(
   const rates = new Map<string, { date: string; usdPerUnit: Prisma.Decimal }>();
   const rows: Prisma.PriceRecordCreateManyInput[] = [];
   let dropped = 0;
-
   for (const item of items) {
     const currency = item.currency;
     let rate = rates.get(currency);
-
     if (rate === undefined) {
       // One lookup per currency per call: every item shares the capture date, so a rate read once
       // converts each of them to the same cents.
       const found = await fxRateFor(tx, currency, captureDate);
-
       if (found === null) {
         if (!isCoveredCurrency(currency)) {
           dropped += 1;
@@ -866,11 +657,9 @@ async function phonePriceRows(
         }
         throw new FxRateUnavailableError(currency, captureDate);
       }
-
       rate = found;
       rates.set(currency, found);
     }
-
     rows.push({
       placeId: place.id,
       captureBatchId,
@@ -895,38 +684,23 @@ async function phonePriceRows(
       isFixture: place.isFixture,
     });
   }
-
   if (dropped > 0) {
     ctx.logger.warn(
       { event: 'phone_price_unconvertible', taskId: result.task.id, dropped },
       'phone_price_unconvertible',
     );
   }
-
   return { rows, dropped };
 }
 
-// ---------------------------------------------------------------------------------------------
-// A lodging call's result (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Applies a `lodging_stay_verification` attempt's outcome to its task and its claim (AAP 0.5.3).
- *
- * An answer reception confirmed on read-back decides both rows in one transaction: the task becomes
+ * Applies a `lodging_stay_verification` attempt's outcome to its task and its claim (AAP 0.5.3). An
+ * answer reception confirmed on read-back decides both rows in one transaction: the task becomes
  * `completed` — it produced the result, so `resolveClaim` is told not to cancel it — and the claim
- * becomes `verified` for yes or `rejected` for no. Nothing else about the stay is read here: the
- * payload carries the answer alone (AAP 0.5.2).
- *
- * Every other result leaves the claim undecided. It goes back to `pending_call` under its own status
- * guard, so a resolution that raced in is never overwritten, and the task follows
- * {@link finishWithoutAnswer}. A claim in that state still reads as pending to the claimant, which is
- * what the operator queue is for.
- *
- * @param tx - The caller's transaction, holding the task, attempt and claim locks.
- * @param ctx - The worker context.
- * @param result - The locked attempt and task, the outcome and the instant the call ended.
- * @returns What the result decided, or why it was refused.
+ * becomes `verified` for yes or `rejected` for no; nothing else about the stay is read here, because
+ * the payload carries the answer alone (AAP 0.5.2). Every other result leaves the claim undecided,
+ * back to `pending_call` under its own status guard so a resolution that raced in is never
+ * overwritten, with the task following {@link finishWithoutAnswer}.
  */
 async function applyStayResult(
   tx: DbTx,
@@ -934,28 +708,21 @@ async function applyStayResult(
   result: ResultContext,
 ): Promise<CallResultsResult> {
   const { task } = result;
-
   if (task.lodging_id === null || task.lodging_claim_id === null) {
     return refuse('claim_missing');
   }
-
   const claim = await lockClaim(tx, task.lodging_claim_id);
-
   if (claim === null || !isActiveClaim(claim.status)) {
     return refuse('claim_missing');
   }
-
   const lodging = await tx.lodging.findUnique({
     where: { id: task.lodging_id },
     select: { id: true, phone: true },
   });
-
   if (lodging === null) {
     return refuse('target_missing');
   }
-
   const answer = readStayAnswer(result.attempt.extracted_fields);
-
   if (
     result.outcome === 'completed' &&
     result.attempt.confidence === 'high' &&
@@ -969,7 +736,6 @@ async function applyStayResult(
       outcomeAt: result.endedAt,
       resolvedBy: 'agent',
     });
-
     await resolveClaim(
       tx,
       ctx,
@@ -977,21 +743,17 @@ async function applyStayResult(
       answer.answer === 'yes' ? 'verified' : 'rejected',
       { byTaskId: task.id },
     );
-
     return report(ctx, result, 'completed');
   }
-
   await tx.lodgingClaim.updateMany({
     where: { id: claim.id, status: 'calling' },
     data: { status: 'pending_call' },
   });
-
   const taskStatus = await finishWithoutAnswer(tx, ctx, result, {
     kind: task.kind,
     id: lodging.id,
     phone: lodging.phone,
   });
-
   return report(ctx, result, taskStatus);
 }
 
@@ -1010,29 +772,18 @@ function resolvableClaim(claim: LockedClaimRow): ResolvableClaim {
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The outcomes that collect nothing (AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Moves the task on for an outcome that decided nothing (AAP 0.5.3).
+ * Moves the task on for an outcome that decided nothing (AAP 0.5.3):
  *
  *   - `no_answer` — nobody picked up, or the call dropped: retried a day later while an attempt is
  *     left, `unreachable` once the second one goes unanswered.
- *   - `unreachable` — Twilio said the number cannot exist, which the API mapped before writing the
- *     outcome: the task stops with `blockedReason = invalid_number` and joins the operator queue.
+ *   - `unreachable` — Twilio said the number cannot exist: the task stops with
+ *     `blockedReason = invalid_number` and joins the operator queue.
  *   - `refused` — the callee asked for a human or to stop: the task closes and no target is blocked.
  *   - `do_not_call` — the callee asked not to be called again: the task stops and
  *     {@link applyDoNotCall} blocks the target and every task still outstanding for it.
  *
- * Shared by both kinds because the mapping is about the call and not its target; only the
- * `do_not_call` branch reads the target, and each kind passes its own.
- *
- * @param tx - The caller's transaction, holding the task lock.
- * @param ctx - The worker context.
- * @param result - The locked attempt and task, the outcome and the instant the call ended.
- * @param target - The place or lodging the call was made to.
- * @returns The status the task reached.
+ * Shared by both kinds because the mapping is about the call and not its target.
  */
 async function finishWithoutAnswer(
   tx: DbTx,
@@ -1041,7 +792,6 @@ async function finishWithoutAnswer(
   target: CallTarget,
 ): Promise<CallTaskStatus> {
   const { task } = result;
-
   switch (result.outcome) {
     case 'no_answer': {
       return await retryOrUnreachable(tx, result);
@@ -1086,18 +836,12 @@ async function finishWithoutAnswer(
 /**
  * Retries a call that went unanswered, or stops the task once its attempts are spent (AAP 0.5.3).
  *
- * The allowance is the task's own `attempts` column, which the dispatcher increments when it dials,
- * so a first `no_answer` requeues the task a day later and a second one makes it `unreachable`, where
- * the operator queue picks it up. `blockedReason` is cleared on the requeue: the task is not blocked,
- * it is about to be dialed again.
- *
- * @param tx - The caller's transaction, holding the task lock.
- * @param result - The locked task and the instant the call ended.
- * @returns `queued` when the task will be dialed again, `unreachable` when it will not.
+ * The allowance is the task's own `attempts` column, which the dispatcher increments when it dials, so a first
+ * `no_answer` requeues the task a day later and a second one makes it `unreachable`, where the operator queue picks
+ * it up. `blockedReason` is cleared on the requeue: the task is not blocked, it is about to be dialed again.
  */
 async function retryOrUnreachable(tx: DbTx, result: ResultContext): Promise<CallTaskStatus> {
   const { task } = result;
-
   if (task.attempts < CALL_MAX_ATTEMPTS) {
     await setTaskStatus(tx, task.id, {
       status: 'queued',
@@ -1105,16 +849,13 @@ async function retryOrUnreachable(tx: DbTx, result: ResultContext): Promise<Call
       blockedReason: null,
       outcomeAt: result.endedAt,
     });
-
     return 'queued';
   }
-
   await setTaskStatus(tx, task.id, {
     status: 'unreachable',
     blockedReason: null,
     outcomeAt: result.endedAt,
   });
-
   return 'unreachable';
 }
 
@@ -1122,22 +863,13 @@ async function retryOrUnreachable(tx: DbTx, result: ResultContext): Promise<Call
  * Honours a request not to be called again (AAP 0.5.3, 0.5.6).
  *
  * The promise a `do_not_call` reply carries is about the number, not the row it was dialed from, so
- * the flag is set on the target *and* on every place and lodging that shares its phone: a business
- * whose line answered "don't call us again" must not be dialed through another record. Those two
+ * the flag is set on the target and on every place and lodging that shares its phone. Those two
  * lookups are bounded by {@link DO_NOT_CALL_TARGET_LIMIT}, and one that returns every row the bound
- * allows is logged: a number shared by far more rows than a business can own is a data fault, and
- * the reply then flagged only part of it.
- *
- * Every other task still outstanding for those targets is cancelled, and each of their possibly live
- * attempts is marked `superseded` — the signal the API's relay reads, speaking its closing line and
- * ending the call on its next turn. The task that produced the outcome is excluded twice over: by its
- * own status, which the caller has moved off `in_progress`, and by `byTaskId`, because only attempts
- * that did not produce the result are superseded.
- *
- * @param tx - The caller's transaction, holding the task lock.
- * @param ctx - The worker context, for the cancellation count.
- * @param target - The place or lodging the call was made to.
- * @param byTaskId - The task that produced the outcome; it is never cancelled or superseded.
+ * allows is logged, because a number shared by far more rows than a business can own is a data fault
+ * and the reply then flagged only part of it. Every other task still outstanding for those targets is
+ * cancelled, and each of their possibly live attempts is marked `superseded` — the signal the API's
+ * relay reads, speaking its closing line and ending the call on its next turn — while the task that
+ * produced the outcome is excluded twice over: by its own status and by `byTaskId`.
  */
 async function applyDoNotCall(
   tx: DbTx,
@@ -1147,13 +879,11 @@ async function applyDoNotCall(
 ): Promise<void> {
   const placeIds: string[] = [];
   const lodgingIds: string[] = [];
-
   if (target.kind === LODGING_VERIFICATION_KIND) {
     lodgingIds.push(target.id);
   } else {
     placeIds.push(target.id);
   }
-
   if (target.phone !== null) {
     // The guarded client narrows both reads to non-fixture rows outside `test` and `demo`, so a
     // production run can never block a fixture number (AAP 0.5.2). The bound is the rule constant's
@@ -1170,10 +900,8 @@ async function applyDoNotCall(
       orderBy: { id: 'asc' },
       take: DO_NOT_CALL_TARGET_LIMIT,
     });
-
     placeIds.push(...places.map((place) => place.id));
     lodgingIds.push(...lodgings.map((lodging) => lodging.id));
-
     if (
       places.length === DO_NOT_CALL_TARGET_LIMIT ||
       lodgings.length === DO_NOT_CALL_TARGET_LIMIT
@@ -1189,10 +917,8 @@ async function applyDoNotCall(
       );
     }
   }
-
   await tx.place.updateMany({ where: { id: { in: placeIds } }, data: { doNotCall: true } });
   await tx.lodging.updateMany({ where: { id: { in: lodgingIds } }, data: { doNotCall: true } });
-
   const outstanding = await tx.callTask.findMany({
     where: {
       id: { not: byTaskId },
@@ -1201,18 +927,14 @@ async function applyDoNotCall(
     },
     select: { id: true },
   });
-
   if (outstanding.length === 0) {
     return;
   }
-
   const cancelledIds = outstanding.map((task) => task.id);
-
   await tx.callTask.updateMany({
     where: { id: { in: cancelledIds } },
     data: { status: 'cancelled' },
   });
-
   await tx.callAttempt.updateMany({
     where: {
       callTaskId: { in: cancelledIds },
@@ -1221,27 +943,16 @@ async function applyDoNotCall(
     },
     data: { superseded: true },
   });
-
   ctx.logger.info(
     { event: 'call_do_not_call', taskId: byTaskId, cancelled: cancelledIds.length },
     'call_do_not_call',
   );
 }
 
-// ---------------------------------------------------------------------------------------------
-// The task write and the extraction readers (AAP 0.5.3, 0.5.6)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Applies one update to the task this result concerns, guarded on its status (AAP 0.5.3).
- *
- * The guard is the transaction's own invariant made explicit: the row is locked and was read as
- * `in_progress`, so nothing else can have moved it. `outcomeAt` travels with every status, dated by
- * the attempt's own end (AAP 0.5.7).
- *
- * @param tx - The caller's transaction, which holds the task lock.
- * @param taskId - The task to update.
- * @param data - The columns to write.
+ * Applies one update to the task this result concerns, guarded on its status (AAP 0.5.3). The guard is the
+ * transaction's own invariant made explicit — the row is locked and was read as `in_progress`, so nothing else can
+ * have moved it — and `outcomeAt` travels with every status, dated by the attempt's own end (AAP 0.5.7).
  */
 async function setTaskStatus(
   tx: DbTx,
@@ -1252,25 +963,22 @@ async function setTaskStatus(
 }
 
 /**
- * The items a menu call collected, or `null` when the payload is not a readable menu extraction.
- * A payload this refuses — an unexpected key, a negative amount, a currency that is not an ISO 4217
- * code — is treated as no extraction at all, which sends the task to the operator queue instead of
- * storing a price that cannot be traced to what was said.
+ * The items a menu call collected, or `null` when the payload is not a readable menu extraction. A payload this
+ * refuses — an unexpected key, a negative amount, a currency that is not an ISO 4217 code — is treated as no
+ * extraction at all, which sends the task to the operator queue instead of storing a price that cannot be traced to
+ * what was said.
  */
 function readMenuItems(extracted: unknown): readonly MenuPriceItem[] | null {
   const parsed = ExtractedFieldsSchema.safeParse(extracted);
-
   return parsed.success && parsed.data.kind === 'menu_prices' ? parsed.data.items : null;
 }
 
 /** The answer a stay call collected, or `null` when the payload is not a readable stay extraction. */
 function readStayAnswer(extracted: unknown): StayAnswer | null {
   const parsed = ExtractedFieldsSchema.safeParse(extracted);
-
   if (!parsed.success || parsed.data.kind !== 'lodging_stay_verification') {
     return null;
   }
-
   return { answer: parsed.data.answer, confirmed: parsed.data.confirmed };
 }
 
@@ -1287,7 +995,6 @@ function slotAlcoholic(slot: MenuPriceItem['slot']): boolean | null {
   if (slot === 'coffee') {
     return false;
   }
-
   return slot === 'beer' ? true : null;
 }
 

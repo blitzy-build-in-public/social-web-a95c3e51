@@ -36,25 +36,18 @@ export const TOTAL_BUDGET = 83_300;
 /** The share of its budget an area may run over (AAP 0.8.1). */
 const OVERRUN_SHARE = 0.1;
 
-/** How much of a file is read before deciding it is binary rather than text. */
 const BINARY_SNIFF_BYTES = 8_000;
 
-/** The byte that separates lines under the counting rule. */
 const LINE_FEED = 0x0a;
 
-/** Output cap of one `git` call, which returns the repository's whole file listing. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
-/** Columns 1-3 of both tables and of the budget table itself hold counts, and align on the right. */
 const RIGHT_ALIGNED: ReadonlySet<number> = new Set([1, 2, 3]);
 
 /**
  * The lines of a file's bytes: every line feed, plus the last line when the file does not end in
  * one. An empty file has none. Bytes rather than characters, so a CRLF file counts as `wc -l` counts
  * it.
- *
- * @param bytes The file's bytes.
- * @returns The file's physical line count.
  */
 export function countPhysicalLines(bytes: Uint8Array): number {
   if (bytes.byteLength === 0) {
@@ -101,14 +94,11 @@ export type AreaStatus = 'ok' | 'over' | 'over_limit';
 /** One area of the AAP 0.8.1 budget table. */
 export interface Area {
   readonly id: AreaId;
-  /** The area's wording in that table, used in the `docs/acceptance.md` record. */
   readonly label: string;
   readonly budget: number;
-  /** Whether a repository-relative path, with `/` separators, belongs to this area. */
   readonly matches: (filePath: string) => boolean;
 }
 
-/** Whether a path sits inside one of the directories. */
 function underAny(...directories: readonly string[]): (filePath: string) => boolean {
   return (filePath) => directories.some((directory) => filePath.startsWith(`${directory}/`));
 }
@@ -167,9 +157,6 @@ if (BUDGET_TOTAL !== TOTAL_BUDGET) {
 
 /**
  * The area a counted file belongs to.
- *
- * @param filePath Repository-relative path, with `/` separators.
- * @returns The owning area, or `null` when no area claims the path.
  */
 export function classify(filePath: string): AreaId | null {
   for (const area of AREAS) {
@@ -180,21 +167,15 @@ export function classify(filePath: string): AreaId | null {
   return null;
 }
 
-/** What one pass over the working tree found, before the areas are judged. */
 interface ScanResult {
-  /** Lines per area; an area whose paths hold no counted file is absent rather than zero. */
   readonly counts: Map<AreaId, number>;
-  /** Counted text files no area claims, in path order. */
   readonly unassigned: readonly string[];
-  /** Files dropped by {@link EXCLUDED_FILES} or {@link EXCLUDED_EXTENSIONS}. */
   readonly excluded: number;
   /** Files dropped because a NUL byte in their opening bytes proves they are not text. */
   readonly skippedBinary: number;
 }
 
-/** The counts of what the scan left out, reported beside the totals. */
 export interface ScanTotals {
-  /** Files excluded by name or by extension. */
   readonly excluded: number;
   /** Files skipped because they are not text. */
   readonly skippedBinary: number;
@@ -206,25 +187,19 @@ export interface AreaResult {
   readonly label: string;
   readonly lines: number;
   readonly budget: number;
-  /** `lines - budget`, signed, so a surplus reads as a negative delta. */
   readonly delta: number;
-  /** How far over budget the area is; 0 when it is within budget. */
   readonly overrun: number;
-  /** The 10% of its budget this area may run over. */
   readonly allowance: number;
   readonly status: AreaStatus;
 }
 
-/** The check's result: every area, the totals, and one line per failure. */
 export interface Report {
   readonly areas: readonly AreaResult[];
-  /** Total counted lines across the areas; files in no area are not part of it. */
   readonly total: number;
   readonly totalBudget: number;
   readonly ceiling: number;
   readonly skippedBinary: number;
   readonly excluded: number;
-  /** Counted files no area claims. */
   readonly unassigned: readonly string[];
   /** Empty when the check passes; `pnpm loc` exits 1 whenever it is not. */
   readonly failures: readonly string[];
@@ -248,17 +223,14 @@ function git(args: readonly string[], cwd: string): Promise<string> {
   });
 }
 
-/** Whether a thrown value is Node's "no such file or directory" error. */
 function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
-/** The message of a thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Whether bytes read like a binary file: a NUL byte anywhere in their opening bytes. */
 function looksBinary(bytes: Uint8Array): boolean {
   const limit = Math.min(bytes.byteLength, BINARY_SNIFF_BYTES);
   for (let index = 0; index < limit; index += 1) {
@@ -351,11 +323,6 @@ async function scan(repoRoot: string): Promise<ScanResult> {
  * has to be cut back and is `over_limit`. The total at or above {@link LINE_CEILING} fails on its
  * own, and so does a counted file in no area: its lines would sit outside every budget and bypass
  * the ceiling the check exists to enforce.
- *
- * @param counts Lines per area, as {@link scan} reports them.
- * @param unassigned Counted files no area claims.
- * @param scan What the scan excluded or skipped, carried into the report.
- * @returns The report, whose `failures` decide the exit code.
  */
 export function evaluate(
   counts: Map<AreaId, number>,
@@ -420,24 +387,20 @@ export function evaluate(
   };
 }
 
-/** Formats a count the way the budget table writes one: grouped in thousands. */
 function formatNumber(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/** Formats a signed delta: `+` when positive, `-` when negative, a bare `0` when level. */
 function formatDelta(value: number): string {
   return value > 0 ? `+${formatNumber(value)}` : formatNumber(value);
 }
 
-/** The width of each column: its widest cell, header included. */
 function columnWidths(header: readonly string[], rows: readonly (readonly string[])[]): number[] {
   return header.map((title, column) =>
     Math.max(title.length, ...rows.map((row) => (row[column] ?? '').length)),
   );
 }
 
-/** Pads every cell to its column's width; the right-aligned columns pad on the left. */
 function padCells(cells: readonly string[], widths: readonly number[]): string[] {
   return widths.map((width, column) => {
     const cell = cells[column] ?? '';
@@ -445,7 +408,6 @@ function padCells(cells: readonly string[], widths: readonly number[]): string[]
   });
 }
 
-/** The console table: fixed-width columns two spaces apart, with no trailing spaces. */
 function renderTable(header: readonly string[], rows: readonly (readonly string[])[]): string {
   const widths = columnWidths(header, rows);
   const line = (cells: readonly string[]): string => padCells(cells, widths).join('  ').trimEnd();
@@ -453,7 +415,6 @@ function renderTable(header: readonly string[], rows: readonly (readonly string[
   return [line(header), ...rows.map((row) => line(row))].join('\n');
 }
 
-/** A Markdown table padded as Prettier pads one, so a committed block cannot fail `format:check`. */
 function renderMarkdownTable(
   header: readonly string[],
   rows: readonly (readonly string[])[],
@@ -469,7 +430,6 @@ function renderMarkdownTable(
   return [line(header), divider, ...rows.map((row) => line(row))].join('\n');
 }
 
-/** The console report: the area table, the totals, what was left out, then each failure. */
 function render(report: Report): string {
   const rows = report.areas.map((area) => [
     area.id,
@@ -491,11 +451,9 @@ function render(report: Report): string {
 /** The document holding the recorded counts (AAP 0.12.2). */
 const DOC_PATH = 'docs/acceptance.md';
 
-/** The markers delimiting the `loc` block, the convention the circuit scripts' doc blocks use. */
 const DOC_BEGIN = '<!-- BEGIN loc -->';
 const DOC_END = '<!-- END loc -->';
 
-/** The `docs/acceptance.md` block: the area table, the totals, and the run's date and commit. */
 function renderDocBlock(report: Report, date: string, commit: string): string {
   const rows = report.areas.map((area) => [
     area.label,
@@ -523,7 +481,6 @@ function renderDocBlock(report: Report, date: string, commit: string): string {
   ].join('\n');
 }
 
-/** The document with the block replaced in place, or appended after a blank line. */
 function replaceBlock(document: string, block: string): string {
   const begin = document.indexOf(DOC_BEGIN);
   const end = document.indexOf(DOC_END);
@@ -536,7 +493,6 @@ function replaceBlock(document: string, block: string): string {
   return `${document.slice(0, begin)}${block}${document.slice(end + DOC_END.length)}`;
 }
 
-/** Writes the block into `docs/acceptance.md`, creating the document when it is absent. */
 async function writeDocBlock(repoRoot: string, block: string): Promise<boolean> {
   const absolute = path.join(repoRoot, DOC_PATH);
 
@@ -558,7 +514,6 @@ async function writeDocBlock(repoRoot: string, block: string): Promise<boolean> 
   return true;
 }
 
-/** Parses the flags; an argument that is not one of them is a usage error. */
 function parseOptions(argv: readonly string[]): { json: boolean; write: boolean } {
   let json = false;
   let write = false;
@@ -586,9 +541,6 @@ function parseOptions(argv: readonly string[]): { json: boolean; write: boolean 
 
 /**
  * Runs the check.
- *
- * @param argv The arguments after the script path.
- * @returns The exit code: 0 when the check passes, 1 when it fails, 2 for a usage error.
  */
 async function main(argv: readonly string[]): Promise<number> {
   let options: { json: boolean; write: boolean };

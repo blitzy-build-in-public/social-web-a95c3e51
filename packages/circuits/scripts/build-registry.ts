@@ -4,14 +4,14 @@
  * `../src/registry/merkle.ts`, and writes the committed `config/registry/{production,test}.json`
  * that the circuit proves membership against and the client reads its leaves from.
  *
- * Production takes the `verified` issuers and never `tablemate-test`, whatever status that record
- * declares; test adds that record, which the DKIM-signed fixture emails are proved against. An
- * `awaiting_samples` or `unverified` record records no leaf, so Booking.com and Airbnb stay out of
- * both files until their samples pass `pnpm circuits:samples`.
+ * Production takes the `verified` issuers and never `tablemate-test`, whatever status that record declares;
+ * test adds that record, which the DKIM-signed fixture emails are proved against. An `awaiting_samples` or
+ * `unverified` record records no leaf, so Booking.com and Airbnb stay out of both files until their samples
+ * pass `pnpm circuits:samples`.
  *
- * Both files are deterministic — no timestamp, and no ordering the configuration does not fix — so a
- * rerun is byte-identical, which `--check` and `test/registry.test.ts` rest on and which makes adding
- * an issuer or a city alias an edit to `config/` plus this rebuild, with no circuit change.
+ * Both files are deterministic — no timestamp, and no ordering the configuration does not fix — so a rerun is
+ * byte-identical, which `--check` and `test/registry.test.ts` rest on and which makes adding an issuer or a
+ * city alias an edit to `config/` plus this rebuild, with no circuit change.
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -83,19 +83,16 @@ export async function loadIssuers(): Promise<LoadedIssuer[]> {
   const names = (await readdir(ISSUERS_DIR)).filter((name) => name.endsWith('.json')).sort();
   const loaded: LoadedIssuer[] = [];
   const seen = new Map<number, string>();
-
   for (const name of names) {
     const relativePath = `${ISSUERS_DIR_RELATIVE}/${name}`;
     const parsed = IssuerConfig.safeParse(
       await readJson(path.join(ISSUERS_DIR, name), relativePath),
     );
-
     if (!parsed.success) {
       throw new Error(
         `${relativePath}: invalid issuer config at ${issuePaths(parsed.error.issues)}`,
       );
     }
-
     const previous = seen.get(parsed.data.issuerId);
     if (previous !== undefined) {
       throw new Error(
@@ -103,10 +100,8 @@ export async function loadIssuers(): Promise<LoadedIssuer[]> {
       );
     }
     seen.set(parsed.data.issuerId, relativePath);
-
     loaded.push({ stem: name.slice(0, -'.json'.length), path: relativePath, config: parsed.data });
   }
-
   return loaded;
 }
 
@@ -121,11 +116,9 @@ export async function loadIssuers(): Promise<LoadedIssuer[]> {
 export async function loadCities(): Promise<CitiesFile> {
   const relativePath = 'config/cities.json';
   const parsed = CitiesFile.safeParse(await readJson(CITIES_FILE, relativePath));
-
   if (!parsed.success) {
     throw new Error(`${relativePath}: invalid city config at ${issuePaths(parsed.error.issues)}`);
   }
-
   return parsed.data;
 }
 
@@ -146,22 +139,18 @@ export async function buildRegistries(
   sources: { readonly testIssuer?: IssuerConfig } = {},
 ): Promise<{ production: RegistryFile; test: RegistryFile }> {
   const [issuers, cities] = await Promise.all([loadIssuers(), loadCities()]);
-
   const record =
     sources.testIssuer ?? issuers.find((issuer) => issuer.stem === TEST_ISSUER_STEM)?.config;
   if (record === undefined) {
     throw new Error(`config/issuers/${TEST_ISSUER_STEM}.json: the test issuer record is missing`);
   }
-
   // Only a `verified` record records a production leaf, and the test issuer never records one there.
   const productionIssuers = issuers
     .filter((issuer) => issuer.stem !== TEST_ISSUER_STEM)
     .filter((issuer) => issuer.config.verificationStatus === 'verified')
     .map((issuer) => withUsableKeys(issuer.config));
-
   const build = (name: RegistryFile['name'], records: readonly IssuerConfig[]): RegistryFile =>
     RegistryFile.parse(buildRegistry({ name, issuers: records, cities: cities.cities }).registry);
-
   return {
     production: build('production', productionIssuers),
     test: build('test', [...productionIssuers, withUsableKeys(record)]),
@@ -186,23 +175,19 @@ export async function writeRegistries(
 ): Promise<{ production: RegistryFile; test: RegistryFile; changed: string[] }> {
   const { production, test } = await buildRegistries();
   const changed: string[] = [];
-
   for (const registry of [production, test]) {
     const relativePath = registryPath(registry.name);
     const absolutePath = path.join(REPO_ROOT, relativePath);
     const contents = `${JSON.stringify(registry, null, 2)}\n`;
-
     if (await holds(absolutePath, contents)) {
       continue;
     }
-
     changed.push(relativePath);
     if (options.check !== true) {
       await mkdir(path.dirname(absolutePath), { recursive: true });
       await writeFile(absolutePath, contents, 'utf8');
     }
   }
-
   return { production, test, changed };
 }
 
@@ -227,7 +212,6 @@ async function readJson(absolutePath: string, relativePath: string): Promise<unk
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${relativePath}: cannot be read (${reason})`);
   });
-
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -272,20 +256,16 @@ async function main(): Promise<void> {
     const args = process.argv.slice(2).filter((argument) => argument !== '--');
     const check = args.includes('--check');
     const unknown = args.filter((argument) => argument !== '--check');
-
     if (unknown.length > 0) {
       process.stderr.write('usage: pnpm circuits:registry [--check]\n');
       throw new Error(`unknown argument ${unknown.join(' ')}`);
     }
-
     const { production, test, changed } = await writeRegistries({ check });
-
     if (check) {
       if (changed.length === 0) {
         process.stdout.write('registry up to date\n');
         return;
       }
-
       for (const file of changed) {
         process.stdout.write(
           `${file} does not match its configuration; run pnpm circuits:registry\n`,
@@ -294,7 +274,6 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-
     for (const registry of [production, test]) {
       const state = changed.includes(registryPath(registry.name)) ? 'written' : 'unchanged';
       process.stdout.write(

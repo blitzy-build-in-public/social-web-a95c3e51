@@ -1,22 +1,18 @@
 /**
- * The error envelope every failing route answers with, and the typed error the domain throws into
- * it (AAP 0.5.4, AAP 0.11.1).
+ * The error envelope every failing route answers with, and the typed error the domain throws into it
+ * (AAP 0.5.4, 0.11.1).
  *
- * `registerErrorHandling` is called on the root Fastify instance, so its handler covers every
- * encapsulated module: a child instance inherits the root error handler unless it sets its own, and
- * no module does. The order of the checks inside that handler is load-bearing, and each step below
- * names what it must precede.
+ * `registerErrorHandling` is called on the root Fastify instance, so its handler covers every encapsulated
+ * module: a child instance inherits the root error handler unless it sets its own, and no module does. The order
+ * of the checks inside that handler is load-bearing, and each step below names what it must precede.
  *
- * Nothing about a failure leaves the process beyond the envelope's code, its message and, for an
- * unexpected error, the request id: no stack trace, no request body, no header, no token, no email
- * address, no coordinate, no message body (AAP 0.11.1). The one place a failure is recorded is the
- * 5xx log line, and what reaches pino there is the narrowed record {@link loggedFailure} builds — a
- * name, the error's own short code and a message passed through the shared `sanitizeLogMessage`
- * (`packages/server-core/src/logger.ts`, the backstop the process entry points and the seed use too)
- * — never the thrown object, whose message and stack pino writes as strings that key-based redaction
- * cannot rewrite (AAP 0.3.2).
+ * Nothing about a failure leaves the process beyond the envelope's code, its message and, for an unexpected
+ * error, the request id: no stack trace, no request body, no header, no token, no email address, no coordinate,
+ * no message body (AAP 0.11.1). The one place a failure is recorded is the 5xx log line, and what reaches pino
+ * there is the narrowed record {@link loggedFailure} builds — a name, the error's own short code and a message
+ * passed through the shared `sanitizeLogMessage`, never the thrown object, whose message and stack pino writes as
+ * strings that key-based redaction cannot rewrite (AAP 0.3.2).
  */
-
 import {
   hasZodFastifySchemaValidationErrors,
   isResponseSerializationError,
@@ -32,9 +28,7 @@ import {
 
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 
-// Type-only, and taken from the module that builds the instance rather than from this file's
-// dependency whitelist: it is the one declaration of the app's type in the plan, it is erased at
-// compile time, and it reads nothing from `app.ts` at runtime.
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**
@@ -132,10 +126,8 @@ function internalFailureMessage(requestId: string): string {
 export class AppError extends Error {
   /** The shared error code, answered as `error.code`. */
   readonly code: ErrorCode;
-
   /** The status the code is answered with, from the shared `ERROR_STATUS`. */
   readonly httpStatus: number;
-
   constructor(code: ErrorCode, message?: string, options?: { cause?: unknown }) {
     super(message ?? defaultFailureMessage(code), options);
     this.name = 'AppError';
@@ -145,7 +137,6 @@ export class AppError extends Error {
     // one process (a test double, an ESM/CJS duplicate), which is also why `isAppError` duck-types.
     Object.setPrototypeOf(this, new.target.prototype);
   }
-
   /**
    * The same number as {@link AppError.httpStatus}, under the name Fastify and `@fastify/rate-limit`
    * read: a thrown error's `statusCode` decides the answer when nothing else does.
@@ -273,7 +264,6 @@ function isLoggableCause(value: unknown): value is object {
 export function registerErrorHandling(app: App): void {
   app.setErrorHandler((error: unknown, request, reply) => {
     const failure = classifyFailure(error, request);
-
     if (ERROR_STATUS[failure.code] >= SERVER_FAULT_STATUS) {
       // Our own defect, logged with its cause and only there. A response that failed its own schema
       // is a defect with a name of its own, so an operator can tell it from an unexpected throw.
@@ -290,10 +280,8 @@ export function registerErrorHandling(app: App): void {
       // deliberately not logged — it can hold the submitted body at this level.
       request.log.info({ code: failure.code }, 'request_rejected');
     }
-
     sendEnvelope(reply, failure.code, failure.message);
   });
-
   // A route that does not exist answers the same envelope a route's own 404 does, so a client parses
   // one shape for every failure (AAP 0.5.4).
   app.setNotFoundHandler((_request, reply) => {
@@ -330,7 +318,6 @@ function classifyFailure(error: unknown, request: FastifyRequest): Failure {
   //    `invalid_field`. First, so an `AppError`'s code and message always win over any shape it
   //    happens to share.
   if (isAppError(error)) return { code: error.code, message: error.message };
-
   // 2. A request that failed its route's schema, before the general 4xx rule below, because such a
   //    failure carries status 400 and the route's own code must still win.
   if (hasZodFastifySchemaValidationErrors(error)) {
@@ -339,10 +326,8 @@ function classifyFailure(error: unknown, request: FastifyRequest): Failure {
       message: schemaFailureMessage(error),
     };
   }
-
   const code = fastifyErrorCode(error);
   const status = fastifyStatus(error);
-
   // 3. A body past the route's limit, before the body-parse rule that its code also matches.
   //    `PUT /me/profile` answers `photo_too_large` here (AAP 0.5.4).
   if (code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
@@ -351,7 +336,6 @@ function classifyFailure(error: unknown, request: FastifyRequest): Failure {
       message: 'Request body too large.',
     };
   }
-
   // 4. Every other client mistake: a body the parser refused or a media type it does not handle, a
   //    non-Zod schema failure, a malformed URL, a `SyntaxError` from a body parser, or an error a
   //    plugin already marked 4xx. The two codes whose meaning the status alone gets wrong are read
@@ -361,7 +345,6 @@ function classifyFailure(error: unknown, request: FastifyRequest): Failure {
     if (status === 404) return { code: 'not_found', message: 'Route not found.' };
     return { code: DEFAULT_REQUEST_ERROR, message: 'Invalid request.' };
   }
-
   // 5. Nothing above fits: a defect on our side. The caller learns the request id and nothing else.
   return { code: 'internal_error', message: internalFailureMessage(request.id) };
 }

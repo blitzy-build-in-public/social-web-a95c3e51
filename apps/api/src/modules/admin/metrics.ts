@@ -2,53 +2,20 @@
  * The operator dashboard's metrics (AAP 0.5.1 `admin/metrics.ts`, 0.5.4 `GET /admin/metrics`,
  * 0.5.7 "Metric definitions") and the language-model re-enable of AAP 0.5.6.
  *
- * One call of {@link computeMetrics} answers the whole dashboard — the headline completion rate the
- * pilot is judged by, the pilot's two reference lines, the deposit funnel, the lifecycle counts, the
- * live per-city figures, the prices and suggestions panel, the calls and spend panel and the
- * lodging-claim measures — assembled field by field into {@link MetricsDto}. `signups` is last on
- * purpose: the hypothesis is tested on completion, and a signup count is never a headline (0.1.1).
- *
  * Every meetup, funnel and count figure comes from one aggregate over `meetup` joined to `venue`,
- * ranged on `meetup.starts_at` (AAP 0.5.7). No figure is counted twice: the variant filter reads
- * `meetup.variant_pairing` alone, which fixes one pairing per meetup. Completion reads `lockedAt`
- * and `bothCheckedInAt` and never `status`, so a later hold loss, `no_fault` resolution or
+ * ranged on `meetup.starts_at` (AAP 0.5.7), and no figure is counted twice. Completion reads
+ * `lockedAt` and `bothCheckedInAt` and never `status`, so a later hold loss, `no_fault` resolution or
  * late-cancel compensation cannot rewrite the rate.
  *
- * The dashboard is read-only: no transaction, no row lock, and not one of the state-writing reads, so
- * the account-deletion write fence does not apply (AAP 0.5.3). Time arrives as the `now` argument —
- * the route passes `request.receivedAt` — never from the process or SQL `now()`, so a test can cross
- * the 45-minute settlement window. The check-in window end is therefore computed in JavaScript as
- * `now - 45 min`, and no interval arithmetic binds a parameter. The file's one write is
- * {@link reEnableLanguageModel}, which reaches the shared suspension flag and no table at all.
- *
- * Three measures are live rather than range-bound, because their tables carry no meetup timestamp:
- * `activeProofsByCity` counts the proofs valid at `now`, and both calls panels are current
- * snapshots. The lodging-claim measures and signups come from the unlinked `account_created`,
- * `lodging_claim_submitted` and `lodging_claim_resolved` events, which survive account erasure
- * (AAP 0.5.2), so neither figure moves when a user is deleted. Places opened reads the same table
- * over the same range and shares one aggregate with signups, so the two events cost one statement
- * rather than two.
- *
- * Decisions taken where the AAP leaves a choice, each restated at its code: the composition root's
- * services are declared here as {@link AdminMetricsServices} rather than imported from `app.ts`,
- * which is outside this file's dependency list and which the narrowed shape satisfies structurally;
- * `meetupsByVenue` counts committed (locked) meetups; `neighborhoodsCoveredShare` is null when the
- * city has no active partner venue and is otherwise the share whose 2 km neighbourhood holds
- * {@link NEIGHBORHOOD_COVERAGE_PLACES} freshly priced places; `placesOpened` ignores the variant
- * filter, because a client-reported event carries no pairing; `signups` is global by design —
- * neither filter reaches it, because `account_created` is emitted with no city and is not a
- * deposit-funnel event, so its row carries no `city_id` and no `variant` — and {@link MetricsDto}
- * labels that for the operator; and `medianResolveSeconds` is PostgreSQL's `percentile_cont`
- * (AAP 0.5.7), with {@link medianOf} stating the same rule in one place for tests.
+ * The dashboard is read-only, and time arrives as the `now` argument — the route passes
+ * `request.receivedAt` — never from the process or SQL `now()`, so a test can cross the 45-minute
+ * settlement window. Three measures are live rather than range-bound because their tables carry no
+ * meetup timestamp, and the unlinked events the claim measures and signups read survive account
+ * erasure (AAP 0.5.2). `signups` is last on purpose: the hypothesis is tested on completion, and a
+ * signup count is never a headline (0.1.1).
  *
  * Nothing here returns a user id, a handle, an email address, a coordinate or a row that was not
- * named field by field, and no log line carries a row, a reason or any other value: the re-enable's
- * success line names the acting operator's id, and every failure line carries the failure's own short
- * code (AAP 0.11.1).
- *
- * @see AAP 0.5.2 for the `AnalyticsEvent` fields and the caps, 0.5.3 for the statuses and forfeit
- *   reasons, 0.5.6 for the calls and spend panel, the suspension flag and the operator's re-enable,
- *   0.8.1 for this file.
+ * named field by field, and no log line carries a row, a reason or any other value (AAP 0.11.1).
  */
 
 import { Prisma, SQL_IDENTIFIER, fixturePredicate, geoColumn, withinMeters } from '@tablemate/db';
@@ -75,10 +42,6 @@ import type {
 } from '@tablemate/shared';
 
 import { AppError } from '../../plugins/errors.ts';
-
-// ---------------------------------------------------------------------------------------------
-// Services (AAP 0.5.1)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * What {@link computeMetrics} needs from the API's composition root: a narrowed declaration rather
@@ -124,9 +87,7 @@ export type AdminMetricsEnv = Pick<
 
 /** The two counts the spend panel needs, or the fail-closed reading when the flag cannot be read. */
 interface SuspensionReading {
-  /** Whether language-model use is suspended in every city. */
   readonly suspended: boolean;
-  /** How many count mismatches have been recorded since the counter was last cleared. */
   readonly mismatches: number;
 }
 
@@ -138,12 +99,10 @@ function suspensionStoreOf(services: AdminMetricsServices): SuspensionStore | nu
   if (services.suspension !== undefined && services.suspension !== null) {
     return services.suspension;
   }
-
   const redis = services.redis;
   if (redis === undefined || redis === null) {
     return null;
   }
-
   const client = 'client' in redis ? redis.client : redis;
   return client === undefined || client === null ? null : createRedisSuspensionStore(client);
 }
@@ -168,12 +127,10 @@ function errorCodeOf(error: unknown): string {
  */
 async function readSuspension(services: AdminMetricsServices): Promise<SuspensionReading> {
   const store = suspensionStoreOf(services);
-
   if (store === null) {
     services.logger.warn({ event: 'metrics_suspension_unreadable', code: 'no_store' });
     return { suspended: true, mismatches: 0 };
   }
-
   try {
     const [suspended, mismatches] = await Promise.all([store.isSuspended(), store.mismatchCount()]);
     return { suspended, mismatches };
@@ -200,22 +157,14 @@ function suspensionClearFailed(services: AdminMetricsServices, code: string): Ap
  * Re-enable language-model use after a mismatch suspended it (AAP 0.5.6): the operator surface the
  * clause "until an operator re-enables it" needs. `SuspensionStore.clear` deletes the `llm:suspended`
  * flag `api` and `workers` share, so menu ingestion and call dispatch resume in every city at once.
- *
- * The store is resolved exactly as {@link readSuspension} resolves it, so both routes read one
- * composition root rather than each building its own view of it. The cumulative `llm:count_mismatches`
- * counter is deliberately left standing: it is the evidence the spend panel shows and the operator
- * establishes the cause from, and only the flag is the suspension.
+ * The cumulative `llm:count_mismatches` counter is deliberately left standing: it is the evidence the
+ * spend panel shows and the operator establishes the cause from, and only the flag is the suspension.
  *
  * A store that is absent, a clear that fails and a read that fails are one
  * `llm_suspension_clear_failed` warning plus an `AppError('service_unavailable')` refusal, so a Redis
  * outage reads as a refusal the operator can act on rather than as an internal failure. The clear is
  * idempotent: a flag that is already absent answers the same way, with nothing to undo.
  *
- * @param services - The app's services; only the suspension flag or Redis connection and the logger
- *   are read (see {@link AdminMetricsServices}).
- * @param operatorId - The acting operator, named on the one success line so the re-enable is
- *   attributable.
- * @returns The flag and the mismatch count read back after the clear (see {@link AdminLlmSuspension}).
  * @throws AppError `service_unavailable` (503) when the flag's store is absent or cannot be used.
  */
 export async function reEnableLanguageModel(
@@ -223,27 +172,19 @@ export async function reEnableLanguageModel(
   operatorId: string,
 ): Promise<AdminLlmSuspension> {
   const store = suspensionStoreOf(services);
-
   if (store === null) {
     throw suspensionClearFailed(services, 'no_store');
   }
-
   try {
     await store.clear();
     const [suspended, mismatches] = await Promise.all([store.isSuspended(), store.mismatchCount()]);
-
     // One line, the event and the acting operator, and nothing else (AAP 0.11.1).
     services.logger.info({ event: 'llm_suspension_cleared', operatorId });
-
     return { suspended, mismatches };
   } catch (error) {
     throw suspensionClearFailed(services, errorCodeOf(error));
   }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Pure helpers (AAP 0.5.4, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The half-open UTC instant range a dashboard query asks for (AAP 0.5.4): `from` at 00:00:00Z up to
@@ -251,9 +192,6 @@ export async function reEnableLanguageModel(
  * `>= start AND < endExclusive`. Both endpoints are UTC, because the AAP ranges on
  * `Meetup.startsAt`, which is stored in UTC (AAP 0.11.1).
  *
- * @param from - The first day of the range, `YYYY-MM-DD`.
- * @param to - The last day of the range, inclusive.
- * @returns The two instants to bind.
  * @throws AppError `invalid_field` when either value is not a date, or when `from` is later than
  *   `to`: a reversed range has no reading, and a silently empty dashboard would look like a real
  *   zero. `MetricsQuery` refuses it first; this is the same rule for direct callers.
@@ -261,15 +199,12 @@ export async function reEnableLanguageModel(
 export function utcRange(from: string, to: string): { start: Date; endExclusive: Date } {
   const start = new Date(`${from}T00:00:00.000Z`);
   const lastDay = new Date(`${to}T00:00:00.000Z`);
-
   if (Number.isNaN(start.getTime()) || Number.isNaN(lastDay.getTime())) {
     throw new AppError('invalid_field', '`from` and `to` must be calendar dates.');
   }
-
   if (from > to) {
     throw new AppError('invalid_field', '`from` must not be later than `to`.');
   }
-
   return { start, endExclusive: new Date(lastDay.getTime() + DAY_MS) };
 }
 
@@ -277,10 +212,6 @@ export function utcRange(from: string, to: string): { start: Date; endExclusive:
  * The headline completion rate: meetups both attendees checked in for, over meetups that reached two
  * locked holds (AAP 0.5.7). `null` rather than 0 when nothing was locked, so an empty period reads
  * as "no data" and not as a pilot that failed its hypothesis.
- *
- * @param locked - Meetups whose `lockedAt` is set.
- * @param both - Meetups with a pass check-in from both attendees.
- * @returns The rate in 0..1, or `null` when `locked` is 0.
  */
 export function completionRate(locked: number, both: number): number | null {
   return locked === 0 ? null : both / locked;
@@ -291,19 +222,14 @@ export function completionRate(locked: number, both: number): number | null {
  * mean of the two middle values, with the list left untouched. The dashboard computes the same
  * figure in PostgreSQL with `percentile_cont`, which keeps it from transferring every value; this is
  * that rule in one place, for tests and for callers that hold the values already.
- *
- * @param values - The values to take the median of; an empty list has none.
- * @returns The median, or `null` when `values` is empty.
  */
 export function medianOf(values: readonly number[]): number | null {
   if (values.length === 0) {
     return null;
   }
-
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
   const upper = sorted[middle] ?? 0;
-
   return sorted.length % 2 === 1 ? upper : ((sorted[middle - 1] ?? 0) + upper) / 2;
 }
 
@@ -322,10 +248,6 @@ function numberOf(value: unknown): number {
   }
   return Prisma.Decimal.isDecimal(value) ? value.toNumber() : 0;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Constants (AAP 0.5.2, 0.5.4, 0.5.6, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /** The `AnalyticsEventName` members the unlinked measures read (AAP 0.5.2, 0.5.7). */
 const ANALYTICS_NAMES = {
@@ -356,7 +278,6 @@ const LATEST_ATTEMPT_OUTCOME = Prisma.sql`(
      ORDER BY "a"."started_at" DESC, "a"."id" DESC
      LIMIT 1
   )`;
-
 /**
  * The calls-by-outcome table (AAP 0.5.7), keyed by `CallAttemptOutcome` so a status the shared enum
  * gains cannot be left out of the panel. Every filter tests a distinct status, so a task is counted
@@ -371,7 +292,6 @@ const CALL_OUTCOME_MEASURES = {
   no_answer: Prisma.sql`"t"."status"::text = 'queued' AND ${LATEST_ATTEMPT_OUTCOME} = 'no_answer'`,
 } satisfies Record<CallAttemptOutcome, Prisma.Sql>;
 
-/** The `count(*)` select items of that table, aliased by outcome name. */
 const CALL_OUTCOME_SELECT = Prisma.join(
   Object.entries(CALL_OUTCOME_MEASURES).map(
     ([outcome, condition]) =>
@@ -392,7 +312,6 @@ const CLAIM_OUTCOME_MEASURES = {
   unreachable: Prisma.sql`"e"."props"->>'outcome' = 'unreachable'`,
 } satisfies Record<OperatorClaimOutcome, Prisma.Sql>;
 
-/** The three `count(*)` select items of {@link CLAIM_OUTCOME_MEASURES}. */
 const CLAIM_OUTCOME_SELECT = Prisma.join(
   Object.entries(CLAIM_OUTCOME_MEASURES).map(
     ([outcome, condition]) =>
@@ -406,11 +325,6 @@ const PLACE_CATEGORY_LIST = Prisma.join(
   PlaceCategory.options.map((category) => Prisma.sql`${category}`),
 );
 
-// ---------------------------------------------------------------------------------------------
-// Row shapes (AAP 0.5.2)
-// ---------------------------------------------------------------------------------------------
-
-/** The one row the meetup aggregate returns: the completion, funnel and lifecycle measures. */
 type MeetupMeasureRow = {
   readonly locked_meetups: number;
   readonly both_checked_in: number;
@@ -425,36 +339,28 @@ type MeetupMeasureRow = {
   readonly suggestions_viewed: number;
 };
 
-/** A statement that answers one count, such as the dispute count. */
 type CountRow = { readonly count: number };
 
-/** One `city_id` group of a per-city breakdown. */
 type CityCountRow = { readonly city_id: string; readonly count: number };
 
-/** One venue group of {@link MetricsDto.meetupsByVenue}. */
 type VenueCountRow = {
   readonly venue_id: string;
   readonly venue_name: string;
   readonly count: number;
 };
 
-/** The partner-venue neighbourhood aggregate: how many venues there are, and how many are covered. */
 type CoverageRow = { readonly venues: number; readonly covered: number };
 
-/** The calls-by-outcome row, keyed by outcome because that is how its items are aliased. */
 type CallOutcomeRow = Record<CallAttemptOutcome, number>;
 
-/** The current call-task snapshot: the three lifecycle counters, range-free by design. */
 type CallLifecycleRow = {
   readonly queued_without_outcome: number;
   readonly in_progress: number;
   readonly cancelled: number;
 };
 
-/** One `blocked_reason` group of the operator queue. */
 type BlockedReasonRow = { readonly reason: BlockedReason; readonly count: number };
 
-/** One `call_budget_day` row: a city's calls and language-model spend on one local day. */
 type BudgetDayRow = {
   readonly city_id: string;
   readonly local_date: Date;
@@ -471,15 +377,10 @@ type LodgingClaimRow = {
   readonly median: unknown;
 };
 
-/** The two measures one aggregate over the unlinked events answers (AAP 0.5.7). */
 type EventCountsRow = {
   readonly signups: number;
   readonly opened: number;
 };
-
-// ---------------------------------------------------------------------------------------------
-// Fragments (AAP 0.11.2: parameterized `Prisma.sql` only)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * A qualified, double-quoted column identifier built from two code constants. Both parts are
@@ -520,7 +421,6 @@ function freshPriceCondition(
 ): Prisma.Sql {
   const onlineCutoff = new Date(now.getTime() - FRESHNESS_ONLINE_DAYS * DAY_MS);
   const otherCutoff = new Date(now.getTime() - FRESHNESS_PHONE_OPERATOR_DAYS * DAY_MS);
-
   return Prisma.sql`
     ${columnOf(priceAlias, 'review_status')} = 'approved'
     AND ((${columnOf(priceAlias, 'source')}::text = 'online_menu' AND ${columnOf(priceAlias, 'captured_at')} >= ${onlineCutoff})
@@ -548,17 +448,13 @@ function meetupWhere(
     Prisma.sql`"m"."starts_at" >= ${start}`,
     Prisma.sql`"m"."starts_at" < ${endExclusive}`,
   ];
-
   if (query.cityId !== undefined) {
     parts.push(Prisma.sql`"v"."city_id" = ${query.cityId}`);
   }
-
   if (query.variant !== undefined) {
     parts.push(Prisma.sql`"m"."variant_pairing"::text = ${query.variant}`);
   }
-
   parts.push(fixturePredicate(env.APP_ENV, 'v'));
-
   return Prisma.join(parts, ' AND ');
 }
 
@@ -573,7 +469,6 @@ function meetupWhere(
 function callTaskJoins(env: AdminMetricsEnv): Prisma.Sql {
   const place = fixturePredicate(env.APP_ENV, 'pl');
   const lodging = fixturePredicate(env.APP_ENV, 'lo');
-
   return Prisma.sql`
     LEFT JOIN "place" AS "pl"
            ON "pl"."id" = "t"."place_id" AND ${place}
@@ -582,7 +477,6 @@ function callTaskJoins(env: AdminMetricsEnv): Prisma.Sql {
   `;
 }
 
-/** The `AND …` city filter of a call-task statement, over `COALESCE(pl.city_id, lo.city_id)`. */
 function callTaskCity(cityId: string | undefined): Prisma.Sql {
   return cityId === undefined
     ? Prisma.empty
@@ -601,10 +495,6 @@ function countOf<T extends object, K extends keyof T>(row: T | undefined, key: K
 function dateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Statements (AAP 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The meetup aggregate: the completion, funnel and lifecycle measures in one indexed pass over
@@ -657,7 +547,6 @@ function disputesStatement(where: Prisma.Sql): Prisma.Sql {
 function venuesStatement(where: Prisma.Sql): Prisma.Sql {
   // A code constant, not caller input: `LIMIT` refuses a bound parameter of unknown type.
   const limit = Prisma.raw(String(MEETUPS_BY_VENUE_LIMIT));
-
   return Prisma.sql`
     SELECT "v"."id"::text AS "venue_id", "v"."name" AS "venue_name", count(*)::int AS "count"
       FROM "meetup" AS "m"
@@ -726,7 +615,6 @@ function neighborhoodsStatement(
     geoColumn('v', 'venue'),
     SUGGESTION_RADIUS_METERS,
   );
-
   return Prisma.sql`
     SELECT count(*)::int AS "venues",
            count(*) FILTER (WHERE "nearby" >= ${target})::int AS "covered"
@@ -860,22 +748,6 @@ function lodgingClaimsStatement(
 /**
  * The two unlinked event measures over one range (AAP 0.5.7): signups, from `account_created`, and
  * how often a suggested place was opened, from `suggestion_place_opened`.
- *
- * One statement answers both, because the two differ only in the event name they count and in the
- * city filter the second one carries: run separately, they read the same rows of the same table
- * twice. The range runs on `occurred_at`, the column the events carry, not on a meetup's
- * `starts_at`, and reaches both measures; each measure keeps its own predicate inside its own
- * `FILTER`, which is this file's shape for an aggregate that reads several event names.
- *
- * Every filter that used to narrow one statement now narrows one measure. The city filter reaches
- * places opened alone: `signups` is the dashboard's one global figure, labelled as such in
- * {@link MetricsDto} for the operator, because an account is created before any city is claimed or
- * any meetup exists, so a signup carries no city and a city predicate would answer 0 for every city
- * filter rather than count those rows. Neither measure takes the variant filter: a
- * `suggestion_place_opened` is reported by the client through `POST /events` and an
- * `account_created` is emitted at sign-up, so neither event carries a meetup pairing, and filtering
- * on one would silently drop every row. Signups are a secondary measure and never the headline
- * (AAP 0.1.1).
  */
 function signupsAndPlacesOpenedStatement(
   start: Date,
@@ -891,14 +763,9 @@ function signupsAndPlacesOpenedStatement(
   `;
 }
 
-/** A per-city breakdown in the DTO's own shape (AAP 0.5.4). */
 function cityCounts(rows: readonly CityCountRow[]): MetricsDto['activeProofsByCity'] {
   return rows.map((row) => ({ cityId: row.city_id, count: numberOf(row.count) }));
 }
-
-// ---------------------------------------------------------------------------------------------
-// The dashboard (AAP 0.5.4, 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The operator dashboard for one range, city and variant pairing (AAP 0.5.4, 0.5.7).
@@ -908,13 +775,6 @@ function cityCounts(rows: readonly CityCountRow[]): MetricsDto['activeProofsByCi
  * read is the language-model suspension flag, which fails closed to "suspended" when it cannot be
  * read.
  *
- * @param services - The app's services: the database, the configuration, the logger and the
- *   suspension flag or Redis connection (see {@link AdminMetricsServices}).
- * @param query - The validated query string; an unknown `cityId` is not an error and simply yields
- *   zero figures.
- * @param now - The instant every live measure and both freshness cutoffs are measured from; the
- *   route passes `request.receivedAt` (AAP 0.11.1).
- * @returns The dashboard, field by field, in the shape of {@link MetricsDto}.
  * @throws AppError `invalid_field` when the range is reversed or not a pair of dates.
  */
 export async function computeMetrics(
@@ -926,7 +786,6 @@ export async function computeMetrics(
   const windowEnd = new Date(now.getTime() - CHECK_IN_CLOSES_AFTER_MINUTES * MINUTE_MS);
   const where = meetupWhere(services.env, query, start, endExclusive);
   const cityId = query.cityId;
-
   const [
     meetups,
     disputes,
@@ -960,37 +819,31 @@ export async function computeMetrics(
     ),
     readSuspension(services),
   ]);
-
   const meetupRow = meetups[0];
   const lifecycleRow = lifecycle[0];
   const outcomeRow = outcomes[0];
   const claimsRow = claims[0];
-
   const lockedMeetups = countOf(meetupRow, 'locked_meetups');
   const bothCheckedIn = countOf(meetupRow, 'both_checked_in');
   const partnerVenues = countOf(coverage[0], 'venues');
   const coveredVenues = countOf(coverage[0], 'covered');
-
   const blockedCounts = new Map(blocked.map((row) => [row.reason, numberOf(row.count)]));
   const medianSeconds =
     claimsRow === undefined || claimsRow.median === null
       ? null
       : Math.round(numberOf(claimsRow.median));
-
   const perDay: MetricsDto['calls']['perDay'] = budgets.map((row) => ({
     cityId: row.city_id,
     localDate: dateOnly(row.local_date),
     calls: numberOf(row.calls),
     cap: services.env.CAP_CALLS_PER_CITY_DAY,
   }));
-
   const spend: MetricsDto['calls']['spend'] = budgets.map((row) => ({
     cityId: row.city_id,
     localDate: dateOnly(row.local_date),
     spendMicros: numberOf(row.llm_spend_micros),
     capMicros: services.env.capLlmMicrosPerCityDay,
   }));
-
   return {
     completion: {
       lockedMeetups,

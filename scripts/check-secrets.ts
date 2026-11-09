@@ -16,12 +16,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-/** One credential shape the scan looks for. */
 export interface SecretPattern {
-  /** Stable id, reported on every finding and asserted by the test suite. */
   readonly id: string;
   readonly description: string;
-  /** Global; {@link scanText} resets its cursor before each pass. */
   readonly regex: RegExp;
 }
 
@@ -70,34 +67,25 @@ export const SECRET_PATTERNS: readonly SecretPattern[] = [
   },
 ];
 
-/** Where a pattern matched, holding nothing the pattern matched. */
 export interface SecretFinding {
-  /** Repository-relative path, with the 1-based line and column of the match. */
   readonly path: string;
   readonly line: number;
   readonly column: number;
   readonly patternId: string;
 }
 
-/** What a repository scan read, and what it found. */
 export interface SecretScanReport {
-  /** Text files scanned. */
   readonly files: number;
-  /** Paths left unread: binary, symlinks, directories, paths missing from the tree. */
   readonly skipped: number;
   readonly findings: SecretFinding[];
 }
 
-/** How much of a file is sniffed for a NUL byte before it is treated as binary. */
 const BINARY_SNIFF_BYTES = 8_000;
 
-/** Files read at once: enough to scan the whole workspace in seconds, few enough to bound fds. */
 const READ_CONCURRENCY = 32;
 
-/** Output cap of one `git` call, which returns the repository's whole file listing. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
-/** Closing line of a failed scan: what the developer does with the finding. */
 const REMEDIATION =
   'check-secrets: move each value above into an environment variable and keep only a placeholder in .env.example.';
 
@@ -133,7 +121,6 @@ export function scanText(filePath: string, text: string): SecretFinding[] {
   return findings.sort((left, right) => left.line - right.line || left.column - right.column);
 }
 
-/** The 0-based index of the line holding `offset`, by binary search over the line starts. */
 function lineIndexAt(lineStarts: readonly number[], offset: number): number {
   let low = 0;
   let high = lineStarts.length - 1;
@@ -148,7 +135,6 @@ function lineIndexAt(lineStarts: readonly number[], offset: number): number {
   return low;
 }
 
-/** Whether bytes read like binary content: a NUL byte in their opening bytes, which no pattern can be read out of. */
 export function isProbablyBinary(bytes: Uint8Array): boolean {
   const limit = Math.min(bytes.byteLength, BINARY_SNIFF_BYTES);
   for (let index = 0; index < limit; index += 1) {
@@ -159,7 +145,6 @@ export function isProbablyBinary(bytes: Uint8Array): boolean {
   return false;
 }
 
-/** The one-line report form of a finding: `path:line:column`, two spaces, then the pattern id. */
 export function formatFinding(finding: SecretFinding): string {
   return `${finding.path}:${finding.line}:${finding.column}  ${finding.patternId}`;
 }
@@ -235,7 +220,6 @@ export async function scanRepository(cwd?: string): Promise<SecretScanReport> {
   return { files, skipped, findings };
 }
 
-/** Whether one file was read as text, and what it held. */
 interface FileScan {
   readonly scanned: boolean;
   readonly findings: SecretFinding[];
@@ -272,9 +256,6 @@ async function scanFile(root: string, filePath: string): Promise<FileScan> {
 /**
  * Runs the scan and reports it: a clean run prints one summary line to stdout, a run with findings
  * prints one {@link formatFinding} line per finding and the closing instruction to stderr.
- *
- * @returns The exit code: 0 when clean, 1 on findings or on an operational failure. The same code is
- *   recorded on `process.exitCode`, so the script's own exit status is right either way.
  */
 export async function main(): Promise<number> {
   let report: SecretScanReport;
@@ -303,7 +284,6 @@ export async function main(): Promise<number> {
   return 1;
 }
 
-/** Runs `git` with an argument vector and no shell, and returns its stdout. */
 async function git(args: readonly string[], cwd: string): Promise<string> {
   try {
     const { stdout } = await execFileAsync('git', [...args], {
@@ -317,12 +297,10 @@ async function git(args: readonly string[], cwd: string): Promise<string> {
   }
 }
 
-/** Whether a thrown value is Node's "no such file or directory" error. */
 function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
-/** The message of a thrown value. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

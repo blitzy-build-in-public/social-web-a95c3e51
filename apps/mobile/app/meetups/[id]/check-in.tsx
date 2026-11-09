@@ -35,7 +35,15 @@ import {
   VENUE_CODE_FILLED_NOTICE,
 } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
-import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
+import {
+  Banner,
+  Button,
+  Card,
+  Screen,
+  TextField,
+  announce,
+  useAppNoticeMessage,
+} from '../../../src/ui';
 
 const SCREEN_TITLE = 'Check in';
 const OFFLINE_NOTICE =
@@ -143,6 +151,7 @@ const OutcomeCard = ({ title, testID, note, onBack }: OutcomeProps): ReactElemen
 export default function CheckInScreen(): ReactElement {
   const params = useLocalSearchParams<{ id: string }>();
   const meetupId = typeof params.id === 'string' ? params.id : '';
+  const noticeMessage = useAppNoticeMessage();
   const meetupQ = useMeetup(meetupId);
   const citiesQ = useQuery({
     queryKey: queryKeys.cities,
@@ -281,7 +290,10 @@ export default function CheckInScreen(): ReactElement {
     announce(VENUE_CODE_FILLED_NOTICE);
   };
   const retry = (): void => void meetupQ.refetch();
-  const bannerProps = loadMessage === null ? {} : { action: { ...RETRY_PROPS, onPress: retry } };
+  const bannerProps =
+    loadMessage === null
+      ? {}
+      : { action: { ...RETRY_PROPS, onPress: retry, busy: meetupQ.isFetching } };
   const back = (): void => void router.navigate(`/meetups/${meetupId}`);
   const form = (
     <>
@@ -325,7 +337,7 @@ export default function CheckInScreen(): ReactElement {
         <Banner tone="error" message={errorMessage} testID="checkin-error" {...bannerProps} />
       )}
       {detail === null ? (
-        errorMessage === null ? (
+        errorMessage === null && noticeMessage === null ? (
           <Text style={styles.notice}>{LOADING_NOTICE}</Text>
         ) : null
       ) : result !== null ? (

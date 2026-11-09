@@ -3,9 +3,9 @@
 # The native prover smoke check: mopro 0.3.7 with rust-witness and rapidsnark inside an Expo SDK 52
 # development build (AAP 0.2.4, AAP 0.5.5, AAP 0.8.2).
 #
-# That combination is unverified, and a standalone native-library test would not settle it, because
-# the risk is the integration inside the app. So this script drives the real bench build through
-# Maestro on a device or simulator and verifies the proof it produces on the host:
+# That combination is unverified, and a standalone native-library test would not settle it, because the risk is
+# the integration inside the app. So this script drives the real bench build through Maestro on a device or
+# simulator and verifies the proof it produces on the host:
 #
 #   compile.sh, setup.sh                only when the circuit artefacts are missing or stale
 #   build-native.sh <platform>          only when that platform's libraries are missing or stale
@@ -13,26 +13,24 @@
 #   install, then `maestro test apps/mobile/e2e/maestro/zk-bench.yaml` with RUNS=1
 #   snarkjs groth16 verify              the host's own verdict on the proof the device produced
 #
-# A `pass` is the gate of AAP 0.8.2: native-prover work on that platform proceeds only after it. A
-# platform whose host, device or tool is unavailable is recorded as `pending` and stays unverified,
-# which is the fallback AAP 0.2.4 permits — proving there is neither confirmed nor moved to the
-# server. Neither outcome is a crash, and one platform's failure never stops the other: every step is
-# checked explicitly, so a failure is recorded against the platform it happened on.
+# A `pass` is the gate of AAP 0.8.2: native-prover work on that platform proceeds only after it. A platform
+# whose host, device or tool is unavailable is recorded as `pending` and stays unverified, which is the
+# fallback AAP 0.2.4 permits — proving there is neither confirmed nor moved to the server. Neither outcome is
+# a crash, and one platform's failure never stops the other: every step is checked explicitly, so a failure is
+# recorded against the platform it happened on.
 #
-# The row this writes into docs/zk-performance.md reports one run's timings as a diagnostic. The
-# criterion 4 p95 figures come from the device benchmark (RUNS defaults to 30, run directly with
-# `maestro test` on an iPhone 13 class and a Pixel 7 class device), not from this check.
+# The row this writes into docs/zk-performance.md reports one run's timings as a diagnostic. The criterion 4
+# p95 figures come from the device benchmark (RUNS defaults to 30, run directly with `maestro test` on an
+# iPhone 13 class and a Pixel 7 class device), not from this check.
 #
-# Invoked as `bash scripts/native-smoke.sh [ios|android|all]` through the `native-smoke` package
-# script and root `circuits:smoke`. The default is `all`.
+# Invoked as `bash scripts/native-smoke.sh [ios|android|all]` through the `native-smoke` package script and
+# root `circuits:smoke`. The default is `all`. Environment: ARTIFACTS_PORT (host port the `artifacts` service
+# publishes, default 8070) and ARTIFACTS_BASE_URL (the origin to check and hand the device, default
+# http://localhost:$ARTIFACTS_PORT); CIRCUITS_NODE_HEAP_MB, PTAU_PATH, BEACON_HASH and TMPDIR pass through to
+# compile.sh and setup.sh.
 #
-# Environment:
-#   ARTIFACTS_PORT      host port the `artifacts` service publishes; default 8070, the compose default
-#   ARTIFACTS_BASE_URL  origin to check and to hand the device; default http://localhost:$ARTIFACTS_PORT
-#   CIRCUITS_NODE_HEAP_MB, PTAU_PATH, BEACON_HASH, TMPDIR  passed through to compile.sh and setup.sh
-#
-# Exit status: 0 every selected platform passed or is pending a host it cannot run on; 1 a platform
-# failed its native build, bench build, install, Maestro run or verification.
+# Exit status: 0 every selected platform passed or is pending a host it cannot run on; 1 a platform failed its
+# native build, bench build, install, Maestro run or verification.
 
 set -euo pipefail
 
@@ -40,9 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$PKG_DIR/../.." && pwd)"
 
-# ---------------------------------------------------------------------------------------------
 # Paths
-# ---------------------------------------------------------------------------------------------
 
 BUILD_DIR="$PKG_DIR/build"
 R1CS="$BUILD_DIR/tablemate_itinerary.r1cs"
@@ -71,9 +67,7 @@ XCODE_VERSION="16.4"
 
 ARTIFACTS_BASE_URL="${ARTIFACTS_BASE_URL:-http://localhost:${ARTIFACTS_PORT:-8070}}"
 
-# ---------------------------------------------------------------------------------------------
 # State
-# ---------------------------------------------------------------------------------------------
 
 # One row per platform, index 0 iOS and index 1 Android, in the order the document lists them. Bash
 # 3.2 (the macOS shell) has no associative arrays, so the platform functions index these by name.
@@ -129,9 +123,7 @@ Options:     -h, --help
 USAGE
 }
 
-# ---------------------------------------------------------------------------------------------
 # Arguments
-# ---------------------------------------------------------------------------------------------
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
@@ -162,9 +154,7 @@ DATE="$(date -u +%Y-%m-%d)"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
 if [ -z "$COMMIT" ]; then COMMIT="unknown"; fi
 
-# ---------------------------------------------------------------------------------------------
 # The Node helper and the one exit path
-# ---------------------------------------------------------------------------------------------
 
 mkdir -p "$RUN_DIR"
 PROOF_JSON="$RUN_DIR/native-smoke-proof.json"
@@ -409,9 +399,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# ---------------------------------------------------------------------------------------------
 # Prerequisites: dependencies and the contracts of the build itself
-# ---------------------------------------------------------------------------------------------
 
 # node parses the bench profile and the device result, and snarkjs is the host's verifier. Both are
 # resolved the way compile.sh and setup.sh resolve snarkjs: the hoisted install keeps them at the
@@ -436,9 +424,7 @@ if ! node "$HELPER" eas-contract "$BENCH_PROFILE"; then
     die "$BENCH_PROFILE does not describe the build this check drives (see the message above)"
 fi
 
-# ---------------------------------------------------------------------------------------------
 # Tools, host and devices
-# ---------------------------------------------------------------------------------------------
 
 pl_index() {
     # pl_index <platform>: the row index of the platform table.
@@ -537,9 +523,7 @@ device_artifacts_url() {
     fi
 }
 
-# ---------------------------------------------------------------------------------------------
 # Prerequisites the device run needs: the circuit artefacts and the artefacts service
-# ---------------------------------------------------------------------------------------------
 
 ensure_circuit_artifacts() {
     # Rebuilt only when missing or older than what they are built from, so a checkout that has run
@@ -583,9 +567,7 @@ ensure_artifacts() {
     fi
 }
 
-# ---------------------------------------------------------------------------------------------
 # One platform: native libraries, bench build, install, the flow, verification
-# ---------------------------------------------------------------------------------------------
 
 # Each of these is called from run_platform under `if !`, where bash suppresses errexit, so each one
 # checks every step itself and returns non-zero rather than relying on the shell to end.
@@ -786,9 +768,7 @@ run_platform() {
     mark_pass "$p"
 }
 
-# ---------------------------------------------------------------------------------------------
 # docs/zk-performance.md
-# ---------------------------------------------------------------------------------------------
 
 write_doc_block() {
     # write_doc_block <file> <block name> <content file>: replaces what sits between the named
@@ -873,9 +853,7 @@ print_summary() {
     done
 }
 
-# ---------------------------------------------------------------------------------------------
 # The run
-# ---------------------------------------------------------------------------------------------
 
 # Whether a platform can be driven here is settled before any long work, so a host with no simulator
 # or device records its rows and stops, instead of compiling a circuit and a native library it cannot

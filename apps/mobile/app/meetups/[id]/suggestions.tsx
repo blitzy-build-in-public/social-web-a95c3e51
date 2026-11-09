@@ -1,6 +1,7 @@
 /** Plan the day — the day-plan suggestions for a locked meetup (AAP 0.5.8, AAP 0.8.1, criterion 13). */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import type { ViewStyle } from 'react-native';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -83,28 +84,68 @@ type TextLinkProps = {
 };
 const linkKeys = (onPress: () => void): { onKeyDown?: (e: { key?: string }) => void } =>
   Platform.OS === 'web' ? { onKeyDown: (event) => void (event.key === 'Enter' && onPress()) } : {};
-const LinkText = ({ label, name, onPress, testID }: TextLinkProps): ReactElement => (
-  <Pressable
-    {...linkKeys(onPress)}
-    role="link"
-    accessibilityLabel={name === undefined ? label : `${label}: ${name}`}
-    onPress={onPress}
-    style={styles.linkTarget}
-    {...(testID === undefined ? {} : { testID })}
-  >
-    <Text style={styles.link}>{label}</Text>
-  </Pressable>
-);
+
+/**
+ * Keeps the browser's own focus outline off a focused control on web, where it would otherwise be
+ * painted over the 2 px band the control's own border reserves and the ring a keyboard user sees
+ * would be the browser's default rather than `colors.focusRing` (WCAG 2.4.7). React Native 0.76
+ * declares no `outline` style, so the long form is asserted once here; react-native-web drops the
+ * `outline` shorthand as an invalid short form. The value is empty off web, which never reads it.
+ */
+const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
+
+const LinkText = ({ label, name, onPress, testID }: TextLinkProps): ReactElement => {
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Pressable
+      {...linkKeys(onPress)}
+      role="link"
+      accessibilityLabel={name === undefined ? label : `${label}: ${name}`}
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
+      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.linkTarget,
+        hovered ? styles.linkHovered : null,
+        pressed ? styles.linkPressed : null,
+        focused ? styles.linkFocused : null,
+        webFocusRingReset,
+      ]}
+      {...(testID === undefined ? {} : { testID })}
+    >
+      <Text style={styles.link}>{label}</Text>
+    </Pressable>
+  );
+};
 type ToggleProps = { readonly expanded: boolean; readonly onPress: () => void };
 function DisclosureToggle({ expanded, onPress }: ToggleProps): ReactElement {
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   return (
     <Pressable
       role="button"
       aria-label={expanded ? 'Hide prices used' : 'Show prices used'}
       aria-expanded={expanded}
       accessibilityState={{ expanded }}
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
+      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       onPress={onPress}
-      style={({ pressed }) => [styles.toggle, pressed ? styles.togglePressed : null]}
+      style={({ pressed }) => [
+        styles.toggle,
+        hovered ? styles.toggleHovered : null,
+        pressed ? styles.togglePressed : null,
+        focused ? styles.toggleFocused : null,
+        webFocusRingReset,
+      ]}
     >
       <Text style={styles.toggleLabel}>{expanded ? 'Hide prices used' : 'Show prices used'}</Text>
     </Pressable>
@@ -265,7 +306,21 @@ const styles = StyleSheet.create({
   cost: { ...typography.body, color: colors.text, fontWeight: fontWeights.bold },
   detail: { ...typography.body, color: colors.textMuted },
   link: { ...typography.body, color: colors.primary, textDecorationLine: 'underline' },
-  linkTarget: { alignSelf: 'flex-start', justifyContent: 'center', minHeight: MIN_TOUCH_TARGET },
+  linkFocused: { borderColor: colors.focusRing },
+  linkHovered: { backgroundColor: colors.surface },
+  linkPressed: { backgroundColor: colors.surface },
+  // Reserved focus ring, the treatment the attribution page's external link uses: the 2px band is
+  // painted in the fill the text sits on until the link takes keyboard focus, so revealing the ring
+  // never moves the label, and the reset above leaves that band as the ring a keyboard user sees.
+  linkTarget: {
+    alignSelf: 'flex-start',
+    borderColor: colors.background,
+    borderRadius: radii.sm,
+    borderWidth: borderWidths.control,
+    justifyContent: 'center',
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: spacing.sm,
+  },
   provenance: { gap: spacing.xs },
   provenanceList: {
     borderTopColor: colors.border,
@@ -286,6 +341,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
+  toggleFocused: { borderColor: colors.focusRing },
+  toggleHovered: { backgroundColor: colors.surface },
   toggleLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.bold },
   togglePressed: { backgroundColor: colors.surface },
 });

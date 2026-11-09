@@ -1,28 +1,18 @@
 /**
- * Reads the rotating check-in code off the partner console's venue screen, which is how the web
- * suites check a meetup in with the code a guest at the door would read (AAP 0.11.2; criterion 1 of
- * AAP 0.12.1).
+ * Reads the rotating check-in code off the partner console's venue screen, which is how the web suites
+ * check a meetup in with the code a guest at the door would read (AAP 0.11.2; criterion 1).
  *
- * The console derives no code of its own: it renders the server's `{ code, expiresAt }` and asks
- * again at each boundary (AAP 0.5.7), so this reader opens `/venue`, types the venue secret into the
- * gate `App.tsx` publishes, and takes the six digits `VenueCode.tsx` displays together with the whole
- * seconds they stay valid. It installs no clock: `console-clock.spec.ts` skews the page clock first,
- * and the console measures its countdown against the API's `Date` header, so what this reads is the
- * server's code and the server's seconds under any device clock (AAP 0.3.2, 0.5.1, 0.12.2).
- *
- * The secret is typed in and never logged, and neither the secret nor any page text reaches an error
- * message.
+ * The console derives no code of its own: it renders the server's `{ code, expiresAt }` and asks again at
+ * each boundary (AAP 0.5.7), so this reader opens `/venue`, types the venue secret into the gate `App.tsx`
+ * publishes, and takes the six digits `VenueCode.tsx` displays together with the whole seconds they stay
+ * valid. It installs no clock: `console-clock.spec.ts` skews the page clock first, and the console measures
+ * its countdown against the API's `Date` header. The secret is typed in and never logged.
  */
 
 import { expect } from '@playwright/test';
 import type { Browser, Page } from '@playwright/test';
 
 import { e2eEnv } from './api-actor.ts';
-
-/*
- * The console's own contract: the ids and the attribute `App.tsx` and `VenueCode.tsx` publish, of
- * which this reader is the counterpart (AAP 0.5.8).
- */
 
 /** The console's venue screen, which `nginx` serves the console's `index.html` for (AAP 0.6.2). */
 const VENUE_PATH = '/venue';
@@ -43,8 +33,8 @@ const CODE_PATTERN = /^\d{6}$/;
 
 /**
  * The most a fresh code's countdown can read: whole seconds of one step, which is the 60 s of
- * `CODE_STEP_SECONDS` (AAP 0.5.7). Stated here rather than imported, because `packages/shared` is
- * outside this file's declared dependencies.
+ * `CODE_STEP_SECONDS`. Stated here rather than imported, because `packages/shared` is outside this file's
+ * declared dependencies.
  */
 const MAX_SECONDS_LEFT = 60;
 
@@ -63,22 +53,18 @@ export interface VenueCodeReading {
 }
 
 /**
- * Opens the venue console's code screen and reads the code it is displaying (AAP 0.5.4, 0.11.2).
+ * Opens the venue console's code screen and reads the code it is displaying (AAP 0.5.4).
  *
- * The URL is absolute, because the page's `baseURL` is the web app and the console is its own origin.
- * A page that shows no code -- a rejected secret returns the gate, and a code the console cannot
- * refresh is replaced by its stale notice -- fails with the one message above.
+ * The URL is absolute, because the page's `baseURL` is the web app and the console is its own origin. A
+ * page that shows no code -- a rejected secret returns the gate, and a code the console cannot refresh is
+ * replaced by its stale notice -- fails with the one message above.
  *
- * @param page - The page to drive, whose clock the caller has already set if it wanted it skewed.
- * @param secret - The venue's console secret, held by the caller from `venueSecret()`.
- * @returns The code on screen and the whole seconds it is still valid.
  * @throws Error when the console shows no code.
  */
 export async function openVenueConsole(page: Page, secret: string): Promise<VenueCodeReading> {
   await page.goto(`${e2eEnv().consoleUrl}${VENUE_PATH}`);
   await page.locator(SECRET_INPUT).fill(secret);
   await page.locator(SECRET_SUBMIT).click();
-
   const codeLocator = page.locator(CODE);
   try {
     await expect(codeLocator).toHaveText(CODE_PATTERN, { timeout: CODE_TIMEOUT_MS });
@@ -87,12 +73,10 @@ export async function openVenueConsole(page: Page, secret: string): Promise<Venu
     // carried: that the console showed no code is the whole of what the caller needs.
     throw new Error(NO_CODE);
   }
-
   const code = await codeLocator.textContent();
   if (code === null || !CODE_PATTERN.test(code)) {
     throw new Error(NO_CODE);
   }
-
   const rawSeconds = await page.locator(COUNTDOWN).getAttribute(SECONDS_LEFT);
   if (rawSeconds === null) {
     throw new Error(NO_CODE);
@@ -101,21 +85,17 @@ export async function openVenueConsole(page: Page, secret: string): Promise<Venu
   expect(rawSeconds).toMatch(/^\d{1,2}$/);
   const secondsLeft = Number.parseInt(rawSeconds, 10);
   expect(secondsLeft).toBeLessThanOrEqual(MAX_SECONDS_LEFT);
-
   return { code, secondsLeft };
 }
 
 /**
- * Reads a venue's code in a browser context of its own (AAP 0.11.2).
+ * Reads a venue's code in a browser context of its own.
  *
  * The console authenticates by secret alone, so the context carries no storage state and no traveler
- * session, and closing it in `finally` takes the tab's `sessionStorage` -- and the secret in it --
- * away with it. The read is as fresh as the page: the console polls only at each `expiresAt`, so a
- * caller that has moved the API's test clock reads again rather than reusing an earlier reading.
+ * session, and closing it in `finally` takes the tab's `sessionStorage` -- and the secret in it -- away
+ * with it. The read is as fresh as the page: the console polls only at each `expiresAt`, so a caller that
+ * has moved the API's test clock reads again rather than reusing an earlier reading.
  *
- * @param browser - The spec's `browser` fixture; any of its engines serves.
- * @param secret - The venue's console secret, which `venueSecret()` resolves.
- * @returns The code the console displays and the whole seconds it is still valid.
  * @throws Error when the console shows no code.
  */
 export async function readVenueCode(browser: Browser, secret: string): Promise<VenueCodeReading> {

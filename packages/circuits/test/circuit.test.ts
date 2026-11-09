@@ -1,28 +1,25 @@
 /**
- * The itinerary circuit's own suite: honest witnesses for both body-window cases, the seven public
- * signals a proof carries, the rejections the circuit exists to perform, and the date layouts
- * (AAP 0.5.5, AAP 0.8.1, AAP 0.12.1 criterion 3, AAP 0.12.2 "circuit public-signal count").
+ * The itinerary circuit's own suite: honest witnesses for both body-window cases, the seven public signals a
+ * proof carries, the rejections the circuit exists to perform, and the date layouts (AAP 0.5.5, AAP 0.8.1,
+ * AAP 0.12.1 criterion 3, AAP 0.12.2 "circuit public-signal count"). Four things are asserted:
  *
- * Four things are asserted here and nowhere else:
- *
- *   - `valid.eml` and `valid-second.eml` build a witness satisfying every constraint, with the
- *     outputs the email itself holds — the city's circuit id, both dates as `YYYYMMDD`, the issuer's
- *     id and the reference's nullifier — computed from the signed bytes, never copied from the
- *     circuit (AAP 0.5.5 "Boundary tests").
- *   - A proof carries exactly the seven signals of `PUBLIC_SIGNAL_NAMES`, in that order, each equal
- *     to what the witness computed; altering any single one makes verification fail (AAP 0.12.1
- *     criterion 3, AAP 0.12.2).
- *   - `tampered.eml` is refused twice: by the input generator, as `body_hash_mismatch`, and by the
- *     circuit, when a witness is assembled by hand around its bytes. So is a 1,024-byte window, 64
- *     bytes wider than `BodyWindow` admits (AAP 0.5.5).
+ *   - `valid.eml` and `valid-second.eml` build a witness satisfying every constraint, with the outputs the
+ *     email itself holds — the city's circuit id, both dates as `YYYYMMDD`, the issuer's id and the
+ *     reference's nullifier — computed from the signed bytes, never copied from the circuit (AAP 0.5.5
+ *     "Boundary tests").
+ *   - A proof carries exactly the seven signals of `PUBLIC_SIGNAL_NAMES`, in that order, each equal to what
+ *     the witness computed; altering any single one makes verification fail (AAP 0.12.1 criterion 3,
+ *     AAP 0.12.2).
+ *   - `tampered.eml` is refused twice: by the input generator, as `body_hash_mismatch`, and by the circuit,
+ *     when a witness is assembled by hand around its bytes. So is a 1,024-byte window, 64 bytes wider than
+ *     `BodyWindow` admits (AAP 0.5.5).
  *   - `DateParse` accepts each of its four layouts and refuses the dates no calendar has.
  *
- * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible
- * instead of a green suite over an unproved file; the proof suite needs the trusted setup on top of
- * the compile and fails alone, naming the command that produces it. A witness of this circuit is a
- * few million signals and the proving key is far larger, so a run wants a raised heap
- * (`NODE_OPTIONS=--max-old-space-size=8192`); a test file cannot raise its own, and `execArgv` in
- * the root `vitest.config.ts`, which this file does not own, is the other place it can be set.
+ * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a
+ * green suite over an unproved file; the proof suite needs the trusted setup on top of the compile and fails
+ * alone, naming the command that produces it. A witness of this circuit is a few million signals and the
+ * proving key is far larger, so a run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a
+ * test file cannot raise for itself.
  */
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
@@ -234,7 +231,6 @@ function built(stem: FixtureStem): BuildCircuitInputsResult {
   if (cached !== undefined) {
     return cached;
   }
-
   const result = buildCircuitInputs(fixture(stem), [issuer], registry, {
     nullifierSalt: NULLIFIER_SALT,
   });
@@ -261,7 +257,6 @@ interface Expectations {
  */
 function expectationsFor(stem: FixtureStem): Expectations {
   const { inputs } = built(stem);
-
   // `locateFields` reads the template's own anchors out of the decoded window, so the four values
   // are the bytes the signed body carries rather than any value this file knows in advance.
   const decoded = new Uint8Array(inputs.decodedEmailBodyIn.map(Number));
@@ -270,12 +265,10 @@ function expectationsFor(stem: FixtureStem): Expectations {
   const departure = fieldAt(fields, 2, stem);
   const cityText = latin1(fieldAt(fields, 0, stem));
   const referenceText = latin1(fieldAt(fields, 3, stem));
-
   const city = cities.cities.find((entry) => entry.aliases.includes(cityText));
   if (city === undefined) {
     throw new Error(`no configured city carries the alias ${stem}.eml proves`);
   }
-
   const signals: Record<PublicSignalName, bigint> = {
     cityId: BigInt(city.circuitCityId),
     arrivalDate: BigInt(dateOf(arrival, stem)),
@@ -285,7 +278,6 @@ function expectationsFor(stem: FixtureStem): Expectations {
     registryRoot: BigInt(registry.root),
     nullifierSalt: BigInt(NULLIFIER_SALT),
   };
-
   return {
     signals,
     pubkeyHashValue: pubkeyHash(modulusFromBase64(firstKey().modulusBase64)),
@@ -319,25 +311,21 @@ function dateOf(field: FieldLocation, stem: FixtureStem): number {
   if (parsed === null) {
     throw new Error(`${stem}.eml carries a date the circuit cannot parse`);
   }
-
   if (params.dateFormat === DATE_FORMAT_CODE.ISO_YMD) {
     const iso = Number(latin1(field).replaceAll('-', ''));
     if (iso !== parsed) {
       throw new Error(`${stem}.eml's ISO date and its parsed date disagree`);
     }
   }
-
   return parsed;
 }
 
 /** A located field's ASCII text, over the `valueLength` bytes that carry it. */
 function latin1(field: FieldLocation): string {
   let text = '';
-
   for (let index = 0; index < field.valueLength; index += 1) {
     text += String.fromCharCode(field.value[index] ?? 0);
   }
-
   return text;
 }
 
@@ -357,12 +345,10 @@ function signalOf(index: SignalIndex, witness: readonly bigint[], name: string):
   if (varIdx === undefined) {
     throw new Error(`the circuit carries no signal named ${name}`);
   }
-
   const value = witness[varIdx];
   if (value === undefined) {
     throw new Error(`the witness carries no value for ${name}`);
   }
-
   return value;
 }
 
@@ -389,12 +375,10 @@ async function signalIndexes(symbolFile: string, names: readonly string[]): Prom
   const handle = await open(symbolFile, 'r');
   const block = Buffer.alloc(SYMBOL_BLOCK_BYTES);
   let carry = '';
-
   try {
     for (;;) {
       const { bytesRead } = await handle.read(block, 0, block.length, null);
       const text = carry + block.toString('latin1', 0, bytesRead);
-
       // `text` always begins at a line's start, so every complete line it holds is scanned here and
       // only the unterminated tail is carried into the next pass.
       const lastBreak = text.lastIndexOf('\n');
@@ -404,23 +388,19 @@ async function signalIndexes(symbolFile: string, names: readonly string[]): Prom
         scanSymbolText(text.slice(0, lastBreak + 1), names, indexes);
         carry = text.slice(lastBreak + 1);
       }
-
       if (bytesRead === 0 || indexes.size === names.length) break;
     }
-
     if (carry !== '') {
       scanSymbolText(`${carry}\n`, names, indexes);
     }
   } finally {
     await handle.close();
   }
-
   for (const name of names) {
     if (!indexes.has(name)) {
       throw new Error(`${symbolFile} carries no signal named ${name}`);
     }
   }
-
   return indexes;
 }
 
@@ -432,14 +412,11 @@ function scanSymbolText(
 ): void {
   for (const name of wanted) {
     if (indexes.has(name)) continue;
-
     // A name is a line's last field, so `,<name>\n` cannot match the tail of a longer name.
     const at = text.indexOf(`,${name}\n`);
     if (at < 0) continue;
-
     const fields = text.slice(text.lastIndexOf('\n', at) + 1, at).split(',');
     const varIdx = Number(fields[1]);
-
     if (fields.length === 3 && Number.isInteger(varIdx) && varIdx >= 0) {
       indexes.set(name, varIdx);
     }
@@ -472,7 +449,6 @@ beforeAll(async () => {
   );
   demand(existsSync(CIRCUIT_WASM), `${CIRCUIT_WASM} is missing: run pnpm circuits:compile`);
   demand(existsSync(CIRCUIT_SYMBOLS), `${CIRCUIT_SYMBOLS} is missing: run pnpm circuits:compile`);
-
   // `recompile: false` reads the compile's own wasm, so nothing here depends on circom agreeing with
   // the build's flags beyond the version checked above. The include array is copied because
   // circom_tester appends the source's directory to whatever array it is handed. The library's
@@ -509,7 +485,6 @@ describe('a witness for an honest booking', () => {
     'proves what %s.eml holds, with the window cut: %s',
     async (stem, expectPrecompute) => {
       const expectations = expectationsFor(stem);
-
       // The window rule the circuit re-derives from the email's own length bytes: nothing is
       // precomputed when the whole padded body fits in 960 bytes, and otherwise the state entering
       // the window is the SHA-256 state after the bytes the window leaves behind.
@@ -518,9 +493,7 @@ describe('a witness for an honest booking', () => {
       if (expectPrecompute) {
         expect(expectations.windowBytes).toBe(MAX_BODY_WINDOW);
       }
-
       const witness = await circuit().calculateWitness(built(stem).inputs, true);
-
       // Position first: the witness's first eight entries are the constant 1 followed by the outputs
       // and public inputs in `PUBLIC_SIGNAL_NAMES` order, so a circuit that reordered them moves
       // these values even before a proof is made (AAP 0.5.5). Then each signal by name, through the
@@ -528,13 +501,11 @@ describe('a witness for an honest booking', () => {
       expect(witness.slice(1, PUBLIC_SIGNAL_NAMES.length + 1)).toEqual(
         PUBLIC_SIGNAL_NAMES.map((name) => expectations.signals[name]),
       );
-
       expect(signalOf(index(), witness, 'cityId')).toBe(expectations.signals.cityId);
       expect(signalOf(index(), witness, 'arrivalDate')).toBe(expectations.signals.arrivalDate);
       expect(signalOf(index(), witness, 'departureDate')).toBe(expectations.signals.departureDate);
       expect(signalOf(index(), witness, 'issuerId')).toBe(expectations.signals.issuerId);
       expect(signalOf(index(), witness, 'nullifier')).toBe(expectations.signals.nullifier);
-
       // The key the RSA check consumed, which the issuer leaf is built from: the circuit computes it
       // itself, so this is the one hash of the modulus the registry does not have to be trusted for.
       expect(signalOf(index(), witness, 'emailVerifier.pubkeyHash')).toBe(
@@ -555,12 +526,10 @@ describe('a Groth16 proof of valid.eml', () => {
   let proved: { proof: unknown; publicSignals: string[] } | undefined;
   let verificationKey: unknown;
   let expectations: Expectations;
-
   beforeAll(async () => {
     for (const artefact of [CIRCUIT_WASM_FLAT, CIRCUIT_ZKEY, VERIFICATION_KEY]) {
       demand(existsSync(artefact), `${artefact} is missing: run pnpm circuits:setup`);
     }
-
     expectations = expectationsFor('valid');
     verificationKey = JSON.parse(readFileSync(VERIFICATION_KEY, 'utf8')) as unknown;
     proved = await snarkjs.groth16.fullProve(
@@ -569,7 +538,6 @@ describe('a Groth16 proof of valid.eml', () => {
       CIRCUIT_ZKEY,
     );
   }, PROOF_TIMEOUT_MS);
-
   afterAll(async () => {
     // ffjavascript keeps a worker pool alive for the bn128 curve, so the curve is terminated by
     // hand: without this the Vitest process never exits after the last test.
@@ -578,23 +546,18 @@ describe('a Groth16 proof of valid.eml', () => {
       await curve.terminate();
     }
   });
-
   it('carries the seven signals of PUBLIC_SIGNAL_NAMES, each holding what the email says', async () => {
     demand(proved !== undefined, 'the fixture proof was not generated: its beforeAll hook failed');
-
     expect(proved.publicSignals).toHaveLength(PUBLIC_SIGNAL_NAMES.length);
-
     const published: Record<string, bigint> = {};
     PUBLIC_SIGNAL_NAMES.forEach((name, index) => {
       published[name] = BigInt(proved?.publicSignals[index] ?? '0');
     });
-
     expect(published).toEqual(expectations.signals);
     await expect(
       snarkjs.groth16.verify(verificationKey, proved.publicSignals, proved.proof),
     ).resolves.toBe(true);
   });
-
   it.each(ALTERED_SIGNAL_CASES)(
     'rejects a proof whose %s signal is altered',
     async (_name, index) => {
@@ -602,10 +565,8 @@ describe('a Groth16 proof of valid.eml', () => {
         proved !== undefined,
         'the fixture proof was not generated: its beforeAll hook failed',
       );
-
       const altered = [...proved.publicSignals];
       altered[index] = ((BigInt(altered[index] ?? '0') + 1n) % BN254_SCALAR_FIELD).toString();
-
       await expect(snarkjs.groth16.verify(verificationKey, altered, proved.proof)).resolves.toBe(
         false,
       );
@@ -631,7 +592,6 @@ function canonicalBodyOf(stem: FixtureStem): Uint8Array {
   if (sig === undefined) {
     throw new Error(`${stem}.eml carries no usable DKIM signature`);
   }
-
   return canonicalizeBody(parsed.body, sig.c.body);
 }
 
@@ -651,7 +611,6 @@ function bodyWindowAt(canonicalBody: Uint8Array, cut: number): BodyWindow {
     cut,
     MAX_BODY_LENGTH,
   );
-
   return {
     emailBody: bodyRemaining,
     emailBodyLength: bodyRemainingLength,
@@ -678,7 +637,6 @@ function merklePath(
  */
 function withWindow(honest: EmailVerifierParts, window: BodyWindow): CircuitInputs {
   const honestInputs = built('valid').inputs;
-
   return assembleInputs({
     emailVerifier: {
       emailHeader: honest.emailHeader,
@@ -715,45 +673,36 @@ describe('a witness the circuit must refuse', () => {
     } catch (error) {
       thrown = error;
     }
-
     expect(thrown).toBeInstanceOf(CircuitInputError);
     expect((thrown as CircuitInputError).code).toBe('body_hash_mismatch');
   });
-
   it('is refused when a tampered body is wrapped in valid.eml signed header', async () => {
     const honest = buildEmailVerifierInputs(fixture('valid'), [issuer]);
     const window = bodyWindowAt(canonicalBodyOf('tampered'), honest.precomputeCut);
-
     // The same length, so the same padded length and the same cut: only the body's own bytes differ,
     // and the body hash the signed header commits to no longer matches them.
     await expect(circuit().calculateWitness(withWindow(honest, window), true)).rejects.toThrow();
   });
-
   it('is refused when the window is 64 bytes wider than the circuit admits', async () => {
     const honest = buildEmailVerifierInputs(fixture('valid'), [issuer]);
     demand(honest.precomputeCut >= 64, 'valid.eml must be cut for this case to exist');
-
     const window = bodyWindowAt(canonicalBodyOf('valid'), honest.precomputeCut - 64);
     expect(window.emailBodyLength).toBe(MAX_BODY_WINDOW + 64);
-
     // `EmailVerifier` range-checks the length with `Num2Bits(10)` and `BodyWindow` requires it to be
     // `maxWindow` once the padded body no longer fits, so a 1,024-byte window is unsatisfiable.
     await expect(circuit().calculateWitness(withWindow(honest, window), true)).rejects.toThrow();
   });
-
   it('is refused when the window is a narrower suffix the email did not fix', async () => {
     const honest = buildEmailVerifierInputs(fixture('valid'), [issuer]);
     const window = bodyWindowAt(
       canonicalBodyOf('valid'),
       honest.precomputeCut + NARROWER_WINDOW_BYTES,
     );
-
     // A narrower suffix still hashes to the body hash the signed header commits to, because the
     // state entering it is the one the email's own bytes leave there, and the fields still extract
     // from it. `BodyWindow` is therefore the only thing stopping a prover choosing its own window —
     // and with it which occurrence of every anchor the extraction can reach (AAP 0.5.5).
     expect(window.emailBodyLength).toBe(MAX_BODY_WINDOW - NARROWER_WINDOW_BYTES);
-
     await expect(circuit().calculateWitness(withWindow(honest, window), true)).rejects.toThrow();
   });
 });
@@ -819,11 +768,9 @@ const DATE_CASES: DateCase[] = [
 /** One date text as the circuit's `value[32]`: ASCII bytes, zero-padded as `FieldExtract` leaves them. */
 function paddedValue(text: string): number[] {
   const value = new Array<number>(32).fill(0);
-
   for (let index = 0; index < text.length && index < value.length; index += 1) {
     value[index] = text.charCodeAt(index);
   }
-
   return value;
 }
 
@@ -831,22 +778,18 @@ describe('DateParse', () => {
   let dateCircuit: WasmCircuit | undefined;
   let dateIndex: SignalIndex | undefined;
   let workDir: string | undefined;
-
   beforeAll(async () => {
     workDir = mkdtempSync(path.join(tmpdir(), 'tablemate-circuit-'));
     const wrapper = path.join(workDir, 'date_parse_main.circom');
     writeFileSync(wrapper, `${DATE_PARSE_WRAPPER}\n`);
-
     dateCircuit = await circomTester.wasm(wrapper, { output: workDir, include: [...INCLUDE] });
     dateIndex = await signalIndexes(path.join(workDir, 'date_parse_main.sym'), ['main.out']);
   }, CIRCUIT_TIMEOUT_MS);
-
   afterAll(() => {
     if (workDir !== undefined) {
       rmSync(workDir, { recursive: true, force: true });
     }
   });
-
   it.each(DATE_CASES)(
     'reads %s as %j, expecting %s',
     async (format, text, expected, extraLength) => {
@@ -854,18 +797,15 @@ describe('DateParse', () => {
         dateCircuit !== undefined && dateIndex !== undefined,
         'the DateParse wrapper was not compiled: its beforeAll hook failed',
       );
-
       const input = {
         value: paddedValue(text),
         length: text.length + (extraLength ?? 0),
         format: DATE_FORMAT_CODE[format],
       };
-
       if (expected === null) {
         await expect(dateCircuit.calculateWitness(input, true)).rejects.toThrow();
         return;
       }
-
       const witness = await dateCircuit.calculateWitness(input, true);
       expect(signalOf(dateIndex, witness, 'out')).toBe(BigInt(expected));
     },

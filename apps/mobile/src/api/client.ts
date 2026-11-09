@@ -153,6 +153,16 @@ export interface AuthHooks {
   /** The in-memory access token, or null while signed out. Never persisted. */
   getAccessToken(): string | null;
 
+  /**
+   * Awaited before the first authenticated send of a request that holds no access token — a cold
+   * start whose restore has not finished, which is the state every screen that reads at mount starts
+   * in (AAP 0.3.3).
+   *
+   * It resolves once an access token is held, and rejects with the failure that prevented the
+   * restore, so the request is refused rather than sent unauthenticated.
+   */
+  ensureSession?(): Promise<void>;
+
   /** Rotates the refresh token and installs the new pair. Rejects when it cannot (AAP 0.11.2). */
   refresh(): Promise<unknown>;
 
@@ -269,6 +279,12 @@ interface HttpAnswer {
  *     rotation failure is reported as itself and signs nobody out.
  *  3. The request is retried exactly once, and a second `401 token_invalid` signs the traveler out.
  *
+ * The request only ever reaches the API authenticated: when the route sends the bearer token and none
+ * is held — a cold start whose restore is still running — the installed `AuthHooks.ensureSession` is
+ * awaited before the first send and the token it installs is read again and sent. Its rejection
+ * propagates to the caller, which is what refuses the request instead of sending it without a token
+ * (AAP 0.3.3, AAP 0.11.2).
+ *
  * Repeating a mutating request after a `401` is safe: the API authenticates and authorizes before it
  * handles anything.
  */
@@ -293,6 +309,19 @@ export async function request(
 
   let token = sendAuth ? accessToken() : null;
   let retried = false;
+
+  // A cold start whose session restore is still running holds no token yet, so the first
+  // authenticated send of a load waits for one here instead of leaving without it: a request sent
+  // without its bearer token is refused by the API and costs the load a rotation and a second round
+  // trip (AAP 0.3.3). Only the absence of a token asks — a request made while one is held uses it as
+  // it is, an `auth: false` route never asks, and a hook set that installs no gate sends as before.
+  if (sendAuth && token === null) {
+    const hooks = installed;
+    if (hooks !== null && hooks.ensureSession !== undefined) {
+      await hooks.ensureSession();
+      token = accessToken();
+    }
+  }
 
   for (;;) {
     const answer = await send(method, url, options, token);

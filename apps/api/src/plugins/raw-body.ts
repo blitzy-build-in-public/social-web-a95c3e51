@@ -18,15 +18,11 @@
  * Nothing here logs a body: an event payload is customer data, and the failure below answers a
  * fixed sentence rather than a parser message that could quote what was sent.
  */
-
 import { AppError } from './errors.ts';
 
 import type { FastifyBodyParser, FastifyInstance } from 'fastify';
 
-// Type-only, and taken from the module that builds the instance rather than from this file's
-// dependency whitelist: `App` is the plan's one declaration of the app's type, it is erased at
-// compile time, and nothing of `app.ts` is read at runtime (the same import the sibling plugins
-// `errors.ts` and `websocket.ts` take).
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**
@@ -58,13 +54,11 @@ type RawBodyInstance = Pick<FastifyInstance, 'addContentTypeParser' | 'removeCon
  */
 const rawJsonParser: FastifyBodyParser<Buffer> = (request, body, done) => {
   request.rawBody = body;
-
   const text = body.toString('utf8');
   if (text.length === 0) {
     done(new AppError('invalid_field', INVALID_JSON_MESSAGE), undefined);
     return;
   }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -72,7 +66,6 @@ const rawJsonParser: FastifyBodyParser<Buffer> = (request, body, done) => {
     done(new AppError('invalid_field', INVALID_JSON_MESSAGE), undefined);
     return;
   }
-
   done(null, parsed);
 };
 
@@ -96,11 +89,9 @@ const rawJsonParser: FastifyBodyParser<Buffer> = (request, body, done) => {
  */
 export function registerRawJsonBody(ctx: App | FastifyInstance): void {
   const instance: RawBodyInstance = ctx;
-
   // A child inherits the root's parser for this media type, and a second parser for a type that
   // already has one can be refused, so the inherited parser is removed first. Removal in a child
   // context leaves the root's table untouched.
   instance.removeContentTypeParser('application/json');
-
   instance.addContentTypeParser('application/json', { parseAs: 'buffer' }, rawJsonParser);
 }

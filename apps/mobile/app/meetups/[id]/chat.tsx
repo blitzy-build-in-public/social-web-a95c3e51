@@ -7,10 +7,12 @@ import type { NativeSyntheticEvent, TextInputKeyPressEventData } from 'react-nat
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import type { InfiniteData } from '@tanstack/react-query';
+import NetInfo from '@react-native-community/netinfo';
 import {
   MESSAGE_MAX_CHARS,
   MINUTE_MS,
   colors,
+  componentSizes,
   fontWeights,
   radii,
   spacing,
@@ -39,7 +41,7 @@ const SCREEN_TITLE = 'Chat';
 const SCREEN_EDGES = ['left', 'right', 'bottom'] as const;
 const BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined;
 const COUNTER_VISIBLE_FROM = 900;
-const AVATAR_SIZE = 40;
+const AVATAR_SIZE = componentSizes.avatarSmall;
 // A message takes at most this share of the thread: without a cap, a long paragraph's bubble fills
 // the whole column and stops reading as its sender's side, and one unbreakable token's bubble grows
 // wider than the thread, whose hidden overflow hides most of it. A share scales with the font size.
@@ -53,6 +55,11 @@ const CONNECTION_TEXT = {
   open: 'Connected',
   reconnecting: 'Reconnecting…',
 } satisfies Record<ConnectionState, string>;
+/** The label for a device with no connectivity at all. An open socket on a device that has lost its
+ * connection still reports `open` until its own close arrives, so the socket's state alone is no
+ * reason to say the chat is connected. It is kept out of {@link CONNECTION_TEXT} rather than folded
+ * into the `idle` entry, so a lost connection and a socket that was never opened stay apart. */
+const OFFLINE_TEXT = 'Offline';
 const MORE = { testID: 'user-more', label: 'More', variant: 'secondary' as const };
 const REPORT = { testID: 'user-report', label: 'Report', variant: 'secondary' as const };
 const BLOCK = { testID: 'user-block', label: 'Block', variant: 'danger' as const };
@@ -177,6 +184,42 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
+/**
+ * Whether the device itself has no connectivity, from the signal the platform reports it with.
+ *
+ * On the web that signal is `navigator.onLine` and the `online`/`offline` events it carries — the
+ * same value `@react-native-community/netinfo` 11.4.1 reads there for `isConnected`, but not one it
+ * delivers: its web build watches `navigator.connection`'s `change` event whenever the browser
+ * exposes that interface (Chrome and Safari do), and its reachability probe is what then gates a
+ * recovery, so a browser that came back would keep reading "Offline" for the probe's retry
+ * interval. On iOS and Android there is no `navigator.onLine`, so NetInfo is the whole answer there,
+ * read as `isOnline()` in `src/checkin/offline-code.ts` reads it.
+ */
+function useOfflineDevice(): boolean {
+  const [offline, setOffline] = useState<boolean | null>(null);
+  useEffect(() => {
+    const readPlatformState = (): void => setOffline(window.navigator.onLine !== true);
+
+    if (Platform.OS === 'web') {
+      readPlatformState();
+      window.addEventListener('offline', readPlatformState);
+      window.addEventListener('online', readPlatformState);
+      return () => {
+        window.removeEventListener('offline', readPlatformState);
+        window.removeEventListener('online', readPlatformState);
+      };
+    }
+
+    return NetInfo.addEventListener((state) => {
+      // `isInternetReachable` is `null` until reachability is known, so only an explicit `false`
+      // counts against the connection, as in `offline-code.ts`.
+      setOffline(state.isConnected !== true || state.isInternetReachable === false);
+    });
+  }, []);
+  // An unknown connection is not a lost one, so only a known-offline device outranks the socket.
+  return offline === true;
+}
+
 export default function ChatScreen(): ReactElement {
   const params = useLocalSearchParams<{ id: string }>();
   const meetupId = typeof params.id === 'string' ? params.id : '';
@@ -205,6 +248,7 @@ export default function ChatScreen(): ReactElement {
     getConnectionState,
     getConnectionState,
   );
+  const offline = useOfflineDevice();
   useEffect(() => {
     if (meetupId === '') return undefined;
     return subscribe((frame) => {
@@ -297,7 +341,7 @@ export default function ChatScreen(): ReactElement {
     );
   }
   const openReport = (userId: string) =>
-    void router.push({ pathname: '/report', params: { userId, meetupId } });
+    void router.navigate({ pathname: '/report', params: { userId, meetupId } });
   const loadMore = (): void => {
     if (history.hasNextPage && !history.isFetchingNextPage) void history.fetchNextPage();
   };
@@ -370,7 +414,7 @@ export default function ChatScreen(): ReactElement {
             {counterpart === undefined || accessClosed ? null : (
               <>
                 <Text accessibilityLiveRegion="polite" style={styles.connection}>
-                  {CONNECTION_TEXT[connection]}
+                  {offline ? OFFLINE_TEXT : CONNECTION_TEXT[connection]}
                 </Text>
                 <Composer {...composer} canSend={canSend} onSend={onSend} />
               </>

@@ -40,26 +40,17 @@ const LONGITUDE_BOUNDS = { min: -180, max: 180 } as const;
  * The first entry of a `;`-separated tag value, trimmed (AAP 0.5.6). OSM records a second phone
  * number or URL after a semicolon, and only the first is read: a place carries one number to dial
  * and a menu fetch follows one link.
- *
- * @param raw - The tag value, when the element carried the tag at all.
- * @returns The first entry, or `null` when nothing is left of it.
  */
 function firstEntry(raw: string | undefined): string | null {
   const first = raw?.split(';')[0]?.trim() ?? '';
-
   return first === '' ? null : first;
 }
 
 /**
  * A tag value trimmed, for the tags stored as they are read (AAP 0.5.6).
- *
- * @param tags - The element's tags, absent on an element Overpass answered without them.
- * @param key - The tag key, spelled as OSM spells it (`addr:street`).
- * @returns The trimmed value, or `null` when the tag is absent or holds only blanks.
  */
 function tagValue(tags: Readonly<Record<string, string>> | undefined, key: string): string | null {
   const value = tags?.[key]?.trim();
-
   return value === undefined || value === '' ? null : value;
 }
 
@@ -75,7 +66,6 @@ function isTagged<T extends string>(values: readonly T[], value: string | null):
 /** Joins the parts one address line is made of with a single space, dropping the empty ones. */
 function joinParts(...parts: (string | null)[]): string | null {
   const kept = parts.filter((part): part is string => part !== null);
-
   return kept.length === 0 ? null : kept.join(' ');
 }
 
@@ -96,9 +86,6 @@ function isCoordinate(value: number, min: number, max: number): boolean {
  * and the list it categorizes from, not unreadable OSM data, and the arm is unreachable once the
  * build passes.
  *
- * @param value - The value the compiler has narrowed to `never`.
- * @returns Never: the call always throws.
- * @throws RangeError when a value reaches an arm the types say is unreachable, which only a cast
  * out of `readonly string[]` at the call site could arrange at runtime.
  */
 function assertNever(value: never): never {
@@ -111,15 +98,11 @@ function assertNever(value: never): never {
  *
  * Precedence is `amenity`, then `tourism`, then `leisure`, so a restaurant with a `tourism` tag is
  * still a restaurant.
- *
- * @param tags - The element's tags.
- * @returns The category, or `null` when the element falls outside the three tag lists.
  */
 export function categorizePlace(
   tags: Readonly<Record<string, string>> | undefined,
 ): PlaceCategory | null {
   const amenity = tagValue(tags, 'amenity');
-
   if (isTagged(PLACE_AMENITY_TAGS, amenity)) {
     switch (amenity) {
       case 'restaurant':
@@ -134,11 +117,9 @@ export function categorizePlace(
         return assertNever(amenity);
     }
   }
-
   if (isTagged(PLACE_TOURISM_TAGS, tagValue(tags, 'tourism'))) {
     return 'activity';
   }
-
   return isTagged(PLACE_LEISURE_TAGS, tagValue(tags, 'leisure')) ? 'activity' : null;
 }
 
@@ -149,20 +130,14 @@ export function categorizePlace(
  * left in a national format (`21 123 4567`) is rejected rather than completed with a country code:
  * the country belongs to the place's city, not to the tag, and a guessed number is one the phone
  * agent would dial.
- *
- * @param raw - The `phone` or `contact:phone` tag value.
- * @returns The number in E.164 form, or `null` when the tag holds no usable number.
  */
 export function toE164(raw: string | undefined): string | null {
   const entry = firstEntry(raw);
-
   if (entry === null) {
     return null;
   }
-
   const digits = entry.replace(PHONE_SEPARATORS, '');
   const normalized = digits.startsWith('00') ? `+${digits.slice(2)}` : digits;
-
   return E164.safeParse(normalized).success ? normalized : null;
 }
 
@@ -172,25 +147,18 @@ export function toE164(raw: string | undefined): string | null {
  * A scheme-less `www.example.pt/menu` gets `https://`; anything that is not a web address (`ftp:`,
  * `mailto:`, a bare word) is rejected, because `Place.website` and `Place.menuUrl` are fetched by
  * `menu-ingest` and the crawl policy is applied to the host that comes out of here.
- *
- * @param raw - The `website`, `contact:website` or `website:menu` tag value.
- * @returns The parsed URL as `href`, or `null` when the tag holds no web address.
  */
 export function normalizeWebUrl(raw: string | undefined): string | null {
   const entry = firstEntry(raw);
-
   if (entry === null) {
     return null;
   }
-
   let url: URL;
-
   try {
     url = new URL(URL_SCHEME.test(entry) ? entry : `https://${entry}`);
   } catch {
     return null;
   }
-
   return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
 }
 
@@ -200,22 +168,16 @@ export function normalizeWebUrl(raw: string | undefined): string | null {
  * `addr:full` wins when present, because whoever filled it wrote the address as it is posted.
  * Otherwise the street and number form one line and the postcode and city another, and a line that
  * holds nothing is left out instead of leaving a separator behind.
- *
- * @param tags - The element's tags.
- * @returns The address lines joined with `', '`, or `null` when the element carries no address.
  */
 export function osmAddress(tags: Readonly<Record<string, string>> | undefined): string | null {
   const full = tagValue(tags, 'addr:full');
-
   if (full !== null) {
     return full;
   }
-
   const lines = [
     joinParts(tagValue(tags, 'addr:street'), tagValue(tags, 'addr:housenumber')),
     joinParts(tagValue(tags, 'addr:postcode'), tagValue(tags, 'addr:city')),
   ].filter((line): line is string => line !== null);
-
   return lines.length === 0 ? null : lines.join(', ');
 }
 
@@ -224,9 +186,6 @@ export function osmAddress(tags: Readonly<Record<string, string>> | undefined): 
  * node carries `lat`/`lon`; a way or a relation carries the `center` both queries ask for. The
  * bounds are checked here rather than at the database, so one malformed element drops only its own
  * place instead of failing the refresh of every place in a city.
- *
- * @param element - One element of an Overpass answer.
- * @returns The point, with `lon` mapped to `lng`, or `null` when the element carries no usable one.
  */
 export function elementPoint(element: OverpassElement): LatLng | null {
   const nodePoint =
@@ -236,7 +195,6 @@ export function elementPoint(element: OverpassElement): LatLng | null {
   const centerPoint =
     element.center === undefined ? null : { lat: element.center.lat, lng: element.center.lon };
   const point = nodePoint ?? centerPoint;
-
   if (
     point === null ||
     !isCoordinate(point.lat, LATITUDE_BOUNDS.min, LATITUDE_BOUNDS.max) ||
@@ -244,7 +202,6 @@ export function elementPoint(element: OverpassElement): LatLng | null {
   ) {
     return null;
   }
-
   return point;
 }
 
@@ -256,9 +213,6 @@ export function elementPoint(element: OverpassElement): LatLng | null {
  * context is passed through because the library needs it to evaluate a `PH` (public holiday) or a
  * `sunrise`/`sunset` rule, which is what `suggestions/candidates.ts` does with the stored string.
  *
- * @param value - The trimmed `opening_hours` tag.
- * @param opts - Where the place is: its coordinates, and the city's ISO 3166-1 alpha-2 country code.
- * @returns `true` when the value parses, `false` when it does not. The library reports an unreadable
  * value by throwing a plain value rather than an `Error`, so nothing is read from it.
  */
 export function isValidOpeningHours(
@@ -273,10 +227,8 @@ export function isValidOpeningHours(
           lon: opts.lng,
           address: { country_code: opts.countryCode.toLowerCase(), state: '' },
         };
-
   try {
     new OpeningHours(value, nominatim);
-
     return true;
   } catch {
     return false;
@@ -319,11 +271,8 @@ export type PlaceFields = {
  * no usable coordinate. Every other field stands on its own — a place with no website is still
  * stored, because the phone fallback can price it, while a missing name would have to be invented.
  *
- * @param element - One element of an Overpass answer.
- * @param opts - `countryCode`, the ISO 3166-1 alpha-2 code of the city the place is ingested for,
  * which the library needs to evaluate a `PH` (public holiday) or a `sunrise`/`sunset` rule in the
  * stored value. Optional, so a caller with no city still gets every other field.
- * @returns The place fields, or `null` when the element cannot become a place.
  */
 export function placeFields(
   element: OverpassElement,
@@ -331,35 +280,26 @@ export function placeFields(
 ): PlaceFields | null {
   const { tags } = element;
   const name = tagValue(tags, 'name');
-
   if (name === null) {
     return null;
   }
-
   const category = categorizePlace(tags);
-
   if (category === null) {
     return null;
   }
-
   const point = elementPoint(element);
-
   if (point === null) {
     return null;
   }
-
   const rawHours = tagValue(tags, 'opening_hours');
   const hoursOptions: { lat: number; lng: number; countryCode?: string } = {
     lat: point.lat,
     lng: point.lng,
   };
-
   if (opts.countryCode !== undefined) {
     hoursOptions.countryCode = opts.countryCode;
   }
-
   const { osmType, osmId } = osmKeyOf(element);
-
   return {
     osmType,
     osmId,

@@ -124,7 +124,6 @@ function groupedDigits(part: string): string | null {
   if (separators.length > 1) return null;
   const [separator] = separators;
   if (separator === undefined) return /^[0-9]+$/u.test(part) ? part : null;
-
   const [head = '', ...tail] = part.split(separator);
   if (head.length < 1 || head.length > 3 || !/^[0-9]+$/u.test(head)) return null;
   for (const group of tail) {
@@ -150,17 +149,12 @@ function groupedDigits(part: string): string | null {
  *
  * Space is only ever a thousands separator between groups of exactly three (`1 234,50`, `25 000`),
  * so `12 15` is refused rather than read as one number.
- *
- * @param token - The number, already stripped of its marker and suffix.
- * @param exponent - The currency's ISO 4217 exponent; a longer fraction than it allows is refused.
  */
 function minorUnitDigits(token: string, exponent: number): string | null {
   if (!NUMBER_TOKEN.test(token)) return null;
-
   const dots = countChar(token, '.');
   const commas = countChar(token, ',');
   let decimal: '.' | ',' | null = null;
-
   if (dots > 0 && commas > 0) {
     decimal = token.lastIndexOf('.') > token.lastIndexOf(',') ? '.' : ',';
   } else if (dots + commas === 1) {
@@ -169,14 +163,11 @@ function minorUnitDigits(token: string, exponent: number): string | null {
     if (trailing === 1 || trailing === 2) decimal = separator;
     else if (trailing !== 3) return null;
   }
-
   const boundary = decimal === null ? -1 : token.lastIndexOf(decimal);
   const integerPart = boundary === -1 ? token : token.slice(0, boundary);
   const fractionPart = boundary === -1 ? '' : token.slice(boundary + 1);
-
   if (fractionPart.length > exponent) return null;
   if (fractionPart !== '' && !/^[0-9]+$/u.test(fractionPart)) return null;
-
   const integer = groupedDigits(integerPart);
   if (integer === null) return null;
   return integer + fractionPart.padEnd(exponent, '0');
@@ -194,28 +185,20 @@ function minorUnitDigits(token: string, exponent: number): string | null {
  * number, which refuses signs, ranges (`12-15`, `12 – 15 €`), a second number (`12 15`, `12 / 15`)
  * and letters; and the amount must be a safe integer greater than 0, which refuses `0,00 €` and a
  * digit run beyond `Number.MAX_SAFE_INTEGER`. Zero is refused because a free item is not a price.
- *
- * @param text - The price substring a menu page or a call produced.
- * @param currency - The ISO 4217 code the source declares; an unsupported code returns `null`.
- * @returns The amount in minor units, or `null` when the text is not exactly one price.
  */
 export function parsePrice(text: string, currency: string): number | null {
   if (!isPriceCurrency(currency)) return null;
   const exponent = MINOR_UNIT_EXPONENT[currency];
-
   let rest = normalize(text);
   if (rest === '') return null;
-
   const marked = matchMarker(rest);
   if (marked !== null) {
     if (!marked.marker.currencies.includes(currency)) return null;
     if (matchMarker(marked.rest) !== null) return null;
     rest = marked.rest;
   }
-
   rest = rest.replace(TRAILING_NO_DECIMALS, '').trim();
   if (rest === '') return null;
-
   let scaled = false;
   const suffix = THOUSANDS_SUFFIX.exec(rest);
   if (suffix !== null) {
@@ -223,10 +206,8 @@ export function parsePrice(text: string, currency: string): number | null {
     scaled = true;
     rest = (suffix[1] ?? '').trim();
   }
-
   const digits = minorUnitDigits(rest, exponent);
   if (digits === null) return null;
-
   const amount = Number(scaled ? `${digits}000` : digits);
   return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
 }

@@ -368,8 +368,8 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
-substitutions below. The run added forty-seven tracked paths the table does not name, each required by an AAP
-requirement or by the toolchain and every one of them recorded here: the forty-six in the list below, and
+substitutions below. The run added fifty-three tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the fifty-two in the list below, and
 `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -456,7 +456,8 @@ requirement or by the toolchain and every one of them recorded here: the forty-s
   the shape the class gives itself, so the proving flow's own code is decided without the package being in the
   starting bundle; the third path is the pair's suite, which pins both recognitions against the real error and
   exercises the deferred load (AAP 0.5.5, 0.8.1).
-- **`apps/mobile/src/ui/{Chip.tsx,HeaderBackButton.tsx}`** — supplement the
+- **`apps/mobile/src/ui/{Chip.tsx,HeaderBackButton.tsx,NavButton.tsx,NavigationHeader.tsx}`**,
+  **`apps/mobile/src/ui/{Switch.tsx,app-notice.tsx}`** — supplement the
   `apps/mobile/src/ui/{Screen,Button,TextField,Card,ListItem,Banner,Avatar}.tsx` row: the one selectable chip
   every city, filter, variant, queue-category and lodging-kind choice is placed with — six painted states, one
   `radii.pill` silhouette, the reserved `borderWidths.control` band for the focus ring so focus moves no layout,
@@ -465,7 +466,21 @@ requirement or by the toolchain and every one of them recorded here: the forty-s
   button — and the web header's back control, which draws the chevron with the `react-native-svg` already in the
   web bundle instead of the navigator's bundled 96x96 PNG, so a header of the web stack requests and downscales
   no image, and which `renderWebHeaderLeft` spreads into a navigator's screen options under
-  `Platform.OS === 'web'` alone (AAP 0.5.8).
+  `Platform.OS === 'web'` alone (AAP 0.5.8). The four primitives beside them are this client's own chrome, its one
+  switch and its notice: `NavigationHeader.tsx`, the one definition of the header band's tint, title style and
+  separator, which the root stack, the auth group and the tab navigator each spread, so none of them paints a
+  navigation library's own theme values, which are in no token source; `NavButton.tsx`, the tab bar's own item,
+  which keeps the framework's `href`, `role="tab"`, `aria-selected` and label node while painting the four states
+  of an app control on the reserved `colors.focusRing` band, so the chrome carries the ring every other control
+  paints rather than the browser's outline; `Switch.tsx`, the one switch every toggle is placed with — the 18+
+  confirmation, the lodging-call consent, the staying-visibility control and the operator registry's
+  active-partner rows — one `role="switch"` element of at least `MIN_TOUCH_TARGET` in both dimensions whose five
+  states are tokens alone, where react-native-web's own `Switch` leaves the box a pointer reaches at 40x20,
+  paints its ON, OFF and disabled faces from its own Material defaults and shows the browser's outline; and
+  `app-notice.tsx`, which publishes
+  the sentence the app-level notice is speaking to the screens below it, so a screen whose read cannot run leaves
+  its loading line out and an error `Banner` whose sentence the notice is already saying renders nothing, one
+  failure reaching the reader once (AAP 0.5.8).
 - **`apps/api/test/unit/voice-relay.test.ts`** — a fourteenth suite beside the twelve the plan's
   `apps/api/test/unit` row names: the bound `relayErrorCode` puts on what may be taken from a ConversationRelay
   `error` frame, the one place on the relay socket where the provider hands this API its own free-form text —
@@ -495,7 +510,8 @@ requirement or by the toolchain and every one of them recorded here: the forty-s
   outage would give; the store failure is pinned here rather than through the route, which the rate limiter
   answers before the handler is reached, and the route end to end is a case of the planned
   `apps/api/test/integration/admin.test.ts` (AAP 0.5.6, 0.11.1).
-- **`apps/mobile/test/artifacts-web.test.ts`, `apps/mobile/test/prover-preflight.test.ts`** — two suites
+- **`apps/mobile/test/artifacts-web.test.ts`, `apps/mobile/test/prover-preflight.test.ts`,
+  `apps/mobile/test/session-hydration.test.ts`, `apps/mobile/test/session-restore-failure.test.ts`** — four suites
   beside the one the plan's `apps/mobile/test/eml-intake.test.ts` row names: the first is the suite of the
   planned `apps/mobile/src/zk/artifacts.web.ts`, whose page side launches the proving Worker and reclaims the
   partial artefact a cancelled or failed attempt leaves in the Origin Private File System, through a bounded,
@@ -506,7 +522,14 @@ requirement or by the toolchain and every one of them recorded here: the forty-s
   `resolveArtifacts` begins the ~1.6 GB download, so `eml_malformed` for a file that is not a booking
   confirmation and `unsupported_issuer` for a booking site the published configuration lists as not yet
   supported are each raised with zero bytes fetched, while an email the configuration does support still
-  reaches proving and submission (AAP 0.5.5, 0.5.8).
+  reaches proving and submission (AAP 0.5.5, 0.5.8); the third is the suite of the client's cold-start ordering in
+  the planned `apps/mobile/src/api/client.ts`, whose first authenticated send awaits the one restore every caller
+  shares and refuses the request rather than letting it leave without the token that restore installed, while a
+  token already held sends at once and a public route asks for no session at all; the fourth is the suite of the
+  failed restore's record in the planned `apps/mobile/src/state/session-store.ts` — the code a restore ended with,
+  one case per kind of cause, published while the snapshot stays `loading`, repeated without a second
+  notification, and cleared by a later answer or by a sign-in or sign-out — which is what lets a screen act on a
+  failure instead of holding its loading placeholder (AAP 0.5.4).
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

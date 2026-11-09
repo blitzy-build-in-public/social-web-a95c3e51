@@ -1,36 +1,26 @@
 /**
  * Policy-checked, SSRF-safe, bounded fetch (AAP 0.5.6).
  *
- * Every request the menu pipeline makes — the entry page, each redirect target, each followed menu
- * link, each browser subrequest and each host's `robots.txt` — is made here and nowhere else, so the
- * blocklist, the operator's site-terms decision and `robots.txt` are checked on every hop, never only
- * on the URL the pipeline started from.
+ * Every request the menu pipeline makes — the entry page, each redirect target, each followed menu link, each
+ * browser subrequest and each host's `robots.txt` — is made here and nowhere else, so the blocklist, the operator's
+ * site-terms decision and `robots.txt` are checked on every hop, never only on the URL the pipeline started from.
  *
- * Three properties make a request safe against a page the pipeline does not control:
+ * Three properties make a request safe against a page the pipeline does not control: the address is pinned before
+ * the connection is opened, so the host is resolved once, every answer is checked against {@link isBlockedAddress},
+ * and the request connects to that validated address itself — no later DNS answer can point the connection at a
+ * private address (DNS rebinding); every hop re-runs every check, so an allowed page cannot hand the crawler a
+ * review site, a domain nobody approved or an internal address through a 30x; and the work is bounded, with
+ * {@link FETCH_LIMITS} capping one response and a {@link FetchBudget} capping a whole place at 50 requests and
+ * 30 MiB across the page, its subrequests, its PDFs and its images.
  *
- * - **The address is pinned before the connection is opened.** The host is resolved once, every answer
- *   is checked against {@link isBlockedAddress}, and the request then connects to that validated
- *   address itself — the name is never resolved a second time, at connect time or by a redirect, so no
- *   later DNS answer can point the connection at a private address (DNS rebinding).
- * - **Every hop re-runs every check.** A redirect target is validated exactly like the entry URL, so
- *   an allowed page cannot hand the crawler a review site, a domain nobody approved or an internal
- *   address through a 30x before its subrequests even begin.
- * - **The work is bounded.** {@link FETCH_LIMITS} caps one response and a {@link FetchBudget} caps a
- *   whole place: 50 requests and 30 MiB across the page, its subrequests, its PDFs and its images.
+ * No request is made without a slot from the per-domain throttle, so a domain sees at most one request per second —
+ * a site and its subdomains share one slot, because the slot is taken on the request host's registrable domain
+ * (AAP 0.3.3, 0.12.2). A refusal is a {@link SafeFetchError} naming its reason, and the caller takes the phone
+ * fallback: no price is guessed and no page without permission is read. Log lines carry a host, a kind, a status, a
+ * byte count or a reason, and never a body, page text, a price or a URL with its query (AAP 0.11.1).
  *
- * No request is made without a slot from the per-domain throttle, so a domain sees at most one
- * request per second — a site and its subdomains share one slot, because the slot is taken on the
- * request host's registrable domain (AAP 0.3.3, AAP 0.12.2). A refusal is a {@link SafeFetchError}
- * naming its reason, and the caller takes the phone fallback: no price is guessed and no page without
- * permission is read. Log lines carry a host, a kind, a status, a byte count or a reason, and never a
- * body, page text, a price or a URL with its query (AAP 0.11.1).
- *
- * The crawl runs in `apps/workers` alone, so a refused fetch cannot delay proposing, locking, checking
- * in or settling (AAP 0.3.2).
- *
- * @see AAP 0.5.6 for the request-safety and resource bounds and the crawl policy, 0.3.3 for the
- *   menu-website rules, 0.12.2 for the checks `apps/workers/test/unit/safe-fetch.test.ts` makes, and
- *   0.8.1 for this file.
+ * The crawl runs in `apps/workers` alone, so a refused fetch cannot delay proposing, locking, checking in or
+ * settling (AAP 0.3.2).
  */
 
 import { lookup } from 'node:dns/promises';
@@ -52,11 +42,9 @@ import { createRobotsChecker } from './robots.ts';
 import type { RobotsCache } from './robots.ts';
 
 /**
- * The DNS answers of one host, as a resolver returns them (AAP 0.5.6).
- *
- * `apps/workers/src/queues.ts` injects the process resolver and
- * {@link SafeFetchDeps.lookup} lets a suite inject one whose second answer differs from its first,
- * which is how the rebinding defence is exercised.
+ * The DNS answers of one host, as a resolver returns them (AAP 0.5.6). `queues.ts` injects the process resolver and
+ * {@link SafeFetchDeps.lookup} lets a suite inject one whose second answer differs from its first, which is how the
+ * rebinding defence is exercised.
  */
 export type LookupFn = (host: string) => Promise<{ address: string; family: 4 | 6 }[]>;
 
@@ -68,7 +56,6 @@ export type LookupFn = (host: string) => Promise<{ address: string; family: 4 | 
  */
 export const defaultLookup: LookupFn = async (host) => {
   const answers = await lookup(host, { all: true, verbatim: true });
-
   return answers.map((answer) => ({
     address: answer.address,
     family: answer.family === 6 ? 6 : 4,
@@ -79,13 +66,11 @@ export const defaultLookup: LookupFn = async (host) => {
 export type FetchKind = 'html' | 'pdf' | 'image' | 'robots';
 
 /**
- * The bounds of one crawl (AAP 0.5.6). Binary megabytes, so `html: 10 MiB` is 10,485,760 bytes.
- *
- * One response is capped by its kind — 10 MiB of HTML or image, 20 MiB of PDF, 512 KiB of
- * `robots.txt`, which sits inside RFC 9309's own 500 KiB parsing limit — and one place is capped
- * across everything it pulls: {@link placeRequests} requests and {@link placeBytes} bytes of bodies,
- * the PDFs and images followed from the page included. `timeoutMs` covers connect, headers and body
- * of each hop.
+ * The bounds of one crawl (AAP 0.5.6). Binary megabytes, so `html: 10 MiB` is 10,485,760 bytes. One response is
+ * capped by its kind — 10 MiB of HTML or image, 20 MiB of PDF, 512 KiB of `robots.txt`, which sits inside RFC
+ * 9309's own 500 KiB parsing limit — and one place is capped across everything it pulls: {@link placeRequests}
+ * requests and {@link placeBytes} bytes of bodies, the PDFs and images followed from the page included. `timeoutMs`
+ * covers connect, headers and body of each hop.
  */
 export const FETCH_LIMITS = {
   html: 10 * 1024 * 1024,
@@ -99,13 +84,11 @@ export const FETCH_LIMITS = {
 } as const;
 
 /**
- * Why a request was refused (AAP 0.5.6). Each leaves the caller a decision it can act on: the URL is
- * unusable (`invalid_url`, `scheme`, `port`, `method_not_allowed`); it resolves nowhere or somewhere
- * forbidden (`dns_failed`, `blocked_address`); the crawl rules refuse it (`blocklisted`,
- * `policy_prohibited`, `policy_uncertain` — the site's terms are unreviewed, `robots_disallowed`);
- * the site wants a session (`auth_required`); or it was permitted but produced no usable answer
- * (`too_large`, `budget_exhausted`, `redirect_limit`, `timeout`, `http_error`, `network_error`,
- * `throttle_timeout`).
+ * Why a request was refused (AAP 0.5.6). Each leaves the caller a decision it can act on: the URL is unusable
+ * (`invalid_url`, `scheme`, `port`, `method_not_allowed`); it resolves nowhere or somewhere forbidden (`dns_failed`,
+ * `blocked_address`); the crawl rules refuse it (`blocklisted`, `policy_prohibited`, `policy_uncertain`,
+ * `robots_disallowed`); the site wants a session; or it was permitted but produced no usable answer (`too_large`,
+ * `budget_exhausted`, `redirect_limit`, `timeout`, `http_error`, `network_error`, `throttle_timeout`).
  */
 export type SafeFetchReason =
   | 'invalid_url'
@@ -126,7 +109,6 @@ export type SafeFetchReason =
   | 'network_error'
   | 'throttle_timeout'
   | 'method_not_allowed';
-
 /**
  * A refused request (AAP 0.5.6). The message names the reason and, when one is known, the host — never
  * the path or the query, so a URL carrying a token in its query cannot reach a log line through it.
@@ -138,8 +120,6 @@ export class SafeFetchError extends Error {
   readonly host: string | null;
   /** The response status, when the refusal is an answer; `null` otherwise. */
   readonly status: number | null;
-
-  /** @param reason - Why the request was refused. @param host - The host, when one is known. @param status - The status, for a refusal that is an answer. */
   constructor(reason: SafeFetchReason, host: string | null = null, status: number | null = null) {
     super(`${reason}${host ? ` (${host})` : ''}`);
     this.name = 'SafeFetchError';
@@ -150,54 +130,35 @@ export class SafeFetchError extends Error {
 }
 
 /**
- * One place's crawl allowance (AAP 0.5.6), shared by the page render, its subrequests and the PDFs and
- * images followed from it: 50 requests and 30 MiB of bodies. `apps/workers/src/jobs/menu-ingest.ts`
- * creates one per place and passes it to every fetch that place makes.
- *
- * Only bytes a caller keeps are counted; a redirect hop's body is discarded without being retained.
+ * One place's crawl allowance (AAP 0.5.6), shared by the page render, its subrequests and the PDFs and images
+ * followed from it: 50 requests and 30 MiB of bodies, created once per place by `jobs/menu-ingest.ts`. Only bytes a
+ * caller keeps are counted; a redirect hop's body is discarded without being retained.
  */
 export class FetchBudget {
   private usedRequests = 0;
   private usedBytes = 0;
-
   /** How many requests of the allowance have been reserved. */
   get requests(): number {
     return this.usedRequests;
   }
-
   /** How many body bytes of the allowance have been kept. */
   get bytes(): number {
     return this.usedBytes;
   }
-
-  /**
-   * Reserve one request of the allowance.
-   *
-   * @throws SafeFetchError with reason `budget_exhausted` when 50 requests were already reserved, so
-   *   the 51st is refused before its address is resolved.
-   */
+  /** Reserve one request of the allowance. */
   reserveRequest(): void {
     if (this.usedRequests >= FETCH_LIMITS.placeRequests) {
       throw new SafeFetchError('budget_exhausted');
     }
-
     this.usedRequests += 1;
   }
-
-  /**
-   * Account for `count` body bytes a caller is keeping.
-   *
-   * @throws SafeFetchError with reason `budget_exhausted` when they would take the place past
-   *   `FETCH_LIMITS.placeBytes`.
-   */
+  /** Account for `count` body bytes a caller is keeping. */
   addBytes(count: number): void {
     if (this.usedBytes + count > FETCH_LIMITS.placeBytes) {
       throw new SafeFetchError('budget_exhausted');
     }
-
     this.usedBytes += count;
   }
-
   /** The body bytes the place may still keep. */
   remainingBytes(): number {
     return Math.max(0, FETCH_LIMITS.placeBytes - this.usedBytes);
@@ -270,8 +231,6 @@ export interface SafeFetchDeps {
   clock: Clock;
 }
 
-/** The headers a caller may add: everything else — `host`, `cookie`, `authorization`, `connection` —
- * is dropped rather than forwarded, so a caller cannot hand a site a session the crawl never earned. */
 const FORWARDED_HEADERS: ReadonlySet<string> = new Set(['accept', 'accept-language', 'referer']);
 
 /** The `Accept` header of each kind (AAP 0.5.6). */
@@ -289,10 +248,9 @@ const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]
 const EMPTY_BODY = Buffer.alloc(0);
 
 /**
- * The IPv4 ranges no request may reach (AAP 0.5.6): the unspecified, private, loopback, link-local
- * (the cloud metadata address `169.254.169.254` included), carrier-grade NAT, protocol-assignment,
- * documentation, benchmarking, multicast and reserved space. Every prefix below is 4 to 24 bits, so
- * the mask shift needs no edge case.
+ * The IPv4 ranges no request may reach (AAP 0.5.6): the unspecified, private, loopback, link-local (the cloud
+ * metadata address `169.254.169.254` included), carrier-grade NAT, protocol-assignment, documentation, benchmarking,
+ * multicast and reserved space. Every prefix below is 4 to 24 bits, so the mask shift needs no edge case.
  */
 const BLOCKED_IPV4_RANGES: readonly (readonly [network: string, prefix: number])[] = [
   ['0.0.0.0', 8],
@@ -315,7 +273,6 @@ const BLOCKED_IPV4_RANGES: readonly (readonly [network: string, prefix: number])
 function ipv4ToInt(address: string): number | null {
   const parts = address.split('.');
   if (parts.length !== 4) return null;
-
   let value = 0;
   for (const part of parts) {
     if (!/^\d{1,3}$/.test(part)) return null;
@@ -323,7 +280,6 @@ function ipv4ToInt(address: string): number | null {
     if (octet > 255) return null;
     value = value * 256 + octet;
   }
-
   return value;
 }
 
@@ -338,13 +294,11 @@ function ipv4BlockedValue(value: number): boolean {
 /** One side of an IPv6 address split on `::`, as its 16-bit groups, or `null` when it does not parse. */
 function parseIPv6Side(side: string): number[] | null {
   if (side === '') return [];
-
   const groups: number[] = [];
   for (const group of side.split(':')) {
     if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
     groups.push(Number.parseInt(group, 16));
   }
-
   return groups;
 }
 
@@ -352,7 +306,6 @@ function parseIPv6Side(side: string): number[] | null {
 function ipv6Groups(address: string): number[] | null {
   // A zone id names an interface of the local host, which a public request can never need.
   if (address.includes('%')) return null;
-
   let text = address.toLowerCase();
   const dot = text.lastIndexOf('.');
   if (dot >= 0) {
@@ -365,42 +318,35 @@ function ipv6Groups(address: string): number[] | null {
     const low = (embedded & 0xffff).toString(16);
     text = `${text.slice(0, colon + 1)}${high}:${low}`;
   }
-
   const halves = text.split('::');
   if (halves.length > 2) return null;
-
   const head = parseIPv6Side(halves[0] ?? '');
   if (head === null) return null;
   if (halves.length === 1) return head.length === 8 ? head : null;
-
   const tail = parseIPv6Side(halves[1] ?? '');
   if (tail === null) return null;
   const missing = 8 - head.length - tail.length;
   if (missing < 1) return null;
-
   return [...head, ...new Array<number>(missing).fill(0), ...tail];
 }
 
 /**
- * Whether an IPv6 address is one no request may reach (AAP 0.5.6): the unspecified and loopback
- * addresses, unique-local, link-local, multicast, documentation and discard-only space, and the
- * addresses that carry an IPv4 address inside them, which are blocked whenever the IPv4 address they
- * carry is.
+ * Whether an IPv6 address is one no request may reach (AAP 0.5.6): the unspecified and loopback addresses,
+ * unique-local, link-local, multicast, documentation and discard-only space, and the addresses that carry an IPv4
+ * address inside them, which are blocked whenever the IPv4 address they carry is.
  *
- * Four kinds of prefix carry an IPv4 address, and each is read the way the RFC that lays it out
- * defines it. An IPv4-mapped or IPv4-compatible address and the well-known NAT64 prefix
- * `64:ff9b::/96` hold it in the last 32 bits. A 6to4 `2002::/16` address holds the tunnel endpoint's
- * own IPv4 address there, so decoding it is exact rather than conservative (RFC 3056, §2). A
- * local-use NAT64 `64:ff9b:1::/48` address spreads it over the 16 bits after the prefix and the two
- * octets around the reserved `u` octet (RFC 6052, §2.2; the prefix is assigned by RFC 8215, §3), and
- * a literal that does not follow that layout is refused outright, because no address can be decoded
- * from it. Teredo `2001:0000::/32` is refused outright too: it holds the Teredo server's IPv4 address
- * and the client's obfuscated one rather than a destination the filter can judge (RFC 4380, §4).
+ * Four kinds of prefix carry an IPv4 address, and each is read the way the RFC that lays it out defines it: an
+ * IPv4-mapped or IPv4-compatible address and the well-known NAT64 prefix `64:ff9b::/96` hold it in the last 32 bits;
+ * a 6to4 `2002::/16` address holds the tunnel endpoint's own IPv4 address there, so decoding it is exact rather than
+ * conservative (RFC 3056, §2); a local-use NAT64 `64:ff9b:1::/48` address spreads it over the 16 bits after the
+ * prefix and the two octets around the reserved `u` octet (RFC 6052, §2.2; the prefix is assigned by RFC 8215, §3),
+ * and a literal that does not follow that layout is refused outright because no address can be decoded from it; and
+ * Teredo `2001:0000::/32` is refused outright too, because it holds the Teredo server's IPv4 address and the
+ * client's obfuscated one rather than a destination the filter can judge (RFC 4380, §4).
  */
 function ipv6Blocked(groups: readonly number[]): boolean {
   const [g0 = 0, g1 = 0, g2 = 0, g3 = 0, g4 = 0, g5 = 0, g6 = 0, g7 = 0] = groups;
   const embedded = g6 * 65536 + g7;
-
   // `::`, `::1`, an IPv4-compatible address and an IPv4-mapped one all carry their IPv4 address here,
   // and the unspecified and loopback shapes carry 0.0.0.0 and 0.0.0.1, which the IPv4 list blocks.
   if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0) return ipv4BlockedValue(embedded);
@@ -425,7 +371,6 @@ function ipv6Blocked(groups: readonly number[]): boolean {
   // rather than trusted.
   if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0x0001) {
     const wellFormed = (g4 & 0xff00) === 0 && (g5 & 0x00ff) === 0 && g6 === 0 && g7 === 0;
-
     return !wellFormed || ipv4BlockedValue(g3 * 65536 + ((g4 & 0xff) << 8) + (g5 >> 8));
   }
   if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
@@ -433,55 +378,45 @@ function ipv6Blocked(groups: readonly number[]): boolean {
   if ((g0 & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   if (g0 === 0x2001 && g1 === 0x0db8) return true; // 2001:db8::/32 documentation
   if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return true; // 100::/64 discard-only
-
   return false;
 }
 
 /**
  * Whether an address is one the crawler may never connect to (AAP 0.5.6, pure).
  *
- * True for every private, loopback, link-local, carrier-grade NAT, multicast, reserved, documentation
- * and benchmarking range of IPv4; for the unspecified, loopback, unique-local, link-local, multicast,
- * documentation and discard-only ranges of IPv6; for an IPv6 address that embeds a blocked IPv4
- * address — IPv4-mapped, IPv4-compatible, both NAT64 prefixes and 6to4, each decoded as its own RFC
- * lays the embedded address out — and for one that reaches an IPv4 address through a transition
- * prefix whose embedded address cannot be decoded, Teredo and a malformed local-use NAT64 address,
- * which are refused outright; for an address carrying a zone id; and — failing closed — for anything
- * that does not parse as an address at all.
- *
- * @param ip The address from a {@link LookupFn} answer or from an IP-literal host.
- * @returns True when no request may be made to it.
+ * True for every private, loopback, link-local, carrier-grade NAT, multicast, reserved, documentation and
+ * benchmarking range of IPv4; for the unspecified, loopback, unique-local, link-local, multicast, documentation and
+ * discard-only ranges of IPv6; for an IPv6 address that embeds a blocked IPv4 address, each decoded as its own RFC
+ * lays it out, and for one whose embedded address cannot be decoded, Teredo and a malformed local-use NAT64 address,
+ * which are refused outright; for an address carrying a zone id; and — failing closed — for anything that does not
+ * parse as an address at all.
  */
 export function isBlockedAddress(ip: string): boolean {
   const address = ip.trim().toLowerCase();
   const family = isIP(address);
-
   if (family === 4) {
     const value = ipv4ToInt(address);
     return value === null ? true : ipv4BlockedValue(value);
   }
   if (family !== 6) return true;
-
   const groups = ipv6Groups(address);
-
   return groups === null ? true : ipv6Blocked(groups);
 }
 
 /**
- * The host a request connects to (AAP 0.5.6): `url.hostname` lower-cased and without the brackets an
- * IPv6 literal carries, because a `Host` header and an SNI name must not be `[::1]`. {@link domainKey}
- * is the key the crawl decisions are taken on, and drops a leading `www.` as well.
+ * The host a request connects to (AAP 0.5.6): `url.hostname` lower-cased and without the brackets an IPv6 literal
+ * carries, because a `Host` header and an SNI name must not be `[::1]`. {@link domainKey} is the key the crawl
+ * decisions are taken on, and drops a leading `www.` as well.
  */
 function hostOf(url: URL): string {
   const host = url.hostname;
-
   return (host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host).toLowerCase();
 }
 
 /**
- * The URL of one hop, or the {@link SafeFetchError} it earns (AAP 0.5.6). A URL carrying credentials
- * is refused outright, and the scheme is judged before the host so `file:` and `data:` report `scheme`
- * rather than an unusable host.
+ * The URL of one hop, or the {@link SafeFetchError} it earns (AAP 0.5.6). A URL carrying credentials is refused
+ * outright, and the scheme is judged before the host so `file:` and `data:` report `scheme` rather than an unusable
+ * host.
  */
 function parseHttpUrl(rawUrl: string): { url: URL; host: string } {
   let url: URL;
@@ -490,7 +425,6 @@ function parseHttpUrl(rawUrl: string): { url: URL; host: string } {
   } catch {
     throw new SafeFetchError('invalid_url');
   }
-
   const host = hostOf(url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new SafeFetchError('scheme', host || null);
@@ -498,14 +432,12 @@ function parseHttpUrl(rawUrl: string): { url: URL; host: string } {
   if (url.username !== '' || url.password !== '' || host === '') {
     throw new SafeFetchError('invalid_url', host || null);
   }
-
   return { url, host };
 }
 
 /** The port a request would use, including the scheme's own default (AAP 0.5.6). */
 function effectivePort(url: URL): number {
   if (url.port !== '') return Number(url.port);
-
   return url.protocol === 'https:' ? 443 : 80;
 }
 
@@ -517,7 +449,6 @@ function headerOf(response: IncomingMessage, name: string): string | null {
     const first = value[0];
     return typeof first === 'string' ? first : null;
   }
-
   return null;
 }
 
@@ -533,14 +464,12 @@ function buildHeaders(
     // Nothing compressed: a decompression bomb is otherwise a way around the byte bounds below.
     'accept-encoding': 'identity',
   };
-
   for (const [name, value] of Object.entries(extra ?? {})) {
     const key = name.toLowerCase();
     if (FORWARDED_HEADERS.has(key)) {
       headers[key] = value;
     }
   }
-
   return headers;
 }
 
@@ -569,13 +498,13 @@ type Hop = {
 /**
  * Build the crawler's one fetch (AAP 0.5.6).
  *
- * Every hop of every request runs the same chain, in this order: the URL, the port, the blocklist, the
- * operator's site-terms decision, the resolved addresses, `robots.txt`, the place's budget, the
- * per-domain throttle, and only then the connection to the address that was validated. The `robots`
- * kind is the chain's one exception: it is not itself subject to `robots.txt`.
+ * Every hop of every request runs the same chain, in this order: the URL, the port, the blocklist, the operator's
+ * site-terms decision, the resolved addresses, `robots.txt`, the place's budget, the per-domain throttle, and only
+ * then the connection to the address that was validated. The `robots` kind is the chain's one exception: it is not
+ * itself subject to `robots.txt`.
  *
- * The returned function rejects with a {@link SafeFetchError} and never falls back to an unsafe
- * request, so a caller that cannot fetch has nothing left to try but the phone route.
+ * The returned function rejects with a {@link SafeFetchError} and never falls back to an unsafe request, so a caller
+ * that cannot fetch has nothing left to try but the phone route.
  */
 export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
   const lookup = deps.lookup ?? defaultLookup;
@@ -584,14 +513,12 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
   const exemptHosts = new Set(
     deps.appEnv === 'test' ? deps.allowPrivateHosts.map((host) => host.toLowerCase()) : [],
   );
-
   if (deps.appEnv !== 'test' && deps.allowPrivateHosts.length > 0) {
     deps.logger.warn({
       event: 'crawl_private_hosts_ignored',
       hosts: deps.allowPrivateHosts.length,
     });
   }
-
   const robots = createRobotsChecker({
     cache: deps.robotsCache,
     userAgent: deps.userAgent,
@@ -604,7 +531,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
           kind: 'robots',
           budget: createFetchBudget(),
         });
-
         return { status: answer.status, body: answer.body.toString('utf8') };
       } catch {
         // No answer at all: the checker reads `null` as "nothing may be crawled", never as "no
@@ -613,7 +539,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       }
     },
   });
-
   /** Resolve a host, or refuse `dns_failed` (AAP 0.5.6). */
   async function resolveHost(host: string): Promise<{ address: string; family: 4 | 6 }[]> {
     try {
@@ -622,7 +547,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       throw new SafeFetchError('dns_failed', host);
     }
   }
-
   /** One HTTP answer, from the URL checks to the last body byte (AAP 0.5.6). */
   async function performHop(
     rawUrl: string,
@@ -634,17 +558,14 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     const { url, host } = parseHttpUrl(rawUrl);
     const exempt = exemptHosts.has(host);
     const port = effectivePort(url);
-
     // An exempt host is a fixture server on this host, which is why it alone may use another port.
     if (!exempt && port !== 80 && port !== 443) {
       throw new SafeFetchError('port', host);
     }
-
     const hostKey = domainKey(host);
     if (isBlocklisted(host, deps.blocklist)) {
       throw new SafeFetchError('blocklisted', host);
     }
-
     const decision = await deps.policy(hostKey);
     if (decision !== 'allowed') {
       // `uncertain` is recorded by the policy before it answers, so a domain awaiting an operator's
@@ -654,7 +575,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         host,
       );
     }
-
     const literal = isIP(host);
     const answers: { address: string; family: 4 | 6 }[] =
       literal === 0 ? await resolveHost(host) : [{ address: host, family: literal === 6 ? 6 : 4 }];
@@ -671,7 +591,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         }
       }
     }
-
     // The address is judged before `robots.txt` is fetched, though both belong to this one hop: a host
     // the crawler may not reach has no readable robots.txt either, so that fetch fails closed and a
     // later address check would report the masked `robots_disallowed`. Every check still runs on
@@ -681,9 +600,7 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     if (kind !== 'robots' && !(await robots.isAllowed(url))) {
       throw new SafeFetchError('robots_disallowed', host);
     }
-
     budget.reserveRequest();
-
     try {
       // The slot is scoped to the site, not to the host spelling the request happens to use, so
       // `a.example.com` and `b.example.com` cannot each make a request a second to `example.com`
@@ -696,7 +613,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       }
       throw error;
     }
-
     const secure = url.protocol === 'https:';
     // The connection is opened to the address itself, so no name is resolved at connect time and no
     // second answer can point the socket somewhere the check above refused. A connect this address
@@ -720,11 +636,9 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     };
     // SNI carries a name, never an IP literal.
     if (secure && literal === 0) options.servername = host;
-
     const limit = FETCH_LIMITS[kind];
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
-
     try {
       const response = await new Promise<IncomingMessage>((onResponse, onError) => {
         const request = (secure ? httpsRequest : httpRequest)(options, onResponse);
@@ -740,7 +654,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       const status = response.statusCode ?? 0;
       const location = headerOf(response, 'location');
       const contentType = headerOf(response, 'content-type');
-
       if (REDIRECT_STATUSES.has(status) && location !== null) {
         // The body is discarded by closing the connection rather than drained, so a hostile 302 cannot
         // stream past the byte bounds, and the socket was never reusable anyway (`agent: false`).
@@ -751,14 +664,12 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         response.destroy();
         return { url, host, status, location: null, contentType, body: EMPTY_BODY };
       }
-
       // A declared length over the kind's limit is refused before a byte of the body is read.
       const declared = Number(headerOf(response, 'content-length') ?? Number.NaN);
       if (Number.isFinite(declared) && declared > limit) {
         response.destroy();
         throw new SafeFetchError('too_large', host, status);
       }
-
       const chunks: Buffer[] = [];
       let received = 0;
       for await (const chunk of response as AsyncIterable<Buffer>) {
@@ -770,7 +681,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         budget.addBytes(chunk.length);
         chunks.push(chunk);
       }
-
       return { url, host, status, location: null, contentType, body: Buffer.concat(chunks) };
     } catch (error) {
       // The refusals raised above are already typed. Everything else is the socket or the TLS
@@ -782,10 +692,9 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       if (timer !== undefined) clearTimeout(timer);
     }
   }
-
   /**
-   * Follow `rawUrl` through its redirects, re-checking every hop, and refuse any answer the kind
-   * cannot use (AAP 0.5.6).
+   * Follow `rawUrl` through its redirects, re-checking every hop, and refuse any answer the kind cannot use
+   * (AAP 0.5.6).
    */
   async function perform(
     rawUrl: string,
@@ -796,14 +705,11 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
     if (method !== 'GET' && method !== 'HEAD') {
       throw new SafeFetchError('method_not_allowed');
     }
-
     const headers = buildHeaders(opts.kind, deps.userAgent, opts.headers);
     let target = rawUrl;
     let followed = 0;
-
     for (;;) {
       const hop = await performHop(target, opts.kind, method, headers, opts.budget);
-
       if (REDIRECT_STATUSES.has(hop.status) && hop.location !== null) {
         if (followed >= FETCH_LIMITS.maxRedirects) {
           throw new SafeFetchError('redirect_limit', hop.host);
@@ -814,7 +720,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         target = resolveLocation(hop.url, hop.location);
         continue;
       }
-
       if (opts.kind !== 'robots') {
         if (hop.status === 401 || hop.status === 403) {
           throw new SafeFetchError('auth_required', hop.host, hop.status);
@@ -823,7 +728,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
           throw new SafeFetchError('http_error', hop.host, hop.status);
         }
       }
-
       deps.logger.debug({
         event: 'menu_fetch',
         host: hop.host,
@@ -832,7 +736,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
         bytes: hop.body.length,
         durationMs: deps.clock.nowMs() - startedMs,
       });
-
       return {
         url: hop.url.href,
         status: hop.status,
@@ -841,7 +744,6 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       };
     }
   }
-
   const safeFetch: SafeFetch = async (url, opts) => {
     try {
       return await perform(url, opts, deps.clock.nowMs());
@@ -861,6 +763,5 @@ export function createSafeFetch(deps: SafeFetchDeps): SafeFetch {
       throw error;
     }
   };
-
   return safeFetch;
 }

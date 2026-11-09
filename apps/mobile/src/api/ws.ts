@@ -1,28 +1,17 @@
 /**
- * The traveler app's one WebSocket: pair chat and meetup-status pushes on `WS /v1/chat`
- * (AAP 0.1.1 requirement 9, AAP 0.3.3, AAP 0.5.4, AAP 0.8.1).
+ * The traveler app's one WebSocket: pair chat and meetup-status pushes on `WS /v1/chat` (AAP 0.1.1
+ * requirement 9, AAP 0.3.3, AAP 0.5.4, AAP 0.8.1).
  *
- * One socket serves every meetup and every screen, and the session owns it rather than a screen:
- * `src/auth/session.ts` calls {@link connect} once a session exists and {@link disconnect} when it
- * ends, and `src/state/meetup-store.ts` subscribes to the frames so it can refetch what it caches.
- * This module therefore imports nothing from `src/auth` or `src/state` — the dependency runs from
- * those modules into here, which keeps the three out of a cycle (AAP 0.5.1).
- *
- * Four invariants hold here:
- *
- *   - The socket authenticates with the `Sec-WebSocket-Protocol: bearer, <accessToken>`
- *     subprotocol, the only way a browser `WebSocket` can carry the access token (AAP 0.3.3). The
- *     token is read from the auth hooks injected through `configureAuth` in `./client`, never from
- *     storage, a query parameter or a header.
- *   - No frame is trusted and none is echoed: every inbound frame is parsed with the shared
- *     {@link ServerFrame} and an unreadable one is dropped, while {@link send} validates its own
- *     frame with {@link ClientFrame} so what leaves is exactly what was checked. It writes only to
- *     an open socket while the runtime is online ({@link isOnline}), so a frame nothing can deliver
- *     is refused instead of left in a buffer nothing flushes. The server is the authority on access
- *     — messaging opens only once both deposits are locked (AAP 0.5.4).
- *   - Nothing is logged: no frame, no message body, no token, no close or error event (AAP 0.11.1).
- *   - Importing this module has no side effect and touches no platform global until {@link connect}
- *     runs, so a Node test can import it with no environment configured.
+ * The session owns the socket, not a screen, and this module imports nothing from `src/auth` or
+ * `src/state`, so the dependency runs one way and the three stay out of a cycle (AAP 0.5.1). It
+ * authenticates with `Sec-WebSocket-Protocol: bearer, <accessToken>` — the only way a browser
+ * `WebSocket` can carry the access token (AAP 0.3.3) — read from the auth hooks, never from storage,
+ * a query parameter or a header. No frame is trusted and none is echoed: inbound frames are parsed
+ * with {@link ServerFrame} and outbound ones with {@link ClientFrame}, an unreadable frame is dropped,
+ * and a write is refused unless the socket is open and the runtime is online, because a socket kept
+ * open by a lost connection takes the write into a buffer nothing flushes. The server is the authority
+ * on access: messaging opens only once both deposits are locked (AAP 0.5.4). Nothing is logged — no
+ * frame, body, token or event (AAP 0.11.1) — and importing the module has no side effect.
  */
 import { onlineManager } from '@tanstack/react-query';
 import { ClientFrame, ServerFrame, WS_BEARER_SUBPROTOCOL } from '@tablemate/shared';
@@ -43,27 +32,15 @@ const MAX_BACKOFF_MS = 30_000;
 /** The close code our own {@link disconnect} sends: a normal closure (RFC 6455 §7.4.1). */
 const CLOSE_NORMAL = 1000;
 
-/**
- * The `readyState` of an open socket, as a number rather than through `WebSocket.OPEN`: a static is
- * a property of whichever implementation the platform supplies, while the value is fixed by the
- * WHATWG specification.
- */
+/** Open, as a number: the static is a property of whichever implementation the platform supplies, while the value is fixed by the WHATWG specification. */
 const READY_STATE_OPEN = 1;
 
-/**
- * The close codes the API sends on the chat socket (`WS_CLOSE` in
- * `apps/api/src/plugins/websocket.ts`): `4401` unauthorized, `4403` forbidden, `4409` invalidated
- * — sessions revoked by account deletion or refresh-token reuse — and `4429` too many sockets. The
- * API's module is not importable from the client bundle, so the numeric contract is restated here.
- */
+/** The API's chat close codes, restated because `apps/api/src/plugins/websocket.ts` is not importable from the client bundle: `4403` forbidden is refused rather than retried. */
 const CLOSE_UNAUTHORIZED = 4401;
 const CLOSE_FORBIDDEN = 4403;
 const CLOSE_INVALIDATED = 4409;
 
-/**
- * What the socket is doing, so a screen can show "reconnecting" instead of a dead chat
- * (AAP 0.3.3).
- */
+/** What the socket is doing, so a screen can show "reconnecting" instead of a dead chat (AAP 0.3.3). */
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting';
 
 /** The state most recently published to the listeners. */
@@ -105,14 +82,9 @@ const stateListeners = new Set<(state: ConnectionState) => void>();
 // --- Listener registration (AAP 0.3.3) ---------------------------------------------------------
 
 /**
- * Subscribes to the frames the API pushes (AAP 0.3.3, AAP 0.5.4): a stored chat message, a meetup
- * status change, or a refusal such as `messaging_locked`, `blocked` or `rate_limited`.
- *
- * Listeners stay registered across connects and disconnects, because the session outlives a socket;
- * {@link disconnect} does not clear them. Each listener is called in isolation, so one that throws
- * neither stops the others nor breaks the socket.
- *
- * @returns The function that removes this listener.
+ * Subscribes to the frames the API pushes (AAP 0.3.3, AAP 0.5.4). Listeners stay registered across
+ * connects and disconnects, because the session outlives a socket, and each is called in isolation,
+ * so one that throws neither stops the others nor breaks the socket.
  */
 export function subscribe(listener: (frame: ServerFrame) => void): () => void {
   frameListeners.add(listener);
@@ -121,12 +93,7 @@ export function subscribe(listener: (frame: ServerFrame) => void): () => void {
   };
 }
 
-/**
- * Subscribes to connection-state changes (AAP 0.3.3), which the chat screen renders so a traveler
- * waiting on a dropped connection is told it is reconnecting rather than shown as sent.
- *
- * @returns The function that removes this listener.
- */
+/** Subscribes to connection-state changes (AAP 0.3.3), which the chat screen renders so a traveler waiting on a dropped connection is told it is reconnecting rather than shown as sent. */
 export function subscribeConnectionState(listener: (state: ConnectionState) => void): () => void {
   stateListeners.add(listener);
   return () => {
@@ -142,14 +109,10 @@ export function getConnectionState(): ConnectionState {
 // --- Connect, send, disconnect (AAP 0.3.3, AAP 0.5.4) ------------------------------------------
 
 /**
- * Opens the chat socket, or does nothing when one is already connecting, open or waiting to be
- * retried (AAP 0.3.3).
- *
- * Idempotent, so `src/auth/session.ts` may call it after every sign-in and bootstrap and
- * `app/_layout.tsx` may call it as well. With no hooks installed or no access token there is nothing
- * to authenticate, so the state stays `idle` rather than throwing; an unset `EXPO_PUBLIC_WS_URL`
- * behaves the same way. Reconnecting after a failure is this module's own job and needs no further
- * call.
+ * Opens the chat socket, or does nothing when one is already connecting, open or waiting to be retried
+ * (AAP 0.3.3). Idempotent, so a caller may invoke it after every sign-in and bootstrap; with no hooks,
+ * no access token or no `EXPO_PUBLIC_WS_URL` the state stays `idle` rather than throwing. Reconnecting
+ * after a failure is this module's own job and needs no further call.
  */
 export function connect(): void {
   desired = true;
@@ -159,51 +122,34 @@ export function connect(): void {
 
 /**
  * Whether the runtime currently has a connection — the app's one connectivity answer (AAP 0.3.3).
- *
- * It is deliberately the query layer's own answer rather than a second opinion: `onlineManager` is
- * the connectivity signal React Query itself consults, and `QueryClientProvider` mounting the client
- * is what registers its `window` `online` and `offline` listeners — so this answer and the one the
- * query layer acts on cannot disagree.
- *
- * On a platform that raises no such events the manager reports online and the socket's own
- * `readyState` is what refuses a write; {@link send} reads both, and refuses when either says so.
- *
- * @returns True while the runtime reports a connection.
+ * Deliberately the query layer's own signal, because `onlineManager` is what React Query consults, so
+ * this answer and the one the query layer acts on cannot disagree. On a platform that raises no
+ * connectivity events the manager reports online and the socket's own `readyState` is what refuses a
+ * write; {@link send} reads both.
  */
 export function isOnline(): boolean {
   return onlineManager.isOnline();
 }
 
 /**
- * Sends one chat message for a meetup (AAP 0.3.3, AAP 0.5.4, `ChatSend`).
- *
- * The frame is written only to an open socket while the runtime is online ({@link isOnline}), and
- * only once it has been validated with the shared {@link ClientFrame}, so a body that is empty,
- * whitespace-only or longer than the contract's limit is refused here rather than answered by the
- * server. There is no local echo and no offline queue, and nothing is buffered either: a socket kept
- * open by a lost connection accepts a write into its own send buffer and then drops it with the
- * browser tab, so a caller refused here keeps its text and reports the failure. The server answers
- * with a `message` frame fanned out to both participants, or with an {@link ErrorFrame} the
- * listeners receive.
- *
- * @returns True when the frame was written to an open socket while the runtime was online, false
- * when it was invalid, the socket was not open, or the runtime was offline — the caller may then
- * tell the traveler to try again, keeping what they typed.
+ * Sends one chat message for a meetup (AAP 0.3.3, AAP 0.5.4, `ChatSend`), and returns false when the
+ * frame was not written: it is validated with the shared {@link ClientFrame}, so an empty,
+ * whitespace-only or over-long body is refused here rather than answered by the server. There is no
+ * local echo and no offline queue — a socket kept open by a lost connection accepts a write into its
+ * own send buffer and then drops it with the browser tab — so a caller refused here keeps its text and
+ * reports the failure.
  */
 export function send(meetupId: string, body: string): boolean {
   const open = socket;
   if (open === null || open.readyState !== READY_STATE_OPEN) return false;
-
   // A socket holds `readyState` 1 while the connection is down, so the write below would land in
   // its send buffer: nothing would be delivered, the tab would lose the message, and the traveler
   // would be told nothing. Refusing is what lets the chat screen keep the draft and report the
   // failure (AAP 0.5.4).
   if (!isOnline()) return false;
-
   const frame: ChatSend = { type: 'chat_send', meetupId, body };
   const checked = ClientFrame.safeParse(frame);
   if (!checked.success) return false;
-
   try {
     // The parsed frame, not the input: what was validated is what is sent, trimming included.
     open.send(JSON.stringify(checked.data));
@@ -216,16 +162,13 @@ export function send(meetupId: string, body: string): boolean {
 }
 
 /**
- * Closes the socket and stops reconnecting (AAP 0.3.3).
- *
- * Called when the session ends, on sign-out and after account deletion. A pending reconnect is
- * cancelled, the backoff and unauthorized counters are cleared, and the state returns to `idle`.
- * Registered listeners are left in place: they belong to the session's lifetime, not to a socket's.
+ * Closes the socket and stops reconnecting (AAP 0.3.3). A pending reconnect is cancelled and the
+ * backoff and unauthorized counters are cleared; registered listeners are left in place, because they
+ * belong to the session's lifetime rather than to a socket's.
  */
 export function disconnect(): void {
   desired = false;
   clearReconnect();
-
   const closing = socket;
   if (closing !== null) {
     discard(closing);
@@ -235,7 +178,6 @@ export function disconnect(): void {
       // Already closed: the socket is gone either way, and its handlers are detached.
     }
   }
-
   refreshBeforeNextAttempt = false;
   refreshedSinceUnauthorized = false;
   unauthorizedCloses = 0;
@@ -245,15 +187,11 @@ export function disconnect(): void {
 
 // --- Opening a socket -------------------------------------------------------------------------
 
-/**
- * Opens one socket for the current session, rotating the session first when the last close looked
- * unauthorized. Never rejects, and never throws at the caller.
- */
+/** Opens one socket for the current session, rotating the session first when the last close looked unauthorized. Never rejects, and never throws at the caller. */
 async function openSocket(): Promise<void> {
   opening = true;
   try {
     if (!desired) return;
-
     if (refreshBeforeNextAttempt) {
       refreshBeforeNextAttempt = false;
       const rotation = await rotateSession();
@@ -266,17 +204,14 @@ async function openSocket(): Promise<void> {
         return;
       }
     }
-
     // The session may have ended while the rotation was in flight.
     if (!desired || socket !== null) return;
-
     const base = wsBaseUrl();
     const token = accessToken();
     if (base === null || token === null) {
       setState('idle');
       return;
     }
-
     let created: WebSocket;
     try {
       created = new WebSocket(`${base}${CHAT_PATH}`, [WS_BEARER_SUBPROTOCOL, token]);
@@ -286,7 +221,6 @@ async function openSocket(): Promise<void> {
       scheduleReconnect();
       return;
     }
-
     socket = created;
     setState('connecting');
     attach(created);
@@ -296,10 +230,9 @@ async function openSocket(): Promise<void> {
 }
 
 /**
- * Attaches the four handlers to a socket and records how to remove them again.
- *
- * Every handler first checks that the socket is still the one this module holds, so a late event
- * from a socket that was already discarded cannot change the state or deliver a frame twice.
+ * Attaches the four handlers to a socket and records how to remove them again. Every handler first
+ * checks that the socket is still the one this module holds, so a late event from a socket that was
+ * already discarded cannot change the state or deliver a frame twice.
  */
 function attach(created: WebSocket): void {
   const handleOpen = (): void => {
@@ -310,35 +243,29 @@ function attach(created: WebSocket): void {
     refreshBeforeNextAttempt = false;
     setState('open');
   };
-
   const handleMessage = (event: MessageEvent): void => {
     if (socket !== created) return;
     receive(event.data);
   };
-
   const handleError = (): void => {
     // Nothing to do: a browser and React Native both follow an error with a close, which decides
     // whether the next attempt rotates the session. The event is never inspected — it can carry the
     // request URL — and never logged (AAP 0.11.1).
   };
-
   const handleClose = (event: CloseEvent): void => {
     if (socket !== created) return;
     discard(created);
-
     // Our own close, or an orderly one from the platform: no reason to come back.
     if (!desired || event.code === CLOSE_NORMAL) {
       setState('idle');
       return;
     }
-
     // 4403 is the server refusing this traveler outright — a block, or a meetup that is not theirs —
     // so retrying would be refused again (AAP 0.5.4).
     if (event.code === CLOSE_FORBIDDEN) {
       setState('idle');
       return;
     }
-
     // A refusal the API itself labelled unauthorized: the close code says the session is not live, or
     // a `token_invalid` frame arrived before the close. A close before `open` is deliberately not
     // one: an upgrade refused for a spent token is answered as plain HTTP before the upgrade, which a
@@ -348,7 +275,6 @@ function attach(created: WebSocket): void {
       event.code === CLOSE_UNAUTHORIZED ||
       event.code === CLOSE_INVALIDATED ||
       refreshBeforeNextAttempt;
-
     if (unauthorized) {
       unauthorizedCloses += 1;
       if (refreshedSinceUnauthorized && unauthorizedCloses >= 2) {
@@ -360,10 +286,8 @@ function attach(created: WebSocket): void {
       }
       refreshBeforeNextAttempt = true;
     }
-
     scheduleReconnect();
   };
-
   created.onopen = handleOpen;
   created.onmessage = handleMessage;
   created.onerror = handleError;
@@ -394,26 +318,22 @@ function discard(created: WebSocket): void {
 /** Parses one inbound payload and delivers it to the listeners (AAP 0.3.3, AAP 0.5.4). */
 function receive(payload: unknown): void {
   if (typeof payload !== 'string') return;
-
   let decoded: unknown;
   try {
     decoded = JSON.parse(payload);
   } catch {
     return;
   }
-
   const frame = ServerFrame.safeParse(decoded);
   // A frame this client cannot read — one from a newer API, or something that is not a frame at all —
   // is dropped rather than logged or answered (AAP 0.11.1).
   if (!frame.success) return;
-
   const value: ServerFrame = frame.data;
   if (value.type === 'error' && value.code === 'token_invalid') {
     // The write was refused because the session no longer authenticates it, and the server closes
     // with 4401 next: rotate before the next attempt (AAP 0.5.3).
     refreshBeforeNextAttempt = true;
   }
-
   for (const listener of [...frameListeners]) {
     try {
       listener(value);
@@ -429,7 +349,6 @@ function receive(payload: unknown): void {
 function scheduleReconnect(): void {
   if (!desired) return;
   clearReconnect();
-
   const ceiling = Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** failedAttempts);
   const delay = Math.max(MIN_BACKOFF_MS, Math.floor(Math.random() * ceiling));
   failedAttempts += 1;
@@ -449,11 +368,9 @@ function clearReconnect(): void {
 
 /**
  * Rotates the session before a reconnect, through the single flight shared with the REST client, so
- * one refresh token is spent once whatever else is retrying (AAP 0.3.3, AAP 0.11.2).
- *
- * @returns `rotated` when a new pair is installed, `failed` when the rotation failed for any reason
- * other than a refusal — a lost connection above all — and `signed_out` when it was refused with
- * `401 token_invalid`, in which case the session has already been cleared.
+ * one refresh token is spent once whatever else is retrying (AAP 0.3.3, AAP 0.11.2). `failed` is a
+ * rotation that failed for a reason other than a refusal — a lost connection above all — and
+ * `signed_out` one refused with `401 token_invalid`, the session already cleared.
  */
 async function rotateSession(): Promise<'rotated' | 'failed' | 'signed_out'> {
   try {
@@ -473,9 +390,8 @@ async function rotateSession(): Promise<'rotated' | 'failed' | 'signed_out'> {
 
 /**
  * Ends the session: the hooks clear it and the socket stops reconnecting (AAP 0.5.3, AAP 0.11.2).
- *
- * `onSignedOut` is idempotent by contract (`./client`), and `src/auth/session.ts` calls
- * {@link disconnect} from it as well, so the second call here is harmless.
+ * `onSignedOut` is idempotent by contract and `src/auth/session.ts` calls {@link disconnect} from it
+ * as well, so the second call here is harmless.
  */
 async function signOutAndStop(): Promise<void> {
   const hooks = authHooks();
@@ -496,9 +412,8 @@ async function signOutAndStop(): Promise<void> {
  *
  * `process.env.EXPO_PUBLIC_WS_URL` is read by direct static member access on purpose:
  * `babel-preset-expo` 12 inlines only that form, so a destructured or computed read would arrive
- * `undefined` in the bundle. `apps/mobile/app.config.ts` validates it at build time as a `ws:` or
- * `wss:` origin; a trailing slash is tolerated here. The read happens per call rather than at module
- * load, so importing this module needs no environment.
+ * `undefined` in the bundle. Read per call rather than at module load, so importing this module needs
+ * no environment.
  */
 function wsBaseUrl(): string | null {
   // The read is kept as one direct member access and the value narrowed by hand, as in `./client`:

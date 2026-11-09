@@ -1,48 +1,29 @@
 /**
- * The acceptance half of the commitment lock: `POST /meetups/:id/accept`, `POST /meetups/:id/decline`
- * and the additive `POST /meetups/:id/hold` (AAP 0.5.1, 0.5.3, 0.5.4).
+ * The acceptance half of the commitment lock: `POST /meetups/:id/accept`, `POST /meetups/:id/decline` and
+ * the additive `POST /meetups/:id/hold` (AAP 0.5.1, 0.5.3, 0.5.4).
  *
- * {@link acceptMeetup} is the recipient's side of the lock. It accepts only from a proposal the
- * recipient can see and only before `recipientDeadline`, marks the acceptance intent once, and places
- * the recipient's own hold: attempt 1 on a proposal they have not answered yet, attempt `n + 1` after
- * a refused card, or the secret of the attempt that already carries an authorization — one still
- * waiting on their 3-D Secure step, or one already held.
- * {@link declineMeetup} is the refusal, which runs the state machine's own `decline` transition.
- * {@link retryInitiatorHold} is the same hold path for the initiator, whose attempt can fail before the
- * proposal is ever visible to the recipient.
+ * {@link acceptMeetup} is the recipient's side of the lock: it accepts only from a proposal the recipient can see
+ * and only before `recipientDeadline`, marks the acceptance intent once, and places the recipient's own hold —
+ * attempt 1 on a proposal they have not answered, attempt `n + 1` after a refused card, or the secret of the
+ * attempt that already carries an authorization. {@link declineMeetup} runs the state machine's own `decline`
+ * transition, and {@link retryInitiatorHold} is the same hold path for the initiator.
  *
- * **The proposal locks itself (AAP 0.5.3).** No branch here moves a meetup to `locked`: the
- * recipient's hold reaching `requires_capture` does, and that transition belongs to
- * `applyHoldOutcome` in `meetups/state-machine.ts`, which the inline hold reaches through its own
- * transaction. This file decides who may act and which attempt to place; the state machine decides
- * whether the result locks the meetup, leaves the proposal standing or lapses it.
+ * **The proposal locks itself (AAP 0.5.3).** No branch here moves a meetup to `locked`: the recipient's hold
+ * reaching `requires_capture` does, through `applyHoldOutcome`. This file decides who may act and which attempt to
+ * place; the state machine decides whether the result locks the meetup.
  *
- * **One fenced transaction, then Stripe (AAP 0.3.2, 0.5.3).** Each handler opens exactly one
- * transaction through `transact`, fenced on the acting account, and takes `lockMeetup` before it reads
- * or writes anything about the meetup, so a racing accept, cancel, block, lapse, check-in, dispute or
- * hold-loss webhook is serialized on the row and this request reads the result the other one
- * committed. No Stripe, Redis or provider call runs inside that transaction: the hold whose result is
- * the response runs after the commit through `executeHoldInline`, and the rows the claim gate makes it
- * wait on run before it — the release a retry planned for the attempt it superseded, which the
- * deposit's plan orders ahead of the new attempt — through the scoped `runOperationsFor` pass
- * {@link runHoldAttempt} opens with the hold's own id. The meetup's remaining operations run after
- * that hold, and never before it, because the open operations of the meetup would otherwise include
- * the hold itself.
+ * **One fenced transaction, then Stripe (AAP 0.3.2, 0.5.3).** Each handler opens exactly one transaction through
+ * `transact`, fenced on the acting account, and takes `lockMeetup` before reading or writing anything about the
+ * meetup, so a racing accept, cancel, block, lapse, check-in, dispute or hold-loss webhook serializes on the row.
+ * No provider call runs inside it: the hold whose result is the response runs after the commit through
+ * `executeHoldInline`, after the release a retry planned for the superseded attempt, and the meetup's remaining
+ * operations run after that hold, since the open ones would otherwise include the hold itself.
  *
- * **A lost answer is never a second authorization.** A deposit left `pending` answers
- * `409 hold_pending` rather than starting a new attempt, while the sweeper replays the identical
- * create under its original key; a repeated accept during 3-D Secure returns the same attempt's secret
- * and writes no new `PaymentOperation`; and the secret a route answers with is always the caller's
- * own, because every attempt this file runs belongs to the deposit the route authorized the caller
- * against — the recipient's for accept, the initiator's for the hold retry, and never the
- * counterpart's (AAP 0.5.4). No client secret, PaymentIntent id or amount is ever logged.
- *
- * Time comes only from the `now` argument, and money is integer USD cents (AAP 0.11.1).
- *
- * @see AAP 0.5.3 for the transition table, the deposit lifecycle and the lock's side effects; 0.5.4
- *   for the three routes, their bodies and the order of their errors; 0.5.7 for the acceptance funnel
- *   stage they record; 0.3.2 for hold recovery, the executor and the idempotency keys; 0.11.1 for the
- *   injected clock and the log fields; and 0.8.1 for this file.
+ * **A lost answer is never a second authorization.** A deposit left `pending` answers `409 hold_pending` rather
+ * than starting a new attempt, while the sweeper replays the identical create under its original key; a repeated
+ * accept during 3-D Secure returns the same attempt's secret and writes no `PaymentOperation`; and the secret a
+ * route answers with is always the caller's own, never the counterpart's (AAP 0.5.4). No client secret,
+ * PaymentIntent id or amount is ever logged.
  */
 
 import type {
@@ -86,40 +67,29 @@ const DECLINE_EVENT = 'meetup_decline';
 const HOLD_RETRY_EVENT = 'meetup_hold_retry';
 
 /**
- * The log event name of a deposit this file found in a state with nothing left to place — the
- * `refused` row of {@link HOLD_PLAN} (AAP 0.5.4). It means the client acted on a meetup whose money
- * had already been decided, so the answer is `409 not_proposed` and the state is worth a log line:
- * no secret, no PaymentIntent id and no amount reaches it.
+ * The log event name of a deposit this file found in a state with nothing left to place — the `refused` row of
+ * {@link HOLD_PLAN} (AAP 0.5.4). It means the client acted on a meetup whose money had already been decided, so
+ * the answer is `409 not_proposed`; no secret, no PaymentIntent id and no amount reaches the log line.
  */
 const DEPOSIT_REFUSED_EVENT = 'meetup_deposit_refused';
 
 /**
  * What a hold path does with one side's deposit, by the deposit's own status (AAP 0.5.3, 0.5.4).
  *
- * The table is total over `DepositStatus`, so a status added to the lifecycle cannot fall through this
- * file unnoticed: it is a compile error until the row it needs is written. The one state
- * `DepositStatus` cannot name — a side with no deposit row at all — is decided by each route before it
- * consults the table, because the two routes answer it differently: an accept creates attempt 1, and a
- * hold retry has nothing to retry.
+ * The table is total over `DepositStatus`, so a status added to the lifecycle is a compile error until the row it
+ * needs is written. A side with no deposit row at all is decided by each route before it consults the table,
+ * because the two routes answer it differently: an accept creates attempt 1, a hold retry has nothing to retry.
  *
- * - `retry` — `failed`: a card that refused the hold, or an attempt Stripe ended on its own, left the
- *   deposit with no authorization, and `failed → pending` with attempt `n + 1` is the retry
- *   (AAP 0.5.3).
- * - `confirm` — `requires_action` and `held`: an authorization exists, so the route answers the
- *   caller's own current attempt's secret and creates no new authorization. `requires_action` is the
- *   attempt still waiting on the customer's 3-D Secure step; `held` is an attempt whose authorization
- *   has landed while the meetup has not locked on it — a repeated accept or hold made before the other
- *   side's hold, or the webhook that applies it, arrived (AAP 0.5.4).
- * - `recovering` — `pending`: the current attempt has not concluded. A create may be in flight, an
- *   ambiguous create may be waiting for its replay, or the executor may have handed it to the operator,
- *   which leaves the deposit `pending` on purpose so that every retry is answered `409 hold_pending`
- *   (AAP 0.3.2). Replaying that attempt is the only way to learn its PaymentIntent id and a second
- *   attempt would risk a second authorization, so there is nothing to place here.
- * - `refused` — `released`, `captured`, `expired` and `refunded`: the money decision is already
- *   durable, so there is nothing for the route to place. Its answer is `409 not_proposed`, the code
- *   this module's own planners use for a deposit that is not in the state the caller asked for
- *   (AAP 0.3.2, 0.5.4), and the state is logged because reaching it means the meetup moved in a way
- *   the client did not observe.
+ * - `retry` — `failed`: a card that refused the hold, or an attempt Stripe ended on its own, left the deposit with
+ *   no authorization, and `failed → pending` with attempt `n + 1` is the retry (AAP 0.5.3).
+ * - `confirm` — `requires_action` and `held`: an authorization exists, so the route answers the caller's own
+ *   current attempt's secret and creates no new one.
+ * - `recovering` — `pending`: the current attempt has not concluded — a create in flight, one waiting for its
+ *   replay, or one handed to the operator — and replaying it is the only way to learn its PaymentIntent id, so
+ *   every retry is answered `409 hold_pending` (AAP 0.3.2).
+ * - `refused` — `released`, `captured`, `expired` and `refunded`: the money decision is already durable, so the
+ *   answer is `409 not_proposed` (AAP 0.3.2, 0.5.4), and the state is logged because reaching it means the meetup
+ *   moved in a way the client did not observe.
  */
 type HoldPlan = 'retry' | 'confirm' | 'recovering' | 'refused';
 
@@ -138,16 +108,12 @@ const HOLD_PLAN: Readonly<Record<DepositStatus, HoldPlan>> = {
 /**
  * How a repeated accept answers the provider's own view of the caller's current attempt (AAP 0.5.4).
  *
- * The authorization the attempt carries is durable either way, so an attempt that is still missing the
- * customer's step, and one whose authorization has already landed and is waiting for the webhook that
- * applies it, both answer the caller's own secret: the client needs it to finish 3-D Secure in the
- * first case and ignores it in the second, and no route returns the counterpart's secret.
- *
- * A state this application does not model as an authorization — `requires_payment_method`,
- * `requires_confirmation`, `processing` — is an outcome that could not be observed, so it answers
- * `503 payment_unavailable` rather than assuming either way. A `canceled` or `succeeded` attempt has
- * nothing left to confirm: the webhook or the executor moves the deposit, and the client's next step
- * appears when it refetches the meetup.
+ * The authorization the attempt carries is durable either way, so an attempt still missing the customer's step and
+ * one whose authorization has landed and awaits the applying webhook both answer the caller's own secret — never
+ * the counterpart's. A state this application does not model as an authorization —
+ * `requires_payment_method`, `requires_confirmation`, `processing` — could not be observed, so it answers `503
+ * payment_unavailable` rather than assuming either way. A `canceled` or `succeeded` attempt has nothing left to
+ * confirm: the webhook or the executor moves the deposit, and the client's next step appears when it refetches.
  */
 type AttemptAnswer = 'secret' | 'recovering' | 'refused';
 
@@ -172,41 +138,26 @@ type HoldDecision =
  */
 
 /**
- * `POST /meetups/:id/accept`: the recipient accepts a visible proposal and places their own hold
- * (AAP 0.5.4).
+ * `POST /meetups/:id/accept`: the recipient accepts a visible proposal and places their own hold (AAP 0.5.4).
  *
- * The guards run in the order the contract lists them, all inside the transaction that takes the
- * meetup row lock: the caller must be the recipient of a proposal they can see, the proposal must not
- * have lapsed and must not be past `recipientDeadline`, and it must still be `proposed`. The
- * acceptance intent is then recorded once — `recipientAcceptedAt` with the funnel's
- * `proposal_accepted` — on the first accept past those guards, whatever the authorization outcome
- * turns out to be, so a declined card and its retry emit nothing further (AAP 0.5.7).
+ * The guards run in the order the contract lists them, all inside the transaction that takes the meetup row lock:
+ * the caller must be the recipient of a proposal they can see, it must not have lapsed or passed
+ * `recipientDeadline`, and it must still be `proposed`. The acceptance intent is then recorded once —
+ * `recipientAcceptedAt` with the funnel's `proposal_accepted` — on the first accept past those guards, whatever
+ * the authorization outcome turns out to be, so a declined card and its retry emit nothing further (AAP 0.5.7).
  *
- * What happens to the money is the recipient's own deposit's state alone, from {@link HOLD_PLAN}: no
- * deposit yet creates attempt 1 in this transaction, `failed` starts attempt `n + 1` through
- * `startNewAttempt` — which refuses while the previous attempt's create is unresolved and releases the
- * authorization of the attempt it supersedes — `requires_action` and `held` answer that attempt's own
- * secret from the provider without writing an operation at all, `pending` answers `409 hold_pending`
- * for an attempt that has not concluded, and a deposit whose money decision is already durable answers
- * `409 not_proposed` (AAP 0.3.2, 0.5.3, 0.5.4).
+ * What happens to the money is the recipient's own deposit's state alone, from {@link HOLD_PLAN}: no deposit yet
+ * creates attempt 1 in this transaction, `failed` starts attempt `n + 1` through `startNewAttempt`,
+ * `requires_action` and `held` answer that attempt's own secret without writing an operation, `pending` answers
+ * `409 hold_pending`, and a durable money decision answers `409 not_proposed` (AAP 0.3.2, 0.5.3, 0.5.4).
  *
- * The response is read back after the hold: `locked` when the recipient's authorization landed with
- * the initiator's hold already `held`, and `proposed` while it is still pending. A proposal that moved
- * under the acceptance answers `410 proposal_lapsed` or `409 not_proposed` instead of claiming a lock,
- * and nothing is left outstanding then, because a hold outcome arriving for a finished meetup releases
- * its authorization (AAP 0.5.3).
+ * The response is read back after the hold: `locked` when the recipient's authorization landed with the
+ * initiator's hold already `held`, `proposed` while it is still pending, and `410 proposal_lapsed` or `409
+ * not_proposed` for a proposal that moved under the acceptance — nothing is left outstanding then, because a hold
+ * outcome arriving for a finished meetup releases its authorization.
  *
- * @param services - The app's services: the guarded client, the injected clock and logger, the outbox
- *   dispatcher the transaction commits through, and the payment gateway the hold and the provider read
- *   go through.
- * @param userId - The authenticated caller, who must be the meetup's recipient.
- * @param meetupId - The meetup as the route's path parameter.
- * @param now - The instant the request arrived, `request.receivedAt`, which decides the deadline and
- *   the funnel timestamp (AAP 0.11.1).
- * @returns The route's `200` body: `locked` once the hold is held against a held initiator deposit,
- *   `proposed` while 3-D Secure is pending, and the caller's own current attempt's client secret.
- * @throws AppError `meetup_not_found` (404), `not_recipient` (403), `proposal_lapsed` (410),
- *   `not_proposed` (409), `hold_failed` (402), `hold_pending` (409) or `payment_unavailable` (503).
+ * @throws AppError `meetup_not_found` (404), `not_recipient` (403), `proposal_lapsed` (410), `not_proposed`
+ *   (409), `hold_failed` (402), `hold_pending` (409) or `payment_unavailable` (503).
  */
 export async function acceptMeetup(
   services: AppServices,
@@ -231,7 +182,6 @@ export async function acceptMeetup(
       if (!isVisibleTo(meetup, userId)) {
         throw new AppError('meetup_not_found');
       }
-
       // 2. A proposal that has lapsed, or one still `proposed` past `recipientDeadline`, is refused
       //    and writes nothing: the lapse and the releases it carries are the sweeper's, and refusing
       //    here keeps a late accept from locking a meetup nobody can still attend (AAP 0.5.3). Only a
@@ -244,19 +194,15 @@ export async function acceptMeetup(
       ) {
         throw new AppError('proposal_lapsed');
       }
-
       // 3. Only a proposal can be accepted (AAP 0.5.4).
       if (meetup.status !== 'proposed') {
         throw new AppError('not_proposed');
       }
-
       // 4. The acceptance intent, recorded in the transaction that decides the attempt, so the
       //    funnel's count and the timestamp it counts are one fact (AAP 0.5.7).
       await recordAcceptedAt(tx, services, meetup, now);
-
       // 5. The recipient's own deposit decides the rest, by its status alone (AAP 0.5.3).
       const deposit = await depositOf(tx, meetup.id, userId);
-
       if (deposit === null) {
         // The recipient has not answered yet: attempt 1 is created and its hold planned in this
         // transaction, so the authorization it carries is as durable as the deposit it belongs to.
@@ -270,12 +216,9 @@ export async function acceptMeetup(
             currentAttempt: 1,
           },
         });
-
         const hold = await planHold(tx, { deposit: created, attempt: 1 }, now);
-
         return { plan: 'run', holdOperationId: hold.id };
       }
-
       switch (HOLD_PLAN[deposit.status]) {
         case 'retry': {
           const started = await startNewAttempt(tx, deposit, now);
@@ -304,41 +247,28 @@ export async function acceptMeetup(
     },
     { fenceUserId: userId },
   );
-
   // The hold's result is the response, so it runs after the commit and never inside the transaction.
   const clientSecret =
     decision.plan === 'confirm'
       ? await confirmOwnAttempt(services, meetupId, decision.paymentIntentId)
       : await runHoldAttempt(services, meetupId, decision.holdOperationId);
-
   const status = await acceptStatus(services, meetupId);
-
   services.logger.info({ event: ACCEPT_EVENT, meetupId, status }, ACCEPT_EVENT);
-
   return { status, clientSecret };
 }
 
 /**
  * `POST /meetups/:id/decline`: the recipient refuses a proposal that is still `proposed` (AAP 0.5.4).
  *
- * The refusals are the contract's own, in its order: an unknown meetup, or a proposal the caller is
- * not meant to see yet, is `404 meetup_not_found`; a caller who is not the recipient is `403
- * not_recipient`; and any status other than `proposed` is `409 not_proposed` — a proposal the sweeper
- * has lapsed, one that locked while the screen was open, and every settled status alike.
+ * The refusals are the contract's own, in its order: an unknown meetup, or a proposal the caller is not meant to
+ * see yet, is `404 meetup_not_found`; a caller who is not the recipient is `403 not_recipient`; and any status
+ * other than `proposed` is `409 not_proposed`.
  *
- * A proposal past its `recipientDeadline` is deliberately still declinable: it stays `proposed` until
- * the sweeper lapses it, and the recipient refusing it is the pair's own way to end it, releasing the
- * holds exactly as the lapse does. The `decline` row of the transition table does the work — every
- * non-final attempt released, `proposal_declined` emitted, the initiator notified, the meetup's timers
- * removed — in this same transaction, and the releases it planned are Stripe calls that run here,
- * after the commit (AAP 0.3.2, 0.5.3).
+ * A proposal past its `recipientDeadline` is deliberately still declinable: it stays `proposed` until the sweeper
+ * lapses it, and the recipient refusing it releases the holds exactly as the lapse does. The `decline` row of the
+ * transition table does the work in this same transaction, and the releases it planned run here, after the commit
+ * (AAP 0.3.2, 0.5.3).
  *
- * @param services - The app's services: the guarded client, the injected clock and logger, and the
- *   outbox dispatcher the transaction commits through.
- * @param userId - The authenticated caller, who must be the meetup's recipient.
- * @param meetupId - The meetup as the route's path parameter.
- * @param now - The instant the request arrived, from the injected clock (AAP 0.11.1).
- * @returns The route's `200` body.
  * @throws AppError `meetup_not_found` (404), `not_recipient` (403) or `not_proposed` (409).
  */
 export async function declineMeetup(
@@ -360,47 +290,31 @@ export async function declineMeetup(
       if (meetup.status !== 'proposed') {
         throw new AppError('not_proposed');
       }
-
       await transition(tx, services, after, meetup, { type: 'decline', at: now, source: 'route' });
     },
     { fenceUserId: userId },
   );
-
   // The releases the transition planned are provider calls, so they run here and never under the row
   // lock; a failure leaves them to the sweeper rather than failing a decline already committed.
   await runMeetupOperations(services, meetupId);
-
   services.logger.info({ event: DECLINE_EVENT, meetupId }, DECLINE_EVENT);
-
   return { status: 'declined' };
 }
 
 /**
  * `POST /meetups/:id/hold`: the initiator retries their own failed hold (AAP 0.5.4).
  *
- * The route is the initiator's alone: a caller who is not on the meetup is `403 not_participant` and
- * the recipient, whose own side is `accept`, is `403 not_initiator`. It applies while the proposal is
- * still open, and it moves the money through the same {@link HOLD_PLAN} table and the same post-commit
- * work as {@link acceptMeetup} — a new attempt for a `failed` deposit, the caller's own secret for an
- * attempt that already carries an authorization (one awaiting 3-D Secure, or one already held),
- * `409 hold_pending` while a create is still being recovered, and `409 not_proposed` for a deposit
- * with nothing left to place. The release a retry plans for the attempt it superseded is carried out
- * in this same request (AAP 0.3.2).
+ * The route is the initiator's alone: a caller who is not on the meetup is `403 not_participant` and the
+ * recipient, whose own side is `accept`, is `403 not_initiator`. It applies while the proposal is still open, and
+ * it moves the money through the same {@link HOLD_PLAN} table and the same post-commit work as
+ * {@link acceptMeetup}, including the release a retry plans for the attempt it superseded (AAP 0.3.2).
  *
- * `initiatorHold` is read back after the hold, so the client sees the state this call left rather than
- * the state it started from. The response reports `proposed`, which is what the contract fixes for
- * this route: a retry only ever adds the authorization the initiator's own side was missing, and the
- * lock needs the recipient's hold, which cannot exist while the proposal is still invisible to them.
+ * `initiatorHold` is read back after the hold, so the client sees the state this call left. The response reports
+ * `proposed`, which is what the contract fixes for this route: a retry only ever adds the authorization the
+ * initiator's own side was missing, and the lock needs the recipient's hold.
  *
- * @param services - The app's services: the guarded client, the injected clock and logger, the outbox
- *   dispatcher the transaction commits through, and the payment gateway.
- * @param userId - The authenticated caller, who must be the meetup's initiator.
- * @param meetupId - The meetup as the route's path parameter.
- * @param now - The instant the request arrived, `request.receivedAt` (AAP 0.11.1).
- * @returns The route's `200` body: the proposal's status, the caller's own hold state and their
- *   current attempt's client secret.
- * @throws AppError `meetup_not_found` (404), `not_participant` (403), `not_initiator` (403),
- *   `not_proposed` (409), `hold_pending` (409), `hold_failed` (402) or `payment_unavailable` (503).
+ * @throws AppError `meetup_not_found` (404), `not_participant` (403), `not_initiator` (403), `not_proposed`
+ *   (409), `hold_pending` (409), `hold_failed` (402) or `payment_unavailable` (503).
  */
 export async function retryInitiatorHold(
   services: AppServices,
@@ -415,7 +329,6 @@ export async function retryInitiatorHold(
       if (meetup === null) {
         throw new AppError('meetup_not_found');
       }
-
       const role = participantRole(meetup, userId);
       if (role === null) {
         throw new AppError('not_participant');
@@ -423,20 +336,17 @@ export async function retryInitiatorHold(
       if (role === 'recipient') {
         throw new AppError('not_initiator');
       }
-
       // A hold is retried while the proposal is still open: a locked proposal has both authorizations
       // and a final one has already decided its money (AAP 0.5.3).
       if (meetup.status !== 'proposed') {
         throw new AppError('not_proposed');
       }
-
       const deposit = await depositOf(tx, meetup.id, userId);
       if (deposit === null) {
         // The initiator's deposit is created with the proposal, so a proposal without one has no
         // attempt to retry; the client's next step comes from refetching the meetup.
         throw new AppError('not_proposed');
       }
-
       switch (HOLD_PLAN[deposit.status]) {
         case 'retry': {
           const started = await startNewAttempt(tx, deposit, now);
@@ -461,16 +371,12 @@ export async function retryInitiatorHold(
     },
     { fenceUserId: userId },
   );
-
   const clientSecret =
     decision.plan === 'confirm'
       ? await confirmOwnAttempt(services, meetupId, decision.paymentIntentId)
       : await runHoldAttempt(services, meetupId, decision.holdOperationId);
-
   const initiatorHold = await depositView(services, meetupId, userId);
-
   services.logger.info({ event: HOLD_RETRY_EVENT, meetupId, initiatorHold }, HOLD_RETRY_EVENT);
-
   return { status: 'proposed', initiatorHold, clientSecret };
 }
 
@@ -481,26 +387,17 @@ export async function retryInitiatorHold(
 /**
  * Run one attempt's hold inline and return the caller's own secret to confirm it (AAP 0.3.2, 0.5.4).
  *
- * The hold's result *is* the response, so it runs in the request that asked for it rather than being
- * left to the sweeper. Its predecessors run first: a retry plans the new attempt's hold **after** the
- * release of the attempt it superseded in that deposit's own plan, and the executor's claim gate
- * refuses a hold while any lower `seq` of its deposit is still open, so the scoped pass is what lets
- * this call place the attempt it was asked to place instead of reporting a claim a later pass holds
- * (AAP 0.3.2 "Claiming and ordering"). The meetup's remaining operations run after that hold: the
- * open operations would otherwise include the hold itself, and running them here is what carries out
- * the orphan release a hold outcome plans. A failure in either pass is logged rather than raised,
- * because those rows are durable and the sweeper resumes them.
+ * The hold's result *is* the response, so it runs in the request that asked for it rather than being left to the
+ * sweeper. Its predecessors run first: a retry plans the new attempt's hold **after** the release of the attempt it
+ * superseded, and the executor's claim gate refuses a hold while any lower `seq` of its deposit is still open, so
+ * the scoped pass is what lets this call place the attempt it was asked to place (AAP 0.3.2 "Claiming and
+ * ordering"). The meetup's remaining operations then carry out the orphan release a hold outcome plans. A failure
+ * in either pass is logged rather than raised, because those rows are durable and the sweeper resumes them.
  *
- * The outcomes that are not an authorization are mapped by {@link inlineHoldOrThrow}, exactly as
- * `POST /meetups` maps them, except that a hold this call could not claim — a deposit whose create is
- * still being recovered, or a predecessor that has not concluded — answers `409 hold_pending` here:
- * on these routes the caller is the one who may retry, and a `503` would send the client to recover
- * through `GET /meetups` when the same call can simply be repeated (AAP 0.3.2, 0.5.4).
+ * The outcomes that are not an authorization are mapped by {@link inlineHoldOrThrow}, exactly as `POST /meetups`
+ * maps them, except that a hold this call could not claim answers `409 hold_pending` here, because on these routes
+ * the caller is the one who may retry.
  *
- * @param services - The app's services.
- * @param meetupId - The meetup whose attempt is being placed.
- * @param holdOperationId - The `hold` operation the transaction planned.
- * @returns The caller's own current attempt's client secret.
  * @throws AppError `hold_failed` (402), `hold_pending` (409) or `payment_unavailable` (503).
  */
 async function runHoldAttempt(
@@ -511,32 +408,20 @@ async function runHoldAttempt(
   // The rows the claim gate makes this hold wait on — the release of the attempt it superseded —
   // run first, so the create this answer reports is its own (AAP 0.3.2 "Claiming and ordering").
   await runMeetupOperations(services, meetupId, { beforeOperationId: holdOperationId });
-
   const result = await executeHoldInline(services, holdOperationId);
-
   await runMeetupOperations(services, meetupId);
-
   return inlineHoldOrThrow(result, { pendingCode: 'hold_pending' }).clientSecret;
 }
 
 /**
- * Read the caller's own current attempt again and return the secret that finishes it (AAP 0.3.2,
- * 0.5.4).
+ * Read the caller's own current attempt again and return the secret that finishes it (AAP 0.3.2, 0.5.4).
  *
- * This is the repeated accept — and the repeated hold — after an app restart during 3-D Secure: the
- * attempt's authorization is durable and only the customer's step is missing, so nothing is written
- * and no second authorization is created. The PaymentIntent is the provider's own view of the attempt,
- * named by the deposit's `currentPaymentIntentId` — the caller's own deposit, never the counterpart's.
+ * This is the repeated accept — and the repeated hold — after an app restart during 3-D Secure: the attempt's
+ * authorization is durable and only the customer's step is missing, so nothing is written and no second
+ * authorization is created. The PaymentIntent is the provider's own view of the attempt, named by the deposit's
+ * `currentPaymentIntentId` — the caller's own deposit, never the counterpart's. A state the client cannot act on is
+ * answered rather than assumed, from {@link ATTEMPT_ANSWERS}.
  *
- * A state the client cannot act on is answered rather than assumed, from {@link ATTEMPT_ANSWERS}: an
- * outcome that could not be observed is `503 payment_unavailable`, and an attempt the provider already
- * ended is `409 not_proposed`, with the deposit moved by the webhook or the executor and the client's
- * next step appearing when it refetches the meetup.
- *
- * @param services - The app's services.
- * @param meetupId - The meetup whose attempt is being confirmed, for the log line alone.
- * @param paymentIntentId - The attempt's PaymentIntent, or null when the deposit recorded none.
- * @returns The caller's own attempt's client secret.
  * @throws AppError `payment_unavailable` (503) or `not_proposed` (409).
  */
 async function confirmOwnAttempt(
@@ -549,13 +434,10 @@ async function confirmOwnAttempt(
     // by the client: the same answer `inlineHoldOrThrow` gives an authorized outcome with no secret.
     throw new AppError('payment_unavailable');
   }
-
   const state = await retrieveAttempt(services, meetupId, paymentIntentId);
-
   if (state.clientSecret === null) {
     throw new AppError('payment_unavailable');
   }
-
   switch (ATTEMPT_ANSWERS[state.status]) {
     case 'secret':
       return state.clientSecret;
@@ -567,15 +449,10 @@ async function confirmOwnAttempt(
 }
 
 /**
- * Read one PaymentIntent from the provider, or answer the route's recoverable failure (AAP 0.3.2).
+ * Read one PaymentIntent from the provider, or answer the route's recoverable failure (AAP 0.3.2). A state that
+ * could not be observed decides nothing, so it becomes `503 payment_unavailable` and the client recovers
+ * through `GET /meetups`. The id reaches no log line and no response.
  *
- * A state that could not be observed decides nothing, so it becomes `503 payment_unavailable` and the
- * client recovers through `GET /meetups`. The id reaches no log line and no response.
- *
- * @param services - The app's services.
- * @param meetupId - The meetup the attempt belongs to, which is what the log line carries.
- * @param paymentIntentId - The PaymentIntent to read.
- * @returns The provider's normalized view of the attempt.
  * @throws AppError `payment_unavailable` (503) when the provider's answer is lost.
  */
 async function retrieveAttempt(
@@ -589,25 +466,17 @@ async function retrieveAttempt(
     if (!(error instanceof PaymentUnavailableError)) {
       throw error;
     }
-
     services.logger.warn({ event: 'attempt_unreadable', meetupId }, 'attempt_unreadable');
-
     throw new AppError('payment_unavailable');
   }
 }
 
 /**
- * The accept route's `200` status, read back after the commit (AAP 0.5.4).
+ * The accept route's `200` status, read back after the commit (AAP 0.5.4): `locked` once the recipient's
+ * authorization landed with the initiator's hold already `held`, and `proposed` while one of the two is still
+ * pending. Any other status means the proposal moved under the acceptance, and nothing is outstanding then, because
+ * a hold outcome arriving for a finished meetup releases its authorization (AAP 0.5.3).
  *
- * `locked` once the recipient's authorization landed with the initiator's hold already `held`, and
- * `proposed` while one of the two is still pending. Any other status means the proposal moved under
- * the acceptance — it lapsed at its deadline, or a racing cancel, block or hold loss ended it — and
- * nothing is outstanding then, because a hold outcome arriving for a finished meetup releases its
- * authorization (AAP 0.5.3).
- *
- * @param services - The app's services.
- * @param meetupId - The meetup the acceptance just acted on.
- * @returns The status the route answers with.
  * @throws AppError `proposal_lapsed` (410) or `not_proposed` (409) for a proposal that moved away.
  */
 async function acceptStatus(
@@ -618,22 +487,15 @@ async function acceptStatus(
     where: { id: meetupId },
     select: { status: true },
   });
-
   if (meetup.status === 'locked' || meetup.status === 'proposed') {
     return meetup.status;
   }
-
   throw new AppError(meetup.status === 'lapsed' ? 'proposal_lapsed' : 'not_proposed');
 }
 
 /**
- * The caller's own hold state as {@link HoldRetryResponse} reports it, read after the commit
- * (AAP 0.5.4).
- *
- * @param services - The app's services.
- * @param meetupId - The meetup whose side is read.
- * @param ownerId - The caller, whose own deposit the view describes.
- * @returns The deposit's current status, or `none` for a side with no deposit.
+ * The caller's own hold state as {@link HoldRetryResponse} reports it, read after the commit (AAP 0.5.4): the
+ * deposit's current status, or `none` for a side with no deposit.
  */
 async function depositView(
   services: AppServices,
@@ -644,15 +506,9 @@ async function depositView(
 }
 
 /**
- * Carry out the operations a decision planned, once its transaction has committed (AAP 0.3.2).
- *
- * A failure to reach the provider never fails the request: the operations are durable rows, and the
- * 60-second sweeper resumes every one that is still open.
- *
- * @param services - The app's services.
- * @param meetupId - The meetup whose deposits' operations run.
- * @param opts - When set, each pass covers the predecessors of the operation it names alone, which is
- *   how {@link runHoldAttempt} frees the hold it is about to place.
+ * Carry out the operations a decision planned, once its transaction has committed (AAP 0.3.2). A failure to
+ * reach the provider never fails the request: the operations are durable rows, and the 60-second sweeper
+ * resumes every one that is still open.
  */
 async function runMeetupOperations(
   services: AppServices,
@@ -670,20 +526,11 @@ async function runMeetupOperations(
 }
 
 /**
- * Record the recipient's acceptance intent and the funnel stage that counts it, once (AAP 0.5.3,
- * 0.5.7).
+ * Record the recipient's acceptance intent and the funnel stage that counts it, once (AAP 0.5.3, 0.5.7).
  *
- * `recipientAcceptedAt` is set on the first accept that passes its route's guards, whatever the
- * authorization outcome turns out to be, and the conditional update is what makes two racing accepts
- * write one instant and one `proposal_accepted` event. The timestamp is the funnel's own count for
- * this stage, so the column and the event are written together, in the transaction that decides the
- * attempt, and the actor's variant and assignment come from their stored assignment through
- * `analytics/emit.ts`.
- *
- * @param tx - The accept's transaction, holding the meetup row lock.
- * @param services - The app's services, for the event's configuration, clock and logger.
- * @param meetup - The locked row the caller read.
- * @param at - The instant the request arrived, from the injected clock (AAP 0.11.1).
+ * `recipientAcceptedAt` is set on the first accept that passes its route's guards, whatever the authorization
+ * outcome turns out to be, and the conditional update is what makes two racing accepts write one instant and one
+ * `proposal_accepted` event, in the transaction that decides the attempt.
  */
 async function recordAcceptedAt(
   tx: DbTx,
@@ -695,16 +542,13 @@ async function recordAcceptedAt(
     where: { id: meetup.id, recipientAcceptedAt: null },
     data: { recipientAcceptedAt: at },
   });
-
   if (marked.count !== 1) {
     return;
   }
-
   const venue = await tx.venue.findUnique({
     where: { id: meetup.venueId },
     select: { cityId: true },
   });
-
   await emit(tx, services, 'proposal_accepted', meetup.recipientId, {
     meetupId: meetup.id,
     ...(venue === null ? {} : { cityId: venue.cityId }),
@@ -713,13 +557,8 @@ async function recordAcceptedAt(
 }
 
 /**
- * One side's deposit of a meetup, by the key the schema files it under: a meetup holds at most one
- * deposit per side (AAP 0.5.2).
- *
- * @param db - The client of the caller's transaction, or the guarded client for a read after it.
- * @param meetupId - The meetup the deposit belongs to.
- * @param ownerId - The account whose side is read.
- * @returns The deposit, or null when that side has not placed one.
+ * One side's deposit of a meetup, by the key the schema files it under: a meetup holds at most one deposit per
+ * side (AAP 0.5.2).
  */
 function depositOf(
   db: DbClient | DbTx,
@@ -733,28 +572,19 @@ function depositOf(
 const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
- * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
- * class name (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1).
- *
- * pino writes a message and a stack — the whole cause chain with them — as strings that key-based
- * redaction cannot rewrite, and a provider failure's message can quote the `PaymentIntent` id it
- * concerns, or the credential it was presented with, which no log line of this module may carry
- * (AAP 0.5.4). A token that is not a plain short identifier becomes `Error`, so nothing a thrown
- * value happens to say can reach a log through this path.
- *
- * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
- * modules its acceptance work names (`./propose.ts`, `./queries.ts`, `./state-machine.ts`,
- * `../payments/holds.ts`, `../payments/operations.ts`, `../outbox/write.ts`) — the same course
- * `../settlement/timers.ts` took with its own `errorTokenOf`.
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its class name
+ * (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1). pino writes a message and a stack as
+ * strings that key-based redaction cannot rewrite, and a provider failure's message can quote the `PaymentIntent`
+ * id it concerns or the credential it was presented with, which no log line of this module may carry (AAP 0.5.4).
+ * A token that is not a plain short identifier becomes `Error`. The copy lives here rather than in
+ * `../settlement/sweeper.ts` because this file imports only the modules its acceptance work names.
  */
 function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {
     return 'Error';
   }
-
   const { code, name } = error as { code?: unknown; name?: unknown };
   const token = typeof code === 'string' && code.length > 0 ? code : name;
-
   if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
     return 'Error';
   }

@@ -37,7 +37,6 @@
  * Side-effect free at import: this module registers nothing until `registerSecurity` is called, so a
  * script that builds no app pays nothing for it.
  */
-
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 
@@ -45,10 +44,7 @@ import { LODGING_SECRET_HEADER, VENUE_SECRET_HEADER } from '@tablemate/shared';
 
 import type { ApiEnv } from '@tablemate/server-core';
 
-// Type-only, and taken from the module that builds the instance rather than from this file's
-// dependency whitelist: `App` is the plan's one declaration of the app's type, it is erased at
-// compile time, and nothing of `app.ts` is read at runtime (the same import the sibling plugins
-// `errors.ts`, `raw-body.ts` and `websocket.ts` take).
+// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**
@@ -109,7 +105,6 @@ export function registerSecurity(
     crossOriginResourcePolicy: { policy: 'cross-origin' },
     crossOriginEmbedderPolicy: false,
   });
-
   app.register(cors, {
     origin: [env.WEB_ORIGIN, env.VENUE_CONSOLE_ORIGIN],
     methods: ALLOWED_METHODS,

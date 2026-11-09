@@ -11,11 +11,7 @@
  * strips it and the ids later. A funnel event also carries its actor's stored `ExperimentAssignment`
  * in the `variant` and `assignmentId` columns and in `props`, which is what criterion 7 checks
  * (AAP 0.5.7, 0.12.1).
- *
- * @see AAP 0.5.2 for the retention and erasure of these rows, 0.5.7 for the funnel stages and the
- *   metrics read from them, 0.3.2 for emitting inside the domain transaction, 0.8.1 for this file.
  */
-
 import type { DbTx, Prisma } from '@tablemate/db';
 import { actorHash } from '@tablemate/server-core';
 import { AnalyticsEventName, AnalyticsProps } from '@tablemate/shared';
@@ -92,15 +88,6 @@ export interface EmitInput {
  * immutable assignment supplies the `variant`/`assignmentId` columns and props and overrides
  * whatever the caller passed; callers pass `variantPairing` and `depositCents`, and this file
  * computes neither (AAP 0.5.7).
- *
- * @param tx - The domain transaction's client, never a fresh one.
- * @param services - The configuration, clock and logger of the calling process.
- * @param name - The contract event name.
- * @param actorUserId - The acting user, or `null` for an event with no actor.
- * @param fields - The optional `cityId`, `meetupId` and props.
- * @throws ZodError when `name` is not a contract name, or `props` holds an unknown key or a value of
- *   the wrong type — a programming error, never stripped silently.
- * @see AAP 0.5.7 for the funnel stages, 0.5.2 for the retention of the row.
  */
 export async function emit(
   tx: DbTx,
@@ -111,7 +98,6 @@ export async function emit(
 ): Promise<void> {
   const event = prepare(name, actorUserId, fields);
   const assignments = await assignmentsFor(tx, services, [event]);
-
   await tx.analyticsEvent.create({
     data: buildRow(services, event, assignmentOf(assignments, event)),
   });
@@ -123,12 +109,6 @@ export async function emit(
  * participant plus `deposit_locked` for the recipient, or `cancelled_late` plus `no_show`
  * (AAP 0.5.3, 0.5.7). An empty batch is a no-op, and every event is validated before any row is
  * written, so a bad event takes the whole batch down with its transaction.
- *
- * @param tx - The domain transaction's client, never a fresh one.
- * @param services - The configuration, clock and logger of the calling process.
- * @param events - The events to write, each as {@link emit} would receive it.
- * @throws ZodError when any event fails validation.
- * @see AAP 0.5.3 for the transitions that emit more than one event at once.
  */
 export async function emitMany(
   tx: DbTx,
@@ -138,10 +118,8 @@ export async function emitMany(
   if (events.length === 0) {
     return;
   }
-
   const prepared = events.map((event) => prepare(event.name, event.actorUserId, event.fields));
   const assignments = await assignmentsFor(tx, services, prepared);
-
   await tx.analyticsEvent.createMany({
     data: prepared.map((event) => buildRow(services, event, assignmentOf(assignments, event))),
   });
@@ -202,22 +180,17 @@ async function assignmentsFor(
       actors.add(event.actorUserId);
     }
   }
-
   const assignments = new Map<string, ActorAssignment>();
-
   if (actors.size === 0) {
     return assignments;
   }
-
   const rows = await tx.experimentAssignment.findMany({
     where: { userId: { in: [...actors] } },
     select: { userId: true, variant: true, assignmentId: true },
   });
-
   for (const row of rows) {
     assignments.set(row.userId, { variant: row.variant, assignmentId: row.assignmentId });
   }
-
   const warned = new Set<string>();
   for (const event of events) {
     const actorUserId = event.actorUserId;
@@ -231,7 +204,6 @@ async function assignmentsFor(
       services.logger.warn({ event: 'experiment_assignment_missing', analyticsEvent: event.name });
     }
   }
-
   return assignments;
 }
 
@@ -278,7 +250,6 @@ function buildRow(
     json['variant'] = assignment.variant;
     json['assignmentId'] = assignment.assignmentId;
   }
-
   return {
     name: event.name,
     actorHash:

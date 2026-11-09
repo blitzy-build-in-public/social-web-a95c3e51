@@ -35,6 +35,7 @@ function openExternal(url: string): void {
 type ExternalLinkProps = { label: string; url: string; testID: string };
 function ExternalLink({ label, url, testID }: ExternalLinkProps): ReactElement {
   const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const onKeyDown = (event: { key?: string; repeat?: boolean }): void => {
     if (event.key === 'Enter' && event.repeat !== true) openExternal(url);
   };
@@ -45,8 +46,17 @@ function ExternalLink({ label, url, testID }: ExternalLinkProps): ReactElement {
       accessibilityLabel={label}
       accessibilityRole="link"
       {...{ onBlur: () => setFocused(false), onFocus: () => setFocused(true) }}
+      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
+      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       onPress={() => openExternal(url)}
-      style={[styles.link, focused ? styles.linkFocused : null]}
+      style={({ pressed }) => [
+        styles.link,
+        hovered ? styles.linkHovered : null,
+        pressed ? styles.linkPressed : null,
+        focused ? styles.linkFocused : null,
+      ]}
       testID={testID}
     >
       <Text style={styles.linkLabel}>{label}</Text>
@@ -86,6 +96,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   linkFocused: { borderColor: colors.focusRing },
+  // The link's own fill is the lightest token, so the palette offers one pointer step for both
+  // states, and hover takes the same fill the press paints.
+  linkHovered: { backgroundColor: colors.surface },
+  linkPressed: { backgroundColor: colors.surface },
   linkLabel: {
     ...typography.label,
     color: colors.primary,

@@ -3,21 +3,19 @@
  * files under `fixtures/test-issuer/`, the public key they are signed with, and the rebuilt registries.
  *
  * The RSA-2048 key pair is generated per run and kept in memory: only the public modulus reaches
- * `config/issuers/tablemate-test.json`, and the private key is never exported, written or logged, so no
- * key material can reach the repository (AAP 0.12.2, `scripts/check-secrets.ts`). A rerun therefore
- * rotates the key, which is why every file this script writes belongs in the same commit as its
- * fixtures.
+ * `config/issuers/tablemate-test.json`, and the private key is never exported, written or logged, so no key
+ * material can reach the repository (AAP 0.12.2, `scripts/check-secrets.ts`). A rerun therefore rotates the
+ * key, which is why every file this script writes belongs in the same commit as its fixtures.
  *
- * The fixtures are the input side of the circuit statement (AAP 0.5.5). `valid.eml` and
- * `valid-second.eml` prove for two travellers staying in one city; `tampered.eml` holds `valid.eml`'s
- * own signed bytes with one byte of its departure date changed after the signature was made, so the
- * header still verifies while the body no longer hashes to the `bh=` it commits to; `other-issuer.eml`
- * is signed by a key the registry does not hold; and the five `adversarial/` bodies are DKIM-honest
- * messages only the circuit rejects: a repeated anchor, a field that lives only in a signed header, and
- * three dates no calendar has. Every other body is rendered from the issuer's own template, so a change
- * to its anchors, terminators, charsets or date layout is carried into them.
- *
- * Every check runs before the first write, so a failure leaves the previous fixture set in place.
+ * The fixtures are the input side of the circuit statement (AAP 0.5.5). `valid.eml` and `valid-second.eml`
+ * prove for two travellers staying in one city; `tampered.eml` holds `valid.eml`'s own signed bytes with one
+ * byte of its departure date changed after the signature was made, so the header still verifies while the body
+ * no longer hashes to the `bh=` it commits to; `other-issuer.eml` is signed by a key the registry does not
+ * hold; and the five `adversarial/` bodies are DKIM-honest messages only the circuit rejects: a repeated
+ * anchor, a field that lives only in a signed header, and three dates no calendar has. Every other body is
+ * rendered from the issuer's own template, so a change to its anchors, terminators, charsets or date layout is
+ * carried into them. Every check runs before the first write, so a failure leaves the previous fixture set in
+ * place.
  *
  * Run as `pnpm --filter @tablemate/circuits fixtures`.
  */
@@ -227,7 +225,6 @@ interface FixtureFile {
 function at<T>(list: readonly T[], index: number, what: string): T {
   const value = list[index];
   if (value === undefined) throw new Error(`no ${what} at ${index}`);
-
   return value;
 }
 
@@ -241,7 +238,6 @@ function at<T>(list: readonly T[], index: number, what: string): T {
  */
 function formatDate(year: number, month: number, day: number, format: DateFormat): string {
   const zeros = (value: number, width: number): string => String(value).padStart(width, '0');
-
   switch (format) {
     case 'ISO_YMD':
       return `${zeros(year, 4)}-${zeros(month, 2)}-${zeros(day, 2)}`;
@@ -279,7 +275,6 @@ function fieldValue(template: IssuerTemplate, spec: FixtureSpec, field: Template
  */
 function fieldLine(template: IssuerTemplate, field: TemplateFieldName, value: string): string {
   const { anchor, terminator } = template.fields[field];
-
   return `${anchor}${value}${String.fromCharCode(terminator)}`;
 }
 
@@ -291,11 +286,9 @@ function fieldLine(template: IssuerTemplate, field: TemplateFieldName, value: st
 function assertFieldValue(template: IssuerTemplate, field: TemplateFieldName, value: string): void {
   const { terminator, charset } = template.fields[field];
   const bytes = [...value].map((character) => character.charCodeAt(0));
-
   if (bytes.length < 1 || bytes.length > MAX_VALUE_BYTES) {
     throw new Error(`the ${field} value is ${bytes.length} bytes, not 1-${MAX_VALUE_BYTES}`);
   }
-
   for (const byte of bytes) {
     if (byte === terminator || !inCharset(byte, CHARSET_CODE[charset])) {
       throw new Error(`the ${field} value carries a byte its charset or its terminator forbids`);
@@ -307,7 +300,6 @@ function assertFieldValue(template: IssuerTemplate, field: TemplateFieldName, va
 function assertNoAnchor(template: IssuerTemplate, text: readonly string[]): void {
   for (const field of TEMPLATE_FIELD_ORDER) {
     const anchor = template.fields[field].anchor;
-
     if (text.some((line) => line.includes(anchor))) {
       throw new Error(`the fixture text repeats the ${field} anchor`);
     }
@@ -323,9 +315,7 @@ function assertNoAnchor(template: IssuerTemplate, text: readonly string[]): void
 function assertStay(stay: StaySpec): void {
   const arrival = typeof stay.arrival === 'string' ? null : calendarInstant(stay.arrival);
   const departure = typeof stay.departure === 'string' ? null : calendarInstant(stay.departure);
-
   if (arrival === null || departure === null) return;
-
   const days = (departure - arrival) / DAY_MS;
   if (days < 1 || days > MAX_STAY_DAYS) {
     throw new Error(`the stay is ${days} days, not 1-${MAX_STAY_DAYS}`);
@@ -335,13 +325,10 @@ function assertStay(stay: StaySpec): void {
 /** A calendar date as a UTC instant, or `null` for one that does not exist in any calendar. */
 function calendarInstant(date: Exclude<StayDate, string>): number | null {
   if (!Number.isInteger(date.month) || date.month < 1 || date.month > 12) return null;
-
   const instant = Date.UTC(date.year, date.month - 1, date.day);
   const landed = new Date(instant);
-
   // A day past the month's end rolls into the next month, which is how a 30 February is caught.
   if (landed.getUTCMonth() !== date.month - 1 || landed.getUTCDate() !== date.day) return null;
-
   return instant;
 }
 
@@ -353,7 +340,6 @@ function calendarInstant(date: Exclude<StayDate, string>): number | null {
 function renderedInstant(value: string): number | null {
   const parts = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
   if (parts === null) return null;
-
   return calendarInstant({
     year: Number(at(parts, 1, 'year digits')),
     month: Number(at(parts, 2, 'month digits')),
@@ -364,10 +350,8 @@ function renderedInstant(value: string): number | null {
 /** The length of a stay whose departure is a rendered value, or `null` when either date is not. */
 function renderedStayDays(arrival: StayDate, departure: string): number | null {
   if (typeof arrival === 'string') return null;
-
   const start = calendarInstant(arrival);
   const end = renderedInstant(departure);
-
   return start === null || end === null ? null : (end - start) / DAY_MS;
 }
 
@@ -384,15 +368,12 @@ function tamperedDepartureValue(stay: StaySpec, format: DateFormat): string {
   const value = renderDate(stay.departure, format);
   const start = DIGITS.indexOf(value.slice(-1));
   if (start < 0) throw new Error('the departure value ends in no digit');
-
   for (let step = 1; step < DIGITS.length; step += 1) {
     const digit = at(DIGITS, (start + step) % DIGITS.length, 'digits');
     const candidate = `${value.slice(0, -1)}${digit}`;
     const days = renderedStayDays(stay.arrival, candidate);
-
     if (days !== null && days >= 1 && days <= MAX_STAY_DAYS) return candidate;
   }
-
   throw new Error(
     `no last digit keeps the departure a real date with a stay of 1-${MAX_STAY_DAYS} days`,
   );
@@ -411,10 +392,8 @@ function qpWrap(text: string, width = WRAP_WIDTH): string[] {
   if (text.includes('=') || text.trim() !== text || text === '') {
     throw new Error('quoted-printable text must be unpadded, non-empty and free of =');
   }
-
   const lines: string[] = [];
   let line = '';
-
   for (const word of text.split(' ')) {
     if (line === '') {
       line = word;
@@ -425,9 +404,7 @@ function qpWrap(text: string, width = WRAP_WIDTH): string[] {
       line = word;
     }
   }
-
   lines.push(line);
-
   return lines;
 }
 
@@ -439,28 +416,20 @@ function qpWrap(text: string, width = WRAP_WIDTH): string[] {
  */
 function renderBody(template: IssuerTemplate, spec: FixtureSpec): string {
   assertStay(spec.stay);
-
   const lines = spec.boilerplate.flatMap((paragraph) => qpWrap(paragraph));
-
   for (const field of TEMPLATE_FIELD_ORDER) {
     if (field === 'reference' && spec.omitReference === true) continue;
-
     const value = fieldValue(template, spec, field);
     assertFieldValue(template, field, value);
     lines.push(fieldLine(template, field, value));
-
     if (field === 'city' && spec.duplicateCity === true) {
       lines.push(fieldLine(template, field, value));
     }
   }
-
   const guestLine = `Guest: ${spec.stay.guest}`;
   lines.push(guestLine);
-
   for (const paragraph of spec.footer) lines.push(...qpWrap(paragraph));
-
   assertNoAnchor(template, [...spec.boilerplate, guestLine, ...spec.footer]);
-
   return `${lines.join('\r\n')}\r\n`;
 }
 
@@ -486,7 +455,6 @@ function assemble(signer: Signer, spec: FixtureSpec, body: string, dkimHeader: s
     'Content-Transfer-Encoding: quoted-printable',
     ...(spec.extraHeaders ?? []),
   ];
-
   return Buffer.from(`${headers.join('\r\n')}\r\n\r\n${body}`, 'latin1');
 }
 
@@ -506,9 +474,7 @@ function renderMessage(template: IssuerTemplate, signer: Signer, spec: FixtureSp
   const signedHeader = canonicalSignedHeader(draft, at(draft.signatures, 0, 'DKIM signatures'));
   const signature = sign('sha256', signedHeader, signer.privateKey).toString('base64');
   const message = assemble(signer, spec, body, dkimSignatureHeader(signer, hashBase64, signature));
-
   assertSigned(message, signer, spec.name);
-
   return message;
 }
 
@@ -520,13 +486,10 @@ function assertSigned(message: Buffer, signer: Signer, name: string): void {
   const parsed = parseEml(message);
   const signature = at(parsed.signatures, 0, 'DKIM signatures');
   const signedHeader = canonicalSignedHeader(parsed, signature);
-
   if (!verify('sha256', signedHeader, signer.publicKey, signature.b)) {
     throw new Error(`${name}.eml: the RSA signature does not verify`);
   }
-
   verifyBodyHash(canonicalizeBody(parsed.body, signature.c.body), signature);
-
   try {
     sha256Pad(signedHeader, MAX_HEADER_LENGTH);
   } catch {
@@ -541,13 +504,10 @@ function assertSigned(message: Buffer, signer: Signer, name: string): void {
  */
 function modulusBase64Of(publicKey: KeyObject): string {
   const n = (publicKey.export({ format: 'jwk' }) as { n?: unknown }).n;
-
   if (typeof n !== 'string') throw new Error('the generated key carries no JWK modulus');
-
   const bytes = Buffer.from(n, 'base64url');
   const start = bytes.findIndex((byte) => byte !== 0);
   if (start < 0) throw new Error('the generated key carries a zero modulus');
-
   return bytes.subarray(start).toString('base64');
 }
 
@@ -565,7 +525,6 @@ function chooseAlias(city: CityConfig, template: IssuerTemplate, params: Templat
     alias.length <= MAX_VALUE_BYTES &&
     [...alias].every((character) => {
       const byte = character.charCodeAt(0);
-
       return (
         byte >= 0x20 &&
         byte <= 0x7e &&
@@ -574,12 +533,10 @@ function chooseAlias(city: CityConfig, template: IssuerTemplate, params: Templat
         inCharset(byte, charset)
       );
     });
-
   const alias = city.aliases.find(carries);
   if (alias === undefined) {
     throw new Error(`config/cities.json: city ${city.id} has no alias the city field can carry`);
   }
-
   return alias;
 }
 
@@ -613,14 +570,11 @@ function checkWindow(
 ): void {
   const parts = buildEmailVerifierInputs(eml, issuers);
   const used = parts.precomputeCut > 0;
-
   if (used !== precomputed) {
     throw new Error(`${name}: the window is ${used ? 'a precomputed tail' : 'the whole body'}`);
   }
-
   for (const field of TEMPLATE_FIELD_ORDER) {
     const anchor = Buffer.from(template.fields[field].anchor, 'latin1');
-
     if (indexOfBytes(parts.emailBody, anchor) < 0) {
       throw new Error(`${name}: the ${field} anchor is outside the body window`);
     }
@@ -646,35 +600,28 @@ function checkTampered(
   if (valid.length !== tampered.length) {
     throw new Error(`tampered.eml is ${tampered.length} bytes, not valid.eml's ${valid.length}`);
   }
-
   const changed: number[] = [];
   for (let index = 0; index < valid.length; index += 1) {
     if (valid[index] !== tampered[index]) changed.push(index);
   }
-
   if (changed.length !== 1) {
     throw new Error(`tampered.eml differs from valid.eml in ${changed.length} bytes, not one`);
   }
-
   const anchor = Buffer.from(template.fields.departure.anchor, 'latin1');
   const anchorIndex = indexOfBytes(valid, anchor);
   if (anchorIndex < 0) throw new Error('valid.eml carries no departure anchor');
-
   const valueStart = anchorIndex + anchor.length;
   const valueEnd = valid.indexOf(template.fields.departure.terminator, valueStart);
   if (valueEnd < 0) throw new Error('valid.eml: the departure value carries no terminator');
-
   const index = at(changed, 0, 'changed bytes');
   if (index < valueStart || index >= valueEnd) {
     throw new Error('tampered.eml: the changed byte is outside the departure value');
   }
-
   if (indexOfBytes(window, valid.subarray(valueStart, valueEnd)) < 0) {
     throw new Error(
       'tampered.eml: the departure value is outside the body window the circuit hashes',
     );
   }
-
   const parsed = parseEml(tampered);
   const signature = at(parsed.signatures, 0, 'DKIM signatures');
   if (!verify('sha256', canonicalSignedHeader(parsed, signature), publicKey, signature.b)) {
@@ -695,13 +642,10 @@ function expectCode(
   } catch (error) {
     if (error instanceof CircuitInputError) {
       if (error.code === expected) return;
-
       throw new Error(`${name}: refused as ${error.code}, not ${expected}`);
     }
-
     throw error;
   }
-
   throw new Error(`${name}: built inputs, but ${expected} was expected`);
 }
 
@@ -711,7 +655,6 @@ function summaryOf(file: FixtureFile): string {
   const body = canonicalizeBody(parsed.body, at(parsed.signatures, 0, 'DKIM signatures').c.body);
   const { paddedLength } = sha256Pad(body, 64 * Math.ceil((body.length + 9) / 64));
   const window = paddedLength > MAX_BODY_WINDOW ? `${MAX_BODY_WINDOW}-byte tail` : 'whole body';
-
   return `${file.name}: ${file.eml.length} bytes, padded body ${paddedLength}, window ${window}`;
 }
 
@@ -721,27 +664,22 @@ async function main(): Promise<void> {
     currentStep = 'configuration';
     const [issuers, cities] = await Promise.all([loadIssuers(), loadCities()]);
     const record = issuers.find((issuer) => issuer.stem === TEST_ISSUER_STEM);
-
     if (record === undefined) throw new Error(`config/issuers/${TEST_ISSUER_STEM}.json is missing`);
-
     const template = record.config.template;
     if (template === null) {
       throw new Error('config/issuers/tablemate-test.json has no template; author it first');
     }
-
     const params = templateParams(template);
     const domain = record.config.keys[0]?.domain ?? 'tablemate.test';
     const selector = record.config.keys[0]?.selector ?? 'fixture';
     const city =
       cities.cities.find((entry) => entry.id === FIXTURE_CITY) ?? at(cities.cities, 0, 'cities');
     const alias = chooseAlias(city, template, params);
-
     currentStep = 'keys';
     const test = generateKeyPairSync('rsa', KEY_OPTIONS);
     const outside = generateKeyPairSync('rsa', KEY_OPTIONS);
     const modulusBase64 = modulusBase64Of(test.publicKey);
     const outsideModulusBase64 = modulusBase64Of(outside.publicKey);
-
     currentStep = 'fixtures';
     const signer: Signer = {
       domain,
@@ -749,23 +687,19 @@ async function main(): Promise<void> {
       privateKey: test.privateKey,
       publicKey: test.publicKey,
     };
-
     if (template.dateFormat !== 'ISO_YMD') {
       throw new Error(
         'the date-month-13 fixture needs a numeric date format, so the test template must use ISO_YMD',
       );
     }
-
     const arrival = renderDate(VALID.arrival, template.dateFormat);
     const nonDigit = arrival.replace(/[0-9]/, 'O');
     if (nonDigit === arrival) throw new Error('the arrival date carries no digit to replace');
-
     // The three dates no calendar has: the circuit's `DateParse` is what refuses them, and each one
     // differs from the honest body in that value alone.
     const feb30: StaySpec = { ...VALID, arrival: { year: 2026, month: 2, day: 30 } };
     const month13: StaySpec = { ...VALID, arrival: { year: 2026, month: 13, day: 5 } };
     const badDigit: StaySpec = { ...VALID, arrival: nonDigit };
-
     // The bodies that differ from the short layout only in the one variation that names them.
     const shared = {
       boilerplate: SHORT_BOILERPLATE,
@@ -803,17 +737,13 @@ async function main(): Promise<void> {
       { name: 'date-month-13', path: 'adversarial/date-month-13.eml', stay: month13, ...shared },
       { name: 'date-non-digit', path: 'adversarial/date-non-digit.eml', stay: badDigit, ...shared },
     ];
-
     const generated = new Map<string, Buffer>();
     const bytes = (name: string): Buffer => {
       const found = generated.get(name);
       if (found === undefined) throw new Error(`${name} was not generated`);
-
       return found;
     };
-
     for (const spec of specs) generated.set(spec.path, renderMessage(template, signer, spec));
-
     // Not listed in `h=`, so the signature does not cover it: a test reads it to build a rogue registry
     // whose root the API never publishes (AAP 0.5.5).
     generated.set(
@@ -835,7 +765,6 @@ async function main(): Promise<void> {
         },
       ),
     );
-
     // `tampered.eml` is the signed `valid.eml` bytes with one byte of the departure date changed after
     // that signature was made: nothing else differs, so the header still verifies under the test key and
     // the body no longer hashes to the `bh=` it commits to (AAP 0.5.5, criterion 3). Deriving it from
@@ -848,11 +777,9 @@ async function main(): Promise<void> {
       renderDate(VALID.departure, template.dateFormat),
     );
     const signedValid = bytes('valid.eml').toString('latin1');
-
     if (signedValid.split(departureLine).length !== 2) {
       throw new Error('valid.eml must carry its departure line exactly once');
     }
-
     generated.set(
       'tampered.eml',
       Buffer.from(
@@ -863,7 +790,6 @@ async function main(): Promise<void> {
         'latin1',
       ),
     );
-
     currentStep = 'checks';
     const issuer: IssuerConfig = IssuerConfig.parse({
       issuerId: record.config.issuerId,
@@ -887,21 +813,18 @@ async function main(): Promise<void> {
         cities: cities.cities,
       }).registry,
     );
-
     // Both valid fixtures must build inputs, and the two ids they prove must be the ones the registry
     // recorded: the city the alias belongs to and the issuer whose key signed them (AAP 0.5.5).
     for (const name of ['valid.eml', 'valid-second.eml']) {
       const built = buildCircuitInputs(bytes(name), [issuer], registry, {
         nullifierSalt: NULLIFIER_SALT,
       });
-
       if (built.cityId !== city.circuitCityId || built.issuerId !== issuer.issuerId) {
         throw new Error(
           `${name} proves city ${built.cityId} and issuer ${built.issuerId}, not ${city.circuitCityId} and ${issuer.issuerId}`,
         );
       }
     }
-
     // `tampered.eml` and `header-field.eml` are absent here: the first fails its body hash before a
     // window exists, and the second omits its reference anchor from the body on purpose.
     for (const [name, precomputed] of [
@@ -915,7 +838,6 @@ async function main(): Promise<void> {
     ] as const) {
       checkWindow(template, name, bytes(name), [issuer, outsideIssuer], precomputed);
     }
-
     // `tampered.eml` is checked outside that loop because it is not a message of its own: it keeps
     // `valid.eml`'s signature, so what has to hold is that one byte differs, inside the departure value,
     // inside the window the circuit hashes (AAP 0.5.5).
@@ -926,7 +848,6 @@ async function main(): Promise<void> {
       test.publicKey,
       buildEmailVerifierInputs(bytes('valid.eml'), [issuer, outsideIssuer]).emailBody,
     );
-
     // The three date fixtures parse, pass DKIM and build EmailVerifier inputs; what refuses them is the
     // circuit's own date parse, so no code is asserted for them (AAP 0.5.5).
     for (const [name, code] of [
@@ -937,7 +858,6 @@ async function main(): Promise<void> {
     ] as const) {
       expectCode(issuer, registry, name, bytes(name), code);
     }
-
     // The one check that needs the registry builder runs here, while every input is still in memory and
     // nothing has been written: it compares the test root the freshly generated record produces with the
     // root of the registry the fixtures were just checked against. It passes that record in rather than
@@ -950,30 +870,24 @@ async function main(): Promise<void> {
         `config/registry/test.json: the generated record builds test root ${rebuilt.test.root}, not the fixture registry's ${registry.root}`,
       );
     }
-
     currentStep = 'writes';
     const directory = path.join(PKG_DIR, 'fixtures', 'test-issuer');
     const files: readonly FixtureFile[] = [...generated].map(([name, eml]) => ({ name, eml }));
     // Read before the writes for the reason the checks are: a message that cannot be summarised must not
     // leave the tree already rewritten.
     const summaries = files.map((file) => summaryOf(file));
-
     for (const file of files) {
       const target = path.join(directory, file.name);
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.eml);
     }
-
     await writeFile(
       path.join(REPO_ROOT, 'config', 'issuers', `${TEST_ISSUER_STEM}.json`),
       `${JSON.stringify(issuer, null, 2)}\n`,
       'utf8',
     );
-
     const written = await writeRegistries();
-
     for (const line of summaries) process.stdout.write(`${line}\n`);
-
     const changed =
       written.changed.length === 0
         ? 'both files already current'

@@ -1,21 +1,20 @@
 /**
  * The real-issuer sample check, `pnpm circuits:samples [issuer]` (AAP 0.5.5, AAP 0.8.1).
  *
- * The gate that decides whether an issuer may claim a production registry leaf: for every
- * user-supplied confirmation in the git-ignored `packages/circuits/samples/<issuer>/` it builds the
- * witness, proves it with `groth16.fullProve` and verifies the proof against the built artefacts,
- * against a registry assembled in memory that includes the issuer whatever its verification status.
- * Only once every sample passes may the record carry `"verificationStatus": "verified"`, and this
- * script never edits it: promotion is an explicit operator act that `pnpm circuits:registry` turns
- * into a leaf.
+ * The gate that decides whether an issuer may claim a production registry leaf: for every user-supplied
+ * confirmation in the git-ignored `packages/circuits/samples/<issuer>/` it builds the witness, proves it with
+ * `groth16.fullProve` and verifies the proof against the built artefacts, against a registry assembled in
+ * memory that includes the issuer whatever its verification status. Only once every sample passes may the
+ * record carry `"verificationStatus": "verified"`, and this script never edits it: promotion is an explicit
+ * operator act that `pnpm circuits:registry` turns into a leaf.
  *
- * Privacy: samples are real personal confirmation emails, so nothing about a sample's content reaches
- * stdout, a log or a document. A sample is named by its position and the first eight hex of its
- * SHA-256, and a refusal prints a `CircuitInputError` code — and, for a stay field, that field's own
- * slot name — never a header, a value, an offset or a parser's message.
+ * Privacy: samples are real personal confirmation emails, so nothing about a sample's content reaches stdout,
+ * a log or a document. A sample is named by its position and the first eight hex of its SHA-256, and a refusal
+ * prints a `CircuitInputError` code — and, for a stay field, that field's own slot name — never a header, a
+ * value, an offset or a parser's message.
  *
- * A real email whose stay fields sit above the provable body window fails with `field_not_found`:
- * the signal AAP 0.2.4 expects, not a defect here.
+ * A real email whose stay fields sit above the provable body window fails with `field_not_found`: the signal
+ * AAP 0.2.4 expects, not a defect here.
  *
  * Invoked as `pnpm circuits:samples [issuer]`, which runs
  * `tsx --conditions=tablemate-source scripts/check-samples.ts [issuer]`; a bare `--` is ignored.
@@ -120,29 +119,23 @@ async function checkSamples(stem: string | undefined): Promise<number> {
   const jobs = await selectJobs(stem);
   await requireArtefacts();
   warnOnSmallHeap();
-
   let passed = 0;
   let failed = 0;
-
   for (const job of jobs) {
     const tally = await checkIssuer(job);
     passed += tally.passed;
     failed += tally.failed;
     process.stdout.write(`${job.record.stem}: ${tally.passed} passed, ${tally.failed} failed\n`);
   }
-
   if (failed > 0) {
     process.stdout.write(`${failed} of ${passed + failed} sample(s) failed\n`);
-
     return 1;
   }
-
   for (const job of jobs) {
     process.stdout.write(
       `All samples pass. Set "verificationStatus": "verified" in config/issuers/${job.record.stem}.json, ` +
         'run pnpm circuits:registry, and commit both. Update the issuer status in docs/zk-proofs.md.\n',
     );
-
     if (job.samples.length < RECOMMENDED_SAMPLES) {
       process.stdout.write(
         `Only ${job.samples.length} sample(s) of ${job.record.stem}: at least ` +
@@ -150,7 +143,6 @@ async function checkSamples(stem: string | undefined): Promise<number> {
       );
     }
   }
-
   return 0;
 }
 
@@ -162,32 +154,25 @@ async function checkSamples(stem: string | undefined): Promise<number> {
  */
 async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
   const stems = stem === undefined ? await sampleStems() : [stem];
-
   if (stems.length === 0) {
     throw new Error(`no .eml samples in ${SAMPLES_DIR}/ (git-ignored, user-supplied)`);
   }
-
   const [issuers, cities] = await Promise.all([loadIssuers(), loadCities()]);
   const jobs: SampleJob[] = [];
-
   for (const name of stems) {
     const record = issuers.find((issuer) => issuer.stem === name);
-
     if (record === undefined) {
       throw new Error(
         `unknown issuer ${name}; known issuers: ${issuers.map((issuer) => issuer.stem).join(', ')}`,
       );
     }
-
     const template = record.config.template;
-
     if (template === null) {
       throw new Error(
         `${record.path}: records no template; author it from the samples (anchors, terminators, ` +
           `charsets, date format) and then run fetch-dkim-key -- ${name} --write`,
       );
     }
-
     // A key still holding the empty modulus placeholder records no leaf either, so it is no more
     // usable than a missing key and would fail inside the registry build.
     if (!record.config.keys.some((key) => key.modulusBase64.trim() !== '')) {
@@ -195,14 +180,11 @@ async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
         `${record.path}: records no DKIM key with a modulus; run fetch-dkim-key -- ${name} --write`,
       );
     }
-
     const directory = path.join(PKG_DIR, 'samples', name);
     const samples = await sampleFiles(directory);
-
     if (samples.length === 0) {
       throw new Error(`no .eml samples in ${SAMPLES_DIR}/${name}/ (git-ignored, user-supplied)`);
     }
-
     jobs.push({
       record,
       params: templateParams(template),
@@ -212,7 +194,6 @@ async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
       samples,
     });
   }
-
   return jobs;
 }
 
@@ -220,7 +201,6 @@ async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
 async function checkIssuer(job: SampleJob): Promise<{ passed: number; failed: number }> {
   let passed = 0;
   let failed = 0;
-
   for (const [index, name] of job.samples.entries()) {
     if (await checkSample(job, index + 1, name)) {
       passed += 1;
@@ -228,7 +208,6 @@ async function checkIssuer(job: SampleJob): Promise<{ passed: number; failed: nu
       failed += 1;
     }
   }
-
   return { passed, failed };
 }
 
@@ -242,32 +221,25 @@ async function checkIssuer(job: SampleJob): Promise<{ passed: number; failed: nu
 async function checkSample(job: SampleJob, number: number, name: string): Promise<boolean> {
   const bytes = await readFile(path.join(job.directory, name));
   process.stdout.write(`sample #${number} (${digestPrefix(bytes)})\n`);
-
   const inputs = stage('inputs', () => buildEmailVerifierInputs(bytes, [job.record.config]));
-
   if (!inputs.ok) return false;
   if (!checkFields(inputs.value.decodedEmailBodyIn, job.params)) return false;
-
   const built = stage('registry', () =>
     buildCircuitInputs(bytes, [job.record.config], job.registry, {
       nullifierSalt: SAMPLE_CHECK_SALT,
     }),
   );
-
   if (!built.ok) {
     if (built.code === 'city_not_supported') {
       process.stdout.write(
         '    hint: the city alias is not in config/cities.json; add it and run pnpm circuits:registry\n',
       );
     }
-
     return false;
   }
-
   const started = performance.now();
   const verified = await proveInputs(built.value.inputs, job.record.config.issuerId);
   process.stdout.write(`  proving: ${secondsSince(started)}s\n`);
-
   return verified;
 }
 
@@ -282,24 +254,19 @@ async function checkSample(job: SampleJob, number: number, name: string): Promis
  */
 function checkFields(decoded: Uint8Array, params: TemplateParams): boolean {
   let complete = true;
-
   for (const index of FIELD_INDEXES) {
     const field = TEMPLATE_FIELD_ORDER[index];
     const located = stage(field, () => {
       const location = locateField(decoded, params, index);
-
       if (field === 'arrival' || field === 'departure') {
         if (parseDateValue(location.value, location.valueLength, params.dateFormat) === null) {
           fail('field_invalid', field);
         }
       }
-
       return location;
     });
-
     if (!located.ok) complete = false;
   }
-
   return complete;
 }
 
@@ -315,45 +282,33 @@ function checkFields(decoded: Uint8Array, params: TemplateParams): boolean {
 async function proveInputs(inputs: CircuitInputs, issuerId: number): Promise<boolean> {
   const prover = createRequire(import.meta.url)('snarkjs') as Snarkjs;
   let proved: { proof: unknown; publicSignals: string[] };
-
   try {
     proved = await prover.groth16.fullProve(inputs, artefact(WASM), artefact(ZKEY));
   } catch (error) {
     // A circom assertion names a template and a line and carries no email data, and snarkjs prints
     // that detail itself: this line only records that producing the proof failed.
     process.stdout.write(`  witness: FAIL ${errorName(error)}\n`);
-
     return false;
   }
-
   process.stdout.write('  witness: PASS\n');
-
   const signals = proved.publicSignals;
-
   if (
     signals.length !== PUBLIC_SIGNAL_NAMES.length ||
     signals[PUBLIC_SIGNAL_NAMES.indexOf('issuerId')] !== String(issuerId)
   ) {
     process.stdout.write('  proof: FAIL public_signals\n');
-
     return false;
   }
-
   process.stdout.write('  proof: PASS\n');
-
   // Parsed before the verifier is called, so a corrupted artefact reports itself rather than a failed
   // proof.
   const verificationKey = await readVerificationKey();
-
   try {
     const verified = await prover.groth16.verify(verificationKey, signals, proved.proof);
-
     process.stdout.write(`  verify: ${verified ? 'PASS' : 'FAIL'}\n`);
-
     return verified;
   } catch (error) {
     process.stdout.write(`  verify: FAIL ${errorName(error)}\n`);
-
     return false;
   }
 }
@@ -366,13 +321,10 @@ function stage<T>(name: string, run: () => T): StageResult<T> {
   try {
     const value = run();
     process.stdout.write(`  ${name}: PASS\n`);
-
     return { ok: true, value };
   } catch (error) {
     if (!(error instanceof CircuitInputError)) throw error;
-
     process.stdout.write(`  ${name}: FAIL ${error.code}\n`);
-
     return { ok: false, code: error.code };
   }
 }
@@ -380,11 +332,9 @@ function stage<T>(name: string, run: () => T): StageResult<T> {
 /** Requires the artefacts `pnpm circuits:build` writes, naming every one that is missing. */
 async function requireArtefacts(): Promise<void> {
   const missing: string[] = [];
-
   for (const name of ARTEFACTS) {
     if (!(await exists(artefact(name)))) missing.push(name);
   }
-
   if (missing.length > 0) {
     throw new Error(`missing build/${missing.join(', build/')}; run pnpm circuits:build first`);
   }
@@ -393,7 +343,6 @@ async function requireArtefacts(): Promise<void> {
 /** Warns, and never aborts, when node's heap is below what a full proof of this circuit needs. */
 function warnOnSmallHeap(): void {
   const limit = getHeapStatistics().heap_size_limit;
-
   if (limit < LARGE_HEAP_BYTES) {
     process.stderr.write(
       `warning: node's heap limit is ${Math.round(limit / 1024 ** 2)} MB and proving this circuit ` +
@@ -407,12 +356,10 @@ async function sampleStems(): Promise<string[]> {
   const root = path.join(PKG_DIR, 'samples');
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   const stems: string[] = [];
-
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if ((await sampleFiles(path.join(root, entry.name))).length > 0) stems.push(entry.name);
   }
-
   return stems.sort();
 }
 
@@ -420,7 +367,6 @@ async function sampleStems(): Promise<string[]> {
  * is the ordinary state of a checkout awaiting the user's confirmation emails (AAP 0.12.3). */
 async function sampleFiles(directory: string): Promise<string[]> {
   const names = await readdir(directory).catch(() => []);
-
   return names.filter((name) => name.toLowerCase().endsWith('.eml')).sort();
 }
 
@@ -429,7 +375,6 @@ async function readVerificationKey(): Promise<unknown> {
   const text = await readFile(artefact(VKEY), 'utf8').catch(() => {
     throw new Error(`build/${VKEY} cannot be read; run pnpm circuits:build first`);
   });
-
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -446,7 +391,6 @@ function artefact(name: string): string {
 async function exists(absolutePath: string): Promise<boolean> {
   try {
     await access(absolutePath);
-
     return true;
   } catch {
     return false;
@@ -482,13 +426,10 @@ function parseArgs(argv: readonly string[]): string | undefined {
   const positional = args.filter((argument) => !argument.startsWith('-'));
   const options = args.filter((argument) => argument.startsWith('-'));
   const [stem, ...extra] = positional;
-
   if (options.length > 0 || extra.length > 0) {
     process.stderr.write(`${USAGE}\n`);
-
     throw new Error(`unexpected argument ${[...options, ...extra].join(' ')}`);
   }
-
   return stem;
 }
 
@@ -545,13 +486,11 @@ function exitAfterFlush(code: number): void {
  */
 async function main(): Promise<void> {
   let code = 1;
-
   try {
     code = await checkSamples(parseArgs(process.argv.slice(2)));
   } catch (error) {
     process.stderr.write(`check-samples: ${reasonOf(error)}\n`);
   }
-
   // snarkjs and ffjavascript keep worker threads alive, so node is ended explicitly: setting
   // process.exitCode alone would leave the process hanging. Draining first is what keeps the last
   // line of the run from being discarded with the process when stdout is a pipe.

@@ -6,7 +6,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { colors, fontWeights, radii, spacing, typography } from '@tablemate/shared';
+import { colors, componentSizes, fontWeights, radii, spacing, typography } from '@tablemate/shared';
 import { ProofStatus } from '@tablemate/shared';
 import type { CityDto, Reputation, Tier0Profile } from '@tablemate/shared';
 
@@ -179,10 +179,14 @@ export default function TravelerProfileScreen(): ReactElement {
     setProofBanner(true);
     announce(IMPORT_BANNER);
   }
-  const avatarProps = { avatarSeed: person.avatarSeed, handle: person.handle, size: 96 };
+  const avatarProps = {
+    avatarSeed: person.avatarSeed,
+    handle: person.handle,
+    size: componentSizes.avatarLarge,
+  };
   const photo = hasPhoto ? { userId, hasPhoto: true } : {};
   const confirmButton = { ...BUTTONS.confirmBlock, label: `Block @${person.handle}` };
-  const openReport = () => void router.push({ pathname: '/report', params: { userId } });
+  const openReport = () => void router.navigate({ pathname: '/report', params: { userId } });
   const confirmBlock = () => setConfirmingBlock(false);
   const startBlock = () => setConfirmingBlock(true);
   const blockSection = confirmingBlock ? (

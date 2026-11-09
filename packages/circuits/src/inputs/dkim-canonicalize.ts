@@ -8,13 +8,10 @@
  * the circuit is the authority on the signature — so the one property this module owes is
  * byte-exactness.
  *
- * Client-safe: it runs under Hermes (React Native 0.76.9), in the browser Web Worker and in Node
- * tests, so it imports `@noble/hashes/sha2.js` and `./eml-parse.ts` and nothing else. It uses no Node
- * built-in, no global `Buffer`, no `TextEncoder`, no DOM API, no randomness, no I/O and no logging,
- * and it does no work at module load beyond declaring constants.
- *
- * Every refusal is a code, never a message: the only error this module raises is
- * `body_hash_mismatch`, from {@link verifyBodyHash}.
+ * Client-safe: it runs under Hermes (React Native 0.76.9), in the browser Web Worker and in Node tests, so it
+ * imports `@noble/hashes/sha2.js` and `./eml-parse.ts` and nothing else — no Node built-in, no global
+ * `Buffer`, no `TextEncoder`, no DOM API, no randomness, no I/O and no logging. Every refusal is a code, never
+ * a message: the only error it raises is `body_hash_mismatch`, from {@link verifyBodyHash}.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 
@@ -38,7 +35,6 @@ const CRLF = new Uint8Array([CR, LF]);
  */
 export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalization): Uint8Array {
   if (mode === 'simple') return concatBytes([field.raw, CRLF]);
-
   // The value is shorter than the field it follows, so it always fits in this buffer.
   const value = new Uint8Array(field.raw.length);
   const length = writeCollapsed(
@@ -50,7 +46,6 @@ export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalizati
     true,
     false,
   );
-
   // `lowerName` is the parser's ASCII-lowercased name with its trailing WSP removed, which is the
   // name §3.4.2 asks for; a field name is RFC 5322 ftext, so one latin1 byte per code unit.
   return concatBytes([latin1ToBytes(`${field.lowerName}:`), value.subarray(0, length), CRLF]);
@@ -59,14 +54,13 @@ export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalizati
 /**
  * Picks the header fields a signature covers, in the order its `h=` tag lists them (RFC 6376 §5.4.2).
  *
- * The n-th occurrence of a name in `h=` takes the n-th instance of that name counted from the bottom
- * of the header block, and an occurrence with no instance left contributes nothing. That is how a
- * signature covers every instance of a name it repeats, and how oversigning (`h=from:from`) refuses
- * a field added above the signed ones afterwards.
+ * The n-th occurrence of a name in `h=` takes the n-th instance of that name counted from the bottom of the
+ * header block, and an occurrence with no instance left contributes nothing: that is how a signature covers
+ * every instance of a name it repeats, and how oversigning (`h=from:from`) refuses a field added above the
+ * signed ones afterwards.
  *
- * The signature field itself is never selected — RFC 6376 §3.5 forbids a signature covering itself
- * through `h=` — because {@link canonicalSignedHeader} appends it separately, with its value
- * emptied.
+ * The signature field itself is never selected — RFC 6376 §3.5 forbids a signature covering itself through
+ * `h=` — because {@link canonicalSignedHeader} appends it separately, with its value emptied.
  *
  * @param parsed - The parsed message.
  * @param sig - The signature whose `h=` tag selects the fields.
@@ -75,26 +69,21 @@ export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalizati
 export function selectSignedHeaderFields(parsed: ParsedEml, sig: DkimSignature): HeaderField[] {
   const selected: HeaderField[] = [];
   const consumed = new Map<string, number>();
-
   for (const name of sig.h) {
     const already = consumed.get(name) ?? 0;
     let skipped = 0;
-
     for (let i = parsed.headers.length - 1; i >= 0; i -= 1) {
       const field = parsed.headers[i];
       if (field === undefined || field === sig.field || field.lowerName !== name) continue;
-
       if (skipped < already) {
         skipped += 1;
         continue;
       }
-
       selected.push(field);
       consumed.set(name, already + 1);
       break;
     }
   }
-
   return selected;
 }
 
@@ -102,10 +91,9 @@ export function selectSignedHeaderFields(parsed: ParsedEml, sig: DkimSignature):
  * Empties the `b=` tag value of a `DKIM-Signature` header line, which is what the signer computes
  * over and what a verifier checks (RFC 6376 §3.7).
  *
- * The tag is found by its own bytes, so `bh=` is never touched — its `b` is followed by `h` — and
- * only the first occurrence is emptied, as the `([;:\s]+b=)[^;]+` substitution the zk-email helpers'
- * vendored mailauth applies does. The line is returned as it stands when it carries no such tag, or
- * when the tag's value is already empty.
+ * The tag is found by its own bytes, so `bh=` is never touched — its `b` is followed by `h` — and only the
+ * first occurrence is emptied. The line is returned as it stands when it carries no such tag, or when the
+ * tag's value is already empty.
  *
  * @param line - A header field line, with or without its trailing CRLF.
  * @returns The line with the `b=` value removed.
@@ -114,31 +102,26 @@ export function stripSignatureValue(line: Uint8Array): Uint8Array {
   for (let i = 1; i + 1 < line.length; i += 1) {
     if (line[i] !== 0x62 /* b */ || line[i + 1] !== 0x3d /* = */) continue;
     if (!isTagBoundary(line[i - 1] ?? 0)) continue;
-
     // The value runs to the tag's own `;`, so an empty one leaves the line untouched.
     let end = i + 2;
     while (end < line.length && line[end] !== SEMI) end += 1;
     if (end === i + 2) return line;
-
     return concatBytes([line.subarray(0, i + 2), line.subarray(end)]);
   }
-
   return line;
 }
 
 /**
  * The exact bytes a signature's RSA-SHA256 signature covers (RFC 6376 §3.5, §3.7).
  *
- * It is the canonical form of every field {@link selectSignedHeaderFields} picked, in `h=` order,
- * followed by the `DKIM-Signature` field itself with its `b=` value emptied and with no trailing
- * CRLF. These are the bytes `EmailVerifier` hashes inside the circuit, and `@zk-email/helpers` 6.4.2
- * canonicalizes the same string into `emailHeader`, which `test/inputs.test.ts` compares against
- * after padding.
+ * It is the canonical form of every field {@link selectSignedHeaderFields} picked, in `h=` order, followed by
+ * the `DKIM-Signature` field itself with its `b=` value emptied and with no trailing CRLF. These are the bytes
+ * `EmailVerifier` hashes inside the circuit, and `@zk-email/helpers` 6.4.2 canonicalizes the same string into
+ * `emailHeader`, which `test/inputs.test.ts` compares against after padding.
  *
- * `./build-inputs.ts` additionally requires the signature to be the last line here, matching the
- * circuit's `BodyHashRegex` `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`. A fixture
- * signature must therefore be signed `c=relaxed/relaxed`, with `bh=` written before `b=` and `; `
- * between tags, which is what `scripts/make-test-fixtures.ts` emits.
+ * `./build-inputs.ts` additionally requires the signature to be the last line here, matching the circuit's
+ * `BodyHashRegex` `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`: a fixture signature is
+ * therefore signed `c=relaxed/relaxed`, with `bh=` before `b=` and `; ` between tags.
  *
  * @param parsed - The parsed message.
  * @param sig - The signature the signed header is built for.
@@ -146,11 +129,9 @@ export function stripSignatureValue(line: Uint8Array): Uint8Array {
  */
 export function canonicalSignedHeader(parsed: ParsedEml, sig: DkimSignature): Uint8Array {
   const parts: Uint8Array[] = [];
-
   for (const field of selectSignedHeaderFields(parsed, sig)) {
     parts.push(canonicalizeHeaderField(field, sig.c.header));
   }
-
   if (sig.c.header === 'simple') {
     parts.push(stripSignatureValue(sig.field.raw));
   } else {
@@ -159,21 +140,20 @@ export function canonicalSignedHeader(parsed: ParsedEml, sig: DkimSignature): Ui
     const relaxed = canonicalizeHeaderField(sig.field, 'relaxed');
     parts.push(stripSignatureValue(relaxed.subarray(0, relaxed.length - 2)));
   }
-
   return concatBytes(parts);
 }
 
 /**
  * Canonicalizes the message body a signature's `bh=` commits to (RFC 6376 §3.4.3, §3.4.4).
  *
- * `simple` drops the body's trailing CRLFs and ends it with exactly one, so an empty body becomes a
- * single CRLF. `relaxed` drops every line's trailing WSP, reduces each run of WSP inside a line to
- * one SP, and removes the empty lines at the end; a body left with no line at all canonicalizes to
- * nothing, which is what an empty body hashes as. Nothing is truncated — `l=` never reaches here,
- * because `./eml-parse.ts` refuses it as `dkim_unsupported`.
+ * `simple` drops the body's trailing CRLFs and ends it with exactly one, so an empty body becomes a single
+ * CRLF. `relaxed` drops every line's trailing WSP, reduces each run of WSP inside a line to one SP, and
+ * removes the empty lines at the end; a body left with no line at all canonicalizes to nothing, which is what
+ * an empty body hashes as. Nothing is truncated — `l=` never reaches here, because `./eml-parse.ts` refuses it
+ * as `dkim_unsupported`.
  *
- * The body must already use CRLF, which `parseEml` in `./eml-parse.ts` guarantees through its line
- * ending normalization.
+ * The body must already use CRLF, which `parseEml` in `./eml-parse.ts` guarantees through its line ending
+ * normalization.
  *
  * @param body - The parsed message body.
  * @param mode - The body canonicalization the signature's `c=` tag selected.
@@ -209,12 +189,10 @@ export function verifyBodyHash(canonicalBody: Uint8Array, sig: DkimSignature): v
   const digest = computeBodyHash(canonicalBody);
   const expected = sig.bh;
   const shared = Math.min(digest.length, expected.length);
-
   let difference = digest.length ^ expected.length;
   for (let i = 0; i < shared; i += 1) {
     difference |= (digest[i] ?? 0) ^ (expected[i] ?? 0);
   }
-
   if (difference !== 0) fail('body_hash_mismatch');
 }
 
@@ -227,7 +205,6 @@ function colonOffset(raw: Uint8Array): number {
   for (let i = 0; i < raw.length; i += 1) {
     if (raw[i] === COLON) return i;
   }
-
   return raw.length;
 }
 
@@ -244,27 +221,27 @@ function isTagBoundary(byte: number): boolean {
  * copied as it stands. With `unfold`, a CRLF pair inside the range disappears as well, which joins a
  * folded header value back into one line.
  *
- * Where the range begins decides how a leading run is treated, and the RFC treats the two places
- * differently: a header value's leading WSP follows the colon and is deleted (§3.4.2 d), while a body
- * line's leading WSP is WSP within the line and collapses to one SP (§3.4.4 a.2). `keepLeadingSpace`
- * selects the second reading, and neither reading emits anything when the range holds no content at
- * all, so a line of nothing but WSP stays empty.
+ * Where the range begins decides how a leading run is treated, and the RFC treats the two places differently:
+ * a header value's leading WSP follows the colon and is deleted (§3.4.2 d), while a body line's leading WSP is
+ * WSP within the line and collapses to one SP (§3.4.4 a.2). `keepLeadingSpace` selects the second reading, and
+ * neither reading emits anything when the range holds no content at all, so a line of nothing but WSP stays
+ * empty.
  *
- * WSP is SP and HTAB only (RFC 5322 §3.2.3, RFC 6376 §3.4.2). The oracle this module is measured
- * against canonicalizes a UTF-8-decoded string with the JavaScript `\s` class, so it also collapses a
- * vertical tab, a form feed and a non-breaking space. No such byte can appear in a field name and
- * this run's fixtures carry none, so the two agree on every input the generator meets; where they
- * could differ, the RFC wins, because that is what real signers implement.
+ * WSP is SP and HTAB only (RFC 5322 §3.2.3, RFC 6376 §3.4.2). The oracle this module is measured against
+ * canonicalizes a UTF-8-decoded string with the JavaScript `\s` class, so it also collapses a vertical tab, a
+ * form feed and a non-breaking space; no such byte can appear in a field name and this run's fixtures carry
+ * none, so the two agree on every input the generator meets. Where they could differ, the RFC wins, because
+ * that is what real signers implement.
  *
- * @param target - The array to write into; its length bounds what can be written, and collapsing
- *   never lengthens a range, so it always fits.
+ * @param target - The array to write into; its length bounds what can be written, and collapsing never
+ *   lengthens a range, so it always fits.
  * @param offset - Where in `target` to start writing.
  * @param bytes - The bytes holding the range.
  * @param start - The first byte of the range.
  * @param end - One past the range's last byte.
  * @param unfold - Whether a CRLF pair inside the range is removed rather than kept.
- * @param keepLeadingSpace - Whether a WSP run before the range's first content byte becomes one SP
- *   (a body line) instead of vanishing (a header field value).
+ * @param keepLeadingSpace - Whether a WSP run before the range's first content byte becomes one SP (a body
+ *   line) instead of vanishing (a header field value).
  * @returns One past the last byte written, which is `offset` when the range carries no content.
  */
 function writeCollapsed(
@@ -279,31 +256,25 @@ function writeCollapsed(
   let at = offset;
   let pendingSpace = false;
   let hasContent = false;
-
   for (let i = start; i < end; i += 1) {
     const byte = bytes[i] ?? 0;
-
     if (unfold && byte === CR && bytes[i + 1] === LF) {
       i += 1;
       continue;
     }
-
     if (byte === SP || byte === HTAB) {
       if (hasContent || keepLeadingSpace) pendingSpace = true;
       continue;
     }
-
     if (pendingSpace) {
       target[at] = SP;
       at += 1;
       pendingSpace = false;
     }
-
     target[at] = byte;
     at += 1;
     hasContent = true;
   }
-
   return at;
 }
 
@@ -313,12 +284,10 @@ function simpleBody(body: Uint8Array): Uint8Array {
   while (end >= 2 && body[end - 2] === CR && body[end - 1] === LF) {
     end -= 2;
   }
-
   const canonical = new Uint8Array(end + 2);
   canonical.set(body.subarray(0, end), 0);
   canonical[end] = CR;
   canonical[end + 1] = LF;
-
   return canonical;
 }
 
@@ -329,29 +298,23 @@ function relaxedBody(body: Uint8Array): Uint8Array {
   const canonical = new Uint8Array(body.length + 2);
   let at = 0;
   let keep = 0;
-
   // Each line is written collapsed and followed by CRLF. `keep` remembers where the last line with
   // content ended, so the trailing empty lines the RFC drops are simply not returned, while an empty
   // line between two lines with content survives as its own CRLF.
   const writeLine = (start: number, end: number): void => {
     const length = writeCollapsed(canonical, at, body, start, end, false, true);
-
     canonical[length] = CR;
     canonical[length + 1] = LF;
     if (length > at) keep = length + 2;
     at = length + 2;
   };
-
   let lineStart = 0;
   for (let i = 0; i < body.length; i += 1) {
     if (body[i] !== CR || body[i + 1] !== LF) continue;
-
     writeLine(lineStart, i);
     lineStart = i + 2;
     i += 1;
   }
-
   if (lineStart < body.length) writeLine(lineStart, body.length);
-
   return canonical.subarray(0, keep);
 }

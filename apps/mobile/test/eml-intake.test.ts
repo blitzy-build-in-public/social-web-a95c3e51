@@ -1,14 +1,11 @@
 /**
- * `.eml` intake cleanup and email-content privacy (AAP 0.5.5 "Intake and cleanup", AAP 0.8.1,
- * criterion 3, AAP 0.12.2). Every path of an attempt runs through the real `eml-intake.native.ts`,
- * `eml-intake.web.ts`, `prover.ts` and `state/proof-store.ts`: an app-owned copy — cache, `Inbox/`,
- * `tmp/` or the share-intent App Group container — is deleted on success, on a failed read, on a
- * failed input generation, on a failed proof and on cancellation, and never twice, while the
- * traveller's own URI is never deleted or written; and neither a snapshot, a log line nor a surfaced
- * error carries a byte of the email, the engine being made to reject with the booking reference.
- *
- * Thirty-four cases run as nine tables over one harness: the intake, the proving flow and the store
- * are the real ones, and only the platform modules, the API client and the engine are faked.
+ * `.eml` intake cleanup and email-content privacy (AAP 0.5.5, criterion 3): every path of an attempt
+ * runs through the real intake, proving flow and store, so an app-owned copy — cache, `Inbox/`, `tmp/`
+ * or the share-intent App Group container — is deleted on success, on a failed read, on a failed input
+ * generation, on a failed proof and on cancellation, and never twice, the traveller's own URI is never
+ * deleted or written, and no snapshot, log line or surfaced error carries a byte of the email.
+ * Thirty-four cases run as nine tables over that harness, the platform modules, the API client and the
+ * engine being the only fakes.
  */
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -202,7 +199,6 @@ function recordRejection(error: unknown): void {
   state.noise.push(`error: ${text}`);
 }
 
-/** The state each outcome must leave behind (AAP 0.5.5). */
 function expectedState(outcome: Outcome): unknown {
   if (outcome === 'accepted') return { status: 'accepted', issuerId };
   if (outcome === 'read-failed') return { status: 'idle' };
@@ -247,10 +243,8 @@ interface Attempt {
   readonly error: unknown;
 }
 
-/**
- * Runs one attempt through `importAndProve`, returning rather than throwing its failure, and
- * aborting only once the engine is inside `generate` — so a cancel is the abort the proof sees.
- */
+/** Runs one attempt through `importAndProve`, aborting only once the engine is inside `generate`, so a
+ * cancel is the abort the proof sees. */
 async function attempt(open: () => Promise<Opened>, outcome: Outcome): Promise<Attempt> {
   const controller = new AbortController();
   let handle: Opened = null;
@@ -275,7 +269,6 @@ async function attempt(open: () => Promise<Opened>, outcome: Outcome): Promise<A
   return { handle, error };
 }
 
-/** One native attempt, through the picker or through share intake. */
 async function drive(uri: string, outcome: Outcome, viaPicker: boolean): Promise<Attempt> {
   arm(outcome, uri);
   const open = (): Promise<Opened> => (viaPicker ? native.pickEml() : native.fromShareIntent(uri));
@@ -351,7 +344,6 @@ beforeAll(() => {
     arrivalDate: '2026-11-02',
     departureDate: '2027-02-27',
   });
-
   // The guest name comes from its own fixture line, the reference from the registered body anchor.
   const anchor = issuer.template?.fields.reference.anchor ?? '';
   fx.reference = fx.valid.slice(fx.valid.indexOf(anchor) + anchor.length).split('\r')[0] ?? '';
@@ -398,7 +390,6 @@ describe('the .eml intake', () => {
     expect(native.appOwnedRoots()).not.toContain(DOCS);
     expect(native.isAppOwnedUri(APP_GROUP)).toBe(true);
   });
-
   it('reads and deletes nothing on a cancelled pick, and asks for no cache copy', async () => {
     await expect(native.pickEml()).resolves.toBeNull();
     expect(h.getDocumentAsync).toHaveBeenCalledWith(
@@ -409,27 +400,22 @@ describe('the .eml intake', () => {
     expect(proof.getProofSnapshot()).toEqual({ status: 'idle' });
     assertPrivate();
   });
-
   const matrix: [string, Outcome, string][] = OWNED.flatMap(([root, uri]) =>
     OUTCOMES.map((outcome): [string, Outcome, string] => [root, outcome, uri]),
   );
-
   it.each(matrix)('deletes the %s copy after %s', async (_root, outcome, uri) => {
     await assertOutcome(await drive(uri, outcome, false), outcome, uri);
     assertPrivate();
   });
-
   it('deletes the copy the picker handed over', async () => {
     const uri = `${CACHE}booking.eml`;
     const driven = await drive(uri, 'accepted', true);
-
     expect(h.getDocumentAsync).toHaveBeenCalledWith(
       expect.objectContaining({ copyToCacheDirectory: false }),
     );
     await assertOutcome(driven, 'accepted', uri);
     assertPrivate();
   });
-
   it.each(ORIGINALS)('never touches or writes %s', async (uri) => {
     expect(native.isAppOwnedUri(uri)).toBe(false);
     for (const outcome of ['accepted', 'engine-failed'] as const) {
@@ -442,17 +428,14 @@ describe('the .eml intake', () => {
       }
     }
   });
-
   it('reads the picked web file into memory, zero-fills it and revokes its blob URL', async () => {
     const file = new File([bytes], 'booking.eml', { type: 'message/rfc822' });
     const readSpy = vi.spyOn(file, 'arrayBuffer');
     const uri = URL.createObjectURL(new Blob([bytes]));
     state.pick = { canceled: false, assets: [{ uri, name: 'booking.eml', file }] };
-
     const handle = await web.pickEml();
     expect(readSpy).toHaveBeenCalled();
     expect(Uint8Array.from(handle?.bytes ?? [])).toEqual(bytes);
-
     await handle?.release();
     expect(revoked).toEqual([uri]);
     expect(handle?.bytes.every((byte) => byte === 0)).toBe(true);
@@ -461,7 +444,6 @@ describe('the .eml intake', () => {
     for (const recorder of Object.values(fs)) expect(recorder).not.toHaveBeenCalled();
     assertPrivate();
   });
-
   it.each(['accepted', 'engine-failed', 'cancelled'] as const)(
     'revokes and zero-fills the blob URL after %s',
     async (outcome) => {
@@ -471,19 +453,16 @@ describe('the .eml intake', () => {
       assertPrivate();
     },
   );
-
   it('rejects share intake on the web, owning no directory', async () => {
     const error = await web
       .fromShareIntent('file:///tmp/booking.eml')
       .catch((caught: unknown) => caught);
     recordRejection(error);
-
     expect(codeOf(error)).toBe('share_intake_unsupported');
     expect(web.isAppOwnedUri('file:///tmp/booking.eml')).toBe(false);
     expect(web.appOwnedRoots()).toEqual([]);
     assertPrivate();
   });
-
   it('keeps the proof state to the four keys AAP 0.5.5 allows', () => {
     expect([...proof.PROOF_STATE_KEYS].every((key) => STATE_KEYS.includes(key))).toBe(true);
   });

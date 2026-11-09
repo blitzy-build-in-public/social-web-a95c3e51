@@ -144,14 +144,14 @@ function visible(page: Page, testID: string): Locator {
 }
 
 /**
- * The checkbox control inside one of the screens' switches.
+ * The control inside one of the screens' switches.
  *
- * `Switch` hands its `testID` to the view it draws around itself and gives the real control the
- * nested `input[type="checkbox"][role="switch"]` (react-native-web 0.19), so the enabled state is a
- * property of the control rather than of the wrapper the test id names.
+ * `Switch` gives its `testID` to the control itself — on web one element carrying `role="switch"`,
+ * the caller's label and its state on `aria-checked` — so the enabled and checked states are
+ * properties of the element the test id names.
  */
 function switchControl(page: Page, testID: string): Locator {
-  return visible(page, testID).locator('input[type="checkbox"]');
+  return visible(page, testID);
 }
 
 /**

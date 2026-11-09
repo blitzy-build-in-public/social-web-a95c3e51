@@ -1,6 +1,6 @@
 /** My stay: the guest-list visibility switch at `/profile/stay` (AAP 0.5.8, AAP 0.8.1, criterion 15). */
 import { useEffect, useState, type ReactElement } from 'react';
-import { Platform, StyleSheet, Switch, Text, View, type SwitchProps } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { MIN_TOUCH_TARGET, colors, fontWeights, spacing, typography } from '@tablemate/shared';
@@ -10,7 +10,7 @@ import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { STAY_TOGGLE_LABEL, formatCalendarDate, guestListWarning } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
-import { Banner, Card, ListItem, Screen, announce } from '../../src/ui';
+import { Banner, Card, ListItem, Screen, Switch, announce } from '../../src/ui';
 type LodgingClaim = NonNullable<MeDto['activeLodgingClaim']>;
 
 const HEADER_TITLE = 'My stay';
@@ -29,14 +29,7 @@ const HIDDEN_NOTICE = "You're hidden from the guest list";
 const LODGINGS_PREFIX = ['lodgings'] as const;
 const NO_CLAIM = 'The lodging query was enabled without a claim.';
 const STEP_TEXT = { pending_call: 'Waiting for the call', calling: 'Calling the lodging now' };
-const TRACK_COLOR = { false: colors.border, true: colors.primary } as const;
 const MEDIUM_LABEL = { ...typography.label, fontWeight: fontWeights.medium };
-
-/** Web withholds both props: `react-native-web` would make the wrapper it draws the first keyboard stop (WCAG 2.1.1). */
-const switchRoleProps = (checked: boolean, disabled: boolean): Partial<SwitchProps> =>
-  Platform.OS === 'web'
-    ? {}
-    : { accessibilityRole: 'switch', accessibilityState: { checked, disabled } };
 
 const browse = (): void => router.push('/lodgings');
 const openLodging = (id: string): void =>
@@ -125,17 +118,13 @@ export default function StayScreen(): ReactElement {
           <Switch
             accessibilityLabel={STAY_TOGGLE_LABEL}
             disabled={toggleDisabled}
-            ios_backgroundColor={colors.border}
             onValueChange={(next) => {
               setOptimistic(next);
               setNotice(null);
               mutation.mutate(next);
             }}
             testID="stay-toggle"
-            thumbColor={colors.onPrimary}
-            trackColor={TRACK_COLOR}
             value={showStaying}
-            {...switchRoleProps(showStaying, toggleDisabled)}
           />
         </View>
         <Text style={styles.muted}>{GUEST_LIST_NOTE}</Text>

@@ -1,19 +1,3 @@
-/**
- * The deterministic language-model provider `LLM_PROVIDER=fake` selects: no network, no credential
- * and no environment read, so the default compose stack and every automated suite run with no
- * provider configured (AAP 0.3.1, AAP 0.3.3, AAP 0.6.2).
- *
- * It answers the same count-then-send contract as the real provider — a count for exactly the payload
- * a send would carry, and usage that `spend.ts` reconciles against the reservation — so the per-city
- * cap is exercised in tests and in `demo` rather than bypassed (AAP 0.5.6). Counting UTF-8 bytes
- * rather than characters makes Thai, Indonesian, emoji and base64-like content count high, the way a
- * real tokenizer counts them.
- *
- * The graph runs one way here: the shared vocabulary — the error classes and `assertLlmRequest` —
- * comes from `contract.ts`, which imports nothing, and `adapter.ts` imports this file's factory.
- * Nothing in this file imports `adapter.ts`, so no load order can meet an uninitialised binding.
- */
-
 import { utf8ByteLength } from '@tablemate/shared';
 
 import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult } from './contract.ts';
@@ -45,9 +29,7 @@ export interface FakeLlmOptions {
 
 /**
  * The fake adapter plus the record of what it was asked to do: `counted` holds the serialized input
- * part of every count attempted, `sent` that of every send attempted. A suite asserts the two are
- * byte-identical for one request, and that a refused request appears in `counted` and never in
- * `sent` (AAP 0.5.6).
+ * part of every count attempted, `sent` that of every send attempted.
  */
 export interface FakeLlmAdapter extends LlmAdapter {
   readonly calls: { readonly counted: string[]; readonly sent: string[] };
@@ -55,8 +37,8 @@ export interface FakeLlmAdapter extends LlmAdapter {
 
 /**
  * The provider-neutral input part of one request — the system prompt, the messages and the output
- * schema, in a fixed key order — which is what a count and a send must agree on byte for byte
- * (AAP 0.5.6).
+ * schema, in a fixed key order — which is what a count and a send must agree on byte for byte (AAP
+ * 0.5.6).
  */
 export function serializeFakeInputPart(request: LlmRequest): string {
   return JSON.stringify({
@@ -68,27 +50,22 @@ export function serializeFakeInputPart(request: LlmRequest): string {
 
 /**
  * The fake provider's prices in USD per million tokens, matching the `llm` group `src/env/modes.ts`
- * parses in fake mode. They are non-secret decimal strings, positive and at most six decimals, which
- * is what `parseUsdPerMTok` requires, so the per-city cap keeps metering in tests and in `demo`
- * (AAP 0.5.6).
+ * parses in fake mode.
  */
 export const FAKE_LLM_PRICES = Object.freeze({
   inputUsdPerMTok: '0.40',
   outputUsdPerMTok: '1.60',
 } as const);
 
-/** The reply of an unscripted request: usable JSON, no items, no classification. */
 function defaultRespond(): unknown {
   return {};
 }
 
-/** JSON text for a scripted value; a value JSON cannot carry becomes empty text. */
 function serializedText(value: unknown): string {
   const text: unknown = JSON.stringify(value);
   return typeof text === 'string' ? text : '';
 }
 
-/** Parsed structured output, or `null` where the scripted text was not JSON. */
 function parseJsonOrNull(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
@@ -97,12 +74,10 @@ function parseJsonOrNull(text: string): unknown {
   }
 }
 
-/** The fake tokenizer: four UTF-8 bytes per token, rounded up, over the input part alone. */
 function countTokens(part: string): number {
   return Math.ceil(utf8ByteLength(part) / 4);
 }
 
-/** Sleep for `ms`, rejecting with `LlmTimeoutError` if the caller aborts meanwhile. */
 function waitForDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -122,20 +97,14 @@ function waitForDelay(ms: number, signal: AbortSignal | undefined): Promise<void
   });
 }
 
-/**
- * Build the provider `LLM_PROVIDER=fake` names (AAP 0.3.1, AAP 0.5.6). It is deterministic: the same
- * request always produces the same count, the same reply and the same reported usage, so a suite can
- * assert an exact spend figure.
- */
+/** Build the provider `LLM_PROVIDER=fake` names (AAP 0.3.1, AAP 0.5.6). */
 export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapter {
   const counted: string[] = [];
   const sent: string[] = [];
-
   return {
     provider: 'fake',
     model: 'fake',
     calls: { counted, sent },
-
     async countInputTokens(request: LlmRequest, call: LlmCallOptions): Promise<number> {
       assertLlmRequest(request);
       const part = serializeFakeInputPart(request);
@@ -151,7 +120,6 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
       await Promise.resolve();
       return countTokens(part);
     },
-
     async complete(request: LlmRequest, call: LlmCallOptions): Promise<LlmResult> {
       assertLlmRequest(request);
       const part = serializeFakeInputPart(request);
@@ -162,7 +130,6 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
       if (call.signal?.aborted === true) {
         throw new LlmTimeoutError('aborted');
       }
-
       const delayMs = options.delayMs ?? 0;
       if (delayMs > 0) {
         await waitForDelay(Math.min(delayMs, call.timeoutMs), call.signal);
@@ -173,7 +140,6 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
       if (options.failComplete === true) {
         throw new LlmProviderError();
       }
-
       const value = (options.respond ?? defaultRespond)(request);
       const text = typeof value === 'string' ? value : serializedText(value);
       const json =
@@ -182,7 +148,6 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
           : typeof value === 'string'
             ? parseJsonOrNull(value)
             : value;
-
       return {
         text,
         json,

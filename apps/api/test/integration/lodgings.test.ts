@@ -1,44 +1,15 @@
 /**
- * The lodging directory, its guest list and its leaderboard, end to end (AAP 0.8.1, 0.5.4, 0.5.7;
- * criteria 15 and 16 of AAP 0.12.1).
+ * The lodging directory, its guest list and its leaderboard, end to end.
  *
- * Every case drives the three routes through the real app `apps/api/test/support/app.ts` builds — real
- * PostgreSQL 16 with PostGIS 3.4 and real Redis — and asserts on what the contract publishes: the error
- * envelope through `expectError`, the DTO key set derived from the shared schemas, and the key paths of
- * the raw JSON through `keysDeep`, so a field that has no business leaving the server is caught even
- * where no schema declares it.
+ * The rules the cases turn on: a verified guest count below `GUEST_COUNT_THRESHOLD` is never a
+ * number — it is `GUEST_COUNT_BELOW_LABEL`, in the directory and on the detail alike — an opted-in
+ * guest is released only to a caller holding a valid proof for the lodging's city, and the city
+ * board counts one pair once in any 30 days and ignores facts older than its 90-day window.
  *
- * Criterion 15: a guest who has not opted in appears in no response; a verified guest count below
- * `GUEST_COUNT_THRESHOLD` is never a number — it is `GUEST_COUNT_BELOW_LABEL`, in the directory and on
- * the detail alike — and an opted-in guest is released only to a caller holding a valid proof for the
- * lodging's city, as the tier-0 profile discovery discloses and no more. The toggle needs a claim that
- * is `verified` and still inside its stay, judged in the lodging's city time (`409 no_verified_claim`
- * otherwise), and hiding always succeeds (AAP 0.5.7).
- *
- * Criterion 16: one seeded city ranks its lodgings by witnessed activity, breaks an equal score by the
- * current verified guest count, keeps each lodging's activity rank under `sort=name`, ignores facts
- * older than the 90-day window, and counts one pair once in any 30 days (AAP 0.5.7).
- *
- * Two harness facts shape the file. The clock is frozen at `DEFAULT_TEST_NOW` and every date here is
- * derived from it and `DAY_MS` — a claim whose stay has ended is written with dates before it, never by
- * moving the clock — so no case waits for a window to pass. And the directory is cached in Redis for
- * `LEADERBOARD_CACHE_SECONDS` under `leaderboard:<APP_ENV>:<cityId>`, one entry per fixture policy,
- * holding the version-stamped envelope `{ v, items }` the module writes rather than the bare board:
- * the reader below drops this run's own key before every read that must see the rows a case has just
- * written, and asserts the entry was written again with the TTL the contract states, which is also
- * what proves the key it drops is the route's own.
- *
- * Three more cases cover the detail route over a bounded directory: a city holding more lodgings than
- * `LODGING_DIRECTORY_LIMIT` still answers one the cut left out with its own `activityScore`, its own
- * `guestCount` and the rank after every listed lodging — never as a lodging that does not exist —
- * while a lodging the board does carry answers exactly the board's own numbers; and a guest list is
- * cut at `LODGING_GUEST_LIST_LIMIT`, the most recently resolved stay first, with `guestCount` still
- * reporting every current verified guest (AAP 0.5.4, 0.5.7).
- *
- * @see AAP 0.5.4 for the routes, their errors and their DTOs, 0.5.7 for the visibility, guest-count and
- *   leaderboard rules, 0.12.1 for the two criteria, 0.11.2 for the harness, 0.8.1 for this file.
+ * The directory is cached in Redis for `LEADERBOARD_CACHE_SECONDS` under
+ * `leaderboard:<APP_ENV>:<cityId>`, whose TTL is wall-clock: the reader drops this run's own key
+ * before every read that must see rows a case has just written.
  */
-
 import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, inject } from 'vitest';
@@ -93,9 +64,6 @@ import {
 } from '../../src/modules/lodgings/leaderboard.ts';
 import { LODGING_GUEST_LIST_LIMIT } from '../../src/modules/lodgings/visibility.ts';
 
-/* Names and keys every case is written against (AAP 0.5.2, 0.5.7) */
-
-/** The city every case stands in: one of the five launch cities of `config/cities.json`. */
 const LISBON = 'lisbon';
 
 /** Another launch city, whose proof must never open the Lisbon directory (AAP 0.5.7). */
@@ -104,28 +72,22 @@ const MEXICO_CITY = 'mexico-city';
 /** A slug `CitySlug` accepts that this deployment is not configured with. */
 const UNKNOWN_CITY = 'narnia';
 
-/** A `Uuid` no lodging has, for the detail route's not-found case. */
 const MISSING_LODGING_ID = '00000000-0000-4000-8000-000000000000';
 
 /**
- * The directory's cache entry under this run's own fixture policy, `leaderboard:test:<cityId>`
- * (AAP 0.5.2, 0.5.7), rewritten by every recomputation. `APP_ENV` is in the key, so the integration
- * project's own `test` policy is named here. Redis TTLs are wall-clock, so the reader below drops this
- * key rather than waiting it out.
+ * The directory's cache entry under this run's own fixture policy,
+ * `leaderboard:test:<cityId>`, rewritten by every recomputation. `APP_ENV` is in the key, so the
+ * integration project's own `test` policy is named here.
  */
 const CACHE_KEY = `leaderboard:test:${LISBON}`;
 
-/** What must never appear in an answer: a console secret, a booking field or a proof nullifier. */
 const FORBIDDEN_IN_RESPONSE = ['secret', 'cipher', 'booking', 'nullifier', 'emailCiphertext'];
 
 /** The words a guest-list key path must never carry: a stay date or a room field would be one. */
 const FORBIDDEN_GUEST_PATH = /stay|room|booking/i;
 
-/* The suite (AAP 0.11.2) */
-
 let t: TestApp;
 
-/** The caller every read is made as: a consented traveler holding a valid proof for Lisbon. */
 let viewer: UserFixture;
 
 beforeAll(async () => {
@@ -145,12 +107,8 @@ beforeEach(async () => {
   await makeProof(t, viewer, { cityId: LISBON });
 });
 
-/* The three routes (AAP 0.5.4) */
-
-/** Who a request is made as: a fixture account, or nobody at all (no bearer header). */
 type Actor = UserFixture | null;
 
-/** `GET /v1/cities/:cityId/lodgings`, with an optional `sort`. */
 async function listRoute(cityId: string, actor: Actor, sort?: string): Promise<RouteResponse> {
   return await callRoute(t.app, {
     method: 'GET',
@@ -160,7 +118,6 @@ async function listRoute(cityId: string, actor: Actor, sort?: string): Promise<R
   });
 }
 
-/** `GET /v1/lodgings/:id`. */
 async function detailRoute(lodgingId: string, actor: Actor): Promise<RouteResponse> {
   return await callRoute(t.app, {
     method: 'GET',
@@ -169,7 +126,6 @@ async function detailRoute(lodgingId: string, actor: Actor): Promise<RouteRespon
   });
 }
 
-/** `PUT /v1/me/lodging-visibility`, the opt-in switch (AAP 0.5.7). */
 async function setStaying(actor: UserFixture, showStaying: boolean): Promise<RouteResponse> {
   return await callRoute(t.app, {
     method: 'PUT',
@@ -179,33 +135,25 @@ async function setStaying(actor: UserFixture, showStaying: boolean): Promise<Rou
   });
 }
 
-/* Reads over the directory (AAP 0.5.7) */
-
 /**
- * The city's activity-ordered directory, read past the cache.
- *
- * The key is dropped first so the board reflects the rows the case has just written, and the TTL the
- * write left behind is asserted, which pins the cache key, its lifetime and the fact that a read
- * repopulates it. `sort=name` re-sorts the same board and writes the same entry, so the check holds
- * for both orders.
+ * The city's activity-ordered directory, read past the cache: the key is dropped first so the board
+ * reflects the rows the case has just written, and the TTL the write left behind is asserted, which
+ * pins the cache key, its lifetime and the fact that a read repopulates it. `sort=name` re-sorts the
+ * same board and writes the same entry, so the check holds for both orders.
  *
  * @param sort - `activity` (the default) or `name`.
  * @returns The directory entries, in the order the route answered with.
  */
 async function board(sort: LodgingSort = 'activity'): Promise<readonly LodgingSummary[]> {
   await t.services.redis.client.del(CACHE_KEY);
-
   const response = await listRoute(LISBON, viewer, sort);
   expect(response.status).toBe(200);
-
   const ttl = await t.services.redis.client.ttl(CACHE_KEY);
   expect(ttl).toBeGreaterThan(0);
   expect(ttl).toBeLessThanOrEqual(LEADERBOARD_CACHE_SECONDS);
-
   return LodgingsResponse.parse(response.json()).items;
 }
 
-/** One directory entry, failing the case when the lodging is not listed at all. */
 function item(items: readonly LodgingSummary[], lodgingId: string): LodgingSummary {
   const found = items.find((entry) => entry.id === lodgingId);
   if (found === undefined) {
@@ -214,17 +162,13 @@ function item(items: readonly LodgingSummary[], lodgingId: string): LodgingSumma
   return found;
 }
 
-/** `GET /v1/lodgings/:id` as the proof-holding viewer, read past the cache. */
 async function readDetail(lodgingId: string): Promise<RouteResponse> {
   await t.services.redis.client.del(CACHE_KEY);
-
   const response = await detailRoute(lodgingId, viewer);
   expect(response.status).toBe(200);
-
   return response;
 }
 
-/** One guest as a detail lists them, failing the case when the guest is absent. */
 function guestOf(detail: LodgingDetail, userId: string): Tier0Profile {
   const listed = detail.guests.find((entry) => entry.id === userId);
   if (listed === undefined) {
@@ -241,61 +185,48 @@ function handleOf(user: UserFixture): string {
   return user.handle;
 }
 
-/* Fixtures the cases are built from (AAP 0.5.2, 0.5.7) */
-
-/** The instant `days` before `now`, which places every activity fact in time (AAP 0.5.7). */
 function ago(now: Date, days: number): Date {
   return new Date(now.getTime() - days * DAY_MS);
 }
 
-/** A calendar date `days` from `now` as `YYYY-MM-DD`: the form a stay's dates are written in. */
 function dayFrom(now: Date, days: number): string {
   return new Date(now.getTime() + days * DAY_MS).toISOString().slice(0, 10);
 }
 
 /**
- * A pair for one lodging fact.
- *
- * A fact carries a keyed hash of two traveler ids and no user id at all (AAP 0.5.7), so the pair needs
- * no account rows: two fresh ids are what the key is taken over, and each call is a pair the
- * leaderboard has not seen before.
+ * A pair for one lodging fact. A fact carries a keyed hash of two traveler ids and no user id at
+ * all, so the pair needs no account rows: two fresh ids are what the key is taken over.
  */
 function pairOf(): readonly [FixtureRef, FixtureRef] {
   return [{ id: randomUUID() }, { id: randomUUID() }];
 }
 
 /**
- * One lodging under a name the case controls.
- *
- * `makeLodging` numbers its own names from a counter that runs for the whole process, so their
- * alphabetical order is not the order the cases create them in; the leaderboard orders by name, so the
- * scenario's own names are written over it.
+ * One lodging under a name the case controls. `makeLodging` numbers its own names from a counter
+ * that runs for the whole process, so their alphabetical order is not the order the cases create
+ * them in; the leaderboard orders by name, so the scenario's own names are written over it.
  */
 async function namedLodging(name: string): Promise<LodgingFixture> {
   const lodging = await makeLodging(t, { cityId: LISBON });
   await t.services.db.lodging.update({ where: { id: lodging.id }, data: { name } });
-
   return { ...lodging, name };
 }
 
-/** What {@link makeGuest} may set. */
 interface GuestOptions {
   readonly status?: LodgingClaimStatus;
   readonly stayFrom?: string;
   readonly stayTo?: string;
 }
 
-/** One guest account, and the claim that carries its stay. */
 interface GuestFixture {
   readonly user: UserFixture;
   readonly claim: ClaimFixture;
 }
 
 /**
- * One guest with a claim on `lodging`, `verified` unless the case says otherwise (AAP 0.5.7).
- *
- * A verified claim whose `stayTo` has not passed is what the guest count, the guest list and the
- * visibility toggle all read, so this is the shape every criterion-15 case starts from.
+ * One guest with a claim on `lodging`, `verified` unless the case says otherwise. A verified claim
+ * whose `stayTo` has not passed is what the guest count, the guest list and the visibility toggle
+ * all read, so this is the shape every criterion-15 case starts from.
  */
 async function makeGuest(
   lodging: LodgingFixture,
@@ -307,29 +238,19 @@ async function makeGuest(
     ...(options.stayFrom === undefined ? {} : { stayFrom: options.stayFrom }),
     ...(options.stayTo === undefined ? {} : { stayTo: options.stayTo }),
   });
-
   return { user, claim };
 }
 
-/* ---------------------------------------------------------------------------------------------
- * The refusals of the three routes (AAP 0.5.4)
- * ------------------------------------------------------------------------------------------- */
-
-/** How a case's request is authenticated: the shared viewer, a fresh one, or nobody at all. */
 type ViewerKind = 'valid' | 'no-proof' | 'other-city' | 'no-consent';
 
-/** The account a row acts as. */
 async function actorFor(kind: ViewerKind | 'none'): Promise<Actor> {
   if (kind === 'none') return null;
   if (kind === 'valid') return viewer;
-
   const user = await makeUser(t, kind === 'no-consent' ? { consents: false } : {});
   if (kind === 'other-city') await makeProof(t, user, { cityId: MEXICO_CITY });
-
   return user;
 }
 
-/** One row of the directory route's error table: the read, and the answer it must produce. */
 type ListRow = readonly [
   title: string,
   viewer: ViewerKind | 'none',
@@ -347,7 +268,6 @@ const LIST_ERRORS: readonly ListRow[] = [
   ['an unknown sort', 'valid', LISBON, 'rating', 400, 'invalid_field'],
 ];
 
-/** One row of the detail route's error table; a `lodging` of `null` means the case's own lodging. */
 type DetailRow = readonly [
   title: string,
   viewer: ViewerKind | 'none',
@@ -370,31 +290,22 @@ describe('the refusals of the directory, the detail and the visibility toggle', 
       expectError(await listRoute(city, await actorFor(kind), sort ?? undefined), status, code);
     },
   );
-
   it.each(rows(DETAIL_ERRORS))(
     'GET /lodgings/:id: %s',
     async (_title, kind, target, status, code) => {
       const lodging = await makeLodging(t, { cityId: LISBON });
       const response = await detailRoute(target ?? lodging.id, await actorFor(kind));
-
       expectError(response, status, code);
     },
   );
-
   it('holds both directory routes behind the age gate', async () => {
     const lodging = await makeLodging(t, { cityId: LISBON });
     const gated = await actorFor('no-consent');
-
     expectError(await listRoute(LISBON, gated), 403, 'age_gate_required');
     expectError(await detailRoute(lodging.id, gated), 403, 'age_gate_required');
   });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * Criterion 15 — what a lodging discloses, and to whom (AAP 0.5.4, 0.5.7)
- * ------------------------------------------------------------------------------------------- */
-
-/** One row of the guest-count table: the guests a lodging holds and the count its DTOs render. */
 interface GuestCountRow {
   readonly guests: number;
   readonly expected: GuestCount;
@@ -402,7 +313,7 @@ interface GuestCountRow {
 
 /**
  * The counts criterion 15 is read at, straddling `GUEST_COUNT_THRESHOLD`: below it the count is the
- * label, at and above it the number itself (AAP 0.5.4).
+ * label, at and above it the number itself.
  */
 const GUEST_COUNTS: readonly GuestCountRow[] = [
   { guests: 0, expected: GUEST_COUNT_BELOW_LABEL },
@@ -412,7 +323,6 @@ const GUEST_COUNTS: readonly GuestCountRow[] = [
   { guests: 4, expected: 4 },
 ];
 
-/** One row of the visibility toggle's error table: the claim the caller holds (AAP 0.5.7). */
 interface VisibilityErrorRow {
   readonly title: string;
   readonly claim: 'none' | 'pending_call' | 'stay_ended';
@@ -429,18 +339,14 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
     const lodging = await makeLodging(t, { cityId: LISBON });
     const guest = await makeGuest(lodging);
     await makeVisibility(t, guest.user, guest.claim, false);
-
     await t.services.redis.client.del(CACHE_KEY);
     const listResponse = await listRoute(LISBON, viewer);
     expect(listResponse.status).toBe(200);
-
     const items = LodgingsResponse.parse(listResponse.json()).items;
     // Hidden from the guest list, and still one of the counts the lodging reports.
     expect(item(items, lodging.id).guestCount).toBe(GUEST_COUNT_BELOW_LABEL);
-
     const detailResponse = await readDetail(lodging.id);
     expect(LodgingDetail.parse(detailResponse.json()).guests).toEqual([]);
-
     for (const body of [listResponse.body, detailResponse.body]) {
       expect(body).not.toContain(guest.user.id);
       expect(body).not.toContain(handleOf(guest.user));
@@ -452,14 +358,11 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
     for (let index = 0; index < row.guests; index += 1) {
       await makeGuest(lodging);
     }
-
     const listed = item(await board(), lodging.id).guestCount;
     const detail = LodgingDetail.parse((await readDetail(lodging.id)).json()).guestCount;
-
     expect(listed).toEqual(row.expected);
     expect(detail).toEqual(row.expected);
     expect(GuestCount.parse(listed)).toEqual(row.expected);
-
     // Below the threshold the count never leaves the server as a number (AAP 0.5.4).
     if (row.guests < GUEST_COUNT_THRESHOLD) {
       expect(typeof listed).toBe('string');
@@ -472,14 +375,11 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
   it('lists an opted-in guest with exactly the tier-0 fields', async () => {
     const lodging = await makeLodging(t, { cityId: LISBON });
     const guest = await makeGuest(lodging);
-
     const optedIn = await setStaying(guest.user, true);
     expect(optedIn.status).toBe(200);
     expect(VisibilityResponse.parse(optedIn.json())).toEqual({ showStaying: true });
-
     const response = await readDetail(lodging.id);
     const listed = guestOf(LodgingDetail.parse(response.json()), guest.user.id);
-
     expect(Object.keys(listed).sort()).toEqual([...TIER_FIELDS[0]].sort());
     expect(keysDeep(listed).filter((path) => FORBIDDEN_GUEST_PATH.test(path))).toEqual([]);
     expect(response.body).not.toContain(guest.claim.id);
@@ -489,9 +389,7 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
     const lodging = await makeLodging(t, { cityId: LISBON });
     const guest = await makeGuest(lodging);
     await setStaying(guest.user, true);
-
     const refused = await detailRoute(lodging.id, await actorFor('other-city'));
-
     expectError(refused, 403, 'no_valid_proof');
     expect(refused.body).not.toContain(guest.user.id);
   });
@@ -503,9 +401,7 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
     await setStaying(blocker.user, true);
     await setStaying(other.user, true);
     await makeBlock(t, blocker.user, viewer);
-
     const detail = LodgingDetail.parse((await readDetail(lodging.id)).json());
-
     expect(detail.guests.map((entry) => entry.id)).toEqual([other.user.id]);
     expect(detail.guestCount).toBe(GUEST_COUNT_BELOW_LABEL);
   });
@@ -514,7 +410,6 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
     'PUT /me/lodging-visibility: $title is 409 no_verified_claim',
     async (row) => {
       const user = await makeUser(t);
-
       if (row.claim !== 'none') {
         const now = t.time.now();
         await makeClaim(t, user, await makeLodging(t, { cityId: LISBON }), {
@@ -524,19 +419,15 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
             : {}),
         });
       }
-
       expectError(await setStaying(user, true), 409, 'no_verified_claim');
     },
   );
-
   it('always lets a traveler hide again', async () => {
     const lodging = await makeLodging(t, { cityId: LISBON });
     const guest = await makeGuest(lodging);
     await setStaying(guest.user, true);
-
     const shown = LodgingDetail.parse((await readDetail(lodging.id)).json());
     expect(shown.guests.map((entry) => entry.id)).toEqual([guest.user.id]);
-
     const hidden = await setStaying(guest.user, false);
     expect(hidden.status).toBe(200);
     expect(VisibilityResponse.parse(hidden.json())).toEqual({ showStaying: false });
@@ -545,17 +436,14 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
 
   it('publishes exactly the lodging DTO fields and nothing above them', async () => {
     const lodging = await makeLodging(t, { cityId: LISBON, withSecret: true });
-
     const listed = item(await board(), lodging.id);
     const detailResponse = await readDetail(lodging.id);
     const detail = LodgingDetail.parse(detailResponse.json());
-
     expect(Object.keys(listed).sort()).toEqual(Object.keys(LodgingSummary.shape).sort());
     expect(Object.keys(detail).sort()).toEqual(Object.keys(LodgingDetail.shape).sort());
     // The business contact the directory exists to show, never a traveler's.
     expect(listed.phone).toBe(lodging.phone);
     expect(listed.address).not.toBeNull();
-
     for (const forbidden of FORBIDDEN_IN_RESPONSE) {
       expect(detailResponse.body).not.toContain(forbidden);
     }
@@ -568,26 +456,18 @@ describe('criterion 15: a guest is disclosed only when opted in, and only to a p
       where: { id: gone.id },
       data: { osmMissingAt: t.time.now() },
     });
-
     expect((await board()).map((entry) => entry.id)).toEqual([listed.id]);
     expectError(await detailRoute(gone.id, viewer), 404, 'lodging_not_found');
   });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * Criterion 16 — the city leaderboard (AAP 0.5.7)
- * ------------------------------------------------------------------------------------------- */
-
-/** The five lodgings of the seeded scenario, by the key each case names them with. */
 type BoardKey = 'alpha' | 'bravo' | 'charlie' | 'delta' | 'echo';
 
-/** The seeded city, and the pair whose chain the 30-day dedupe case extends. */
 interface BoardFixture {
   readonly lodgings: Readonly<Record<BoardKey, LodgingFixture>>;
   readonly charliePair: readonly [FixtureRef, FixtureRef];
 }
 
-/** One row of the expectation the seeded board is read against. */
 interface BoardExpectation {
   readonly name: string;
   readonly score: number;
@@ -611,22 +491,17 @@ const SEEDED_BOARD: readonly BoardExpectation[] = [
   { name: 'Echo Lodge', score: 0, rank: 5, guestCount: GUEST_COUNT_BELOW_LABEL },
 ];
 
-/** The days before now of Charlie's two counted facts, the first of them the shared pair's. */
 const CHARLIE_PAIR_DAYS_AGO = LEADERBOARD_PAIR_DEDUPE_DAYS + 10;
 const CHARLIE_OTHER_PAIR_DAYS_AGO = CHARLIE_PAIR_DAYS_AGO - 5;
 
-/** How much later than the pair's counted fact the dedupe case places each fact of its own. */
 const INSIDE_PAIR_WINDOW_GAP_DAYS = 10;
 const PAST_PAIR_WINDOW_GAP_DAYS = LEADERBOARD_PAIR_DEDUPE_DAYS + 1;
 
-/** How far outside the 90-day activity window Bravo's ignored fact sits. */
 const OUTSIDE_WINDOW_DAYS_AGO = LEADERBOARD_WINDOW_DAYS + 10;
 
-/** Build the scenario: five named lodgings, their witnessed facts and their current verified guests. */
 async function seedBoard(): Promise<BoardFixture> {
   const now = t.time.now();
   const charliePair = pairOf();
-
   const lodgings: Record<BoardKey, LodgingFixture> = {
     alpha: await namedLodging('Alpha Lodge'),
     bravo: await namedLodging('Bravo Lodge'),
@@ -634,7 +509,6 @@ async function seedBoard(): Promise<BoardFixture> {
     delta: await namedLodging('Delta Lodge'),
     echo: await namedLodging('Echo Lodge'),
   };
-
   await makeActivityFacts(t, lodgings.alpha, [
     { pair: pairOf(), completedAt: ago(now, 1) },
     { pair: pairOf(), completedAt: ago(now, 2) },
@@ -649,25 +523,21 @@ async function seedBoard(): Promise<BoardFixture> {
     { pair: charliePair, completedAt: ago(now, CHARLIE_PAIR_DAYS_AGO) },
     { pair: pairOf(), completedAt: ago(now, CHARLIE_OTHER_PAIR_DAYS_AGO) },
   ]);
-
   for (let index = 0; index < 3; index += 1) {
     await makeGuest(lodgings.alpha);
   }
   await makeGuest(lodgings.charlie);
-
   return { lodgings, charliePair };
 }
 
 describe('criterion 16: the city leaderboard', () => {
   let seeded: BoardFixture;
-
   beforeEach(async () => {
     seeded = await seedBoard();
   });
 
   it('ranks by witnessed activity and breaks an equal score by the verified guest count', async () => {
     const items = await board();
-
     expect(items.map((entry) => entry.name)).toEqual(SEEDED_BOARD.map((row) => row.name));
     expect(items.map((entry) => entry.activityScore)).toEqual(SEEDED_BOARD.map((row) => row.score));
     expect(items.map((entry) => entry.rank)).toEqual(SEEDED_BOARD.map((row) => row.rank));
@@ -679,7 +549,6 @@ describe('criterion 16: the city leaderboard', () => {
   it("keeps each lodging's activity rank when the directory is sorted by name", async () => {
     const alphabetical = [...SEEDED_BOARD].sort((a, b) => a.name.localeCompare(b.name, 'en'));
     const items = await board('name');
-
     expect(items.map((entry) => entry.name)).toEqual(alphabetical.map((row) => row.name));
     expect(items.map((entry) => entry.rank)).toEqual(alphabetical.map((row) => row.rank));
     expect(items.map((entry) => entry.activityScore)).toEqual(alphabetical.map((row) => row.score));
@@ -689,14 +558,12 @@ describe('criterion 16: the city leaderboard', () => {
     const now = t.time.now();
     const { alpha, bravo, charlie } = seeded.lodgings;
     expect(item(await board(), charlie.id).activityScore).toBe(2);
-
     // Ten days after the counted fact: inside the pair's window, so the score does not move.
     const insideGap = CHARLIE_PAIR_DAYS_AGO - INSIDE_PAIR_WINDOW_GAP_DAYS;
     await makeActivityFacts(t, charlie, [
       { pair: seeded.charliePair, completedAt: ago(now, insideGap) },
     ]);
     expect(item(await board(), charlie.id).activityScore).toBe(2);
-
     // Thirty-one days after the counted fact: the chain advances, because a fact that did not count
     // never reset it, so the score rises by exactly one (AAP 0.5.7).
     const pastGap = CHARLIE_PAIR_DAYS_AGO - PAST_PAIR_WINDOW_GAP_DAYS;
@@ -704,7 +571,6 @@ describe('criterion 16: the city leaderboard', () => {
       { pair: seeded.charliePair, completedAt: ago(now, pastGap) },
     ]);
     const items = await board();
-
     expect(item(items, charlie.id).activityScore).toBe(3);
     // Level with Bravo on score and one verified guest ahead of it: the tie-break moves Charlie up.
     expect(item(items, charlie.id).rank).toBe(1);
@@ -712,10 +578,6 @@ describe('criterion 16: the city leaderboard', () => {
     expect(item(items, alpha.id).rank).toBe(3);
   });
 });
-
-/* ---------------------------------------------------------------------------------------------
- * The bound on a directory answer (AAP 0.1.1, 0.11.1)
- * ------------------------------------------------------------------------------------------- */
 
 /** One warning line the module wrote, kept as the fields it carries (AAP 0.11.1). */
 type WarningLine = Record<string, unknown>;
@@ -736,7 +598,6 @@ interface RecordedServices {
  */
 function recordingServices(db: DbClient): RecordedServices {
   const warnings: WarningLine[] = [];
-
   return {
     warnings,
     services: {
@@ -766,7 +627,6 @@ const LODGING_CREATE_BATCH = 50;
 /** `count` lodgings in Lisbon, created in batches rather than all in one `Promise.all`. */
 async function createLodgings(count: number): Promise<LodgingFixture[]> {
   const created: LodgingFixture[] = [];
-
   while (created.length < count) {
     const size = Math.min(LODGING_CREATE_BATCH, count - created.length);
     created.push(
@@ -775,7 +635,6 @@ async function createLodgings(count: number): Promise<LodgingFixture[]> {
       )),
     );
   }
-
   return created;
 }
 
@@ -799,14 +658,11 @@ describe('the bound on a directory answer', () => {
     const quiet = await createLodgings(LODGING_DIRECTORY_LIMIT - 1);
     const quietIds = new Set(quiet.map((lodging) => lodging.id));
     const now = t.time.now();
-
     for (const lodging of scored) {
       await makeActivityFacts(t, lodging, [{ pair: pairOf(), completedAt: ago(now, 1) }]);
     }
-
     const recorded = recordingServices(t.services.db);
     const listed = await leaderboard(recorded.services, LISBON, 'activity');
-
     expect(listed).toHaveLength(LODGING_DIRECTORY_LIMIT);
     expect(listed.slice(0, 2).map((entry) => entry.id)).toEqual(
       scored.map((lodging) => lodging.id),
@@ -819,7 +675,6 @@ describe('the bound on a directory answer', () => {
     expect(warningsFor(recorded.warnings, 'lodgings_truncated')).toEqual([
       { event: 'lodgings_truncated', cityId: LISBON, limit: LODGING_DIRECTORY_LIMIT },
     ]);
-
     // The route answers the same board over the app's own services, and caches it again.
     const items = await board();
     expect(items.map((entry) => entry.id)).toEqual(listed.map((entry) => entry.id));
@@ -828,7 +683,6 @@ describe('the bound on a directory answer', () => {
   it('saturates one lodging at the facts bound and reports the cap', async () => {
     const lodging = await oneLodging();
     const now = t.time.now();
-
     // A distinct pair per fact, so every fact inside the window would count on its own and the score
     // is exactly the number of facts the read kept.
     await t.services.db.lodgingActivityFact.createMany({
@@ -839,10 +693,8 @@ describe('the bound on a directory answer', () => {
         completedAt: now,
       })),
     });
-
     const recorded = recordingServices(t.services.db);
     const listed = await leaderboard(recorded.services, LISBON, 'activity');
-
     expect(item(listed, lodging.id).activityScore).toBe(LODGING_ACTIVITY_FACTS_LIMIT);
     expect(warningsFor(recorded.warnings, 'lodging_activity_facts_capped')).toEqual([
       {
@@ -851,7 +703,6 @@ describe('the bound on a directory answer', () => {
         limit: LODGING_ACTIVITY_FACTS_LIMIT,
       },
     ]);
-
     // The reads that score this lodging on its own — its console standings and its detail summary —
     // clip at the same bound, so the three readers report one number rather than the directory
     // reporting the bound and the console the lodging's own larger count.
@@ -863,14 +714,9 @@ describe('the bound on a directory answer', () => {
   });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * The detail route over a bounded directory (AAP 0.5.4, 0.5.7)
- * ------------------------------------------------------------------------------------------- */
-
 describe('the detail route over a bounded directory', () => {
   it('answers a lodging the bound left out with its own numbers, not as one that does not exist', async () => {
     const now = t.time.now();
-
     // A board full to its bound, every lodging in it carrying a meetup inside the window, so the two
     // lodgings below are ones the cut leaves out however their own data reads.
     const fullBoard = await createLodgings(LODGING_DIRECTORY_LIMIT);
@@ -882,14 +728,12 @@ describe('the detail route over a bounded directory', () => {
         completedAt: now,
       })),
     });
-
     // The name sorts after every listed one's, so a name the cut orders by drops this lodging.
     const scored = await namedLodging('Zzz Cap Lodging Scored');
     await makeActivityFacts(t, scored, [
       { pair: pairOf(), completedAt: ago(now, 1) },
       { pair: pairOf(), completedAt: ago(now, 2) },
     ]);
-
     // Carrying no fact inside the window and three current verified guests of its own.
     const quiet = await namedLodging('Zzz Cap Lodging Quiet');
     for (let index = 0; index < GUEST_COUNT_THRESHOLD; index += 1) {
@@ -898,14 +742,11 @@ describe('the detail route over a bounded directory', () => {
     await makeActivityFacts(t, quiet, [
       { pair: pairOf(), completedAt: ago(now, OUTSIDE_WINDOW_DAYS_AGO) },
     ]);
-
     const items = await board();
     const listedIds = items.map((entry) => entry.id);
-
     expect(items).toHaveLength(LODGING_DIRECTORY_LIMIT);
     expect(listedIds).not.toContain(scored.id);
     expect(listedIds).not.toContain(quiet.id);
-
     // The scored one is answered with the two facts of its own window and the position after the
     // whole board; the quiet one with the count its own three current guests give it and a score of
     // 0, because its only fact is older than the window (AAP 0.5.7).
@@ -913,7 +754,6 @@ describe('the detail route over a bounded directory', () => {
     expect(scoredDetail.activityScore).toBe(2);
     expect(scoredDetail.guestCount).toBe(GUEST_COUNT_BELOW_LABEL);
     expect(scoredDetail.rank).toBe(LODGING_DIRECTORY_LIMIT + 1);
-
     const quietDetail = LodgingDetail.parse((await readDetail(quiet.id)).json());
     expect(quietDetail.activityScore).toBe(0);
     expect(quietDetail.guestCount).toBe(GUEST_COUNT_THRESHOLD);
@@ -929,7 +769,6 @@ describe('the detail route over a bounded directory', () => {
     const lodging = await oneLodging();
     const now = t.time.now();
     const guests: GuestFixture[] = [];
-
     // One opted-in guest more than the list answers, each with its own resolved instant, so a list
     // that were unbounded would carry one guest more and a list cut in any other order would carry
     // the oldest stay (AAP 0.5.7).
@@ -942,9 +781,7 @@ describe('the detail route over a bounded directory', () => {
       await makeVisibility(t, guest.user, guest.claim, true);
       guests.push(guest);
     }
-
     const detail = LodgingDetail.parse((await readDetail(lodging.id)).json());
-
     expect(detail.guests).toHaveLength(LODGING_GUEST_LIST_LIMIT);
     expect(detail.guests.map((entry) => entry.id)).toEqual(
       guests.slice(0, LODGING_GUEST_LIST_LIMIT).map((guest) => guest.user.id),
@@ -961,11 +798,9 @@ describe('the detail route over a bounded directory', () => {
     for (let index = 0; index < GUEST_COUNT_THRESHOLD; index += 1) {
       await makeGuest(carried);
     }
-
     const listed = item(await board(), carried.id);
     const detail = LodgingDetail.parse((await readDetail(carried.id)).json());
     const { lat, lng, guests, ...summary } = detail;
-
     // Field for field the same object as the directory's entry, so a lodging both answers carry is
     // described the same way by both (AAP 0.5.4).
     expect(summary).toEqual(listed);
@@ -977,10 +812,6 @@ describe('the detail route over a bounded directory', () => {
     expect(listed.activityScore).toBe(1);
   });
 });
-
-/* ---------------------------------------------------------------------------------------------
- * The cache entry's version stamp (AAP 0.5.7)
- * ------------------------------------------------------------------------------------------- */
 
 /**
  * The entries a hit must refuse rather than serve (AAP 0.5.7), as (title, raw entry) rows: a bare
@@ -998,15 +829,12 @@ describe('the directory cache entry', () => {
   it.each(rows(STALE_ENTRIES))('recomputes and re-stamps %s', async (_title, raw) => {
     const lodging = await oneLodging();
     const recorded = recordingServices(t.services.db);
-
     // One board is computed first, so the entry the case overwrites is one this process wrote: the
     // read below then proves the entry was refused and recomputed, not simply absent.
     await leaderboard(recorded.services, LISBON, 'activity');
     expect(await cachedVersion(CACHE_KEY)).toBe(LEADERBOARD_CACHE_VERSION);
-
     await t.services.redis.client.set(CACHE_KEY, raw, 'EX', LEADERBOARD_CACHE_SECONDS);
     const listed = await leaderboard(recorded.services, LISBON, 'activity');
-
     expect(idsOf(listed)).toEqual([lodging.id]);
     expect(warningsFor(recorded.warnings, 'leaderboard_cache_invalid')).toEqual([
       { event: 'leaderboard_cache_invalid', cityId: LISBON },
@@ -1015,25 +843,19 @@ describe('the directory cache entry', () => {
   });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * The cache's scope — one board per fixture policy (AAP 0.5.2)
- * ------------------------------------------------------------------------------------------- */
-
 /** The environment the second policy stands for: one that may neither write nor read fixture rows. */
 const REFUSING_ENV = 'staging' as const;
 
-/** The city's cache entry under {@link REFUSING_ENV}, the key a fixture-refusing process must use. */
 const REFUSING_CACHE_KEY = `leaderboard:${REFUSING_ENV}:${LISBON}`;
 
 /**
  * The services of the fixture-refusing policy: the run's own Redis, clock and logger, over a client
- * built for an environment outside `test` and `demo` (AAP 0.5.2).
+ * built for an environment outside `test` and `demo`.
  *
  * The case drives the module's exported {@link leaderboard} rather than a second app, because the
- * harness cannot build one: `buildApp` refuses a fault injector outside `APP_ENV=test`
- * (`apps/api/src/app.ts:564`) and the factory always supplies one
- * (`apps/api/test/support/app.ts:866`). The directory route calls exactly this function with exactly
- * these services, so the cache key under test is the one the route reads and writes.
+ * harness cannot build one: `buildApp` refuses a fault injector outside `APP_ENV=test` and the
+ * factory always supplies one. The directory route calls exactly this function with exactly these
+ * services, so the cache key under test is the one the route reads and writes.
  */
 function refusingServices(db: DbClient): LodgingLeaderboardServices {
   return {
@@ -1046,12 +868,10 @@ function refusingServices(db: DbClient): LodgingLeaderboardServices {
   };
 }
 
-/** The ids a board carries, sorted, so two boards compare without depending on their order. */
 function idsOf(items: readonly LodgingSummary[]): string[] {
   return items.map((entry) => entry.id).sort();
 }
 
-/** The board one cache key holds, as the route would have answered it (AAP 0.5.7). */
 async function cachedBoard(key: string): Promise<readonly LodgingSummary[]> {
   return (await cachedEntry(key)).items;
 }
@@ -1079,16 +899,13 @@ async function cachedEntry(
   if (raw === null) {
     throw new Error(`no leaderboard cache entry at ${key}`);
   }
-
   const decoded = JSON.parse(raw) as { readonly v?: unknown; readonly items?: unknown };
   if (decoded.items === undefined) {
     throw new Error(`the leaderboard cache entry at ${key} carries no items`);
   }
-
   return { v: decoded.v, items: LodgingSummary.array().parse(decoded.items) };
 }
 
-/** Asserts one key holds an entry whose lifetime is the contract's (AAP 0.5.7). */
 async function expectCacheTtl(key: string): Promise<void> {
   const ttl = await t.services.redis.client.ttl(key);
   expect(ttl).toBeGreaterThan(0);
@@ -1098,7 +915,6 @@ async function expectCacheTtl(key: string): Promise<void> {
 describe('the directory cache holds one board per fixture policy', () => {
   let guarded: DbClient;
   let refusing: LodgingLeaderboardServices;
-
   beforeAll(() => {
     guarded = createPrismaClient({ databaseUrl: inject('databaseUrl'), appEnv: REFUSING_ENV });
     refusing = refusingServices(guarded);
@@ -1115,23 +931,18 @@ describe('the directory cache holds one board per fixture policy', () => {
       await makeLodging(t, { cityId: LISBON }),
     ];
     const ids = lodgings.map((lodging) => lodging.id).sort();
-
     // The fixture-allowing policy lists them, and the board it computed is the one the cache holds.
     await t.services.redis.client.del(CACHE_KEY);
     const allowed = await leaderboard(t.services, LISBON, 'activity');
-
     expect(allowed.every((entry) => entry.name.startsWith('Fixture'))).toBe(true);
     expect(idsOf(allowed)).toEqual(ids);
     expect(idsOf(await cachedBoard(CACHE_KEY))).toEqual(ids);
     await expectCacheTtl(CACHE_KEY);
-
     // The same city through a process that may not read fixture rows at all. On a key without the
     // environment this read is served the board above, fixtures and all.
     const refused = await leaderboard(refusing, LISBON, 'activity');
-
     expect(refused.filter((entry) => entry.name.startsWith('Fixture'))).toEqual([]);
     expect(idsOf(refused)).toEqual([]);
-
     // The two entries are independent: the refusing read wrote one of its own, and the
     // fixture-allowing board is still the one its own policy computed.
     expect(idsOf(await cachedBoard(REFUSING_CACHE_KEY))).toEqual([]);

@@ -6,35 +6,6 @@
  * integration suites need on top of validation lives here, and `./server.ts` forwards each request to
  * `stripe-mock` for validation before answering from this state — so `STRIPE_MODE=mock` exercises the
  * real gateway over HTTP with no credential at all (AAP 0.6.2, AAP 0.11.2).
- *
- * Four properties shape the file:
- *
- *  - **One clock.** {@link ProxyState.now} is the only reader of the wall clock, behind the injectable
- *    `wallClock`; every Stripe timestamp (`created`, `canceled_at`, `capture_before`, an event's
- *    `created`) is derived from it. `setNow` pins it, which is how a suite mirrors the API's own
- *    frozen test clock (AAP 0.11.1).
- *  - **Snapshots.** Every response body and every event payload is a `structuredClone`, so a later
- *    mutation of the stored object cannot rewrite a body a test already holds.
- *  - **The PaymentIntent is the unit of state.** A hold attempt is its own PaymentIntent, so an
- *    idempotency replay, a retry and a superseded attempt are three intents here exactly as they are
- *    in Stripe (AAP 0.3.2, AAP 0.5.3).
- *  - **No automatic expiry.** A hold expires only when a test calls `expireHold`: an authorization
- *    that lapsed on its own would make a suite's outcome depend on when it ran.
- *
- * The object shapes carry the fields `apps/api/src/modules/payments/{stripe-gateway,webhook}.ts` and
- * the suites read, never the provider's whole resource, and the modelled endpoints are exactly the
- * ones the gateway calls — its TSDoc names this folder as its cross-folder contract. A path this file
- * does not model is answered by `stripe-mock` through `./server.ts`, and nothing here delivers an
- * event: a suite decides the order, the duplicates and the timing
- * ({@link deliverStripeEvents}, AAP 0.3.2 "never order by `created`").
- *
- * No value here is a real credential: the card fixtures are Stripe's own published test ids, ids and
- * client secrets are random at runtime, and the ephemeral key's secret carries a test-only prefix.
- *
- * @see AAP 0.3.2 for idempotency, hold loss and the recovery a suite must be able to replay;
- *   AAP 0.3.3 for the `stripe-mock` row; AAP 0.2.4 for the seven-day hold window and the `expired`
- *   cancellation reason; AAP 0.5.3 for the deposit lifecycle these transitions mirror; AAP 0.11.2 for
- *   the suites that drive it.
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
@@ -72,9 +43,6 @@ export const CONTROL_PREFIX = '/__proxy';
 /**
  * Stripe's published test card ids, which `./server.ts` passes through to
  * `POST /v1/payment_methods/:id/attach` and a suite passes to a control.
- *
- * Each id stands for one confirmation outcome: a card that authorizes into a capturable hold, one
- * that requires 3-D Secure first, and one the issuer declines (see {@link CARD_SPECS}).
  */
 export const TEST_CARDS = {
   visa: 'pm_card_visa',
@@ -372,10 +340,6 @@ export interface PaymentIntentFilter {
   readonly metadata?: Record<string, string>;
 }
 
-/*
- * Pure helpers
- */
-
 /** A deep copy of `value`, so a stored object and a returned body never share structure. */
 function snapshot<T>(value: T): T {
   return structuredClone(value);
@@ -532,7 +496,6 @@ export type IdempotencyBegin =
  */
 export class ProxyControlError extends Error {
   readonly status: 404 | 409;
-
   constructor(status: 404 | 409, message: string) {
     super(message);
     this.name = 'ProxyControlError';
@@ -543,9 +506,6 @@ export class ProxyControlError extends Error {
 /**
  * One proxy's state: the Stripe resources it holds, the events it recorded, the idempotency keys it
  * remembers, the transport faults waiting for a request, and the clock a suite pins.
- *
- * `./server.ts` drives every method of it, and each is also reachable over
- * {@link CONTROL_ROUTES} through the {@link proxyControl} client.
  */
 export interface ProxyState {
   /** The proxy's current time in milliseconds: the pin when one is set, else the wall clock. */
@@ -627,13 +587,9 @@ interface IdempotencyEntry {
  *
  * State lives in this closure and nowhere else, so the module itself has no side effect and two
  * states in one process cannot see each other's customers, intents or events.
- *
- * @param options - the clock the state reads; the wall clock by default.
- * @returns the state `./server.ts` answers Stripe requests from.
  */
 export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
   const wallClock = options.wallClock ?? ((): number => Date.now());
-
   const customers = new Map<string, StripeCustomer>();
   const paymentMethods = new Map<string, StoredPaymentMethod>();
   const setupIntents = new Map<string, StripeSetupIntent>();
@@ -644,19 +600,12 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
   let recorded: StripeEvent[] = [];
   let faults: FaultRule[] = [];
   let pinnedMs: number | null = null;
-
-  /*
-   * The clock, the event log and the object builders
-   */
-
   function now(): number {
     return pinnedMs ?? wallClock();
   }
-
   function nowSec(): number {
     return Math.floor(now() / 1000);
   }
-
   function recordEvent(type: HandledStripeEventType, object: unknown): void {
     recorded.push({
       id: newId('evt'),
@@ -669,7 +618,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       data: { object: snapshot(object) },
     });
   }
-
   /** One card fixture as a stored card. The caller registers it, so a lookup can never mint one. */
   function newCard(customerId: string | null, card: TestCardId): StoredPaymentMethod {
     const spec = CARD_SPECS[card];
@@ -691,7 +639,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       },
     };
   }
-
   function newCustomer(metadata: Record<string, string>): StripeCustomer {
     return {
       id: newId('cus'),
@@ -702,14 +649,12 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       invoice_settings: { default_payment_method: null },
     };
   }
-
   /** The charge a stored intent points at, or `undefined` when it has none yet. */
   function chargeOf(intent: StripePaymentIntent): StripeCharge | undefined {
     const id =
       typeof intent.latest_charge === 'string' ? intent.latest_charge : intent.latest_charge?.id;
     return id === undefined ? undefined : charges.get(id);
   }
-
   /**
    * One intent as a response body. `latest_charge` stays the stored id unless the request expanded
    * it, and the expanded charge is cloned so a later capture cannot rewrite a body already returned.
@@ -726,7 +671,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     copy.latest_charge = expand && charge !== undefined ? snapshot(charge) : id;
     return copy;
   }
-
   /** The card a 3-D Secure completion charges against, cloned when the intent's card is not stored. */
   function storedMethodFor(intent: StripePaymentIntent): StoredPaymentMethod {
     const id = typeof intent.payment_method === 'string' ? intent.payment_method : null;
@@ -735,7 +679,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       newCard(intent.customer, TEST_CARDS.visa)
     );
   }
-
   /**
    * The card a confirmation uses when the request names none: the customer's default, else the
    * newest saved card. Stripe reads a `confirm` against a customer's own card that way, so a hold
@@ -754,7 +697,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       .sort(newestFirst);
     return cards[0]?.id ?? null;
   }
-
   /**
    * Resolve the card a confirmation charges against: a stored card, or a test-card id cloned into a
    * new `pm_…` attached to the customer, which is what Stripe's own test mode does with these ids. An
@@ -777,7 +719,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     paymentMethods.set(cloned.method.id, cloned);
     return { ok: true, stored: cloned };
   }
-
   /** The `400` a capture, cancel or confirm reports from a status that does not allow it. */
   function wrongIntentState(intent: StripePaymentIntent): StateResponse {
     return {
@@ -789,7 +730,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       ),
     };
   }
-
   /** The same refusal for a setup intent, which the gateway reads for its own failure class. */
   function wrongSetupState(intent: StripeSetupIntent): StateResponse {
     return refused(
@@ -797,7 +737,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       `This SetupIntent's status is ${intent.status}, which does not allow this operation.`,
     );
   }
-
   /** The charge an authorization creates, carrying the capture deadline every hold reports. */
   function createCharge(intent: StripePaymentIntent, stored: StoredPaymentMethod): StripeCharge {
     const charge: StripeCharge = {
@@ -828,17 +767,14 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     charges.set(charge.id, charge);
     return charge;
   }
-
   /*
    * The modelled endpoints (AAP 0.3.3, AAP 0.5.3)
    */
-
   function createCustomerResource(params: StripeParams): StateResponse {
     const customer = newCustomer(record(params, 'metadata'));
     customers.set(customer.id, customer);
     return ok(snapshot(customer));
   }
-
   function retrieveCustomer(id: string): StateResponse {
     const customer = customers.get(id);
     if (customer === undefined) return missing('customer', id);
@@ -846,7 +782,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       return ok({ id, object: 'customer', deleted: true, livemode: false });
     return ok(snapshot(customer));
   }
-
   function updateCustomer(id: string, params: StripeParams): StateResponse {
     const customer = customers.get(id);
     if (customer === undefined || customer.deleted === true) return missing('customer', id);
@@ -861,14 +796,12 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     }
     return ok(snapshot(customer));
   }
-
   function deleteCustomerResource(id: string): StateResponse {
     const customer = customers.get(id);
     if (customer === undefined || customer.deleted === true) return missing('customer', id);
     customer.deleted = true;
     return ok({ id, object: 'customer', deleted: true, livemode: false });
   }
-
   function listCards(customerId: string | null, params: StripeParams): StateResponse {
     if (customerId !== null && !customers.has(customerId))
       return missing('customer', customerId, 'customer');
@@ -884,12 +817,10 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       .map((method) => snapshot(method));
     return ok({ object: 'list', data, has_more: false, url: '/v1/payment_methods' });
   }
-
   function retrieveCard(id: string): StateResponse {
     const stored = paymentMethods.get(id);
     return stored === undefined ? missing('payment_method', id) : ok(snapshot(stored.method));
   }
-
   function attachCardResource(id: string, params: StripeParams): StateResponse {
     const customerId = scalar(params, 'customer');
     if (customerId === undefined) return parameterMissing('customer');
@@ -902,7 +833,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     resolved.stored.method.customer = customerId;
     return ok(snapshot(resolved.stored.method));
   }
-
   function createSetupIntentResource(params: StripeParams): StateResponse {
     const id = newId('seti');
     const intent: StripeSetupIntent = {
@@ -919,12 +849,10 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     setupIntents.set(id, intent);
     return ok(snapshot(intent));
   }
-
   function retrieveSetupIntent(id: string): StateResponse {
     const intent = setupIntents.get(id);
     return intent === undefined ? missing('setup_intent', id) : ok(snapshot(intent));
   }
-
   function confirmSetupIntent(id: string, params: StripeParams): StateResponse {
     const intent = setupIntents.get(id);
     if (intent === undefined) return missing('setup_intent', id);
@@ -937,7 +865,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('setup_intent.succeeded', snapshot(intent));
     return ok(snapshot(intent));
   }
-
   function createEphemeralKeyResource(params: StripeParams): StateResponse {
     const customerId = scalar(params, 'customer');
     if (customerId === undefined) return parameterMissing('customer');
@@ -952,7 +879,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       livemode: false,
     });
   }
-
   function createIntent(params: StripeParams): StateResponse {
     const amount = integer(params, 'amount');
     if (amount === undefined) return parameterMissing('amount');
@@ -987,7 +913,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     if (intent.payment_method !== null) intent.status = 'requires_confirmation';
     return ok(serializeIntent(intent, expandHas(params, 'latest_charge')));
   }
-
   /** Confirm one intent against its card, applying the outcome that card's fixture stands for. */
   function applyConfirmation(intent: StripePaymentIntent, params: StripeParams): StateResponse {
     const requested =
@@ -999,7 +924,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     const outcome = CARD_SPECS[resolved.stored.card].outcome;
     const expand = expandHas(params, 'latest_charge');
     intent.payment_method = resolved.stored.method.id;
-
     if (outcome === 'declined') {
       intent.status = 'requires_payment_method';
       intent.last_payment_error = {
@@ -1022,13 +946,11 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
         }),
       };
     }
-
     if (outcome === 'authentication') {
       intent.status = 'requires_action';
       intent.next_action = { ...NEXT_ACTION };
       return ok(serializeIntent(intent, expand));
     }
-
     const charge = createCharge(intent, resolved.stored);
     intent.status = 'requires_capture';
     intent.amount_capturable = intent.amount;
@@ -1036,7 +958,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.amount_capturable_updated', serializeIntent(intent, false));
     return ok(serializeIntent(intent, expand));
   }
-
   /** Confirm an intent that has not been confirmed yet, applying its card's outcome (AAP 0.2.4). */
   function confirmIntent(id: string, params: StripeParams): StateResponse {
     const intent = intents.get(id);
@@ -1048,14 +969,12 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       return wrongIntentState(intent);
     return applyConfirmation(intent, params);
   }
-
   function retrieveIntent(id: string, params: StripeParams): StateResponse {
     const intent = intents.get(id);
     return intent === undefined
       ? missing('payment_intent', id)
       : ok(serializeIntent(intent, expandHas(params, 'latest_charge')));
   }
-
   /**
    * A customer's PaymentIntents, newest first.
    *
@@ -1071,7 +990,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       .map((intent) => serializeIntent(intent, expandHas(params, 'latest_charge')));
     return ok({ object: 'list', data, has_more: false, url: '/v1/payment_intents' });
   }
-
   function captureIntent(id: string, params: StripeParams): StateResponse {
     const intent = intents.get(id);
     if (intent === undefined) return missing('payment_intent', id);
@@ -1089,7 +1007,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.succeeded', serializeIntent(intent, false));
     return ok(serializeIntent(intent, expandHas(params, 'latest_charge')));
   }
-
   function cancelIntent(id: string, params: StripeParams): StateResponse {
     const intent = intents.get(id);
     if (intent === undefined) return missing('payment_intent', id);
@@ -1102,7 +1019,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.canceled', serializeIntent(intent, false));
     return ok(serializeIntent(intent, expandHas(params, 'latest_charge')));
   }
-
   function createRefund(params: StripeParams): StateResponse {
     const intentId = scalar(params, 'payment_intent');
     if (intentId === undefined) return parameterMissing('payment_intent');
@@ -1134,7 +1050,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('charge.refunded', snapshot(charge));
     return ok(snapshot(refund));
   }
-
   /*
    * Routing (AAP 0.3.3)
    */
@@ -1146,16 +1061,13 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     readonly pattern: RegExp;
     readonly handler: (match: RegExpExecArray, params: StripeParams) => StateResponse;
   }
-
   function route(method: string, pattern: string, handler: Route['handler']): Route {
     return { method, pattern: new RegExp(`^${pattern}$`), handler };
   }
-
   /** The one path segment a route matched. */
   function segmentOf(match: RegExpExecArray): string {
     return match[1] ?? '';
   }
-
   const ROUTES: readonly Route[] = [
     route('POST', '/v1/customers', (_match, params) => createCustomerResource(params)),
     route('GET', '/v1/customers/([^/]+)', (match) => retrieveCustomer(segmentOf(match))),
@@ -1195,7 +1107,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     ),
     route('POST', '/v1/refunds', (_match, params) => createRefund(params)),
   ];
-
   function handleStripe(request: StripeRequest): StateResponse | null {
     const method = request.method.toUpperCase();
     const path = request.path.split('?')[0] ?? request.path;
@@ -1206,11 +1117,9 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     }
     return null;
   }
-
   /*
    * Idempotency (AAP 0.3.2)
    */
-
   function idempotencyBegin(
     key: string,
     method: string,
@@ -1231,7 +1140,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       ? { kind: 'in_flight' }
       : { kind: 'replay', response: snapshot(entry.response) };
   }
-
   function idempotencyComplete(key: string, response: StateResponse): void {
     const entry = idempotency.get(key);
     idempotency.set(key, {
@@ -1239,19 +1147,15 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       response: snapshot(response),
     });
   }
-
   function idempotencyAbort(key: string): void {
     idempotency.delete(key);
   }
-
   /*
    * Transport faults (AAP 0.11.2)
    */
-
   function addFault(rule: FaultRule): void {
     faults.push(rule);
   }
-
   function takeFault(method: string, path: string): FaultRule | null {
     const target = path.split('?')[0] ?? path;
     const wanted = method.toUpperCase();
@@ -1262,11 +1166,9 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     const [taken] = faults.splice(index, 1);
     return taken ?? null;
   }
-
   /*
    * Controls (AAP 0.11.2)
    */
-
   function reset(): void {
     customers.clear();
     paymentMethods.clear();
@@ -1279,18 +1181,15 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     faults = [];
     pinnedMs = null;
   }
-
   function setNow(ms: number | null): number | null {
     pinnedMs = ms;
     return pinnedMs;
   }
-
   function requireIntent(id: string): StripePaymentIntent {
     const intent = intents.get(id);
     if (intent === undefined) throw new ProxyControlError(404, `No such PaymentIntent: '${id}'`);
     return intent;
   }
-
   /**
    * Refuse a control the intent's status cannot apply to. Inventing the effect the test asked for
    * would put a state in the proxy that Stripe could never report, and the suite would assert on it
@@ -1307,7 +1206,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       `PaymentIntent ${intent.id} is ${intent.status}; ${operation} needs ${allowed.join(' or ')}`,
     );
   }
-
   function complete3ds(paymentIntentId: string): StripePaymentIntent {
     const intent = requireIntent(paymentIntentId);
     requireStatus(intent, ['requires_action'], 'a 3-D Secure completion');
@@ -1319,7 +1217,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.amount_capturable_updated', serializeIntent(intent, false));
     return snapshot(intent);
   }
-
   function failAuthentication(paymentIntentId: string): StripePaymentIntent {
     const intent = requireIntent(paymentIntentId);
     requireStatus(intent, ['requires_action'], 'an authentication failure');
@@ -1333,7 +1230,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.payment_failed', serializeIntent(intent, false));
     return snapshot(intent);
   }
-
   function abandonAuthentication(paymentIntentId: string): StripePaymentIntent {
     const intent = requireIntent(paymentIntentId);
     requireStatus(intent, ['requires_action', 'requires_payment_method'], 'an abandonment');
@@ -1345,7 +1241,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.canceled', serializeIntent(intent, false));
     return snapshot(intent);
   }
-
   function expireHold(paymentIntentId: string): StripePaymentIntent {
     const intent = requireIntent(paymentIntentId);
     requireStatus(intent, ['requires_capture'], 'an expiry');
@@ -1361,7 +1256,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('payment_intent.canceled', serializeIntent(intent, false));
     return snapshot(intent);
   }
-
   function createCustomer(input: { card: TestCardId | null }): CustomerRef {
     if (input.card !== null && !isTestCard(input.card)) {
       throw new ProxyControlError(409, 'Unknown card fixture passed to createCustomer');
@@ -1374,7 +1268,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     customer.invoice_settings = { default_payment_method: stored.method.id };
     return { customerId: customer.id, paymentMethodId: stored.method.id };
   }
-
   function attachCard(
     customerId: string,
     card: TestCardId,
@@ -1393,7 +1286,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     }
     return { paymentMethodId: stored.method.id };
   }
-
   function events(options: { since?: string } = {}): StripeEvent[] {
     const since = options.since;
     if (since === undefined) return recorded.map(snapshot);
@@ -1401,7 +1293,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     if (index < 0) throw new ProxyControlError(404, `No such event: '${since}'`);
     return recorded.slice(index + 1).map(snapshot);
   }
-
   function paymentIntents(filter: PaymentIntentFilter = {}): StripePaymentIntent[] {
     return [...intents.values()]
       .filter(
@@ -1412,7 +1303,6 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       )
       .map(snapshot);
   }
-
   return {
     now,
     handleStripe,
@@ -1463,9 +1353,6 @@ export interface ControlRoute {
  * The control routes, declared once for both sides: `./server.ts` routes by them and
  * {@link proxyControl} builds its requests from them, so a path renamed on one side can never leave
  * the other pointing at nothing.
- *
- * Each maps one-to-one onto a {@link ProxyState} control, and `health` is what the compose
- * healthcheck polls, so the proxy reports ready only once it can answer at all.
  */
 export const CONTROL_ROUTES: Readonly<Record<ControlName, ControlRoute>> = {
   health: { method: 'GET', path: `${CONTROL_PREFIX}/health` },
@@ -1487,10 +1374,6 @@ export const CONTROL_ROUTES: Readonly<Record<ControlName, ControlRoute>> = {
   events: { method: 'GET', path: `${CONTROL_PREFIX}/events` },
   paymentIntents: { method: 'POST', path: `${CONTROL_PREFIX}/payment_intents/query` },
 };
-
-/*
- * Ordering, fingerprints and fault paths
- */
 
 /** Newest first by `created`, ties broken by the greater id — the order Stripe lists in. */
 function newestFirst(
@@ -1551,10 +1434,6 @@ function matchesPath(pattern: string, path: string): boolean {
 /**
  * The typed client one Vitest worker drives the proxy with over HTTP, while the state itself lives in
  * the `globalSetup` process or in the compose service.
- *
- * Every method maps onto one entry of {@link CONTROL_ROUTES}, so a path here and a route there cannot
- * drift apart, and a non-2xx answer rejects with an `Error` naming the control, its status and the
- * proxy's own message.
  */
 export interface ProxyControl {
   /** Stripe's published test card ids, re-exposed so a suite needs one import for both. */
@@ -1634,14 +1513,10 @@ async function failureDetail(response: Response): Promise<string> {
 /**
  * Build the client one worker drives the proxy with.
  *
- * @param baseUrl - the proxy's origin: the URL a `globalSetup` started it on, or the compose
- *   service's address.
- * @returns the client; a method rejects with an `Error` naming the control, the status and the
- *   proxy's message whenever the proxy answers non-2xx.
+ * `baseUrl` is the control address `setup` published for this run's proxy.
  */
 export function proxyControl(baseUrl: string): ProxyControl {
   const base = baseUrl.replace(/\/+$/, '');
-
   async function call<T>(control: ControlName, options: ControlCall = {}): Promise<T> {
     const entry = CONTROL_ROUTES[control];
     const path =
@@ -1663,7 +1538,6 @@ export function proxyControl(baseUrl: string): ProxyControl {
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
-
   return {
     TEST_CARDS,
     async reset() {
@@ -1732,11 +1606,6 @@ export interface WebhookResponse {
  * `t=<unix seconds>` and one `v1=<hex HMAC-SHA256 of "t.payload">`, with the timestamp inside its 300
  * second tolerance. The signature is over the bytes a caller sends, so a caller signs the exact
  * string it posts rather than a re-serialized object.
- *
- * @param payload - the exact request body.
- * @param secret - the endpoint's signing secret: the process's own in `test` and `live`, the mock
- *   placeholder in `mock`.
- * @param tSec - the signing instant, in unix seconds, judged against the API's injected clock.
  */
 export function signStripePayload(payload: string, secret: string, tSec: number): string {
   const signature = createHmac('sha256', secret).update(`${tSec}.${payload}`).digest('hex');
@@ -1750,15 +1619,6 @@ export function signStripePayload(payload: string, secret: string, tSec: number)
  * suite is testing: a replay of an already processed event, a historical `requires_capture` arriving
  * after a settlement, or the same event twice in one run are all cases here, and a provider-driven
  * delivery order would decide them instead of the test.
- *
- * Each event is signed and sent as the exact string it was signed as, sequentially, and every answer
- * is returned in order — so a suite can assert the status of each delivery.
- *
- * @param app - the built app: its `inject` delivers without opening a socket, and its injected clock
- *   dates the signature.
- * @param events - the event payloads, in the order they are to arrive.
- * @param secret - the endpoint's signing secret, `TestApp.stripe.webhookSecret`.
- * @param options - `tSec` overrides the signing instant, which a tampering test varies.
  */
 export async function deliverStripeEvents(
   app: Pick<App, 'inject' | 'services'>,
