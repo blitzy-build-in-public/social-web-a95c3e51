@@ -28,6 +28,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -408,22 +409,58 @@ let cachedManifest: ArtifactsManifest | undefined;
  * `packages/circuits/build/` is generated and git-ignored, and the `api` container mounts the manifest
  * and `verification_key.json` into it, so an absent file is a normal state outside a full local build
  * rather than a defect. Only a successful read is cached, so a container that mounts the artefacts after
- * the process started picks them up on the next call.
+ * the process started picks them up on the next call; the file itself is probed on every call, never
+ * memoized away, which is what answers a build directory that is absent — or mounted later.
  *
- * @returns The parsed manifest, or `null` when no manifest file exists.
+ * @returns A promise for the parsed manifest, or for `null` when no manifest file exists.
  * @throws {ZkConfigurationError} When the file exists but is not valid JSON or fails
  *   {@link ArtifactsManifest}.
  */
-export function readArtifactsManifest(): ArtifactsManifest | null {
-  const relativePath = `${BUILD_DIR}/${MANIFEST_FILE}`;
-  if (!existsSync(repoPath(BUILD_DIR, MANIFEST_FILE))) {
+export async function readArtifactsManifest(): Promise<ArtifactsManifest | null> {
+  if (!(await manifestPresent())) {
     return null;
   }
+  return cachedArtifactsManifest();
+}
+
+/**
+ * Whether the artefact manifest is there, through an awaited `stat` that yields the event loop
+ * (AAP 0.5.4, 0.12.2).
+ *
+ * The probe is asynchronous because the only caller on a request path is the public, unthrottled
+ * `GET /v1/zk/config`, where a synchronous stat would hold every other request the process is serving;
+ * it still runs on every call, which is what answers an absent or late-mounted build directory. Any
+ * rejection reads as absent, exactly as `existsSync` answered `false`: no file at all (ENOENT), a
+ * non-directory in the path (ENOTDIR) and a mode that denies the process (EACCES) are one answer to
+ * this module, which asks only whether there is a manifest to read.
+ */
+async function manifestPresent(): Promise<boolean> {
+  try {
+    await stat(repoPath(BUILD_DIR, MANIFEST_FILE));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The same answer for {@link checkZkConfiguration}, which runs before the app listens and is
+ * synchronous on purpose, so the start cannot leave a rejected promise unhandled (AAP 0.5.5).
+ */
+function readArtifactsManifestSync(): ArtifactsManifest | null {
+  if (!existsSync(circuitsBuildPath(MANIFEST_FILE))) {
+    return null;
+  }
+  return cachedArtifactsManifest();
+}
+
+/** The manifest's parse, taken from the process cache once a read has succeeded (AAP 0.5.5). */
+function cachedArtifactsManifest(): ArtifactsManifest {
   const cached = cachedManifest;
   if (cached !== undefined) {
     return cached;
   }
-  const parsed = parseAt(relativePath, ArtifactsManifest);
+  const parsed = parseAt(`${BUILD_DIR}/${MANIFEST_FILE}`, ArtifactsManifest);
   cachedManifest = parsed;
   return parsed;
 }
@@ -526,15 +563,17 @@ const zkConfigCache = new Map<boolean, ZkConfig>();
  * production, so this answer is reachable only where a build has not run.
  *
  * @param services - The environment and the logger.
- * @returns The published configuration, the same object for every call in one mode.
+ * @returns A promise for the published configuration, the same object for every call in one mode.
  * @throws {AppError} `service_unavailable` when the artefact manifest is absent.
  * @throws {ZkConfigurationError} When a configuration file it publishes cannot be read.
  */
-export function zkConfig(services: ZkConfigServices): ZkConfig {
+export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
   const allowTestIssuer = testIssuerAllowed(services.env);
   // The manifest is checked before the memoized object is served, so a build directory that is not
-  // mounted — or mounted later — is answered as the contract says on every call rather than once.
-  const manifest = readArtifactsManifest();
+  // mounted — or mounted later — is answered as the contract says on every call rather than once. The
+  // probe is awaited rather than stat-ed synchronously, so this public and unthrottled route never
+  // holds the event loop on a filesystem call (AAP 0.12.2).
+  const manifest = await readArtifactsManifest();
   if (manifest === null) {
     services.logger.warn(
       { event: 'zk_artifacts_missing', file: MANIFEST_FILE },
@@ -711,7 +750,7 @@ export function checkZkConfiguration(env: ZkEnv): void {
 
   if (env.APP_ENV === 'staging' || env.APP_ENV === 'production') {
     requireBuildFile(VERIFICATION_KEY_FILE);
-    if (readArtifactsManifest() === null) {
+    if (readArtifactsManifestSync() === null) {
       throw new ZkConfigurationError(`${BUILD_DIR}/${MANIFEST_FILE}: missing`);
     }
   }

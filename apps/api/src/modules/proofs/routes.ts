@@ -286,9 +286,8 @@ export default function proofsRoutes(app: App): Promise<void> {
     instance.withTypeProvider<ZodTypeProvider>().get(
       '/zk/config',
       { schema: { tags: [PROOFS_TAG], response: { 200: ZkConfig, 503: ErrorEnvelope } } },
-      // Synchronous, because `zkConfig` is: it reads the committed configuration and answers from
-      // the process's own cache, and a thrown `AppError` from a synchronous handler is caught and
-      // rendered by the error plugin exactly as one from an awaited call is.
+      // The handler returns `zkConfig`'s promise instead of awaiting it: Fastify awaits what a handler
+      // returns, and the error plugin renders a rejection from it exactly as a thrown `AppError`.
       () => zkConfig(app.services),
     );
   });
