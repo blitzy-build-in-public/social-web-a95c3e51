@@ -287,11 +287,20 @@ exports `./test-support/*` for the system and workers integration suites.
   `adapter.ts` alone imports a provider, so no load order can meet an uninitialised binding, and
   its re-export keeps one import path and one class identity (`instanceof`).
 - **Everything crossing a boundary is validated.** Requests, responses, WebSocket frames, job payloads
-  and configuration files each have a Zod schema, one per shape; the Fastify validator and serializer
-  compilers are Zod's, and an `onRoute` hook fails the boot when a route declares no response schema.
+  and configuration files each have a Zod schema, one per shape, and the Fastify validator and
+  serializer compilers are Zod's. An `onRoute` hook fails the boot unless a route declares
+  `schema.response`, carries `config.rawResponse`, answers no body at all, or is a WebSocket — a
+  body-less method (`HEAD`, which Fastify derives from its `GET` route, and the `OPTIONS` CORS
+  preflight `@fastify/cors` registers for the allowlist) and a WebSocket route, which carries frames
+  rather than a response body. `config.rawResponse` is how the two routes that answer other bytes say
+  so: the WebP photo at `apps/api/src/modules/users/routes.ts` and the TwiML document at
+  `apps/api/src/modules/voice-agent/twiml.ts`, where a schema would put a JSON serializer in front of
+  them.
 - **Raw SQL is written as `Prisma.sql` tagged templates** with double-quoted identifiers, so no value is
-  ever interpolated into a statement; the unsafe `$queryRawUnsafe` and `$executeRawUnsafe` forms appear
-  nowhere in the workspace.
+  ever interpolated into a statement. Neither `$queryRawUnsafe` nor `$executeRawUnsafe` is called
+  anywhere in the workspace: the only source file that names either form is
+  `packages/db/src/fixtures-guard.ts`, which registers the unsafe write form beside `$executeRaw` so a
+  raw write cannot bypass the fixture guard (neither query form is registered, because those are reads).
 - **Disclosure lives in one directory.** `apps/api/src/modules/users/disclosure/` is the only place a
   profile field is selected or serialized, and no client filters a field on its own.
 - **Client code stays client-safe.** `packages/circuits/src`, `apps/mobile/app`, `apps/mobile/src` and the
@@ -353,9 +362,10 @@ that withholds one fails that feature alone.
 
 ## Delivered inventory: the plan's rows and their additions
 
-AAP 0.8.1's table is the canonical inventory: every file this run created is named there exactly once. The run
-added a closed set of seventeen tracked paths it does not name, each required by an AAP requirement or the toolchain:
-those below, and `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
+AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
+substitutions below. The run added twenty-six tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the twenty-five in the list below, and
+`packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
   row: `pnpm-workspace.yaml`'s `patchedDependencies` declares all four, so a frozen install requires them —
@@ -383,6 +393,16 @@ those below, and `packages/server-core/src/llm/contract.ts`, which the language-
   price-parse, robots, priority, crawl-policy, safe-fetch).
 - **`apps/api/test/support/voice-simulator/scenarios/{drop-before-prompt,machine,wants-human}.json`** — three
   fixtures beyond the twelve the plan lists for that directory; `docs/voice-agent.md` records each one's play status.
+- **`tsconfig.json`, `apps/mobile/app/{index,+native-intent}.tsx`, `apps/mobile/src/api/server-clock.ts`,
+  `apps/mobile/test/{server-clock,prover-worker}.test.ts`, `apps/mobile/e2e/maestro/config.yaml`,
+  `apps/mobile/modules/tablemate-prover/rust/src/bin/{ios,android}.rs`** — nine further paths the plan's table
+  does not name: the root solution `tsconfig.json`, which the plan's root-files row omits and which the `build`
+  and `typecheck` scripts build the six composite projects through (`tsc -b tsconfig.json`); the Expo Router
+  entry route `app/index.tsx` and the `+native-intent.tsx` hook that answers a share-sheet file URL and the
+  Stripe return URL before the router navigates; the client server clock and the two suites covering it and the
+  proving Worker's published-URL artefact source; the Maestro workspace config that fixes the order the native
+  flows run in, which the magic-link budget requires; and the two mopro build wrappers the prover crate's iOS
+  and Android binding generation runs.
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

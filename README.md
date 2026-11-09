@@ -14,8 +14,10 @@ Lisbon, Mexico City, Medellín, Chiang Mai and Canggu — built as container ima
 
 ## Workspace layout
 
-A pnpm workspace: each entry below carries its own `package.json` and `tsconfig.json`, and shared
-contracts live in one package so no route or payload shape is declared twice.
+A pnpm workspace: each of the eight package rows below carries its own `package.json` and
+`tsconfig.json`, and `pnpm-workspace.yaml` declares `apps/*` and `packages/*`; the five rows marked
+`—` in the Package column are repository directories, not packages. Shared contracts live in one
+package so no route or payload shape is declared twice.
 
 | Path                   | Package                    | Role                                                                                                                               |
 | ---------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
