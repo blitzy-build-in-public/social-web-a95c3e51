@@ -47,7 +47,9 @@
  *   - Every rule is a delete-or-update-where whose own predicate the write takes the row out of, so a
  *     second run of the same step changes nothing and reports zeros (AAP 0.3.2).
  *   - Bulk deletes and strips take {@link DELETE_BATCH_SIZE} rows per statement, so a run over a
- *     large backlog holds bounded statements and a bounded transaction.
+ *     large backlog holds bounded statements, and each batch's transaction carries its own budget
+ *     ({@link TRANSACTION_TIMEOUT_MS}) rather than Prisma's route-sized default, so a busy database
+ *     cannot expire it mid-batch and abort a pass before the later rules of that pass have run.
  *   - Every statement is a tagged template over the guarded client: identifiers double-quoted
  *     (`"user"` is reserved), values bound, no string interpolation (AAP 0.11.2). Nothing here calls
  *     Stripe, Twilio, Overpass, a language model or any other provider, which is what keeps retention
@@ -82,6 +84,20 @@ const STEP = JOB[QUEUE.dataExpiry];
  * transaction however much data is due.
  */
 const DELETE_BATCH_SIZE = 1_000;
+
+/**
+ * How long one batch's transaction may run before Prisma closes it (AAP 0.5.2, 0.5.6).
+ *
+ * One budget covers each of the three batch transactions this module opens — the lodging strip, the
+ * call-metadata purge and the financial purge. A batch's statements are cheap in isolation, but the
+ * transaction's wall clock grows with pool contention and host load, and five seconds is Prisma's
+ * default, meant for a route: once it expires mid-batch the next statement is refused, the whole run
+ * aborts, and every rule after the strip is skipped for that pass with no counts line written. The
+ * budget is what lets a run over a large backlog finish its rules and report its counts; 60 s
+ * matches this repository's own budget for a heavier-than-a-route transaction
+ * (`account-erasure.ts`, `ERASURE_TRANSACTION_TIMEOUT_MS`).
+ */
+const TRANSACTION_TIMEOUT_MS = 60_000;
 
 /** How long a `menu_prices` call transcript is kept, the only call content ever stored (AAP 0.5.2). */
 const TRANSCRIPT_RETENTION_DAYS = 30;
@@ -356,39 +372,42 @@ async function stripLodgingCallRows(db: DbClient, now: Date): Promise<LodgingCal
     }
 
     const ids = batch.map((row) => row.id);
-    const stripped = await db.$transaction(async (tx) => {
-      const callbacksDeleted = await tx.$executeRaw`
-        DELETE FROM "voice_callback_event"
-         WHERE "call_attempt_id" IN (
-                 SELECT "id" FROM "call_attempt" WHERE "call_task_id" = ANY(${ids}::uuid[])
-               )
-            OR "call_sid" IN (
-                 SELECT "twilio_call_sid"
-                   FROM "call_attempt"
-                  WHERE "call_task_id" = ANY(${ids}::uuid[])
-                    AND "twilio_call_sid" IS NOT NULL
-               )
-      `;
-      const attemptsStripped = await tx.$executeRaw`
-        UPDATE "call_attempt"
-           SET "twilio_call_sid" = NULL,
-               "summary" = NULL,
-               "extracted_fields" = NULL,
-               "confidence" = NULL,
-               "duration_sec" = NULL,
-               "transcript" = NULL,
-               "transcript_delete_at" = NULL,
-               "llm_reserved_micros" = 0
-         WHERE "call_task_id" = ANY(${ids}::uuid[])
-      `;
-      const tasksStripped = await tx.$executeRaw`
-        UPDATE "call_task"
-           SET "lodging_claim_id" = NULL, "updated_at" = ${now}::timestamptz
-         WHERE "id" = ANY(${ids}::uuid[])
-      `;
+    const stripped = await db.$transaction(
+      async (tx) => {
+        const callbacksDeleted = await tx.$executeRaw`
+          DELETE FROM "voice_callback_event"
+           WHERE "call_attempt_id" IN (
+                   SELECT "id" FROM "call_attempt" WHERE "call_task_id" = ANY(${ids}::uuid[])
+                 )
+              OR "call_sid" IN (
+                   SELECT "twilio_call_sid"
+                     FROM "call_attempt"
+                    WHERE "call_task_id" = ANY(${ids}::uuid[])
+                      AND "twilio_call_sid" IS NOT NULL
+                 )
+        `;
+        const attemptsStripped = await tx.$executeRaw`
+          UPDATE "call_attempt"
+             SET "twilio_call_sid" = NULL,
+                 "summary" = NULL,
+                 "extracted_fields" = NULL,
+                 "confidence" = NULL,
+                 "duration_sec" = NULL,
+                 "transcript" = NULL,
+                 "transcript_delete_at" = NULL,
+                 "llm_reserved_micros" = 0
+           WHERE "call_task_id" = ANY(${ids}::uuid[])
+        `;
+        const tasksStripped = await tx.$executeRaw`
+          UPDATE "call_task"
+             SET "lodging_claim_id" = NULL, "updated_at" = ${now}::timestamptz
+           WHERE "id" = ANY(${ids}::uuid[])
+        `;
 
-      return { callbacksDeleted, attemptsStripped, tasksStripped };
-    });
+        return { callbacksDeleted, attemptsStripped, tasksStripped };
+      },
+      { timeout: TRANSACTION_TIMEOUT_MS },
+    );
 
     counts.lodgingCallCallbacksDeleted += stripped.callbacksDeleted;
     counts.lodgingCallAttemptsStripped += stripped.attemptsStripped;
@@ -525,16 +544,19 @@ async function purgeCallMetadata(db: DbClient, now: Date): Promise<CallMetadataC
     }
 
     const ids = batch.map((row) => row.id);
-    const purged = await db.$transaction(async (tx) => {
-      const attempts = await tx.$executeRaw`
-        DELETE FROM "call_attempt" WHERE "call_task_id" = ANY(${ids}::uuid[])
-      `;
-      const tasks = await tx.$executeRaw`
-        DELETE FROM "call_task" WHERE "id" = ANY(${ids}::uuid[])
-      `;
+    const purged = await db.$transaction(
+      async (tx) => {
+        const attempts = await tx.$executeRaw`
+          DELETE FROM "call_attempt" WHERE "call_task_id" = ANY(${ids}::uuid[])
+        `;
+        const tasks = await tx.$executeRaw`
+          DELETE FROM "call_task" WHERE "id" = ANY(${ids}::uuid[])
+        `;
 
-      return { attempts, tasks };
-    });
+        return { attempts, tasks };
+      },
+      { timeout: TRANSACTION_TIMEOUT_MS },
+    );
 
     callAttemptsPurged += purged.attempts;
     callTasksPurged += purged.tasks;
@@ -680,58 +702,61 @@ async function purgeFinancialRecords(db: DbClient, cutoff: Date): Promise<Financ
     }
 
     const ids = batch.map((row) => row.id);
-    const purged = await db.$transaction(async (tx) => {
-      const depositOperationsPurged = await tx.$executeRaw`
-        DELETE FROM "payment_operation"
-         WHERE "deposit_id" IN (
-                 SELECT "id" FROM "deposit" WHERE "meetup_id" = ANY(${ids}::uuid[])
-               )
-      `;
-      const depositsPurged = await tx.$executeRaw`
-        DELETE FROM "deposit" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const settlementsPurged = await tx.$executeRaw`
-        DELETE FROM "meetup_settlement" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const creditEntriesPurged = await tx.$executeRaw`
-        DELETE FROM "table_credit_entry" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const checkInsPurged = await tx.$executeRaw`
-        DELETE FROM "check_in" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const messagesPurged = await tx.$executeRaw`
-        DELETE FROM "message" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const disputesPurged = await tx.$executeRaw`
-        DELETE FROM "dispute" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const witnessEventsUnlinked = await tx.$executeRaw`
-        UPDATE "witness_event" SET "meetup_id" = NULL WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const reportsUnlinked = await tx.$executeRaw`
-        UPDATE "report" SET "meetup_id" = NULL WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const activityFactsPurgedForMeetups = await tx.$executeRaw`
-        DELETE FROM "lodging_activity_fact" WHERE "meetup_id" = ANY(${ids}::uuid[])
-      `;
-      const meetupsPurged = await tx.$executeRaw`
-        DELETE FROM "meetup" WHERE "id" = ANY(${ids}::uuid[])
-      `;
+    const purged = await db.$transaction(
+      async (tx) => {
+        const depositOperationsPurged = await tx.$executeRaw`
+          DELETE FROM "payment_operation"
+           WHERE "deposit_id" IN (
+                   SELECT "id" FROM "deposit" WHERE "meetup_id" = ANY(${ids}::uuid[])
+                 )
+        `;
+        const depositsPurged = await tx.$executeRaw`
+          DELETE FROM "deposit" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const settlementsPurged = await tx.$executeRaw`
+          DELETE FROM "meetup_settlement" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const creditEntriesPurged = await tx.$executeRaw`
+          DELETE FROM "table_credit_entry" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const checkInsPurged = await tx.$executeRaw`
+          DELETE FROM "check_in" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const messagesPurged = await tx.$executeRaw`
+          DELETE FROM "message" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const disputesPurged = await tx.$executeRaw`
+          DELETE FROM "dispute" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const witnessEventsUnlinked = await tx.$executeRaw`
+          UPDATE "witness_event" SET "meetup_id" = NULL WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const reportsUnlinked = await tx.$executeRaw`
+          UPDATE "report" SET "meetup_id" = NULL WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const activityFactsPurgedForMeetups = await tx.$executeRaw`
+          DELETE FROM "lodging_activity_fact" WHERE "meetup_id" = ANY(${ids}::uuid[])
+        `;
+        const meetupsPurged = await tx.$executeRaw`
+          DELETE FROM "meetup" WHERE "id" = ANY(${ids}::uuid[])
+        `;
 
-      return {
-        depositOperationsPurged,
-        depositsPurged,
-        settlementsPurged,
-        creditEntriesPurged,
-        checkInsPurged,
-        messagesPurged,
-        disputesPurged,
-        witnessEventsUnlinked,
-        reportsUnlinked,
-        activityFactsPurgedForMeetups,
-        meetupsPurged,
-      };
-    });
+        return {
+          depositOperationsPurged,
+          depositsPurged,
+          settlementsPurged,
+          creditEntriesPurged,
+          checkInsPurged,
+          messagesPurged,
+          disputesPurged,
+          witnessEventsUnlinked,
+          reportsUnlinked,
+          activityFactsPurgedForMeetups,
+          meetupsPurged,
+        };
+      },
+      { timeout: TRANSACTION_TIMEOUT_MS },
+    );
 
     counts.depositOperationsPurged += purged.depositOperationsPurged;
     counts.depositsPurged += purged.depositsPurged;
