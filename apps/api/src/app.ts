@@ -21,8 +21,8 @@
  * root instance, not Fastify plugins registered in child contexts: `decorate` and `decorateRequest`
  * throw once an instance has started, and a hook or decorator added to the root runs for every route
  * its children declare. `registerClock` is first — its `receivedAt` decoration must exist before any
- * route can read it — then errors, security, auth, rate-limit, WebSocket and OpenAPI, the last
- * before any route so the emitted document contains every operation. The routes follow, the
+ * route can read it — then errors, security, auth, rate-limit, compression, WebSocket and OpenAPI, the
+ * last before any route so the emitted document contains every operation. The routes follow, the
  * test-control routes only in `APP_ENV=test`, and the health probe last.
  *
  * **One write path for the background work (AAP 0.3.2).** Only `startBackground` starts the
@@ -62,6 +62,7 @@ import { HealthResponse } from '@tablemate/shared';
 
 import { registerAuth } from './plugins/auth.ts';
 import { registerClock } from './plugins/clock.ts';
+import { registerCompression } from './plugins/compression.ts';
 import { registerErrorHandling } from './plugins/errors.ts';
 import { registerOpenApi, type OpenApiTag } from './plugins/openapi.ts';
 import { registerRateLimit } from './plugins/rate-limit.ts';
@@ -660,17 +661,18 @@ export function buildApp(deps: AppDeps): App {
 
   app.decorate('services', services);
 
-  // 1-7. The cross-cutting plugins, on the root instance in this order (AAP 0.5.1).
+  // 1-8. The cross-cutting plugins, on the root instance in this order (AAP 0.5.1).
   registerClock(app, clock);
   registerErrorHandling(app);
   registerSecurity(app, env);
   registerAuth(app, services);
   registerRateLimit(app, services);
+  registerCompression(app);
   registerWebsocket(app);
   // Before any route: the document is generated from the routes registered after it.
   registerOpenApi(app, env);
 
-  // 8. The Stripe timing (AAP 0.12.2). The store is opened around `done`, so the rest of the
+  // 9. The Stripe timing (AAP 0.12.2). The store is opened around `done`, so the rest of the
   // lifecycle — the handler, the executor it awaits, the serializer — runs inside it and every
   // Stripe call the request makes is added to one figure.
   app.addHook('onRequest', (_request, _reply, done) => withStripeTimingStore(done));
@@ -688,12 +690,12 @@ export function buildApp(deps: AppDeps): App {
     done(null, payload);
   });
 
-  // 9. Every route answers with a declared schema or says why it does not (AAP 0.5.4). The guard
+  // 10. Every route answers with a declared schema or says why it does not (AAP 0.5.4). The guard
   // runs while the routes are being resolved, so a missing schema fails the start rather than
   // answering an empty body in production.
   app.addHook('onRoute', (route) => assertResponseSchema(route));
 
-  // 10. The module routes, each mounted under `/v1` in the order the AAP's component list names
+  // 11. The module routes, each mounted under `/v1` in the order the AAP's component list names
   // them. Two of them register more than their own routes: `messaging/routes.ts` registers the chat
   // socket beside its history route, and `voice-agent/twiml.ts` registers `@fastify/formbody`, the
   // TwiML route, the status webhook and the relay socket inside its own context.
@@ -714,13 +716,13 @@ export function buildApp(deps: AppDeps): App {
   app.register(stripeWebhookRoutes, { prefix: API_PREFIX });
   app.register(voiceAgentRoutes, { prefix: API_PREFIX });
 
-  // 11. Test control: mounted only in a test process that set its token (AAP 0.5.1, 0.5.4). The
+  // 12. Test control: mounted only in a test process that set its token (AAP 0.5.1, 0.5.4). The
   // plugin refuses to register anywhere else, so this condition and its own guard are two locks.
   if (env.APP_ENV === 'test' && env.testOnly.testControlToken !== null) {
     app.register(testControlRoutes, { prefix: API_PREFIX });
   }
 
-  // 12. The health probe: public, unlimited, and answered from the two dependencies compose gates the
+  // 13. The health probe: public, unlimited, and answered from the two dependencies compose gates the
   // API's readiness on (AAP 0.5.4). It is mounted as a child context, like every other route, so it is
   // registered while the plugins load — a route added to the root instance synchronously would be
   // resolved before the OpenAPI plugin had loaded and would never reach the emitted document, which

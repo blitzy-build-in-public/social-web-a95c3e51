@@ -1,10 +1,12 @@
 /**
  * `pnpm test:e2e` — the end-to-end orchestration (AAP 0.8.1, 0.11.2).
  *
- * One run does four things: it selects the Stripe mode the environment affords, starts the
- * `tablemate-e2e` compose project, drives the Playwright web suite and — where a device is attached —
- * the Maestro native flows, records the outcome in the `e2e` block of `docs/acceptance.md` and the
- * `e2e:web-proving` block of `docs/zk-performance.md`, and tears the stack down again.
+ * One run does four things: it selects the Stripe mode the environment affords, starts the compose
+ * project the checkout itself owns ({@link composeProjectName}), so a sibling checkout's containers,
+ * `pgdata` volume and image tags are never recreated or dropped, drives the Playwright web suite and
+ * — where a device is attached — the Maestro native flows, records the outcome in the `e2e` block of
+ * `docs/acceptance.md` and the `e2e:web-proving` block of `docs/zk-performance.md`, and tears the
+ * stack down again.
  *
  * Criterion 1 needs real test-mode holds and no client payment adapter is mocked (AAP 0.11.2), so the
  * mode decides what runs. With `sk_test_`/`pk_test_` keys the criterion walks run and `stripe-cli`
@@ -54,8 +56,12 @@ const TEST_PUBLISHABLE_PREFIX = 'pk_test_';
 /** The app the native flows drive; `app.config.ts` declares it for both stores. */
 const APP_ID = 'com.tablemate.app';
 
-/** The compose project this run owns, so it never touches a developer's own stack or its volumes. */
-const COMPOSE_PROJECT = 'tablemate-e2e';
+/**
+ * The prefix of the compose project one run owns: {@link composeProjectName} appends the checkout's
+ * own slug to it, so a run never touches a developer's own stack, another checkout's containers and
+ * volumes, or another run's image tags.
+ */
+const COMPOSE_PROJECT_PREFIX = 'tablemate-e2e';
 
 /** The block each document holds for this run, delimited by the marker convention (AAP 0.8.1). */
 const ACCEPTANCE_DOC = 'docs/acceptance.md';
@@ -282,6 +288,44 @@ export function originsFromPorts(ports: Ports): Origins {
   };
 }
 
+/** A name slug in the shape compose accepts: lowercased, every run of foreign characters one `-`. */
+function composeNameSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * The compose project one run owns, named after the checkout it was started in.
+ *
+ * Compose derives its project name from the directory it is run in, and this harness has to name the
+ * same project for the `docker compose config`, `up` and `down` calls it makes from the repository
+ * root, for the volumes and image tags compose then creates, and for the `--keep` instruction it
+ * prints. Deriving that name from the checkout keeps all of them on one project, so a run starts,
+ * records and tears down its own stack: it never recreates another checkout's containers on the shared
+ * daemon nor drops the `pgdata` volume a concurrent run is using, which is the separation
+ * `docker-compose.yml` states for two checkouts on one host.
+ *
+ * The result is valid for compose — it opens with the `t` of {@link COMPOSE_PROJECT_PREFIX} and the
+ * slug that follows is lowercased with every run of characters outside `[a-z0-9_-]` replaced by a
+ * single `-`, leaving it within `[a-z0-9_-]`. The checkout's own directory name is what identifies the
+ * run; `E2E_COMPOSE_PROJECT` pins the whole name instead, for a host that runs one stack at a time.
+ *
+ * @param source The environment the run was started with.
+ * @param checkout The checkout directory the run works in.
+ * @returns The compose project name this run owns.
+ */
+export function composeProjectName(source: NodeJS.ProcessEnv, checkout: string): string {
+  const pinned = readValue(source.E2E_COMPOSE_PROJECT);
+  if (pinned !== '') {
+    return pinned;
+  }
+  const absolute = path.resolve(checkout);
+  const slug = composeNameSlug(path.basename(absolute)) || composeNameSlug(absolute);
+  return `${COMPOSE_PROJECT_PREFIX}-${slug}`;
+}
+
 /**
  * A markdown table in the shape prettier gives one, which `pnpm format:check` holds every document
  * under `docs/` to: each column as wide as its widest cell counted in code points, the rule row as
@@ -352,12 +396,15 @@ export function applyBlock(document: string, id: string, content: string): strin
  * @param source The environment this process was started with.
  * @param stripeMode The mode {@link resolveStripeMode} selected.
  * @param origins The origins of the published host ports.
+ * @param project The compose project name {@link composeProjectName} derived for this run, which every
+ *   compose call the run makes then acts on.
  * @returns The environment for the compose stack, the suites and the dev server.
  */
 export function buildSuiteEnv(
   source: NodeJS.ProcessEnv,
   stripeMode: StripeMode,
   origins: Origins,
+  project: string,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
 
@@ -368,7 +415,7 @@ export function buildSuiteEnv(
   env.TELEPHONY_MODE = 'simulator';
   env.LLM_PROVIDER = 'fake';
   env.ZK_ALLOW_TEST_ISSUER = 'true';
-  env.COMPOSE_PROJECT_NAME = COMPOSE_PROJECT;
+  env.COMPOSE_PROJECT_NAME = project;
 
   /* A fresh token every run: the harness derives its actor addresses from it, so a rerun signs in
    * with accounts that have spent none of the five magic links an address gets per hour (AAP 0.5.4). */
@@ -409,7 +456,6 @@ export function buildSuiteEnv(
   env.E2E_MAILPIT_URL = valueOr(env.E2E_MAILPIT_URL, origins.mailpit);
   env.API_URL = env.E2E_API_URL;
   env.MAILPIT_URL = env.E2E_MAILPIT_URL;
-  env.CONSOLE_URL = env.E2E_CONSOLE_URL;
 
   /* Only a test-mode stack can confirm a card, so only then does the bundle carry a publishable key
    * (AAP 0.11.2); in mock mode the card screens report that payments are not configured. */
@@ -776,6 +822,7 @@ export function renderWebProvingBlock(report: WebProvingReport): string {
 /* The state every exit path reads, which is why it lives at the module's scope: the signal handlers
  * and the `finally` both tear the run down, and teardown has to know what is up. */
 let root = '';
+let composeProject = '';
 let suiteEnv: NodeJS.ProcessEnv = process.env;
 let profiles: readonly string[] = ['--profile', 'test'];
 let keepStack = false;
@@ -1082,8 +1129,6 @@ async function runNativeFlow(device: string, flow: NativeFlowId): Promise<boolea
     '-e',
     `MAILPIT_URL=${readValue(suiteEnv.E2E_MAILPIT_URL)}`,
     '-e',
-    `CONSOLE_URL=${readValue(suiteEnv.E2E_CONSOLE_URL)}`,
-    '-e',
     `TEST_CONTROL_TOKEN=${readValue(suiteEnv.TEST_CONTROL_TOKEN)}`,
     '-e',
     `STRIPE_MODE=${readValue(suiteEnv.STRIPE_MODE)}`,
@@ -1247,7 +1292,7 @@ async function performTeardown(): Promise<void> {
   }
   if (keepStack) {
     process.stdout.write(
-      `e2e: stack left running — stop it with \`docker compose -p ${COMPOSE_PROJECT} down -v --remove-orphans\`\n`,
+      `e2e: stack left running — stop it with \`docker compose -p ${composeProject} down -v --remove-orphans\`\n`,
     );
     return;
   }
@@ -1285,6 +1330,7 @@ export async function runE2E(argv: readonly string[] = []): Promise<number> {
   const startedAtMs = Date.now();
   keepStack = argv.includes('--keep');
   root = await repositoryRoot();
+  composeProject = composeProjectName(process.env, root);
   const where: Command = { cwd: root, env: process.env };
 
   await requireTool(
@@ -1298,9 +1344,9 @@ export async function runE2E(argv: readonly string[] = []): Promise<number> {
 
   const stripeMode = resolveStripeMode(process.env);
   process.stdout.write(`e2e: Stripe mode ${stripeMode} (no key is ever printed)\n`);
-  const ports = await resolvePorts({ ...process.env, COMPOSE_PROJECT_NAME: COMPOSE_PROJECT });
+  const ports = await resolvePorts({ ...process.env, COMPOSE_PROJECT_NAME: composeProject });
   const origins = originsFromPorts(ports);
-  suiteEnv = buildSuiteEnv(process.env, stripeMode, origins);
+  suiteEnv = buildSuiteEnv(process.env, stripeMode, origins, composeProject);
   profiles =
     stripeMode === 'test'
       ? ['--profile', 'test', '--profile', 'stripe-test']

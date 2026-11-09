@@ -34,6 +34,10 @@ const SCREEN_EDGES = ['left', 'right', 'bottom'] as const;
 const BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined;
 const COUNTER_VISIBLE_FROM = 900;
 const AVATAR_SIZE = 40;
+// A message takes at most this share of the thread: without a cap, a long paragraph's bubble fills
+// the whole column and stops reading as its sender's side, and one unbreakable token's bubble grows
+// wider than the thread, whose hidden overflow hides most of it. A share scales with the font size.
+const BUBBLE_MAX_WIDTH = '80%' as const;
 const MORE_HINT = 'Shows block and report options';
 const BLOCK_CONFIRM_TEXT =
   "Blocking cancels any open meetup between you. They won't be able to see or message you.";
@@ -379,6 +383,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     backgroundColor: colors.surface,
     borderRadius: radii.md,
+    maxWidth: BUBBLE_MAX_WIDTH,
     paddingBlock: spacing.sm,
     paddingInline: spacing.md,
   },

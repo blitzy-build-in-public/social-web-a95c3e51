@@ -368,8 +368,8 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
-substitutions below. The run added twenty-six tracked paths the table does not name, each required by an AAP
-requirement or by the toolchain and every one of them recorded here: the twenty-five in the list below, and
+substitutions below. The run added thirty-three tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the thirty-two in the list below, and
 `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -408,6 +408,25 @@ requirement or by the toolchain and every one of them recorded here: the twenty-
   proving Worker's published-URL artefact source; the Maestro workspace config that fixes the order the native
   flows run in, which the magic-link budget requires; and the two mopro build wrappers the prover crate's iOS
   and Android binding generation runs.
+- **`apps/api/src/plugins/compression.ts`, `apps/api/test/unit/compression.test.ts`** — a ninth plugin beside the
+  eight the plan's API-bootstrap row names, and a thirteenth suite beside the twelve its `apps/api/test/unit` row
+  names: a root `onSend` stage on `node:zlib` that encodes a body of 1 KiB or more whose media type is text, JSON
+  or XML when the client's `Accept-Encoding` admits gzip or deflate, adds `Accept-Encoding` to `Vary`, and fails
+  open to the plain body. The deployment needs its own encoder because the API answers on a port compose publishes
+  directly, with no proxy in front of it, while the stage never decodes a request body, so the bytes Stripe sent
+  still reach the webhook's signature check and no hijacked WebSocket frame passes through it; the second path is
+  that stage's unit suite, covering the negotiation, the threshold, the media types, `Vary`, the fail-open path
+  and both boundaries.
+- **`apps/mobile/public/robots.txt`, `apps/mobile/src/seo/{route-meta.ts,RouteHead.web.tsx,RouteHead.native.tsx}`,
+  `apps/mobile/test/route-meta.test.ts`** — five paths the plan's `apps/mobile` rows do not name: `robots.txt` is
+  the crawler policy `expo export` copies into the served web root, so `/robots.txt` answers with a real policy
+  instead of the single-page app's entry document; `route-meta.ts` is the web client's per-route title and
+  description table, which the export needs because Expo Router mounts its container with document titles off and
+  delivers one static document whose only title is the app's name; `RouteHead.web.tsx` is that table's head half —
+  Expo Router's own `Head`, mounted once in the root layout, writing the route's title, description and Open Graph
+  pair into `document.head` — and `RouteHead.native.tsx` is its documented no-op native half, a device having no
+  document head to write; the fifth is the table's unit suite, which pins its rows and walks every route file
+  under `app/` so a screen added without an entry fails the suite.
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

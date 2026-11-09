@@ -11,7 +11,7 @@
     "export:web": "pnpm run export:worker && expo export --platform web",
     "e2e:web": "NODE_OPTIONS=--conditions=tablemate-source playwright test -c playwright.config.ts",
     "e2e:prepare": "tsx --conditions=tablemate-source e2e/playwright/support/api-actor.ts prepare-maestro",
-    "e2e:native": "pnpm run e2e:prepare && maestro test --include-tags e2e -e API_URL=${E2E_API_URL:-http://localhost:3000} -e MAILPIT_URL=${E2E_MAILPIT_URL:-http://localhost:8025} -e CONSOLE_URL=${E2E_CONSOLE_URL:-http://localhost:8090} -e TEST_CONTROL_TOKEN=${TEST_CONTROL_TOKEN:-} -e STRIPE_MODE=${STRIPE_MODE:-mock} e2e/maestro"
+    "e2e:native": "pnpm run e2e:prepare && maestro test --include-tags e2e -e API_URL=${E2E_API_URL:-http://localhost:3000} -e MAILPIT_URL=${E2E_MAILPIT_URL:-http://localhost:8025} -e TEST_CONTROL_TOKEN=${TEST_CONTROL_TOKEN:-} -e STRIPE_MODE=${STRIPE_MODE:-mock} e2e/maestro"
   },
   "dependencies": {
     "@expo/metro-runtime": "4.0.1",

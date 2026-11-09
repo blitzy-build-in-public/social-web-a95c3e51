@@ -1,0 +1,5 @@
+# Tablemate's web client is a single-page app: nginx answers every client route with this origin's
+# entry document, and the API behind it decides what any visitor may read. No path here is withheld
+# from crawlers, so this policy allows every user agent.
+User-agent: *
+Allow: /

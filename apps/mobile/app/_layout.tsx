@@ -1,6 +1,6 @@
 /**
  * The traveler app's root: the providers every screen sits in, the session bootstrap, the navigation
- * gate and the one Stack the route tree hangs from (AAP 0.5.8, AAP 0.6.2, AAP 0.8.1).
+ * gate, the web head and the one Stack the route tree hangs from (AAP 0.5.8, AAP 0.6.2, AAP 0.8.1).
  */
 import 'react-native-get-random-values';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -17,6 +17,7 @@ import { userMessageFor } from '../src/api/errors';
 import { bootstrap, type BootstrapResult } from '../src/auth/session';
 import { registerForNotifications } from '../src/notifications/register';
 import { PaymentsProvider } from '../src/payments/card-setup';
+import { RouteHead } from '../src/seo/RouteHead';
 import { bindRealtimeInvalidation, queryClient } from '../src/state/meetup-store';
 import { useSession, type SessionSnapshot } from '../src/state/session-store';
 import { Banner, announce } from '../src/ui';
@@ -111,6 +112,7 @@ export default function RootLayout(): ReactElement {
           <PaymentsProvider>
             <ShareIntentIntake>
               <Gate />
+              <RouteHead />
               <View role="main" style={styles.fill}>
                 <Stack screenOptions={HEADER}>
                   <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

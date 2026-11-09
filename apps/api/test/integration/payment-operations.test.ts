@@ -996,6 +996,101 @@ describe.runIf(MOCK)(`${MODE} payment operations — superseded attempts`, () =>
     }
     expect((await depositOf(proposal.meetupId, 'recipient')).status).toBe('released');
   });
+
+  it('closes the settlement of a meetup whose retried hold superseded a failed attempt', async () => {
+    // Step 1: the traveler has no saved card, so attempt 1 places no authorization at all and the
+    // deposit is `failed` with attempt 1's own `hold` row written `failed_terminal` (AAP 0.5.3).
+    const actors = await cast({ initiatorCard: 'none' });
+    const proposed = await propose(actors);
+    expectError(proposed, 402, 'hold_failed');
+
+    // The proposal stands for retry, so the initiator recovers its id from its own list.
+    const [listed] = await listedMeetups(actors.initiator, 'proposed');
+    expect(listed?.initiatorHold).toBe('failed');
+    const proposal: Proposal = { ...actors, meetupId: listed?.id ?? '' };
+    const failed = await depositOf(proposal.meetupId, 'initiator');
+    expect(failed.status).toBe('failed');
+    expect(failed.currentAttempt).toBe(1);
+    // Nothing reached the provider under attempt 1's key, so its row can never carry an intent.
+    expect(failed.currentPaymentIntentId).toBeNull();
+    const firstHolds = await ops(failed.id, 'hold');
+    expect(firstHolds.map((operation) => [operation.attempt, operation.status])).toEqual([
+      [1, 'failed_terminal'],
+    ]);
+
+    // Step 2: the traveler completes the saved-card step and retries, which supersedes attempt 1 and
+    // holds attempt 2. Attempt 2 owns the authorization, and attempt 1 keeps its terminal row: it
+    // recorded no PaymentIntent, so there is nothing a release could cancel (AAP 0.3.2).
+    const setup = await route('POST', '/v1/me/payment-setup', actors.initiator);
+    expect(setup.status, `the card setup answered ${setup.body}`).toBe(200);
+    await attachVisa(actors.initiator);
+    const retried = await retryHold(proposal, actors.initiator, 'hold');
+    expect(retried.status, `the hold retry answered ${retried.body}`).toBe(200);
+    expect(HoldRetryResponse.parse(retried.json()).initiatorHold).toBe('held');
+
+    const current = await depositOf(proposal.meetupId, 'initiator');
+    expect(current.currentAttempt).toBe(2);
+    expect(current.status).toBe('held');
+    expect(await operationCount(failed.id, 'release')).toBe(0);
+    const holds = await ops(failed.id, 'hold');
+    expect(holds.map((operation) => [operation.attempt, operation.status])).toEqual([
+      [1, 'failed_terminal'],
+      [2, 'succeeded'],
+    ]);
+
+    // Step 3: the recipient accepts, and both holds stand (AAP 0.5.3).
+    const accepted = await route(
+      'POST',
+      `/v1/meetups/${proposal.meetupId}/accept`,
+      actors.recipient,
+    );
+    expect(accepted.status, `the accept answered ${accepted.body}`).toBe(200);
+    expect(AcceptResponse.parse(accepted.json()).status).toBe('locked');
+
+    // Step 4: both attendees check in through the real route inside the window, the second answer
+    // reporting the pair as present.
+    t.time.toMeetupPoint(proposal, 'startsAt');
+    const venueSecret = proposal.venue.secret;
+    expect(venueSecret).not.toBeNull();
+    const at = { id: proposal.meetupId, venueId: proposal.venue.id };
+    expect(
+      (await checkIn(t, actors.initiator, at, { venueSecret: venueSecret ?? '' })).bothCheckedIn,
+    ).toBe(false);
+    expect(
+      (await checkIn(t, actors.recipient, at, { venueSecret: venueSecret ?? '' })).bothCheckedIn,
+    ).toBe(true);
+
+    // Step 5: the window closes and the settlement falls due; every money move it plans runs.
+    t.time.toMeetupPoint(proposal, 'startsAt+45m');
+    await settleNow(t.services);
+
+    for (const role of ['initiator', 'recipient'] as const) {
+      const released = await eventually(
+        () => depositOf(proposal.meetupId, role),
+        (deposit) => deposit.status === 'released',
+      );
+      expect(released.status).toBe('released');
+    }
+
+    // Step 6: every operation that could still move money has finished — the two holds, the two
+    // releases, and attempt 1's failed row, which supersession made history — so the marker closes.
+    const settlement = await eventually(
+      () =>
+        t.services.db.meetupSettlement.findUnique({
+          where: { meetupId: proposal.meetupId },
+          select: { outcome: true, status: true },
+        }),
+      (row) => row?.status === 'complete',
+    );
+    expect(settlement).toMatchObject({ outcome: 'completed', status: 'complete' });
+    expect(await meetupStatus(proposal.meetupId)).toBe('completed');
+    // The superseded attempt's history is left exactly as it was written.
+    const finalHolds = await ops(failed.id, 'hold');
+    expect(finalHolds.map((operation) => [operation.attempt, operation.status])).toEqual([
+      [1, 'failed_terminal'],
+      [2, 'succeeded'],
+    ]);
+  });
 });
 
 /* Phase 4 — late, orphan and lost authorizations (AAP 0.5.3) */

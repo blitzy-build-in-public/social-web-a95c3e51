@@ -716,6 +716,13 @@ async function applyEffect(ctx: EffectContext): Promise<WebhookOutcome> {
  * meetup's and `applyHoldOutcome` takes it: an initiator's hold makes the proposal visible (or
  * lapses it when the start has passed), and a recipient's hold locks the meetup while the
  * initiator's is `held` and the deadline has not passed.
+ *
+ * Both the release and the `released` marking are conditioned on the state the handler retrieved,
+ * never on the payload the event carries: only a `requires_capture` authorization is released. One
+ * the provider has taken away is the hold loss its cancellation reported, so the deposit takes the
+ * state the lifecycle gives a loss — `expired` with the provider's own `canceledAt` on a `held`
+ * attempt, `failed` on one that never became a hold — rather than a release that would hide it from
+ * the no-forfeit compensation that reads those two columns (AAP 0.3.2, AAP 0.5.3).
  */
 async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, services, log, after, event, intent, correlation, meetup, now } = ctx;
@@ -730,6 +737,27 @@ async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
   }
 
   if (!isCurrent(ctx) || isFinalMeetupStatus(meetup.status)) {
+    // The state the provider reports decides here, exactly as it does on the path below: an event's
+    // payload is historical, so an authorization the provider has already taken away gets no release
+    // and no `released` marking — a cancelled one is the hold loss its cancellation reported, and any
+    // other state left nothing to release (AAP 0.3.2, AAP 0.5.3).
+    if (intent.status === 'canceled') {
+      return applyProviderCancellation(ctx);
+    }
+
+    if (intent.status !== 'requires_capture') {
+      log.info(
+        {
+          event: INTENT_UNEXPECTED,
+          eventId: event.id,
+          depositId: deposit.id,
+          status: intent.status,
+        },
+        INTENT_UNEXPECTED,
+      );
+      return ignored(meetup.id);
+    }
+
     await planRelease(
       tx,
       {

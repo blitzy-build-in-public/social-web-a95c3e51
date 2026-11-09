@@ -152,8 +152,10 @@ export default defineConfig({
   workers: 1,
   retries: 0,
 
-  /* A committed `test.only` must fail the run wherever the suite is not being driven by hand. */
-  forbidOnly: process.env.CI !== undefined && process.env.CI !== '',
+  /* A committed `test.only` must fail the run wherever the suite is not being driven by hand: the
+   * delivered suite's only driver, `pnpm test:e2e` through `scripts/e2e.ts`, sets no `CI`, and no
+   * pipeline file is delivered (AAP 0.7.2), so the guard is unconditional rather than gated on `CI`. */
+  forbidOnly: true,
 
   timeout: TEST_TIMEOUT_MS,
   expect: { timeout: EXPECT_TIMEOUT_MS },

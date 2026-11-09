@@ -624,9 +624,11 @@ async function recordAlone(
  * Applies a successful deposit operation's effect and closes the settlement when it is done.
  *
  * The deposit moves first and the settlement completion runs last, inside one transaction: a
- * settlement becomes `complete` only once every operation of its meetup is `succeeded` or `fenced`,
- * which is the same rule the executor has just satisfied. A settlement holding a `failed_terminal`
- * operation deliberately stays `applying` as the audit trail of a forfeit that could not run.
+ * settlement becomes `complete` once every operation of its meetup that could still move money has
+ * finished — `succeeded`, `fenced`, or a `failed_terminal` `hold` of an attempt the deposit has since
+ * superseded, which is the same rule the executor has just satisfied. A settlement holding a
+ * `failed_terminal` capture or release deliberately stays `applying` as the audit trail of a forfeit
+ * that could not run.
  *
  * A null PaymentIntent is recorded as `no_payment_intent`, so the row explains for itself why an
  * operation that was planned against an authorization closed without touching the provider: the
@@ -743,8 +745,9 @@ async function recordDepositSuccess(
  * as {@link recordCancellation} closes a captured intent under a release plan — one error line, and
  * the operation written `failed_terminal` in the same transaction, conditional on the row this pass
  * just wrote (`succeeded` under this claim's token) so a concurrent path's result is never rewritten.
- * The settlement then stays `applying`, because {@link completeSettlement} accepts only `succeeded`
- * and `fenced`, which is what puts the contradiction in front of an operator.
+ * The settlement then stays `applying`, which is what puts the contradiction in front of an
+ * operator: {@link completeSettlement} counts a `failed_terminal` capture or release, and a
+ * `failed_terminal` hold of the deposit's current attempt, which is the attempt this closes.
  *
  * @param tx - The caller's transaction, holding the meetup row lock.
  * @param services - The app's services.
@@ -908,9 +911,13 @@ async function applyCancellation(
  * Marks a settlement `complete` once every operation of its meetup has finished (AAP 0.3.2).
  *
  * `succeeded` and `fenced` are the two statuses that mean "this operation will never call Stripe
- * again": the first did what it planned, the second was superseded before it could. Anything else —
- * `pending`, `executing`, `failed_retryable`, and `failed_terminal` above all — keeps the settlement
- * `applying`, so an operator can see a settlement whose money could not be moved.
+ * again": the first did what it planned, the second was superseded before it could. A `failed_terminal`
+ * `hold` of an attempt the deposit has since superseded is finished for the same reason: the attempt
+ * that replaced it owns the authorization, and the superseded attempt's create either never reached
+ * the provider or was cancelled by its own `release` row, which is counted here like any other
+ * operation. Everything else — `pending`, `executing`, `failed_retryable`, and a `failed_terminal`
+ * operation that could still have moved money, a capture or a release above all — keeps the
+ * settlement `applying`, so an operator can see a settlement whose money could not be moved.
  *
  * @param tx - The caller's transaction, holding the meetup row lock.
  * @param meetupId - The meetup whose settlement is checked.
@@ -926,7 +933,15 @@ async function completeSettlement(tx: DbTx, meetupId: string, now: Date): Promis
          SELECT 1 FROM "payment_operation" o
            JOIN "deposit" d ON d."id" = o."deposit_id"
           WHERE d."meetup_id" = s."meetup_id"
-            AND o."status" NOT IN ('succeeded', 'fenced'))
+            AND o."status" NOT IN ('succeeded', 'fenced')
+            -- A hold of an attempt the deposit has superseded cannot move money: its
+            -- authorization either never reached the provider or is cancelled by its own
+            -- release row, which this clause still counts. The current attempt's hold is
+            -- still counted, a handed-off create above all, because its authorization may
+            -- still be live.
+            AND NOT (o."kind" = 'hold'
+                     AND o."status" = 'failed_terminal'
+                     AND o."attempt" IS DISTINCT FROM d."current_attempt"))
   `);
 }
 

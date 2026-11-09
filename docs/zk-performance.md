@@ -25,13 +25,13 @@ defect against the web capability, never an exception, and its deviation is repo
 
 ## Criterion 4 status
 
-| Measurement                           | Result  | Evidence                                                                                                                                                                |
-| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Proving, iPhone 13 class              | pending | Not yet measured — device access required                                                                                                                               |
-| Proving, Pixel 7 class                | pending | Not yet measured — device access required                                                                                                                               |
-| Server verification                   | pass    | `verifyItineraryProof` p95 10.48 ms and route p95 22.68 ms — run 2026-11-08, commit a5ee7c3                                                                             |
-| Web local proving, Playwright engines | pass    | pass — Chromium 156.0.8078.4 256.4 s, Firefox 157.0 263.1 s and WebKit 27.2 209.4 s; each engine's proof was accepted by the API — run 2026-11-08, commit 73a65de-dirty |
-| Web local proving, branded browsers   | pending | Pending — manual browser check not yet run; the Safari rows need a macOS host                                                                                           |
+| Measurement                           | Result  | Evidence                                                                                                                                                          |
+| ------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Proving, iPhone 13 class              | pending | Not yet measured — device access required                                                                                                                         |
+| Proving, Pixel 7 class                | pending | Not yet measured — device access required                                                                                                                         |
+| Server verification                   | pass    | `verifyItineraryProof` p95 10.48 ms and route p95 22.68 ms — run 2026-11-08, commit a5ee7c3                                                                       |
+| Web local proving, Playwright engines | pass    | pass — Chromium 156.0.8078.4 304.8 s, Firefox 157.0 311.0 s and WebKit 27.2 244.5 s; each engine's proof was accepted by the API — run 2026-11-09, commit 870bc52 |
+| Web local proving, branded browsers   | pending | Pending — manual browser check not yet run; the Safari rows need a macOS host                                                                                     |
 
 Updated by hand as the tables below gain measurements, and mirrored in
 [`acceptance.md`](./acceptance.md).
@@ -159,13 +159,13 @@ One row per engine, written from `.local/e2e/web-proving/<engine>.json` by `scri
 
 <!-- BEGIN e2e:web-proving -->
 
-Web proving in the end-to-end suite. Run 2026-11-08T20:46:04.000Z · commit 73a65de-dirty · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
+Web proving in the end-to-end suite. Run 2026-11-09T07:46:36.516Z · commit 870bc52 · Stripe mock (stripe-mock behind the stateful proxy) — mock evidence only
 
 | Engine   | Version      | Total (s) | Result |
 | -------- | ------------ | --------- | ------ |
-| chromium | 156.0.8078.4 | 256.4     | pass   |
-| firefox  | 157.0        | 263.1     | pass   |
-| webkit   | 27.2         | 209.4     | pass   |
+| chromium | 156.0.8078.4 | 304.8     | pass   |
+| firefox  | 157.0        | 311.0     | pass   |
+| webkit   | 27.2         | 244.5     | pass   |
 
 Timings are informational: the 90-second target names only the phone classes (AAP 0.5.5). Each row is one `.local/e2e/web-proving/<engine>.json` that this run wrote, and an engine whose file is missing is `pending`. Chrome, Firefox and Safari at their current and previous branded versions are recorded by hand (AAP 0.3.4).
 

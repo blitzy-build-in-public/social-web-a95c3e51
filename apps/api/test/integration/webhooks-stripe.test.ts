@@ -519,6 +519,46 @@ describe.runIf(MOCK)(`${MODE} POST ${WEBHOOK_URL} — ordering and lifecycle`, (
     expect(await meetupStatus(pair.meetupId)).toBe('locked');
   });
 
+  it('ends a canceled orphan authorization as a lost hold, not a release', async () => {
+    const venue = await makeVenue(t, { cityId: CITY_ID });
+    const initiator = await makeUser(t, { card: 'visa' });
+    const recipient = await makeUser(t, { card: 'visa' });
+    // A meetup that already ended with a live hold and no capture or release decided for it: the
+    // authorization this event reports is an orphan, and it carries the attempt's `hold` operation
+    // alone, so nothing about it is durable yet (AAP 0.5.3).
+    const meetup = await makeMeetup(t, {
+      status: 'completed',
+      initiator,
+      recipient,
+      venue,
+      deposits: { initiator: 'held', recipient: 'released' },
+    });
+    const deposit = await depositOf(meetup.id, 'initiator');
+    expect(deposit.status).toBe('held');
+
+    // Stripe cancels the authorization itself — an expired hold — and the intent the handler reads
+    // reports `canceled` with the provider's own cancellation instant (AAP 0.3.2).
+    await proxy().expireHold(deposit.paymentIntentId);
+    const event = eventEnvelope('payment_intent.amount_capturable_updated', {
+      id: deposit.paymentIntentId,
+      object: 'payment_intent',
+    });
+
+    expectAccepted(await deliverStripeEvents(t.app, [event], t.stripe.webhookSecret));
+    await expectProcessedOnce(event.id);
+
+    // There was nothing left to release: the deposit takes the hold loss and keeps the instant it
+    // happened, and no release is planned for an authorization the provider has already given up
+    // (AAP 0.3.2, AAP 0.5.3).
+    const lost = await depositOf(meetup.id, 'initiator');
+    expect(lost.status).toBe('expired');
+    expect(lost.canceledAt).not.toBeNull();
+    expect(await operationCount(deposit.id, 'release')).toBe(0);
+    // The outcome of a meetup that already ended stands: a completed settlement releases both holds
+    // anyway, so the loss moves no money (AAP 0.3.2).
+    expect(await meetupStatus(meetup.id)).toBe('completed');
+  });
+
   it('applies one of two concurrent deliveries of the same event', async () => {
     const pending = await awaitingInitiation();
     const event = await completionEvent(pending.deposit.paymentIntentId);
