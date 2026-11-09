@@ -1,27 +1,21 @@
 /**
- * Lodging claims: what a traveler files to have a stay verified by phone, and the routes built on it
- * (AAP 0.5.4): `POST /me/lodging-claims` ({@link createClaim}), `GET /me/lodging-claims/:id`
- * ({@link getClaim}) and `DELETE /me/lodging-claims/:id` ({@link deleteClaim}), plus
- * {@link activeClaimFor} for `MeDto.activeLodgingClaim` and {@link deleteClaimsForAccount}, which
- * `DELETE /me` calls inside its user transaction (AAP 0.5.3).
+ * Lodging claims: what a traveler files to have a stay verified by phone, and the routes built on it —
+ * `POST /me/lodging-claims`, `GET /me/lodging-claims/:id` and `DELETE /me/lodging-claims/:id`, plus {@link activeClaimFor}
+ * for `MeDto.activeLodgingClaim` and {@link deleteClaimsForAccount}, which `DELETE /me` calls inside its user transaction.
  *
- * A claim row carries the stay dates, the booking name and reference encrypted (AES-256-GCM through
- * `encryptField`, AAP 0.5.2) and the consent that disclosed the lodging exception before it was given
- * (AAP 0.12.2).
+ * A claim row carries the stay dates, the booking name and reference encrypted (AES-256-GCM through `encryptField`) and the
+ * consent that disclosed the lodging exception before it was given.
  *
- * Four invariants hold throughout: the caller's proof decides everything, so a claim requires a valid
- * proof (AAP 0.5.7) and the stay must lie inside the proof's own dates in the proof's city; one active
- * claim per user, checked inside the inserting transaction behind
- * `pg_advisory_xact_lock(hashtext('lodging-claim:<userId>'))`, because the rule depends on `stayTo`,
- * which no index expresses; booking details are write-only here, encrypted before the insert and never
- * decrypted, logged or returned, with the workers erasing the ciphertext on the first hourly
- * `data-expiry` run after the claim reaches a terminal state (AAP 0.5.2); and locks are taken claim row
- * first, then the claim's call-task rows (`lodging_claim` → `call_task`), which the workers' jobs
- * observe too, so this route and those jobs can never deadlock against each other (AAP 0.5.3, 0.5.6).
+ * Four invariants hold throughout: the caller's proof decides everything, so a claim requires a valid proof and the stay must
+ * lie inside the proof's own dates in the proof's city; one active claim per user, checked inside the inserting transaction
+ * behind `pg_advisory_xact_lock(hashtext('lodging-claim:<userId>'))`; booking details are write-only here, encrypted before the
+ * insert and never decrypted, logged or returned, with the workers erasing the ciphertext on the first hourly `data-expiry`
+ * run after a terminal state; and locks are taken claim row first, then the claim's call-task rows (`lodging_claim` →
+ * `call_task`), the order the workers' jobs observe too, so neither can deadlock.
  *
- * Every write runs in one `transact`, fenced on the acting user, so a mutation racing `DELETE /me`
- * commits before it or is refused (AAP 0.5.3); the outbox row and the analytics event are written in
- * that same transaction, and the leaderboard cache is dropped only after it commits.
+ * Every write runs in one `transact`, fenced on the acting user, so a mutation racing `DELETE /me` commits before it or is
+ * refused; the outbox row and the analytics event are written in that same transaction, and the leaderboard cache is dropped
+ * only after it commits.
  */
 
 import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';
@@ -47,11 +41,9 @@ import { currentStayPredicate, invalidateLeaderboard } from './leaderboard.ts';
 import type { AppServices } from '../../app.ts';
 
 /**
- * The two statuses in which a claim is active whatever its dates: `pending_call` and `calling` (AAP 0.5.3). Every other
- * status is terminal, and a terminal claim stays terminal.
- *
- * The same list is what the workers' `lodging-claims` job applies, and the two cannot drift, because both are checked
- * against `LodgingClaimStatus`.
+ * The two statuses in which a claim is active whatever its dates: `pending_call` and `calling`. Every other status is
+ * terminal, and a terminal claim stays terminal. The workers' `lodging-claims` job applies the same list, checked against
+ * `LodgingClaimStatus`, so the two cannot drift.
  */
 const ACTIVE_CLAIM_STATUSES = [
   'pending_call',
@@ -59,9 +51,8 @@ const ACTIVE_CLAIM_STATUSES = [
 ] as const satisfies readonly LodgingClaimStatus[];
 
 /**
- * The call-task statuses a deleted or expired claim cancels: a task that is `queued`, `in_progress`, `needs_review` or
- * `unreachable` has not produced the claim's result (AAP 0.5.3). `completed`, `refused`, `do_not_call` and `cancelled`
- * are terminal and are left exactly as they stand.
+ * The call-task statuses a deleted or expired claim cancels: a task that has not produced the claim's result. `completed`,
+ * `refused`, `do_not_call` and `cancelled` are terminal and are left exactly as they stand.
  */
 const OUTSTANDING_TASK_STATUSES = [
   'queued',
@@ -71,10 +62,9 @@ const OUTSTANDING_TASK_STATUSES = [
 ] as const satisfies readonly CallTaskStatus[];
 
 /**
- * The attempt states in which a call may genuinely be live (AAP 0.3.2, 0.5.3): a claim is `calling` exactly while one of
- * its attempts is in one of these, which is why `DELETE /me/lodging-claims/:id` answers `409 call_in_progress` for
- * them, and why account deletion marks them `superseded` — the signal the voice relay reads before every turn to speak
- * its closing line and end the call.
+ * The attempt states in which a call may genuinely be live: a claim is `calling` exactly while one of its attempts is in one of
+ * these, which is why `DELETE /me/lodging-claims/:id` answers `409 call_in_progress` for them, and why account deletion marks
+ * them `superseded`, the signal the voice relay reads before its closing line.
  */
 const LIVE_ATTEMPT_STATES = [
   'dispatching',
@@ -83,10 +73,8 @@ const LIVE_ATTEMPT_STATES = [
   'in_progress',
 ] as const satisfies readonly CallAttemptState[];
 
-/**
- * The advisory-lock key prefix for one user's claim creation, `lodging-claim:<userId>` (AAP 0.5.2): the lock is per
- * user, so two travelers filing claims at the same moment never serialize against each other.
- */
+/** The advisory-lock key prefix for one user's claim creation, `lodging-claim:<userId>`: the lock is per user, so two travelers
+ * filing claims at the same moment never serialize against each other. */
 const CLAIM_LOCK_PREFIX = 'lodging-claim:';
 
 const CLAIM_ALIAS = 'c';
@@ -97,31 +85,25 @@ const LODGING_ALIAS = 'l';
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/**
- * The caller's active lodging claim as `GET /me` reports it: exactly `MeDto.activeLodgingClaim`, so the contract and
- * this read cannot drift apart (AAP 0.5.4).
- */
+/** The caller's active lodging claim as `GET /me` reports it: exactly `MeDto.activeLodgingClaim`, so the contract and this read
+ * cannot drift apart. */
 export type ActiveLodgingClaim = NonNullable<MeDto['activeLodgingClaim']>;
 
-/**
- * What {@link deleteClaimsForAccount} deleted, for the account transaction that called it (AAP 0.5.3): the claims
- * themselves, and the cities whose leaderboards the deletion changed.
- */
+/** What {@link deleteClaimsForAccount} deleted, for the account transaction that called it: the claims themselves, and the
+ * cities whose leaderboards the deletion changed. */
 export interface DeletedClaims {
   readonly claimIds: string[];
   /**
-   * The cities holding a lodging whose *verified* claim was deleted, deduplicated. Only these need their cached
-   * leaderboard dropped: the live verified-guest count changed for them, while the impersonal `LodgingActivityFact`
-   * rows behind the score are untouched, so historical standings never move (AAP 0.5.2, 0.5.7).
+   * The cities holding a lodging whose *verified* claim was deleted, deduplicated. Only these need their cached leaderboard
+   * dropped: the live verified-guest count changed for them, while the `LodgingActivityFact` rows behind the score are
+   * untouched, so historical standings never move.
    */
   readonly cityIds: string[];
 }
 
 /**
- *
- * The shared `DateOnly` schema checks the spelling, not the calendar: `2026-02-30` would be rolled over by
- * JavaScript's `Date` to 2 March, storing a stay the traveler never asked for. The round-trip through `Date.UTC`
- * rejects exactly those, so a claim's dates are always the dates that were requested.
+ * The shared `DateOnly` schema checks the spelling, not the calendar: `2026-02-30` would be rolled over by JavaScript's `Date`
+ * to 2 March, storing a stay the traveler never asked for. The round-trip through `Date.UTC` rejects exactly those.
  */
 function isCalendarDate(day: string): boolean {
   const parts = ISO_DATE_RE.exec(day);
@@ -146,9 +128,9 @@ function isoDateColumn(at: Date): string {
 }
 
 /**
- * Whether the requested stay lies inside the proof's own dates (AAP 0.5.7 "Claim rules"): both dates must be real
- * calendar dates, the first must not be after the second, and the stay must be covered by the proof. The comparison is
- * lexicographic on zero-padded `YYYY-MM-DD` strings, which is chronological order.
+ * Whether the requested stay lies inside the proof's own dates: both dates must be real calendar dates, the first must not be
+ * after the second, and the stay must be covered by the proof. The comparison is lexicographic on zero-padded `YYYY-MM-DD`
+ * strings, which is chronological order.
  */
 function stayWithinProof(stayFrom: string, stayTo: string, proof: ProofSummary): boolean {
   if (!isCalendarDate(stayFrom) || !isCalendarDate(stayTo)) {
@@ -158,9 +140,8 @@ function stayWithinProof(stayFrom: string, stayTo: string, proof: ProofSummary):
 }
 
 /**
- * The proof a claim is filed against (AAP 0.5.7): the caller's valid proof for the lodging's city when one exists,
- * otherwise the caller's latest valid proof in any city, so the city mismatch is answered by its own error rather than
- * as a missing proof.
+ * The proof a claim is filed against: the caller's valid proof for the lodging's city when one exists, otherwise the caller's
+ * latest valid proof in any city, so the city mismatch is answered by its own error rather than as a missing proof.
  */
 async function proofForLodging(
   tx: DbTx,
@@ -173,13 +154,13 @@ async function proofForLodging(
 }
 
 /**
- * The one definition of an active claim, as a SQL predicate (AAP 0.5.3, 0.5.7): it reads as
+ * The one definition of an active claim, as a SQL predicate: it reads as
  * `"c"."user_id" = <user> AND ("c"."status" IN ('pending_call','calling') OR (<a current verified stay>))`.
  *
- * The caller's `FROM` must join `lodging_claim` as `c`, `lodging` as `l` and `city` as `ci`, with the city reached
- * from the lodging: {@link currentStayPredicate} needs both aliases, and the fixture predicate needs the lodging's
- * alias because a raw read bypasses the guarded client's fixture filter (AAP 0.5.2). This fragment is the single
- * definition of "active" for claim creation, for `MeDto.activeLodgingClaim` and for the leaderboard's guest count.
+ * The caller's `FROM` must join `lodging_claim` as `c`, `lodging` as `l` and `city` as `ci`, with the city reached from the
+ * lodging: {@link currentStayPredicate} needs both aliases, and the fixture predicate needs the lodging's alias because a raw
+ * read bypasses the guarded client's fixture filter. This fragment is the single definition of "active" for claim creation, for
+ * `MeDto.activeLodgingClaim` and for the leaderboard's guest count.
  */
 function activeClaimPredicate(appEnv: AppEnv, userId: string, now: Date): Prisma.Sql {
   return Prisma.sql`"c"."user_id" = ${userId}::uuid
@@ -206,12 +187,11 @@ async function hasActiveClaim(
 }
 
 /**
- * Takes the per-user claim-creation lock for the rest of the transaction (AAP 0.5.2).
+ * Takes the per-user claim-creation lock for the rest of the transaction.
  *
- * `pg_advisory_xact_lock` is released by the commit or the rollback, never by this file, so the lock cannot outlive
- * the request that took it; the key makes one traveler's claims serialize while leaving every other traveler's alone,
- * and a hash collision would only delay an unrelated claim. The result is cast to `text` so the statement returns a
- * value the driver maps without ambiguity.
+ * `pg_advisory_xact_lock` is released by the commit or the rollback, never by this file, so the lock cannot outlive the request
+ * that took it; the key makes one traveler's claims serialize while leaving every other traveler's alone. The result is cast to
+ * `text` so the statement returns a value the driver maps without ambiguity.
  */
 async function lockClaimCreation(tx: DbTx, userId: string): Promise<void> {
   await tx.$queryRaw<{ lock: string }[]>(Prisma.sql`
@@ -219,8 +199,6 @@ async function lockClaimCreation(tx: DbTx, userId: string): Promise<void> {
   `);
 }
 
-/**
- */
 interface LockedClaimRow {
   readonly id: string;
   readonly lodging_id: string;
@@ -232,10 +210,8 @@ interface LockedTaskRow {
   readonly status: CallTaskStatus;
 }
 
-/**
- * Locks one claim of one user, or answers `null` when there is no such row (AAP 0.5.4): ownership is part of the
- * `WHERE`, so another traveler's claim is indistinguishable from a claim that does not exist.
- */
+/** Locks one claim of one user, or answers `null` when there is no such row: ownership is part of the `WHERE`, so another
+ * traveler's claim is indistinguishable from a claim that does not exist. */
 async function lockClaim(
   tx: DbTx,
   claimId: string,
@@ -254,9 +230,8 @@ async function lockClaim(
 }
 
 /**
- * Locks every claim of one user, ordered by id, or answers an empty list (AAP 0.5.3). Ordered by id on purpose: two
- * transactions deleting overlapping sets of claims acquire them in the same order, so neither can deadlock. The caller
- * locks the tasks next, the one order this file and the workers both keep.
+ * Locks every claim of one user, ordered by id, or answers an empty list. Ordered by id on purpose: two transactions deleting
+ * overlapping sets of claims acquire them in the same order, so neither can deadlock. The caller locks the tasks next.
  */
 async function lockClaimsOfUser(tx: DbTx, userId: string): Promise<LockedClaimRow[]> {
   return tx.$queryRaw<LockedClaimRow[]>(Prisma.sql`
@@ -271,9 +246,9 @@ async function lockClaimsOfUser(tx: DbTx, userId: string): Promise<LockedClaimRo
 }
 
 /**
- * Always called after the claims themselves are locked: **`lodging_claim` before `call_task`**, the cross-app contract
- * this file keeps with the workers' jobs. Both sides state it, because a job that took the two in the other order
- * could deadlock against a deletion.
+ * Always called after the claims themselves are locked: **`lodging_claim` before `call_task`**, the cross-app contract this file
+ * keeps with the workers' jobs. Both sides state it, because a job that took the two in the other order could deadlock against a
+ * deletion.
  */
 async function lockTasksOfClaims(tx: DbTx, claimIds: readonly string[]): Promise<LockedTaskRow[]> {
   if (claimIds.length === 0) {
@@ -301,9 +276,9 @@ async function hasLiveAttempt(tx: DbTx, taskIds: readonly string[]): Promise<boo
 }
 
 /**
- * Cancels the tasks that have not produced the claim's result (AAP 0.5.3). Only the outstanding statuses move, and
- * `outcomeAt` is never written: a cancelled task was cancelled, it did not reach an outcome (AAP 0.5.7). Terminal tasks
- * stay terminal even when the deletion happens later, because the status filter is part of the update itself.
+ * Cancels the tasks that have not produced the claim's result. Only the outstanding statuses move, and `outcomeAt` is never
+ * written: a cancelled task was cancelled, it did not reach an outcome. Terminal tasks stay terminal, because the status filter
+ * is part of the update itself.
  */
 async function cancelOutstandingTasks(tx: DbTx, taskIds: readonly string[]): Promise<void> {
   if (taskIds.length === 0) {
@@ -316,9 +291,8 @@ async function cancelOutstandingTasks(tx: DbTx, taskIds: readonly string[]): Pro
 }
 
 /**
- * Marks a possibly live call's attempt `superseded` (AAP 0.5.3). The voice relay re-reads its task's status and its
- * attempt's `superseded` flag before every turn, speaks the closing template and ends the call, so a call whose claim
- * is being deleted stops at its next turn and `call-results` never applies its result to a deleted claim.
+ * Marks a possibly live call's attempt `superseded`. The voice relay re-reads its task's status and its attempt's `superseded`
+ * flag before every turn and ends the call, so a call whose claim is being deleted stops at its next turn.
  */
 async function supersedeLiveAttempts(tx: DbTx, taskIds: readonly string[]): Promise<void> {
   if (taskIds.length === 0) {
@@ -336,8 +310,7 @@ async function supersedeLiveAttempts(tx: DbTx, taskIds: readonly string[]): Prom
 
 /**
  * The cities whose cached leaderboard a deletion invalidates: those of the lodgings behind the deleted claims that were
- * `verified`, deduplicated (AAP 0.5.7). Read through the guarded client, so a fixture lodging is simply absent outside
- * `test` and `demo` and its cached board therefore cannot be stale (AAP 0.5.2).
+ * `verified`, deduplicated. Read through the guarded client, so a fixture lodging is absent outside `test` and `demo`.
  */
 async function verifiedClaimCityIds(
   tx: DbTx,
@@ -359,29 +332,25 @@ async function verifiedClaimCityIds(
 }
 
 /**
- * Files a lodging claim for the caller and asks the workers to verify the stay by phone (AAP 0.5.4
- * `POST /me/lodging-claims`).
+ * Files a lodging claim for the caller and asks the workers to verify the stay by phone.
  *
- * The errors are checked in exactly the order AAP 0.5.4 lists them, so a request that breaks two rules is answered with
- * the first one:
+ * The errors are checked in exactly the order AAP 0.5.4 lists them, so a request that breaks two rules is answered with the
+ * first one:
  *
- *  1. `400 consent_missing` — the lodging exception was not consented to. The consent is what discloses that the
- *     lodging will learn a guest with this name uses Tablemate (AAP 0.5.8, 0.12.2), so nothing is read or written
- *     before it is given; the check is pure.
- *  2. `400 booking_name_empty` — the booking name is empty after trimming. Also pure.
- *  3. `404 lodging_not_found` — no such lodging, a fixture outside `test` and `demo` (AAP 0.5.2), or one that has left
- *     the OpenStreetMap directory (`osmMissingAt` set, AAP 0.5.6).
+ *  1. `400 consent_missing` — the lodging exception was not consented to, the disclosure that the lodging will learn a guest
+ *     with this name uses Tablemate. Nothing is read or written before it is given.
+ *  2. `400 booking_name_empty` — the booking name is empty after trimming.
+ *  3. `404 lodging_not_found` — no such lodging, a fixture outside `test` and `demo`, or one that has left the OpenStreetMap
+ *     directory (`osmMissingAt` set).
  *  4. `403 no_valid_proof` — the caller holds no proof valid now, with the city preference of {@link proofForLodging}.
  *  5. `409 active_claim_exists` — an active claim of the caller's already exists.
  *  6. `422 claim_dates_invalid` — the stay is reversed or falls outside the proof's dates.
  *  7. `422 lodging_other_city` — the lodging is not in the proof's city.
  *
- * Checks 3 to 7 run inside one fenced transaction, behind the per-user advisory lock, because the active-claim rule
- * depends on `stayTo` and no index can enforce it (AAP 0.5.2). The insert, the `create_call_task` outbox row and the
- * `lodging_claim_submitted` event commit together, so the worker is told to verify exactly the claims that exist, and
- * nothing is announced for a claim that rolled back. The verification task itself, its 72-hour expiry timer and the
- * operator-queue routing for a lodging with no callable number belong to the workers (AAP 0.5.3, 0.5.6). The booking
- * name and reference are encrypted before the insert and never logged.
+ * Checks 3 to 7 run inside one fenced transaction, behind the per-user advisory lock, because the active-claim rule depends on
+ * `stayTo` and no index can enforce it. The insert, the `create_call_task` outbox row and the `lodging_claim_submitted` event
+ * commit together. The verification task itself and its 72-hour expiry timer belong to the workers. The booking name and
+ * reference are encrypted before the insert and never logged.
  */
 export async function createClaim(
   services: AppServices,
@@ -454,13 +423,12 @@ export async function createClaim(
 }
 
 /**
- * The caller's own claim as it now stands (AAP 0.5.4 `GET /me/lodging-claims/:id`).
+ * The caller's own claim as it now stands.
  *
  * Ownership is part of the query, so another traveler's claim is answered exactly like a claim that does not exist:
- * `404 claim_not_found`, never a hint that the id is real. The response carries the status and, once the claim has
- * reached `verified`, `rejected` or `unreachable`, the instant it did — the `resolvedAt` key is absent until then, as
- * AAP 0.5.4 states the shape `{ status, resolvedAt? }`; the booking name and reference are never read here
- * (AAP 0.5.2).
+ * `404 claim_not_found`, never a hint that the id is real. The response carries the status and, once the claim has reached
+ * `verified`, `rejected` or `unreachable`, the instant it did — the `resolvedAt` key is absent until then; the booking name and
+ * reference are never read here.
  *
  * A plain read: it opens no transaction, takes no lock and changes nothing.
  */
@@ -482,24 +450,20 @@ export async function getClaim(
 }
 
 /**
- * Deletes the caller's claim, with its booking details and its verification work (AAP 0.5.3, 0.5.4
- * `DELETE /me/lodging-claims/:id`). The claim row is locked first and its call tasks next, the one order this file and
- * the workers keep. Then:
+ * Deletes the caller's claim, with its booking details and its verification work. The claim row is locked first and its call
+ * tasks next, the one order this file and the workers keep. Then:
  *
- *  - `409 call_in_progress` when one of the claim's attempts is still in a state in which a call may genuinely be
- *    live. The claim is `calling` exactly while such an attempt exists, so this is the one refusal that protects a
- *    real phone call; the traveler can delete the claim the moment it ends, and account deletion is not subject to it
- *    (AAP 0.5.3).
+ *  - `409 call_in_progress` when one of the claim's attempts is still in a state in which a call may genuinely be live. The
+ *    claim is `calling` exactly while such an attempt exists, so this is the one refusal that protects a real phone call;
+ *    account deletion is not subject to it.
  *  - Every task that has not produced the claim's result is `cancelled`; terminal tasks stay terminal.
- *  - The claim row is deleted, which takes the booking ciphertext with it, cascades the `LodgingVisibility` row and
- *    nulls the cancelled tasks' `lodging_claim_id` (the schema's `onDelete: SetNull` and `Cascade`).
- *  - A deleted `verified` claim changes the lodging's live verified-guest count, so its city's cached leaderboard is
- *    dropped after the commit, through the transaction's `after` hook, so a rollback cannot leave a cold cache behind
- *    a change that never happened and a Redis failure cannot fail the deletion (AAP 0.3.2, 0.5.7). The
- *    `LodgingActivityFact` rows are untouched, so historical standings do not move (AAP 0.5.2).
+ *  - The claim row is deleted, which takes the booking ciphertext with it, cascades the `LodgingVisibility` row and nulls the
+ *    cancelled tasks' `lodging_claim_id` (the schema's `onDelete: SetNull` and `Cascade`).
+ *  - A deleted `verified` claim changes the lodging's live verified-guest count, so its city's cached leaderboard is dropped
+ *    after the commit, through the transaction's `after` hook. The `LodgingActivityFact` rows are untouched.
  *
- * The write runs in one fenced transaction: a deletion racing `DELETE /me` is serialized with it, so neither can leave
- * a half-deleted set of claims (AAP 0.5.3).
+ * The write runs in one fenced transaction: a deletion racing `DELETE /me` is serialized with it, so neither can leave a
+ * half-deleted set of claims.
  */
 export async function deleteClaim(
   services: AppServices,
@@ -534,19 +498,18 @@ export async function deleteClaim(
 }
 
 /**
- * Deletes every lodging claim of an account, cancelling its verification work (AAP 0.5.3).
+ * Deletes every lodging claim of an account, cancelling its verification work.
  *
- * Called by `me/deletion.ts` **inside** its own transaction, which already holds `SELECT … FOR UPDATE` on the user
- * row: this function therefore opens no transaction of its own and takes no fence. It locks the account's claims and
- * then their call tasks, the same order {@link deleteClaim} takes.
+ * Called by `me/deletion.ts` **inside** its own transaction, which already holds `SELECT … FOR UPDATE` on the user row: this
+ * function therefore opens no transaction of its own and takes no fence. It locks the account's claims and then their call
+ * tasks, the same order {@link deleteClaim} takes.
  *
- * It differs from the user-facing {@link deleteClaim} in the one place AAP 0.5.3 requires: a claim in `calling` is
- * deleted too, rather than answered `409 call_in_progress`. The verification task is cancelled and its possibly live
- * attempt is marked `superseded` — the signal the voice relay reads before every turn — which keeps `call-results`
- * from applying that call's result to a claim that no longer exists.
+ * It differs from the user-facing {@link deleteClaim} in the one place AAP 0.5.3 requires: a claim in `calling` is deleted too,
+ * rather than answered `409 call_in_progress`. The verification task is cancelled and its possibly live attempt is marked
+ * `superseded`, which keeps `call-results` from applying that call's result to a claim that no longer exists.
  *
- * The claims' ciphertext goes with the rows. The caller registers the leaderboard invalidations it needs by passing its
- * own `after`: the commit that makes the deletion durable is the caller's (AAP 0.3.2).
+ * The caller registers the leaderboard invalidations it needs by passing its own `after`, because the commit that makes the
+ * deletion durable is the caller's.
  */
 export async function deleteClaimsForAccount(
   tx: DbTx,
@@ -586,18 +549,14 @@ interface ActiveClaimRow {
 }
 
 /**
- * The caller's active claim, or `null` (AAP 0.5.4 `GET /me`).
+ * The caller's active claim, or `null`.
  *
- * "Active" is the one definition of {@link activeClaimPredicate}: `pending_call`, `calling`, or `verified` with the
- * stay not yet over in the lodging's city time. `me/profile.ts` reads this, so the meaning of active lives here alone
- * (AAP 0.5.3, 0.5.7).
+ * "Active" is the one definition of {@link activeClaimPredicate}: `pending_call`, `calling`, or `verified` with the stay not
+ * yet over in the lodging's city time. `me/profile.ts` reads this, so the meaning of active lives here alone.
  *
- * The shape is `MeDto.activeLodgingClaim` exactly, with the stay dates as `YYYY-MM-DD` and the visibility the caller
- * set (`showStaying` from `LodgingVisibility`, false when the caller has no row for this claim). The booking name, the
- * reference and the verification transcript are deliberately absent: nothing in this response can disclose a booking
- * (AAP 0.5.2).
- *
- * A plain read: no transaction, no lock, nothing written.
+ * The shape is `MeDto.activeLodgingClaim` exactly, with the stay dates as `YYYY-MM-DD` and the visibility the caller set
+ * (`showStaying` from `LodgingVisibility`, false when the caller has no row for this claim). The booking name, the reference
+ * and the verification transcript are deliberately absent. A plain read: no transaction, no lock, nothing written.
  */
 export async function activeClaimFor(
   services: AppServices,

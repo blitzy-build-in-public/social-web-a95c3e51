@@ -1,17 +1,15 @@
 /**
- * The registry suite (AAP 0.5.5): the committed `config/registry/{production,test}.json`, the off-circuit
- * encodings of `src/registry`, and their parity with the Circom templates the itinerary circuit instantiates.
+ * The registry suite (AAP 0.5.5): the committed `config/registry/{production,test}.json`, the off-circuit encodings of
+ * `src/registry`, and their parity with the Circom templates the itinerary circuit instantiates.
  *
- * The committed registries are reproduced byte for byte from `config/`, production carrying no leaf for an
- * issuer that is not `verified` or for the synthetic test issuer; every leaf, index and root is re-derived
- * from configuration, so an edited registry fails here rather than at verification time; the boundary cases of
- * the packing the leaf and the nullifier both rest on are pinned in TypeScript; and each mirror is compared
- * with its template through a generated wrapper, because a mirror that is only self-consistent still lets the
- * device produce a proof the server cannot verify, and the domain tags and path bits are the substitution
- * attacks that would follow.
- *
- * The parity suite needs circom 2.1.9 on `PATH` and is never skipped, its failure naming the install command.
- * The other cases need no compiler and sit outside its `describe`.
+ * The committed registries are reproduced byte for byte from `config/`, production carrying no leaf for an issuer that
+ * is not `verified` or for the synthetic test issuer; every leaf, index and root is re-derived from configuration, so an
+ * edited registry fails here rather than at verification time; the boundary cases of the packing the leaf and the
+ * nullifier both rest on are pinned in TypeScript; and each mirror is compared with its template through a generated
+ * wrapper, because a mirror that is only self-consistent still lets the device produce a proof the server cannot verify,
+ * and the domain tags and path bits are the substitution attacks that would follow.
+ * The parity suite needs circom 2.1.9 on `PATH` and is never skipped, its failure naming the install command. The other
+ * cases need no compiler and sit outside its `describe`.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -73,8 +71,8 @@ const COMPILE_TIMEOUT_MS = 10 * 60_000;
 const TEST_ISSUER_STEM = 'tablemate-test';
 
 /**
- * The fixture whose unsigned `X-Tablemate-Fixture-Key` header carries a key outside the registry; the
- * header is not in that fixture's `h=` list, so no signature covers it.
+ * The fixture whose unsigned `X-Tablemate-Fixture-Key` header carries a key outside the registry; the header is not in
+ * that fixture's `h=` list, so no signature covers it.
  */
 const OTHER_ISSUER_EML = 'packages/circuits/fixtures/test-issuer/other-issuer.eml';
 const FIXTURE_KEY_HEADER = 'x-tablemate-fixture-key';
@@ -83,8 +81,8 @@ const FIXTURE_KEY_HEADER = 'x-tablemate-fixture-key';
 const SALT = '123456789';
 
 /**
- * What circom's witness generator reports for a failed `!==`/`===`: the only failure a rejected
- * parity row may throw, so a row cannot pass because it was handed a bad input instead.
+ * What circom's witness generator reports for a failed `!==`/`===`: the only failure a rejected parity row may throw,
+ * so a row cannot pass because it was handed a bad input instead.
  */
 const ASSERT_FAILED = 'Assert Failed';
 
@@ -207,8 +205,8 @@ const TEST_ISSUER = issuerByStem(TEST_ISSUER_STEM);
 const TEST_TEMPLATE = requiredTemplate(TEST_ISSUER);
 
 /**
- * The records the production registry takes leaves from: the `verified` issuers other than the
- * synthetic test one, which is withheld by name whatever status it declares (AAP 0.5.5).
+ * The records the production registry takes leaves from: the `verified` issuers other than the synthetic test one,
+ * which is withheld by name whatever status it declares (AAP 0.5.5).
  */
 const PRODUCTION_ISSUERS = ISSUERS.filter(
   (issuer) => issuer.stem !== TEST_ISSUER_STEM && issuer.config.verificationStatus === 'verified',
@@ -280,9 +278,9 @@ const HONEST_MEMBERSHIP: Record<string, unknown> = {
 };
 
 /**
- * The modulus the outside-key fixture carries in its unsigned `X-Tablemate-Fixture-Key` header: the
- * key the `PoseidonLarge` parity row hashes to show it is not the registered one. It is read from the
- * fixture rather than written here, with every byte of folding whitespace dropped.
+ * The modulus the outside-key fixture carries in its unsigned `X-Tablemate-Fixture-Key` header: the key the
+ * `PoseidonLarge` parity row hashes to show it is not the registered one. It is read from the fixture rather than
+ * written here, with every byte of folding whitespace dropped.
  */
 function fixtureKeyModulus(): bigint {
   const { headers } = parseEml(readFileSync(path.join(REPO_ROOT, OTHER_ISSUER_EML)));
@@ -434,8 +432,8 @@ describe('the off-circuit encodings', () => {
 let tmpDir = '';
 
 /**
- * `circom_tester` 0.0.24 ships no declarations, so the one entry point used here is loaded through
- * `createRequire` and typed by these two declarations rather than by a `.d.ts` for the package.
+ * `circom_tester` 0.0.24 ships no declarations, so the one entry point used here is loaded through `createRequire` and
+ * typed by these two declarations rather than by a `.d.ts` for the package.
  */
 interface WasmCircuit {
   calculateWitness(input: Record<string, unknown>, sanityCheck: boolean): Promise<bigint[]>;
@@ -488,9 +486,9 @@ async function compute(
 }
 
 /**
- * Requires circom 2.1.9 on `PATH`. A missing or older compiler fails the suite with the install
- * command: these parity cases are the only evidence that the mirrors above match the circuit, so
- * skipping them silently would leave that unproven.
+ * Requires circom 2.1.9 on `PATH`. A missing or older compiler fails the suite with the install command: these parity
+ * cases are the only evidence that the mirrors above match the circuit, so skipping them silently would leave that
+ * unproven.
  *
  * @throws {Error} With {@link CIRCOM_MESSAGE}.
  */
@@ -507,8 +505,8 @@ function assertCircom(): void {
 }
 
 /**
- * Writes one wrapper — a pragma, the includes and a `main` component — into {@link tmpDir} and
- * compiles it there, so no test circuit is committed (AAP 0.8.1).
+ * Writes one wrapper — a pragma, the includes and a `main` component — into {@link tmpDir} and compiles it there, so
+ * no test circuit is committed.
  */
 async function compileWrapper(
   name: string,

@@ -6,26 +6,24 @@ include "@zk-email/circuits/utils/array.circom";
 include "@zk-email/circuits/utils/bytes.circom";
 include "@zk-email/circuits/utils/functions.circom";
 
-// Field extraction for the itinerary circuit (AAP 0.5.5): it reads the four stay fields — city, arrival,
-// departure and booking reference — out of the decoded, DKIM-authenticated body window, never from the
-// headers, and fixes the injective byte packing every hash of an anchor, a value or a city alias is
-// taken over. A field exists only where its anchor occurs exactly once in that window and the value
-// after it is a bounded, charset-checked literal ending at the first terminator following the anchor, so
-// no key, template, city alias or field boundary can be substituted.
+// Field extraction for the itinerary circuit (AAP 0.5.5): it reads the four stay fields — city, arrival, departure and
+// booking reference — out of the decoded, DKIM-authenticated body window, never from the headers, and fixes the
+// injective byte packing every hash of an anchor, a value or a city alias is taken over. A field exists only where its
+// anchor occurs exactly once in that window and the value after it is a bounded, charset-checked literal ending at the
+// first terminator following the anchor, so no key, template, city alias or field boundary can be substituted.
 //
-// The packing template is `CheckedPackBytes`, not the `PackBytes(32)` the AAP names: zk-email's
-// `PackBytes(maxBytes)` is already defined by `bytes.circom`, circom rejects a duplicate name, and this
-// name adds the byte range check zk-email's version omits.
+// The packing template is `CheckedPackBytes`, not the `PackBytes(32)` the AAP names: zk-email's `PackBytes(maxBytes)` is
+// already defined by `bytes.circom`, circom rejects a duplicate name, and this name adds the byte range check
+// zk-email's version omits.
 
 /// @title CheckedPackBytes
-/// @notice Packs a 32-byte value into the two field elements this circuit hashes anchors, extracted
-///         values and city aliases with: `out[0]` holds bytes 0-30 little-endian, `out[1]` holds byte 31.
-/// @notice The encoding is zk-email's `PackBytes(32)`, instantiated rather than reimplemented, and
-///         `packBytes` in `packages/circuits/src/registry/leaves.ts` mirrors it. The range check below
-///         is what zk-email's version lacks: without it a byte above 255 could carry weight into
-///         `out[0]`, two byte strings could pack to the same pair, and the encoding would not be
-///         injective — the registry leaf and the nullifier both rest on it. With every byte in 0-255,
-///         `out[0]` stays below 2^248, well inside the BN254 field.
+/// @notice Packs a 32-byte value into the two field elements this circuit hashes anchors, extracted values and city
+///         aliases with: `out[0]` holds bytes 0-30 little-endian, `out[1]` holds byte 31.
+/// @notice The encoding is zk-email's `PackBytes(32)`, instantiated rather than reimplemented, and `packBytes` in
+///         `packages/circuits/src/registry/leaves.ts` mirrors it. The range check below is what zk-email's version
+///         lacks: without it a byte above 255 could carry weight into `out[0]`, two byte strings could pack to the
+///         same pair, and the encoding would not be injective — the registry leaf and the nullifier both rest on it.
+///         With every byte in 0-255, `out[0]` stays below 2^248, well inside the BN254 field.
 /// @param maxBytes The number of bytes packed; every caller's value is 32 bytes wide.
 /// @input in The bytes to pack, zero-padded to `maxBytes`; each one must be in 0-255.
 /// @output out The two packed field elements.
@@ -46,16 +44,15 @@ template CheckedPackBytes(maxBytes) {
 }
 
 /// @title TmCharsetMember
-/// @notice Tests one byte against one of the four charsets an extraction template may name, selected by
-///         a one-hot selector so `FieldExtract` derives that selector once per field, not per byte.
-/// @notice The codes and the sets are those `CHARSET_CODE` in `packages/shared/src/schemas/proofs.ts`
-///         writes down: 1 `digits` is `0`-`9`; 2 `alnum` adds `A`-`Z`, `a`-`z` and `-`; 3 `date` adds
-///         the space and the comma the English date layouts need; 4 `text` is the printable range
-///         0x20-0x7E plus every byte at or above 0x80, so an accented place name or booking reference
-///         still extracts. No charset admits 0x00, so a value can never run through the zero fill that
-///         follows the SHA-256 0x80 pad byte into the body's length field.
-/// @input in A byte the caller has already range-checked to 0-255.
-/// @input sel The one-hot charset selector: `sel[c] = 1` for charset code `c + 1`.
+/// @notice Tests one byte against one of the four charsets an extraction template may name, selected by a one-hot
+///         selector so `FieldExtract` derives that selector once per field, not per byte.
+/// @notice The codes and the sets are those `CHARSET_CODE` in `packages/shared/src/schemas/proofs.ts` writes down:
+///         1 `digits` is `0`-`9`; 2 `alnum` adds `A`-`Z`, `a`-`z` and `-`; 3 `date` adds the space and the comma the
+///         English date layouts need; 4 `text` is the printable range 0x20-0x7E plus every byte at or above 0x80, so
+///         an accented place name or booking reference still extracts. No charset admits 0x00, so a value can never
+///         run through the zero fill that follows the SHA-256 0x80 pad byte into the body's length field.
+/// @input in A byte the caller has already range-checked to 0-255; sel the one-hot charset selector, `sel[c] = 1`
+///         for charset code `c + 1`.
 /// @output out 1 when `in` belongs to the selected charset, 0 otherwise.
 template TmCharsetMember() {
     signal input in;
@@ -117,23 +114,20 @@ template TmCharsetMember() {
 }
 
 /// @title FieldExtract
-/// @notice Locates one stay field inside the decoded, DKIM-authenticated body window and returns its bytes,
-///         zero from `valueLength` on (AAP 0.5.5).
-/// @notice The anchor is read at the prover-supplied `anchorIndex` and the value immediately after it, as the
-///         bytes up to the field's terminator: at least one byte, each in the field's charset, none of them
-///         the terminator, then the terminator itself. The anchor is bounded to its declared length —
-///         non-zero inside it, zero outside — and occurs exactly once in the window, and the value ends at
-///         the first terminator after the anchor, so the field has one possible position and one length.
-/// @param maxLen The window length in bytes, 1,024 for the circuit's body bound.
-/// @param maxAnchor The anchor bound in bytes, 32.
-/// @param maxValue The value bound in bytes, 32.
+/// @notice Locates one stay field inside the decoded, DKIM-authenticated body window and returns its bytes, zero from
+///         `valueLength` on (AAP 0.5.5).
+/// @notice The anchor is read at the prover-supplied `anchorIndex` and the value immediately after it, as the bytes up
+///         to the field's terminator: at least one byte, each in the field's charset, none of them the terminator,
+///         then the terminator itself. The anchor is bounded to its declared length — non-zero inside it, zero
+///         outside — and occurs exactly once in the window, and the value ends at the first terminator after the
+///         anchor, so the field has one possible position and one length.
+/// @param maxLen The window length in bytes, 1,024 for the circuit's body bound; maxAnchor the anchor bound in bytes,
+///         32; maxValue the value bound in bytes, 32.
 /// @input in The decoded body window: the body with soft line breaks removed, zero-padded to `maxLen`.
-/// @input anchor The anchor's bytes, zero-padded to `maxAnchor`.
-/// @input anchorLength The anchor's length in bytes, 1 to 32.
-/// @input anchorIndex The anchor's position in the window.
-/// @input valueLength The value's length in bytes, 1 to 32.
-/// @input terminator The byte that ends the value; non-zero, as no charset admits 0x00.
-/// @input charset The value's charset code: 1 `digits`, 2 `alnum`, 3 `date`, 4 `text`.
+/// @input anchor The anchor's bytes, zero-padded to `maxAnchor`; anchorLength its length in bytes, 1 to 32;
+///         anchorIndex its position in the window; valueLength the value's length in bytes, 1 to 32.
+/// @input terminator The byte that ends the value; non-zero, as no charset admits 0x00; charset the value's charset
+///         code: 1 `digits`, 2 `alnum`, 3 `date`, 4 `text`.
 /// @output value The value's bytes, zero from `valueLength` on.
 template FieldExtract(maxLen, maxAnchor, maxValue) {
     assert(maxAnchor == 32);
@@ -150,9 +144,9 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
     signal input terminator;
     signal input charset;
     signal output value[maxValue];
-    // Ranges. Every length, index and byte the extraction reads with is bounded before it is used; the
-    // two lengths and the terminator are rejected at zero, so an anchor and a value always have at
-    // least one byte and the terminator can never stand in for an empty field.
+    // Ranges. Every length, index and byte the extraction reads with is bounded before it is used; the two lengths and
+    // the terminator are rejected at zero, so an anchor and a value always have at least one byte and the terminator
+    // can never stand in for an empty field.
     component anchorLengthBits = Num2Bits(6);
     anchorLengthBits.in <== anchorLength;
     component anchorLengthNonZero = IsZero();
@@ -178,9 +172,9 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
     terminatorNonZero.out === 0;
     component anchorIndexBits = Num2Bits(log2Ceil(maxLen));
     anchorIndexBits.in <== anchorIndex;
-    // The terminator lies inside the window: anchorIndex + anchorLength <= anchorIndex + anchorLength
-    // + valueLength < maxLen, with valueLength at least 1. Bounding the whole sum before the shifted
-    // reads below is also what keeps `VarShiftLeft`'s modulo indexing from wrapping.
+    // The terminator lies inside the window: anchorIndex + anchorLength + valueLength < maxLen, with valueLength at
+    // least 1. Bounding the whole sum before the shifted reads below is also what keeps `VarShiftLeft`'s modulo
+    // indexing from wrapping.
     signal anchorEnd;
     anchorEnd <== anchorIndex + anchorLength + valueLength;
     component withinWindow = LessThan(11);
@@ -200,9 +194,9 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
         selTotal.nums[c] <== sel[c];
     }
     selTotal.sum === 1;
-    // Anchor shape: non-zero inside its declared length and zero outside it. zk-email's
-    // `CheckSubstringMatch` treats a zero pattern byte as a wildcard, so the shape is asserted here
-    // rather than relied on; the zero fill is also what makes the anchor's packed encoding unique.
+    // Anchor shape: non-zero inside its declared length and zero outside it. zk-email's `CheckSubstringMatch`
+    // treats a zero pattern byte as a wildcard, so the shape is asserted here rather than relied on; the zero fill
+    // is also what makes the anchor's packed encoding unique.
     signal inAnchor[maxAnchor];
     component anchorLengthAbove[maxAnchor];
     component anchorByteIsZero[maxAnchor];
@@ -216,9 +210,9 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
         inAnchor[i] * anchorByteIsZero[i].out === 0;
         (1 - inAnchor[i]) * anchor[i] === 0;
     }
-    // Slice: the bytes at and after the anchor — its 32 bytes, the longest value and the terminator, 65 at
-    // the 32/32 bound. Every byte the extraction reads is range-checked here, because `EmailVerifier` binds
-    // `decodedEmailBodyIn` through a Poseidon random linear combination and never per byte.
+    // Slice: the bytes at and after the anchor — its 32 bytes, the longest value and the terminator, 65 at the 32/32
+    // bound. Every byte the extraction reads is range-checked here, because `EmailVerifier` binds `decodedEmailBodyIn`
+    // through a Poseidon random linear combination and never per byte.
     component sliceShift = VarShiftLeft(maxLen, maxAnchor + maxValue + 1);
     sliceShift.in <== in;
     sliceShift.shift <== anchorIndex;
@@ -234,10 +228,10 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
     for (var m = 0; m < maxAnchor; m++) {
         inAnchor[m] * (slice[m] - anchor[m]) === 0;
     }
-    // The anchor occurs exactly once in `in`, so no second occurrence can be selected, and a field that
-    // appears only in the headers is rejected with a count of 0. The count runs over all `maxLen`
-    // entries, SHA-256 padding and zero fill included, exactly as `src/inputs/template-locate.ts` counts
-    // over the same array. It is the dominant cost of this template, so it is not repeated anywhere.
+    // The anchor occurs exactly once in `in`, so no second occurrence can be selected, and a field that appears only
+    // in the headers is rejected with a count of 0. The count runs over all `maxLen` entries, SHA-256 padding and zero
+    // fill included, exactly as `src/inputs/template-locate.ts` counts over the same array. It is the dominant cost of
+    // this template, so it is not repeated anywhere.
     component anchorOccurrences = CountSubstringOccurrences(maxLen, maxAnchor);
     anchorOccurrences.in <== in;
     anchorOccurrences.substring <== anchor;
@@ -251,9 +245,9 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
     for (var j = 0; j <= maxValue; j++) {
         tail[j] <== tailShift.out[j];
     }
-    // Value: the first `valueLength` tail bytes, zero from there on so the packed encoding is
-    // canonical. Each of those bytes is in the field's charset and none of them is the terminator,
-    // while `tail[valueLength]` is the terminator itself.
+    // Value: the first `valueLength` tail bytes, zero from there on so the packed encoding is canonical. Each of
+    // those bytes is in the field's charset and none of them is the terminator, while `tail[valueLength]` is the
+    // terminator itself.
     signal inValue[maxValue];
     component valueLengthAbove[maxValue];
     component charsetMember[maxValue];
@@ -275,20 +269,18 @@ template FieldExtract(maxLen, maxAnchor, maxValue) {
         inValue[v] * (1 - charsetMember[v].out) === 0;
         inValue[v] * terminatorEqual[v].out === 0;
     }
-    // Prohibiting the terminator inside the value goes beyond AAP 0.5.5's text: without it a terminator
-    // the charset admits — say `<` under `text` — would leave several lengths valid, because the value
-    // could end at any of its terminators. With it the value ends at the first terminator after the
-    // anchor, so exactly one length satisfies the constraints. Changing a supported charset or the
-    // terminator rule changes what the extraction accepts, and so requires a circuit revision and a new
-    // trusted setup.
+    // Prohibiting the terminator inside the value goes beyond AAP 0.5.5's text: without it a terminator the charset
+    // admits — say `<` under `text` — would leave several lengths valid, because the value could end at any of its
+    // terminators. With it the value ends at the first terminator after the anchor, so exactly one length satisfies
+    // the constraints. Changing a supported charset or the terminator rule changes what the extraction accepts, and so
+    // requires a circuit revision and a new trusted setup.
     //
-    // Padding: SHA-256 ends every padded body with its 8-byte bit length, whose high bytes are zero for any
-    // real body, so a 0x00 always follows the 0x80 pad marker; no charset admits 0x00 and the terminator is
-    // non-zero, so a value can never run past the marker into that length field.
+    // Padding: SHA-256 ends every padded body with its 8-byte bit length, whose high bytes are zero for any real body,
+    // so a 0x00 always follows the 0x80 pad marker; no charset admits 0x00 and the terminator is non-zero, so a value
+    // can never run past the marker into that length field.
     //
-    // The byte after the value is that terminator: an asserting gadget rather than a selector, since
-    // `valueLength` is in 1-32, so the index is always valid and only a length whose byte is not the
-    // terminator can fail it.
+    // The byte after the value is that terminator: an asserting gadget rather than a selector, since `valueLength` is
+    // in 1-32, so the index is always valid and only a length whose byte is not the terminator can fail it.
     component terminatorAtLength = ItemAtIndex(maxValue + 1);
     terminatorAtLength.in <== tail;
     terminatorAtLength.index <== valueLength;

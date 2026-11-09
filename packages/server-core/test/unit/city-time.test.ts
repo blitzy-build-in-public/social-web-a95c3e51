@@ -12,21 +12,15 @@ import {
   nextOccurrenceOf,
   startOfLocalDay,
 } from '../../src/time/city-time.ts';
-
 const LIS = 'Europe/Lisbon';
 const MEX = 'America/Mexico_City';
 const BOG = 'America/Bogota';
 const BKK = 'Asia/Bangkok';
 const MAK = 'Asia/Makassar';
-
 const LAUNCH_ZONES = [LIS, MEX, BOG, BKK, MAK];
-
 const CALL_MS = 300_000;
-
 const LAST_START_MS = 39_300_000;
-
 const CLOCK_SEEDS = ['2026-07-01T12:00:00Z', '2026-01-15T12:00:00Z'];
-
 const at = (instant: string): Date => new Date(instant);
 const iso = (instant: Date): string => instant.toISOString();
 
@@ -38,8 +32,7 @@ describe('localDateKey', () => {
     [BKK, '2026-11-04T17:00:00.000Z'],
     [MAK, '2026-11-04T16:00:00.000Z'],
   ])('%s turns the day over at its own midnight, %s', (tz, midnight) => {
-    // CallBudgetDay keys one row per city and local date (AAP 0.5.6), so a millisecond either side
-    // of local midnight must fall in different days.
+    // CallBudgetDay keys one row per city and local date (AAP 0.5.6), so a millisecond either side of local midnight must fall in different days.
     const edge = at(midnight).getTime();
     expect(localDateKey(tz, new Date(edge - 1))).toBe('2026-11-04');
     expect(localDateKey(tz, new Date(edge))).toBe('2026-11-05');
@@ -76,8 +69,7 @@ describe('localTimeOn', () => {
     [MAK, '20:00', '2026-11-04T12:00:00.000Z'],
     [MAK, '23:00', '2026-11-04T15:00:00.000Z'],
   ])('%s %s on 2026-11-04', (tz, hhmm, expected) => {
-    // 09:00 opens calling hours and 20:00 closes them (AAP 0.5.6); 23:00 is the suggestion
-    // cut-off (AAP 0.5.7). Mexico City and Bogotá reach both on the next UTC date.
+    // 09:00 opens calling hours and 20:00 closes them (AAP 0.5.6); 23:00 is the suggestion cut-off (AAP 0.5.7). Mexico City and Bogotá reach both on the next UTC date.
     expect(iso(localTimeOn(tz, '2026-11-04', hhmm))).toBe(expected);
   });
   const FIXED_OFFSETS = [
@@ -92,8 +84,7 @@ describe('localTimeOn', () => {
       SEASONS.map((date): [string, string, string] => [tz, date, `${date}T${utc}Z`]),
     ),
   )('%s holds 09:00 at %s on every date: %s', (tz, date, expected) => {
-    // No DST since 2022 in Mexico and never in the other three, so a 09:00 deferral lands at the
-    // same UTC time all year (AAP 0.5.6).
+    // No DST since 2022 in Mexico and never in the other three, so a 09:00 deferral lands at the same UTC time all year (AAP 0.5.6).
     expect(iso(localTimeOn(tz, date, '09:00'))).toBe(expected);
   });
 });
@@ -104,15 +95,13 @@ describe('wall times inside a DST transition', () => {
     Settings.now = realNow;
   });
   it.each(CLOCK_SEEDS)('moves the 01:30 gap forward by the hour it lost, clock at %s', (seed) => {
-    // Each wall time is asserted under a summer and a winter clock, because luxon's factory resolves
-    // both from the offset it guesses at the process clock: the reading must not move with it.
+    // Each wall time is asserted under a summer and a winter clock, because luxon's factory resolves both from the offset it guesses at the process clock: the reading must not move with it.
     Settings.now = () => at(seed).getTime();
     expect(iso(localTimeOn(LIS, '2026-03-29', '01:30'))).toBe('2026-03-29T01:30:00.000Z');
   });
   it.each(CLOCK_SEEDS)('takes the earlier reading of the 01:30 overlap, clock at %s', (seed) => {
     Settings.now = () => at(seed).getTime();
-    // A task deferred to a wall time that resolved differently depending on when the process
-    // started would be a scheduling defect, so the earlier of the two readings is the one pinned.
+    // A task deferred to a wall time that resolved differently depending on when the process started would be a scheduling defect, so the earlier of the two readings is the one pinned.
     expect(iso(localTimeOn(LIS, '2026-10-25', '01:30'))).toBe('2026-10-25T00:30:00.000Z');
     expect(iso(localTimeOn(LIS, '2026-10-25', '02:30'))).toBe('2026-10-25T02:30:00.000Z');
   });
@@ -125,9 +114,7 @@ describe('deferring to a later local time', () => {
     [LIS, '2026-03-28T12:00:00.000Z', '2026-03-29T08:00:00.000Z'],
     [LIS, '2026-10-24T12:00:00.000Z', '2026-10-25T09:00:00.000Z'],
   ])('%s from %s waits for the next local 09:00', (tz, from, expected) => {
-    // A task over a cap moves nextAttemptAt to 09:00 local the next day (AAP 0.5.6). Makassar is
-    // the case that proves it is the next day and not the next 09:00: 08:30 local is still before
-    // today's, and the answer is tomorrow's.
+    // A task over a cap moves nextAttemptAt to 09:00 local the next day (AAP 0.5.6). Makassar is the case that proves it is the next day and not the next 09:00: 08:30 local is still before today's, and the answer is tomorrow's.
     expect(iso(nextLocalDayAt(tz, at(from), '09:00'))).toBe(expected);
   });
   it('defers a refused menu job to 00:05 local the next day', () => {
@@ -155,8 +142,7 @@ describe('day bounds', () => {
     [LIS, '2026-03-29', '2026-03-29T00:00:00.000Z', '2026-03-29T22:59:59.999Z'],
     [LIS, '2026-10-25', '2026-10-24T23:00:00.000Z', '2026-10-25T23:59:59.999Z'],
   ])('%s %s spans %s to %s', (tz, date, start, end) => {
-    // endOfLocalDay is a proof's validTo and the instant stay-expiry turns showStaying off
-    // (AAP 0.5.2, 0.5.3); the two Lisbon rows are the 23- and 25-hour days.
+    // endOfLocalDay is a proof's validTo and the instant stay-expiry turns showStaying off (AAP 0.5.2, 0.5.3); the two Lisbon rows are the 23- and 25-hour days.
     expect(iso(startOfLocalDay(tz, date))).toBe(start);
     expect(iso(endOfLocalDay(tz, date))).toBe(end);
   });
@@ -166,8 +152,7 @@ describe('day bounds', () => {
     ['2026-12-31', 1, '2027-01-01'],
     ['2026-03-29', -1, '2026-03-28'],
   ])('%s moved by %s day(s) is %s', (date, days, expected) => {
-    // validFrom is arrival − 2 local days (AAP 0.5.2): pure calendar arithmetic, so a month, a
-    // year and the DST date itself all step by whole days.
+    // validFrom is arrival − 2 local days (AAP 0.5.2): pure calendar arithmetic, so a month, a year and the DST date itself all step by whole days.
     expect(addLocalDays(date, days)).toBe(expected);
   });
 });

@@ -1,10 +1,9 @@
 /**
- * The witnessed check-in: the venue's rotating code, the 150 m geofence, the window from
- * `startsAt − 15 min` to `startsAt + 45 min`, and what an attempt leaves behind.
+ * The witnessed check-in: the venue's rotating code, the 150 m geofence, the window from `startsAt − 15 min` to `startsAt + 45 min`,
+ * and what an attempt leaves behind.
  *
- * Two rules the cases turn on: the refusals arrive in the contract's order, so a request breaking
- * two rules is answered with the first, and the stored row holds the result and a distance bucket
- * and no coordinate column at all.
+ * Two rules the cases turn on: the refusals arrive in the contract's order, so a request breaking two rules is answered with the first,
+ * and the stored row holds the result and a distance bucket and no coordinate column at all.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -63,10 +62,10 @@ const CITY_ID = 'lisbon';
  * a stored row or a log field would be recognisable rather than plausible. */
 const VENUE_LOCATION: LatLng = { lat: 38.7123456, lng: -9.139337 };
 
-/** Metres in one degree of latitude, for offsets of at most a few hundred metres: the geodesic
- * distance of a northward offset lands within a metre of the metres asked for. A metre of slack is
- * enough for every distance below, but not for the geofence's inclusive edge, which {@link projected}
- * places instead (AAP 0.5.7). */
+/**
+ * Metres in one degree of latitude, for offsets of at most a few hundred metres. A metre of slack is enough for every distance below,
+ * but not for the geofence's inclusive edge, which {@link projected} places instead (AAP 0.5.7).
+ */
 const METERS_PER_DEGREE_LAT = 111_320;
 
 /** Distances either side of the two boundaries of AAP 0.5.7, each with a margin it cannot drift
@@ -106,10 +105,8 @@ interface Base {
 }
 
 /**
- * A meetup in `status` for a fresh pair at a fresh secret-bearing venue. `makeMeetup` writes the
- * rows the state machine would have left, so a `held` deposit is a real authorization at the
- * provider this run points at; the default start is two hours out when open, three hours back when
- * final.
+ * A meetup in `status` for a fresh pair at a fresh secret-bearing venue. `makeMeetup` writes the rows the state machine would have left, so
+ * a `held` deposit is a real authorization at the provider; the default start is two hours out when open, three hours back when final.
  */
 async function pairIn(status: MeetupStatus): Promise<Base> {
   const venue = await makeVenue(t, { cityId: CITY_ID, ...VENUE_LOCATION });
@@ -145,21 +142,13 @@ function offsetMeters(origin: LatLng, meters: number): LatLng {
 }
 
 /**
- * A coordinate `meters` due north of `venue`, projected on the spheroid by the database's own
- * `ST_Project`, for a case that must stand on a measured boundary rather than near one (AAP 0.5.7).
+ * A coordinate `meters` due north of `venue`, projected on the spheroid by the database's own `ST_Project`, for a case that must stand on a
+ * measured boundary rather than near one (AAP 0.5.7).
  *
- * {@link offsetMeters} cannot do this job at the geofence: `METERS_PER_DEGREE_LAT` is a fixed
- * 111,320 metres per degree of latitude, while the route measures distance with PostGIS's spheroid,
- * so the table's own 150 m offset is measured at 149.58230029 m — 0.42 m short of the boundary. A
- * probe there is accepted by a correct implementation and by one comparing `distance < 150` alike,
- * so it discriminates nothing. A point `ST_Project` places at {@link GEOFENCE_METERS} and
- * `ST_Distance` measures back at exactly the geofence is the only one such an implementation refuses.
- *
- * @param venue - The venue the probe is projected from; its coordinates are bound parameters of this
- *   statement and of nothing else.
- * @param meters - How far due north of the venue the probe stands.
- * @returns The projected coordinate pair.
- * @throws Error when the statement returns no row, which no coordinate pair can make it do.
+ * {@link offsetMeters} cannot do this job at the geofence: `METERS_PER_DEGREE_LAT` is a fixed 111,320 metres per degree, while the route
+ * measures with PostGIS's spheroid, so a table offset of 150 m measures at 149.58230029 m — 0.42 m short of the boundary, which a correct
+ * implementation and one comparing `distance < 150` both accept. A point `ST_Project` places at {@link GEOFENCE_METERS} and `ST_Distance`
+ * measures back at exactly the geofence is the only one such an implementation refuses.
  */
 async function projected(venue: VenueFixture, meters: number): Promise<LatLng> {
   const rows = await t.services.db.$queryRaw<{ lat: number; lng: number }[]>`
@@ -183,18 +172,9 @@ async function projected(venue: VenueFixture, meters: number): Promise<LatLng> {
 }
 
 /**
- * The metres the route itself measures between `venue` and `point`: the same `distanceFrom` statement
- * `check-in.ts` compares with {@link GEOFENCE_METERS} and derives its bucket from (AAP 0.5.7).
- *
- * A boundary case reads its probe back through this, so the case pins what the product measures
- * rather than what it asked the database to place: a probe that drifted off the edge would fail the
- * pin instead of quietly stopping discriminating.
- *
- * @param venue - The venue to measure from, through its own stored location.
- * @param point - The coordinate to measure to.
- * @returns The distance in metres.
- * @throws Error when the venue row carries no location, which no fixture venue does: `makeVenue`
- *   always writes one, and a null here means the row this case measures from is not the fixture's.
+ * The metres the route itself measures between `venue` and `point`: the same `distanceFrom` statement `check-in.ts` compares with
+ * {@link GEOFENCE_METERS} and derives its bucket from (AAP 0.5.7). A boundary case reads its probe back through this, so the case pins what
+ * the product measures rather than what it asked the database to place.
  */
 async function measuredMeters(venue: VenueFixture, point: LatLng): Promise<number> {
   const meters = await distanceFrom(t.services.db, 'venue', venue.id, point, t.env.APP_ENV);
@@ -215,8 +195,7 @@ async function displayedCode(secret: string): Promise<string> {
 }
 
 /**
- * A six-digit value no tolerated step produces, so the wrong-code cases are refusable by
- * construction rather than by luck: at most four candidates can be taken.
+ * A six-digit value no tolerated step produces, so the wrong-code cases are refusable by construction rather than by luck.
  */
 function unmatchedCode(secret: string, now: Date): string {
   const accepted = new Set(TOLERATED_STEPS.map((step) => codeFor(secret, shifted(now, step)).code));
@@ -243,8 +222,8 @@ interface AttemptOptions {
 }
 
 /**
- * Submit one check-in for `base`'s meetup as `user`, from `distanceM` metres away or from the exact
- * coordinates a boundary case hands in (AAP 0.5.7).
+ * Submit one check-in for `base`'s meetup as `user`, from `distanceM` metres away or from the exact coordinates a boundary case hands in
+ * (AAP 0.5.7).
  */
 async function attemptCheckIn(
   base: Base,
@@ -497,11 +476,9 @@ describe('an accepted check-in', () => {
 
   it('is accepted at the geofence itself, which an exclusive comparison would refuse', async () => {
     const base = await lockedPair();
-    // AAP 0.5.7 accepts `ST_Distance(venue.location, point) <= 150` m, so the edge belongs to the
-    // accepted side, and the only probe an implementation comparing `< 150` refuses is one the
-    // database measures at exactly the geofence. The pin below is the point of this case: it reads
-    // the metres back through the statement the route itself compares with, so a probe that drifted
-    // off the edge fails here rather than silently stopping discriminating.
+    // AAP 0.5.7 accepts `ST_Distance(venue.location, point) <= 150` m, so the edge belongs to the accepted side, and the only probe an
+    // implementation comparing `< 150` refuses is one the database measures at exactly the geofence. The pin below reads the metres back
+    // through the statement the route itself compares with, so a probe that drifted off the edge fails here.
     const onEdge = await projected(base.venue, GEOFENCE_METERS);
     expect(await measuredMeters(base.venue, onEdge)).toBe(GEOFENCE_METERS);
     expect(expectAccepted(await attemptCheckIn(base, base.initiator, { point: onEdge }))).toEqual({
@@ -588,10 +565,9 @@ describe('the rows a check-in leaves', () => {
     },
   );
   it('leaves the submitted coordinates out of every logged field', async () => {
-    // `createTestApp` exposes no logger injection point (its options are the environment, the clock,
-    // the language model, the gateway and whether to start background work), and pino's default
-    // destination writes to fd 1 rather than through `process.stdout`, so the live line is not
-    // captured here: the redaction list both processes share is the evidence instead.
+    // `createTestApp` exposes no logger injection point, and pino's default destination writes to fd 1 rather than through
+    // `process.stdout`, so the live line is not captured here: the redaction list both processes share is the evidence instead.
+
     const base = await lockedPair();
     expect(expectAccepted(await attemptCheckIn(base, base.initiator))).toEqual({
       status: 'locked',

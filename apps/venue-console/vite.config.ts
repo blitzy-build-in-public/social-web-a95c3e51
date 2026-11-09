@@ -20,7 +20,6 @@ const CONSOLE_PORT_VAR = 'VITE_CONSOLE_PORT';
 const DEFAULT_CONSOLE_PORT = 8090;
 
 const MISSING_MESSAGE = `${API_URL_VAR} is required: the API origin without a path, e.g. http://localhost:3000 (see .env.example)`;
-
 /** The message an unusable `VITE_API_URL` fails with, quoting the value it echoes. */
 function invalidMessage(value: string): string {
   return `${API_URL_VAR} is invalid: expected the API origin without a path, e.g. http://localhost:3000 (got ${JSON.stringify(value)})`;
@@ -55,12 +54,10 @@ function resolveApiOrigin(configured: string | undefined): string {
   }
   return value.replace(/\/$/, '');
 }
-
 /** The message an unusable `VITE_CONSOLE_PORT` fails with, quoting the value it echoes. */
 function invalidPortMessage(value: string): string {
   return `${CONSOLE_PORT_VAR} is invalid: expected an integer between 1 and 65535 (got ${JSON.stringify(value)})`;
 }
-
 /**
  * Resolves the port the dev server and the preview server listen on. An absent or blank value is the
  * default rather than an error, because the variable exists only to move the console inside the port
@@ -81,7 +78,6 @@ function resolveConsolePort(configured: string | undefined): number {
   }
   return port;
 }
-
 /**
  * The console's Vite configuration (AAP 0.6.2, 0.8.1). The function form is required, because `loadEnv`
  * needs the resolved mode to pick `.env.<mode>`.

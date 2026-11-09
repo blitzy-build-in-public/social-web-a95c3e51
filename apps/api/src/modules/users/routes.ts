@@ -1,31 +1,24 @@
 /**
- * The four user routes of AAP 0.5.4 — a traveler's profile, their photo bytes, a block and a report
- * (AAP 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.7). They are the whole HTTP surface of the `users` module, and
- * each of them is deliberately thin: the rule it exposes is decided in one other place.
+ * The four user routes — a traveler's profile, their photo bytes, a block and a report — the whole HTTP surface of the
+ * `users` module, each deliberately thin: the rule it exposes is decided in one other place.
  *
- * `GET /users/:userId` answers the profile `loadProfile` returned for the viewer's disclosure tier
- * (AAP 0.5.4, criterion 5). The three disclosure layers — `disclosure/tier.ts` decides the tier,
- * `disclosure/select.ts` loads only that tier's columns and `disclosure/serialize.ts` copies that
- * tier's keys through its own schema — are the only place a profile field is chosen, so nothing here
- * re-decides a tier, filters a field or re-serializes one: a field above the viewer's tier is never
- * loaded, let alone returned, whichever tier the pair earned (AAP 0.12.2).
+ * `GET /users/:userId` answers the profile `loadProfile` returned for the viewer's disclosure tier. The three
+ * disclosure layers — `disclosure/tier.ts` decides the tier, `disclosure/select.ts` loads only that tier's columns and
+ * `disclosure/serialize.ts` copies that tier's keys through its own schema — are the only place a profile field is
+ * chosen, so nothing here re-decides a tier, filters a field or re-serializes one.
  *
- * `GET /users/:userId/photo` asks `computeTier` for the pair's tier and compares it with
- * `PHOTO_MIN_TIER` (2), which is the single gate on photo bytes (AAP 0.5.4). Every refusal answers
- * `404 user_not_found`: a block in either direction, a tier below 2, an unknown or erased account and a
- * traveler with no stored photo are indistinguishable, so the route cannot be used to probe who exists,
- * who is blocked, or who has a photo. `POST /users/:id/block` and `POST /users/:id/report` hand their
- * work to `./safety.ts`, which owns the `Block` and `Report` rows (AAP 0.5.3, 0.7.3).
+ * `GET /users/:userId/photo` asks `computeTier` for the pair's tier and compares it with `PHOTO_MIN_TIER` (2), which
+ * is the single gate on photo bytes. Every refusal answers `404 user_not_found`: a block in either direction, a tier
+ * below 2, an unknown or erased account and a traveler with no stored photo are indistinguishable, so the route
+ * cannot be used to probe who exists, who is blocked, or who has a photo. `POST /users/:id/block` and
+ * `POST /users/:id/report` hand their work to `./safety.ts`, which owns the `Block` and `Report` rows.
  *
  * All four are traveler feature routes, so the guard is installed once on this encapsulated context as
- * `app.addHook('onRequest', requireTraveler)` and never globally (AAP 0.5.4); a refusal is `401
- * token_invalid` or `403 age_gate_required`. The two reads carry no counter, while the block and the
- * report spread `mutatingLimits(app)` for their per-IP `onRequest` and per-user `preHandler` allowances.
- *
- * The instant the profile read is judged at is `request.receivedAt`, the single instant
- * `plugins/clock.ts` stamps per request, so a proof's validity and the tier it feeds cannot be decided
- * across the boundary of the proof's own window (AAP 0.11.1). Nothing here logs: not a profile field,
- * not a report reason, not a contact handle, not a photo byte.
+ * `app.addHook('onRequest', requireTraveler)` and never globally; a refusal is `401 token_invalid` or
+ * `403 age_gate_required`. The two reads carry no counter, while the block and the report spread `mutatingLimits(app)`
+ * for their per-IP and per-user allowances. The instant the profile read is judged at is `request.receivedAt`, so a
+ * proof's validity and the tier it feeds cannot be decided across the boundary of the proof's own window. Nothing
+ * here logs: not a profile field, not a report reason, not a contact handle, not a photo byte.
  */
 
 import { z } from 'zod';

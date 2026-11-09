@@ -1,22 +1,16 @@
 /**
- * `GET /v1/meetups/:id/suggestions` — the pair's day plan near the meetup's venue
- * (AAP 0.5.4, 0.5.7).
+ * `GET /v1/meetups/:id/suggestions` — the pair's day plan near the meetup's venue.
  *
- * The second of the two reads that write (AAP 0.5.4): a supplied `perPersonBudgetCents` is stored as
- * the pair's shared budget, where the latest write by either attendee wins, and the first read
- * stamps `suggestionsFirstViewedAt`, which feeds the dashboard's "meetups with suggestions viewed"
- * metric (AAP 0.5.7). Both writes run in one `transact` behind the account-deletion write fence, so
- * nothing commits once `DELETE /me` has been called (AAP 0.5.3), and neither runs when there is
- * nothing to write.
+ * The second of the two reads that write: a supplied `perPersonBudgetCents` is stored as the pair's shared budget, where the latest
+ * write by either attendee wins, and the first read stamps `suggestionsFirstViewedAt`, which feeds the dashboard's metric. Both writes
+ * run in one `transact` behind the account-deletion write fence, so nothing commits once `DELETE /me` has been called, and neither
+ * runs when there is nothing to write.
  *
- * `409 meetup_not_locked` is read the way AAP 0.7.3 settles the contract's two statements: a `locked`
- * meetup is served, and so is a `completed` one whose settlement is at most
- * `SUGGESTIONS_SETTLED_ELIGIBLE_HOURS` (24 h) old, because a pair who met may still plan their day.
- * Every other status carries no plan — a `completed` meetup settled longer ago included.
+ * `409 meetup_not_locked` is read the way the contract's two statements settle it: a `locked` meetup is served, and so is a
+ * `completed` one whose settlement is at most `SUGGESTIONS_SETTLED_ELIGIBLE_HOURS` (24 h) old. Every other status carries no plan.
  *
- * Failure isolation (AAP 0.3.2): the read behind this route touches stored prices alone, so any
- * failure in it is answered `503 suggestions_unavailable` on this route alone, and proposing,
- * locking, checking in and settling are untouched.
+ * Failure isolation: the read behind this route touches stored prices alone, so any failure in it is answered `503
+ * suggestions_unavailable` on this route alone.
  */
 
 import {
@@ -43,18 +37,14 @@ import { suggest, type SuggestResult } from './candidates.ts';
 import type { App } from '../../app.ts';
 import type { FastifyRequest } from 'fastify';
 
-/** The tag this route groups under: a member of the document's own vocabulary. */
 const SUGGESTIONS_TAG = 'suggestions' satisfies OpenApiTag;
 
 /**
- * The authenticated caller's id, or a refusal.
+ * The authenticated caller's id, or a refusal: the guard below admitted this request, but that is a property of the registration
+ * rather than of the handler, so a hook that were moved, removed or shadowed would otherwise leave a `TypeError` answered as
+ * `500 internal_error` where the contract requires `401 token_invalid`.
  *
- * The guard below admitted this request, so `request.auth` is set — but that is a property of the
- * registration, not of the handler: a hook that were moved, removed or shadowed would otherwise leave
- * a `TypeError` to be answered as `500 internal_error` where the contract requires `401
- * token_invalid`, and no compiler check would catch it.
- *
- * @throws AppError `token_invalid` (401) when no context is present.
+ * `@throws AppError token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
   if (request.auth === null) {
@@ -64,14 +54,11 @@ function callerId(request: FastifyRequest): string {
 }
 
 /**
- * Whether this meetup's suggestions may be served (AAP 0.5.4, 0.7.3).
+ * Whether this meetup's suggestions may be served. Pure and exported for tests.
  *
- * Pure and exported for tests. A `locked` meetup is always eligible, because planning the day is what
- * a locked commitment is for. A `completed` meetup is eligible only until
- * `SUGGESTIONS_SETTLED_ELIGIBLE_HOURS` (24 h, both ends inclusive) have passed since `settledAt`, so
- * a pair who met can still read the plan they made. Everything else is refused with
- * `409 meetup_not_locked`, including `proposed`, `forfeited`, `unattended`, `lock_lost`, `no_fault`,
- * and a `completed` meetup settled longer ago.
+ * A `locked` meetup is always eligible, because planning the day is what a locked commitment is for. A `completed` meetup is eligible
+ * only until `SUGGESTIONS_SETTLED_ELIGIBLE_HOURS` (24 h, both ends inclusive) have passed since `settledAt`. Everything else is
+ * refused with `409 meetup_not_locked`.
  */
 export function suggestionsEligible(
   status: MeetupStatus,
@@ -88,16 +75,11 @@ export function suggestionsEligible(
 }
 
 /**
- * Registers `GET /meetups/:id/suggestions` on the context `app.ts` mounts under `/v1` (AAP 0.5.1).
+ * Registers `GET /meetups/:id/suggestions` on the context `app.ts` mounts under `/v1`.
  *
- * Registration is synchronous, as in every other plugin the composition root installs — `clock.ts`,
- * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts` and the sibling route
- * modules all declare a `void` function — so the returned promise is already resolved. The declared
- * `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
- *
- * The guard is installed on this plugin's context, never globally, so `GET /me`, the public routes,
- * the provider webhooks, the console routes, `/admin/*` and the test-control routes cannot inherit
- * the age gate by accident (AAP 0.5.4).
+ * Registration is synchronous, as in every other plugin the composition root installs, so the returned promise is already resolved;
+ * the declared `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one. The guard is installed
+ * on this plugin's context, never globally, so no other route can inherit the age gate by accident.
  */
 export default function suggestionsRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
@@ -184,12 +166,9 @@ export default function suggestionsRoutes(app: App): Promise<void> {
         if (isAppError(err) && err.code === 'suggestions_unavailable') {
           throw err;
         }
-        // Any other failure of the read — a statement row that does not match its shape, a venue in a
-        // city the configuration does not name, an unreadable hours value, the database itself —
-        // stays on this route (AAP 0.3.2). It travels as the thrown error's `cause`, which the errors
-        // plugin walks for the log alone, so the failure is recorded once: by that plugin's narrowed
-        // 503 line, which carries the request id, the code, the sanitized message and the head of the
-        // cause chain, and never a budget, a coordinate or a place list (AAP 0.11.1).
+        // Any other failure of the read — a statement row that does not match its shape, a venue in a city the configuration does not
+        // name, an unreadable hours value, the database itself — stays on this route. It travels as the thrown error's `cause`, which
+        // the errors plugin walks for the log alone, so the failure is recorded once, by that plugin's 503 line.
         throw new AppError('suggestions_unavailable', undefined, { cause: err });
       }
       // Field by field, never a spread: the response carries places, their estimate and the

@@ -3,31 +3,18 @@
  *
  * The app's only reader of the device position, read only when the user submits a check-in. The coordinates leave no
  * trace: nothing here persists them, nothing logs them and no module-level variable holds them, so a fix lives for
- * exactly the one awaited call (AAP 0.1.1, AAP 0.12.2).
- *
+ * exactly the one awaited call.
  * The 150 m geofence and the window from 15 minutes before to 45 minutes after the meetup's start are the server's own
- * decision (AAP 0.5.7), so a fix from the wrong place fails the check-in as `422 outside_geofence` rather than meeting a
- * submit button that never appears. Permission is foreground only, from the `expo-location` config plugin in
- * `app.config.ts`, which also keeps background location blocked; one implementation serves all three platforms, because
- * that package already ships a web module over `navigator.geolocation`.
+ * decision, so a fix from the wrong place fails the check-in as `422 outside_geofence` rather than meeting a submit
+ * button that never appears. Permission is foreground only, from the `expo-location` config plugin in `app.config.ts`,
+ * which also keeps background location blocked; one implementation serves all three platforms, because that package
+ * already ships a web module over `navigator.geolocation`.
  */
 import * as Location from 'expo-location';
-
 import type { LatLng } from '@tablemate/shared';
-
-/**
- * Why a position could not be read; each value is also the `snake_case` code a screen maps to its
- * own copy, and only `location_denied` is something the user can resolve.
- */
 export type LocationErrorCode = 'location_denied' | 'location_unavailable' | 'location_timeout';
 
-/**
- * The only rejection {@link currentCoords} produces, carrying a code and nothing else — no
- * coordinate, no accuracy radius, no provider message — so a screen can render it and a log record
- * it without leaking a position.
- */
 export class LocationError extends Error {
-  /** Which failure this is; always equal to {@link Error.message}. */
   readonly code: LocationErrorCode;
   constructor(code: LocationErrorCode) {
     super(code);
@@ -37,15 +24,8 @@ export class LocationError extends Error {
   }
 }
 
-/**
- * How long one fresh fix is awaited before the attempt fails with `location_timeout`: the check-in
- * window closes 45 minutes after the meetup starts (AAP 0.5.7), so a fix that has not arrived in 15
- * seconds is not worth holding the screen for, and the user can retry at once.
- */
 export const LOCATION_TIMEOUT_MS = 15_000;
-
 const PERMISSION_DENIED_CODE = 1;
-
 /**
  * Called only by the check-in screen, at the moment the user submits, because submitting is the only
  * point at which the app may ask for location (AAP 0.3.4). The server range-checks both numbers and

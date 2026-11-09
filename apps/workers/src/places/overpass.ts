@@ -1,31 +1,22 @@
 /**
- * The Overpass client behind place and lodging ingestion (AAP 0.3.3, 0.5.6): the two Overpass QL
- * queries `place-refresh` runs per city, and the transport that reads their answers.
+ * The Overpass client behind place and lodging ingestion (AAP 0.3.3, 0.5.6): the two Overpass QL queries `place-refresh` runs
+ * per city, and the transport that reads their answers.
  *
- * Every value interpolated into a query comes from a constant of this file or from a coordinate
- * {@link coord} has already bounded and formatted, so no caller input reaches Overpass verbatim.
- * Overpass is operator-configured infrastructure (`OVERPASS_URL`), not a menu site: `safe-fetch` and
- * the crawl policy do not apply, the caller passes its own identifying user agent, and `zod` is the
- * only import because a third party's answer is parsed before any of it is used.
+ * Every value interpolated into a query comes from a constant of this file or from a coordinate {@link coord} has already
+ * bounded and formatted, so no caller input reaches Overpass verbatim. Overpass is operator-configured infrastructure
+ * (`OVERPASS_URL`), not a menu site: `safe-fetch` and the crawl policy do not apply, the caller passes its own identifying user
+ * agent, and `zod` is the only import because a third party's answer is parsed before any of it is used.
  *
- * HTTP 200 does not mean a complete answer: Overpass reports a truncated result set in `remark` and
- * still answers 200, and {@link runOverpass} throws on it, because `lodging-upsert.ts` would read
- * every lodging missing from a truncated answer as gone.
+ * HTTP 200 does not mean a complete answer: Overpass reports a truncated result set in `remark` and still answers 200, and
+ * {@link runOverpass} throws on it, because `lodging-upsert.ts` would read every lodging missing from a truncated answer as
+ * gone.
  */
 
 import { z } from 'zod';
 
-/**
- * The OpenStreetMap element type of a query result (AAP 0.5.6): the first half of the
- * (`osmType`, `osmId`) key `Place` and `Lodging` are upserted by.
- */
+/** The OpenStreetMap element type of a query result (AAP 0.5.6): the first half of the (`osmType`, `osmId`) key `Place` and `Lodging` are upserted by. */
 export type OsmType = 'node' | 'way' | 'relation';
-
-/**
- * One element of an Overpass answer, as `out center tags;` returns it (AAP 0.5.6). A way or a
- * relation carries `center` instead of `lat`/`lon`. An absent property is omitted rather than set to
- * `undefined`, as `exactOptionalPropertyTypes` requires of the upsert that consumes it.
- */
+/** One element of an Overpass answer, as `out center tags;` returns it (AAP 0.5.6). A way or a relation carries `center` instead of `lat`/`lon`. An absent property is omitted rather than set to `undefined`, as `exactOptionalPropertyTypes` requires of the upsert that consumes it. */
 export type OverpassElement = {
   type: OsmType;
   id: number;
@@ -34,10 +25,8 @@ export type OverpassElement = {
   center?: { lat: number; lon: number };
   tags?: Record<string, string>;
 };
-
 /** The `amenity` values ingested as places, shared with `categorize.ts` (AAP 0.5.6). */
 export const PLACE_AMENITY_TAGS = ['restaurant', 'cafe', 'bar', 'pub'] as const;
-
 /** The `tourism` values ingested as places, shared with `categorize.ts` (AAP 0.5.6). */
 export const PLACE_TOURISM_TAGS = [
   'museum',
@@ -47,43 +36,20 @@ export const PLACE_TOURISM_TAGS = [
   'aquarium',
   'theme_park',
 ] as const;
-
-/**
- * The `leisure` values ingested as places, shared with `categorize.ts` (AAP 0.5.6).
- *
- * The three place lists stay short on purpose: broad tags such as `tourism=attraction` and
- * `leisure=park` add places that rarely publish a price, and such a place takes the phone fallback
- * or goes straight to `unreachable` (`no_phone`) in `menu-ingest`.
- */
+/** The `leisure` values ingested as places, shared with `categorize.ts` (AAP 0.5.6). The three place lists stay short on purpose: broad tags such as `tourism=attraction` and `leisure=park` add places that rarely publish a price, and such a place takes the phone fallback or goes straight to `unreachable` (`no_phone`) in `menu-ingest`. */
 export const PLACE_LEISURE_TAGS = ['park', 'water_park', 'sports_centre'] as const;
-
-/**
- * The `tourism` values ingested as lodgings (AAP 0.5.6): the three kinds `Lodging.kind` accepts,
- * queried inside a city's bbox rather than around a partner venue.
- */
+/** The `tourism` values ingested as lodgings (AAP 0.5.6): the three kinds `Lodging.kind` accepts, queried inside a city's bbox rather than around a partner venue. */
 export const LODGING_TOURISM_TAGS = ['hostel', 'hotel', 'guest_house'] as const;
-
 /** The radius of the places query in metres: "within 2 km of each partner venue" (AAP 0.5.6). */
 const PLACES_RADIUS_M = 2_000;
-
 /** The deadline applied when the caller passes none (AAP 0.11.1: "Overpass 60 s"). */
 const DEFAULT_TIMEOUT_MS = 60_000;
-
 /** The coordinate bounds {@link coord} enforces, which keep an unchecked number out of a query. */
 const LATITUDE_BOUNDS = { min: -90, max: 90 } as const;
 const LONGITUDE_BOUNDS = { min: -180, max: 180 } as const;
-
-/**
- * The `remark` values that mark a truncated answer (AAP 0.5.6): Overpass answers 200 with a partial
- * `elements` array and one of these in `remark`.
- */
+/** The `remark` values that mark a truncated answer (AAP 0.5.6): Overpass answers 200 with a partial `elements` array and one of these in `remark`. */
 const PARTIAL_RESULT_REMARK = /runtime error|timed out|out of memory|rate_limited/i;
-
-/**
- * Thrown when a query cannot be built, or when Overpass answers with a failure or a truncated result
- * set (AAP 0.5.6). The message carries the HTTP status or the remark, never a response body.
- * `place-refresh` lets it propagate, so BullMQ retries the job on its own backoff.
- */
+/** Thrown when a query cannot be built, or when Overpass answers with a failure or a truncated result set (AAP 0.5.6). The message carries the HTTP status or the remark, never a response body. `place-refresh` lets it propagate, so BullMQ retries the job on its own backoff. */
 export class OverpassError extends Error {
   /** The HTTP status of the answer, when the failure was a response. */
   readonly status?: number;
@@ -104,10 +70,7 @@ export class OverpassError extends Error {
   }
 }
 
-/**
- * Formats one coordinate for a query (AAP 0.3.3). `toFixed(6)` is what makes it safe to interpolate:
- * a string of digits, a sign and a point, never exponent notation and never query syntax.
- */
+/** Formats one coordinate for a query (AAP 0.3.3). `toFixed(6)` is what makes it safe to interpolate: a string of digits, a sign and a point, never exponent notation and never query syntax. */
 function coord(value: number, bounds: { min: number; max: number }): string {
   if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
     throw new RangeError(`overpass_coordinate_out_of_range: expected ${bounds.min}..${bounds.max}`);
@@ -115,24 +78,12 @@ function coord(value: number, bounds: { min: number; max: number }): string {
   return value.toFixed(6);
 }
 
-/**
- * Builds an exact-match regular expression over OSM tag values (AAP 0.3.3). `values` comes only from
- * the tag constants above, so no user-supplied string is ever interpolated.
- */
+/** Builds an exact-match regular expression over OSM tag values (AAP 0.3.3). `values` comes only from the tag constants above, so no user-supplied string is ever interpolated. */
 function regex(values: readonly string[]): string {
   return `^(${values.join('|')})$`;
 }
 
-/**
- * The query that fetches places around a city's partner venues and partner lodgings (AAP 0.3.3,
- * 0.5.6): the three tag lists above, each within 2 km of every centre, in one union.
- *
- * The `["name"]` filter drops unnamed elements at the server, because `Place.name` is required and an
- * unnamed element could never be stored. Overpass deduplicates across union members within one
- * answer, but the client verifies uniqueness anyway, since a union member is no contract.
- *
- * city with no partner venue and no partner lodging, or when a coordinate is unusable.
- */
+/** The query that fetches places around a city's partner venues and partner lodgings (AAP 0.3.3, 0.5.6): the three tag lists above, each within 2 km of every centre, in one union. The `["name"]` filter drops unnamed elements at the server, because `Place.name` is required and an unnamed element could never be stored. Overpass deduplicates across union members within one answer, but the client verifies uniqueness anyway, since a union member is no contract. city with no partner venue and no partner lodging, or when a coordinate is unusable. */
 export function buildPlacesQuery(centers: readonly { lat: number; lng: number }[]): string {
   if (centers.length === 0) {
     throw new RangeError('overpass_no_centers: a places query needs at least one centre');
@@ -157,12 +108,7 @@ export function buildPlacesQuery(centers: readonly { lat: number; lng: number }[
   return `[out:json][timeout:60];\n(\n${statements.join('\n')}\n);\nout center tags;`;
 }
 
-/**
- * The query that fetches the lodgings inside a city's bbox (AAP 0.3.3, 0.5.6).
- *
- * The Overpass bounding box is south, west, north, east, which is the shape `City.bbox` carries in
- * `config/cities.json`.
- */
+/** The query that fetches the lodgings inside a city's bbox (AAP 0.3.3, 0.5.6). The Overpass bounding box is south, west, north, east, which is the shape `City.bbox` carries in `config/cities.json`. */
 export function buildLodgingsQuery(bbox: {
   south: number;
   west: number;
@@ -194,11 +140,7 @@ const ElementSchema = z.looseObject({
   center: z.object({ lat: z.number(), lon: z.number() }).optional(),
   tags: z.record(z.string(), z.string()).optional(),
 });
-
-/**
- * The answer envelope (AAP 0.3.3). `elements` stays `unknown[]` so each element is validated on its
- * own and one malformed element drops only itself.
- */
+/** The answer envelope (AAP 0.3.3). `elements` stays `unknown[]` so each element is validated on its own and one malformed element drops only itself. */
 const EnvelopeSchema = z.looseObject({
   version: z.number().optional(),
   generator: z.string().optional(),
@@ -206,15 +148,9 @@ const EnvelopeSchema = z.looseObject({
   remark: z.string().optional(),
   elements: z.array(z.unknown()),
 });
-
 /** The parsed shape of one element, before it is narrowed to {@link OverpassElement}. */
 type ParsedElement = z.output<typeof ElementSchema>;
-
-/**
- * Narrows a parsed element to {@link OverpassElement}, omitting the properties the answer did not
- * carry. The explicit copy keeps `undefined` out of the property values, as
- * `exactOptionalPropertyTypes` requires and as the upsert that follows depends on.
- */
+/** Narrows a parsed element to {@link OverpassElement}, omitting the properties the answer did not carry. The explicit copy keeps `undefined` out of the property values, as `exactOptionalPropertyTypes` requires and as the upsert that follows depends on. */
 function toElement(parsed: ParsedElement): OverpassElement {
   const element: OverpassElement = { type: parsed.type, id: parsed.id };
   if (parsed.lat !== undefined) element.lat = parsed.lat;
@@ -294,10 +230,7 @@ export async function runOverpass(
   return elements;
 }
 
-/**
- * The (`osmType`, `osmId`) key of an element, as `Place` and `Lodging` store it (AAP 0.5.6). The id
- * is a `bigint` because an OSM id outgrows an `int4` and the column is `BigInt?`.
- */
+/** The (`osmType`, `osmId`) key of an element, as `Place` and `Lodging` store it (AAP 0.5.6). The id is a `bigint` because an OSM id outgrows an `int4` and the column is `BigInt?`. */
 export function osmKeyOf(element: Pick<OverpassElement, 'type' | 'id'>): {
   osmType: OsmType;
   osmId: bigint;
@@ -305,11 +238,7 @@ export function osmKeyOf(element: Pick<OverpassElement, 'type' | 'id'>): {
   return { osmType: element.type, osmId: BigInt(element.id) };
 }
 
-/**
- * The composite key string of an element, `` `<osmType>/<osmId>` `` (AAP 0.5.6). `lodging-upsert.ts`
- * compares it against the SQL expression `osm_type || '/' || osm_id::text`, so both spellings of the
- * same key have to agree.
- */
+/** The composite key string of an element, `` `<osmType>/<osmId>` `` (AAP 0.5.6). `lodging-upsert.ts` compares it against the SQL expression `osm_type || '/' || osm_id::text`, so both spellings of the same key have to agree. */
 export function osmKeyString(osmType: string, osmId: bigint | number): string {
   return `${osmType}/${osmId}`;
 }

@@ -1,23 +1,18 @@
 /**
- * The DKIM key fetcher,
- * `pnpm --filter @tablemate/circuits fetch-dkim-key -- <issuer> [--write]` (AAP 0.5.5, 0.8.1).
+ * The DKIM key fetcher, `pnpm --filter @tablemate/circuits fetch-dkim-key -- <issuer> [--write]` (AAP 0.5.5).
  *
- * The operator-side half of onboarding an issuer. Once real confirmation emails are in the git-ignored
- * `packages/circuits/samples/<issuer>/`, it reads the `d=` and `s=` tags of their DKIM signatures, resolves
- * each selector's `p=` key over DNS, prints one key record per aligned signature, and with `--write` merges
- * those records into the issuer's record as `unverified`, so `pnpm circuits:samples` still decides whether the
- * issuer earns a production leaf.
- *
- * Alignment is the security rule here: only a signature whose `d=` equals the message's `From` domain or a
- * parent domain of it is kept. A confirmation is routinely also signed by the sending ESP (`amazonses.com`,
- * `sendgrid.net`), whose key signs mail for every one of that ESP's customers; recording it as an issuer key
- * would let anyone forge a "confirmation". Every other signature is reported and dropped, and no key is
- * invented either: each record comes from DNS for a selector a sample actually carried.
- *
- * This is the only place in the project that resolves DNS — the client takes its keys from the published
- * registry by `d=` and `s=` (AAP 0.5.5) — and samples stay git-ignored, never copied, quoted or logged. Output
- * carries a sample number, the first 8 hex of its SHA-256, and public DNS names only, so no file name,
- * address, local part or line of email text is printed.
+ * The operator-side half of onboarding an issuer: once real confirmation emails are in the git-ignored
+ * `packages/circuits/samples/<issuer>/`, it reads the `d=` and `s=` tags of their DKIM signatures, resolves each
+ * selector's `p=` key over DNS, prints one key record per aligned signature, and with `--write` merges those records
+ * into the issuer's record as `unverified`, so `pnpm circuits:samples` still decides whether the issuer earns a
+ * production leaf.
+ * Alignment is the security rule here: only a signature whose `d=` equals the message's `From` domain or a parent
+ * domain of it is kept. A confirmation is routinely also signed by the sending ESP (`amazonses.com`, `sendgrid.net`),
+ * whose key signs mail for every one of that ESP's customers; recording it as an issuer key would let anyone forge a
+ * "confirmation". Every other signature is reported and dropped, and no key is invented either: each record comes from
+ * DNS for a selector a sample actually carried.
+ * This is the only place in the project that resolves DNS, and samples stay git-ignored, never copied, quoted or
+ * logged: output carries a sample number, the first 8 hex of its SHA-256, and public DNS names only.
  */
 import { createHash, createPublicKey } from 'node:crypto';
 import { resolveTxt } from 'node:dns/promises';
@@ -55,12 +50,8 @@ interface KeySource {
 }
 
 /**
- * The domain of a message's `From` header: the text after the last `@` of the address, lowercased. The
- * `<>`-enclosed address is read when the display name carries one of its own, because that is the
- * address the message is from.
- *
- * @param headers - The message's header fields, in file order.
- * @returns The domain, or undefined when no readable address or domain is there.
+ * The domain of a message's `From` header: the text after the last `@` of the address, lowercased. The `<>`-enclosed
+ * address is read when the display name carries one of its own, because that is the address the message is from.
  */
 export function fromDomainOf(headers: readonly HeaderField[]): string | undefined {
   const field = headers.find((header) => header.lowerName === 'from');
@@ -76,9 +67,9 @@ export function fromDomainOf(headers: readonly HeaderField[]): string | undefine
 }
 
 /**
- * Whether a DKIM `d=` is aligned with the `From` domain as DKIM's relaxed alignment reads it: the
- * signing domain is the `From` domain itself or a parent domain of it. A domain that merely ends with
- * the same text (`booking.com.example` for `booking.com`), and a child of the `From` domain, are not.
+ * Whether a DKIM `d=` is aligned with the `From` domain as DKIM's relaxed alignment reads it: the signing domain is
+ * the `From` domain itself or a parent domain of it. A domain that merely ends with the same text
+ * (`booking.com.example` for `booking.com`), and a child of the `From` domain, are not.
  */
 export function isAligned(signingDomain: string, fromDomain: string): boolean {
   if (signingDomain === '' || fromDomain === '') return false;
@@ -92,11 +83,11 @@ export interface DkimTxtRecord {
 }
 
 /**
- * The DKIM record among a selector's TXT answers (RFC 6376 §3.6): each answer's chunks joined, the
- * first answer carrying a `p=` tag taken, its tag list read into tags.
+ * The DKIM record among a selector's TXT answers (RFC 6376 §3.6): each answer's chunks joined, the first answer
+ * carrying a `p=` tag taken, its tag list read into tags.
  *
- * @returns The `p=` and `k=` tags, `p` empty for a revoked key; undefined when no answer carries a
- *   `p=` tag at all, which is a different state from a withdrawn key.
+ * @returns The `p=` and `k=` tags, `p` empty for a revoked key; undefined when no answer carries a `p=` tag at all,
+ *   which is a different state from a withdrawn key.
  */
 export function dkimTxtRecord(answers: readonly (readonly string[])[]): DkimTxtRecord | undefined {
   for (const chunks of answers) {
@@ -114,14 +105,13 @@ export function dkimTxtRecord(answers: readonly (readonly string[])[]): DkimTxtR
 }
 
 /**
- * Encodes one selector's `p=` value (AAP 0.5.5). The tag carries the DER SubjectPublicKeyInfo of the
- * RSA public key; `modulusBase64` is standard base64 of the unsigned big-endian modulus with no leading
- * zero byte — the encoding `src/registry/leaves.ts` decodes and `make-test-fixtures.ts` writes — and
- * `hash` is the issuer leaf's `pubkeyHash`, printed so an operator can compare it with the registry.
+ * Encodes one selector's `p=` value (AAP 0.5.5). The tag carries the DER SubjectPublicKeyInfo of the RSA public key;
+ * `modulusBase64` is standard base64 of the unsigned big-endian modulus with no leading zero byte — the encoding
+ * `src/registry/leaves.ts` decodes and `make-test-fixtures.ts` writes — and `hash` is the issuer leaf's `pubkeyHash`,
+ * printed so an operator can compare it with the registry.
  *
- * @param p - The base64 `p=` value, its folding whitespace already removed.
- * @throws {Error} When the value is not a valid SPKI public key, is not RSA, or carries a modulus
- *   outside 1024-2048 bits.
+ * @throws {Error} When the value is not a valid SPKI public key, is not RSA, or carries a modulus outside 1024-2048
+ *   bits.
  */
 export function modulusRecordOf(p: string): { modulusBase64: string; bits: number; hash: bigint } {
   let key: ReturnType<typeof createPublicKey>;
@@ -151,13 +141,10 @@ export function modulusRecordOf(p: string): { modulusBase64: string; bits: numbe
 }
 
 /**
- * The issuer's key list with the resolved records merged in, deduplicated by domain (lowercased) and
- * selector (AAP 0.5.5). A recorded key wins while its modulus is identical, so a repeated run rewrites
- * nothing; it is replaced — and reported as rotated — when the modulus differs, because the DNS answer
- * of this run is current and the file's is not. Existing entries keep their position and new selectors
- * are appended, so a rerun's diff is only what actually changed.
- *
- * @returns The merged list, whether it differs from `existing`, and the records it replaced.
+ * The issuer's key list with the resolved records merged in, deduplicated by domain (lowercased) and selector
+ * (AAP 0.5.5). A recorded key wins while its modulus is identical, so a repeated run rewrites nothing; it is replaced —
+ * and reported as rotated — when the modulus differs, because the DNS answer of this run is current and the file's is
+ * not. Existing entries keep their position and new selectors are appended, so a rerun's diff is only what changed.
  */
 export function mergeKeys(
   existing: readonly DkimKey[],
@@ -188,9 +175,9 @@ export function mergeKeys(
 }
 
 /**
- * Runs the command line: reads the issuer's samples, resolves their aligned DKIM keys, and with
- * `--write` merges the result into the issuer's record. Every failure is reported as
- * `fetch-dkim-key: <message>` with exit code 1, and nothing prints a stack trace or a file's bytes.
+ * Runs the command line: reads the issuer's samples, resolves their aligned DKIM keys, and with `--write` merges the
+ * result into the issuer's record. Every failure is reported as `fetch-dkim-key: <message>` with exit code 1, and
+ * nothing prints a stack trace or a file's bytes.
  */
 async function main(): Promise<void> {
   try {
@@ -201,8 +188,8 @@ async function main(): Promise<void> {
       const known = issuers.map((record) => record.stem).join(', ');
       throw new Error(`unknown issuer ${stem}; known issuers: ${known}`);
     }
-    // The record's schema couples keys to a template: an issuer awaiting samples carries neither, so
-    // writing keys first would produce a record `IssuerConfig` refuses (AAP 0.5.5).
+    // The record's schema couples keys to a template: an issuer awaiting samples carries neither, so writing keys
+    // first would produce a record `IssuerConfig` refuses (AAP 0.5.5).
     if (write && issuer.config.template === null) {
       throw new Error(
         `${issuer.path}: awaiting_samples forbids DKIM keys; author the template from the samples ` +
@@ -220,7 +207,6 @@ async function main(): Promise<void> {
 /**
  * Reads the command line: exactly one positional issuer stem and an optional `--write`.
  *
- * @param argv - `process.argv.slice(2)`, whose separating bare `--` is ignored.
  * @throws {Error} For any other argument or a missing stem, after the usage line is printed.
  */
 function parseArgs(argv: readonly string[]): { stem: string; write: boolean } {
@@ -239,11 +225,10 @@ function parseArgs(argv: readonly string[]): { stem: string; write: boolean } {
 }
 
 /**
- * Reads the issuer's samples, keeps the signatures aligned with each message's `From` domain, resolves
- * every remaining selector's DKIM record over DNS and encodes its key. A pair that cannot be resolved
- * is reported and never stops the others, because one dead selector must not hide a usable key.
+ * Reads the issuer's samples, keeps the signatures aligned with each message's `From` domain, resolves every remaining
+ * selector's DKIM record over DNS and encodes its key. A pair that cannot be resolved is reported and never stops the
+ * others, because one dead selector must not hide a usable key.
  *
- * @param stem - The issuer's file stem, which is also its samples' directory name.
  * @throws {Error} When the issuer has no samples, or a sample cannot be read.
  */
 async function resolveSamples(stem: string): Promise<DkimKey[]> {
@@ -295,11 +280,7 @@ async function resolveSamples(stem: string): Promise<DkimKey[]> {
   return resolveKeys([...sources.values()]);
 }
 
-/**
- * Resolves each source's DKIM TXT record and prints the key record it yields.
- *
- * @param sources - The aligned `(domain, selector)` pairs, with the samples that carried each.
- */
+/** Resolves each source's DKIM TXT record and prints the key record it yields. */
 async function resolveKeys(sources: readonly KeySource[]): Promise<DkimKey[]> {
   const resolved: DkimKey[] = [];
   for (const source of sources) {
@@ -343,7 +324,6 @@ async function resolveKeys(sources: readonly KeySource[]): Promise<DkimKey[]> {
 /**
  * Merges the resolved keys into the issuer's record and writes it, or reports that nothing changed.
  *
- * @param issuer - The loaded issuer record, whose path the write targets.
  * @throws {Error} When nothing resolved, or when the merged record fails its schema.
  */
 async function writeKeys(issuer: LoadedIssuer, resolved: readonly DkimKey[]): Promise<void> {
@@ -360,8 +340,8 @@ async function writeKeys(issuer: LoadedIssuer, resolved: readonly DkimKey[]): Pr
     process.stdout.write(`${issuer.path}: unchanged; every resolved key is already recorded\n`);
     return;
   }
-  // A newly recorded key needs its own `pnpm circuits:samples` pass before the issuer may claim a
-  // production leaf, so the status drops back to `unverified` (AAP 0.5.5).
+  // A newly recorded key needs its own `pnpm circuits:samples` pass before the issuer may claim a production leaf,
+  // so the status drops back to `unverified` (AAP 0.5.5).
   const record: IssuerConfig = {
     issuerId: issuer.config.issuerId,
     displayName: issuer.config.displayName,

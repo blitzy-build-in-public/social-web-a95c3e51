@@ -1,23 +1,18 @@
 /**
- * The real-issuer sample check, `pnpm circuits:samples [issuer]` (AAP 0.5.5, AAP 0.8.1).
+ * The real-issuer sample check, `pnpm circuits:samples [issuer]` (AAP 0.5.5, AAP 0.12.3).
  *
- * The gate that decides whether an issuer may claim a production registry leaf: for every user-supplied
- * confirmation in the git-ignored `packages/circuits/samples/<issuer>/` it builds the witness, proves it with
- * `groth16.fullProve` and verifies the proof against the built artefacts, against a registry assembled in
- * memory that includes the issuer whatever its verification status. Only once every sample passes may the
- * record carry `"verificationStatus": "verified"`, and this script never edits it: promotion is an explicit
- * operator act that `pnpm circuits:registry` turns into a leaf.
- *
- * Privacy: samples are real personal confirmation emails, so nothing about a sample's content reaches stdout,
- * a log or a document. A sample is named by its position and the first eight hex of its SHA-256, and a refusal
- * prints a `CircuitInputError` code — and, for a stay field, that field's own slot name — never a header, a
- * value, an offset or a parser's message.
- *
- * A real email whose stay fields sit above the provable body window fails with `field_not_found`: the signal
- * AAP 0.2.4 expects, not a defect here.
- *
- * Invoked as `pnpm circuits:samples [issuer]`, which runs
- * `tsx --conditions=tablemate-source scripts/check-samples.ts [issuer]`; a bare `--` is ignored.
+ * The gate that decides whether an issuer may claim a production registry leaf: for every user-supplied confirmation
+ * in the git-ignored `packages/circuits/samples/<issuer>/` it builds the witness, proves it with `groth16.fullProve`
+ * and verifies the proof against the built artefacts, against a registry assembled in memory that includes the issuer
+ * whatever its verification status. Only once every sample passes may the record carry
+ * `"verificationStatus": "verified"`, and this script never edits it: promotion is an explicit operator act that
+ * `pnpm circuits:registry` turns into a leaf.
+ * Privacy: samples are real personal confirmation emails, so nothing about a sample's content reaches stdout, a log or
+ * a document. A sample is named by its position and the first eight hex of its SHA-256, and a refusal prints a
+ * `CircuitInputError` code — and, for a stay field, that field's own slot name — never a header, a value, an offset or
+ * a parser's message.
+ * A real email whose stay fields sit above the provable body window fails with `field_not_found`: the signal AAP 0.2.4
+ * expects, not a defect here.
  */
 import { createHash } from 'node:crypto';
 import { access, readFile, readdir } from 'node:fs/promises';
@@ -41,19 +36,19 @@ import type { TemplateParams } from '../src/registry/template-hash.ts';
 import { PKG_DIR, loadCities, loadIssuers } from './build-registry.ts';
 import type { LoadedIssuer } from './build-registry.ts';
 
-/** The samples' directory, repository-relative: git-ignored and user-supplied, so a message names a
- * directory and never a file inside it. */
+/** The samples' directory, repository-relative: git-ignored and user-supplied, so a message names a directory. */
 const SAMPLES_DIR = 'packages/circuits/samples';
 
 /** The command line, printed on stderr whenever the arguments do not match it. */
 const USAGE = 'usage: pnpm circuits:samples [issuer]';
 
-/** The salt a booking reference is hashed with. Any field element works: this check proves to nobody,
- * so the nullifier it computes is discarded and never published. */
+/**
+ * The salt a booking reference is hashed with. Any field element works: this check proves to nobody, so the nullifier
+ * it computes is discarded and never published.
+ */
 const SAMPLE_CHECK_SALT = '1';
 
-/** The artefacts `pnpm circuits:build` writes into the git-ignored `build/`: the witness generator,
- * the proving key and the verification key. */
+/** The artefacts `pnpm circuits:build` writes into the git-ignored `build/`. */
 const WASM = 'tablemate_itinerary.wasm';
 const ZKEY = 'tablemate_itinerary.zkey';
 const VKEY = 'verification_key.json';
@@ -74,15 +69,14 @@ const DIGEST_PREFIX = 8;
 const FIELD_INDEXES = [0, 1, 2, 3] as const;
 
 /**
- * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
- * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
- * hold the sample check open.
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway (one second): a
+ * consumer that never reads — a stopped `tee`, a detached log collector — must not hold the sample check open.
  */
 const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
 /**
- * The one part of snarkjs 0.7.6 this script uses, narrowed here because the package ships no
- * declarations. `verify` takes the parsed verification key object rather than the path to it.
+ * The one part of snarkjs 0.7.6 this script uses, narrowed here because the package ships no declarations: `verify`
+ * takes the parsed verification key object rather than the path to it.
  */
 interface Snarkjs {
   readonly groth16: {
@@ -147,10 +141,10 @@ async function checkSamples(stem: string | undefined): Promise<number> {
 }
 
 /**
- * Selects the work: the named issuer, or every `samples/` subdirectory that holds an `.eml` file.
- * A selected stem must match a `config/issuers/<stem>.json` record carrying a template and a key with
- * a modulus, and it must hold a sample, because an issuer whose samples never arrived has nothing to
- * check (AAP 0.12.3). Every refusal names a configuration path or a samples directory, never a file.
+ * Selects the work: the named issuer, or every `samples/` subdirectory that holds an `.eml` file. A selected stem must
+ * match a `config/issuers/<stem>.json` record carrying a template and a key with a modulus, and it must hold a sample,
+ * because an issuer whose samples never arrived has nothing to check (AAP 0.12.3). Every refusal names a configuration
+ * path or a samples directory, never a file.
  */
 async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
   const stems = stem === undefined ? await sampleStems() : [stem];
@@ -173,8 +167,8 @@ async function selectJobs(stem: string | undefined): Promise<SampleJob[]> {
           `charsets, date format) and then run fetch-dkim-key -- ${name} --write`,
       );
     }
-    // A key still holding the empty modulus placeholder records no leaf either, so it is no more
-    // usable than a missing key and would fail inside the registry build.
+    // A key still holding the empty modulus placeholder records no leaf either, so it is no more usable than a
+    // missing key and would fail inside the registry build.
     if (!record.config.keys.some((key) => key.modulusBase64.trim() !== '')) {
       throw new Error(
         `${record.path}: records no DKIM key with a modulus; run fetch-dkim-key -- ${name} --write`,
@@ -212,11 +206,8 @@ async function checkIssuer(job: SampleJob): Promise<{ passed: number; failed: nu
 }
 
 /**
- * Runs one sample: its label, then one line per stage. Every field is checked before anything is
- * proved, so a sample the circuit could not accept never costs a proving run (AAP 0.5.5).
- *
- * @param number - The sample's position among its issuer's samples, which is how it is named.
- * @param name - The sample's file name, used to read it and never printed.
+ * Runs one sample: its label, then one line per stage. Every field is checked before anything is proved, so a sample
+ * the circuit could not accept never costs a proving run (AAP 0.5.5).
  */
 async function checkSample(job: SampleJob, number: number, name: string): Promise<boolean> {
   const bytes = await readFile(path.join(job.directory, name));
@@ -244,13 +235,12 @@ async function checkSample(job: SampleJob, number: number, name: string): Promis
 }
 
 /**
- * Locates the four stay fields and parses both dates, printing one line per field and checking all
- * four so a sample reports them together.
+ * Locates the four stay fields and parses both dates, printing one line per field and checking all four so a sample
+ * reports them together.
  *
- * The circuit reads the fields from the decoded body window alone: an anchor the window carries twice
- * is `field_ambiguous`, one it never carries is `field_not_found`. Both dates are read with the
- * template's one layout, so a value the circuit could not parse is refused here rather than inside
- * witness generation.
+ * The circuit reads the fields from the decoded body window alone: an anchor the window carries twice is
+ * `field_ambiguous`, one it never carries is `field_not_found`. Both dates are read with the template's one layout, so
+ * a value the circuit could not parse is refused here rather than inside witness generation.
  */
 function checkFields(decoded: Uint8Array, params: TemplateParams): boolean {
   let complete = true;
@@ -273,11 +263,8 @@ function checkFields(decoded: Uint8Array, params: TemplateParams): boolean {
 /**
  * Proves the witness and verifies the proof against the built artefacts.
  *
- * The public signals are checked before the proof is verified: the circuit's output list fixes their
- * number and their order, so a proof carrying other signals is not this proof whatever the verifier
- * would say about it.
- *
- * @param issuerId - The id the record names, which the `issuerId` signal must carry.
+ * The public signals are checked before the proof is verified: the circuit's output list fixes their number and their
+ * order, so a proof carrying other signals is not this proof whatever the verifier would say about it.
  */
 async function proveInputs(inputs: CircuitInputs, issuerId: number): Promise<boolean> {
   const prover = createRequire(import.meta.url)('snarkjs') as Snarkjs;
@@ -285,8 +272,8 @@ async function proveInputs(inputs: CircuitInputs, issuerId: number): Promise<boo
   try {
     proved = await prover.groth16.fullProve(inputs, artefact(WASM), artefact(ZKEY));
   } catch (error) {
-    // A circom assertion names a template and a line and carries no email data, and snarkjs prints
-    // that detail itself: this line only records that producing the proof failed.
+    // A circom assertion names a template and a line and carries no email data: this line only records that
+    // producing the proof failed.
     process.stdout.write(`  witness: FAIL ${errorName(error)}\n`);
     return false;
   }
@@ -300,8 +287,7 @@ async function proveInputs(inputs: CircuitInputs, issuerId: number): Promise<boo
     return false;
   }
   process.stdout.write('  proof: PASS\n');
-  // Parsed before the verifier is called, so a corrupted artefact reports itself rather than a failed
-  // proof.
+  // Parsed before the verifier is called, so a corrupted artefact reports itself rather than a failed proof.
   const verificationKey = await readVerificationKey();
   try {
     const verified = await prover.groth16.verify(verificationKey, signals, proved.proof);
@@ -314,8 +300,8 @@ async function proveInputs(inputs: CircuitInputs, issuerId: number): Promise<boo
 }
 
 /**
- * Runs one synchronous stage and prints its line: `  <name>: PASS`, or `  <name>: FAIL <code>` when
- * the input generator refused the sample. Anything else `run` raises is a defect and propagates.
+ * Runs one synchronous stage and prints its line: `  <name>: PASS`, or `  <name>: FAIL <code>` when the input generator
+ * refused the sample. Anything else `run` raises is a defect and propagates.
  */
 function stage<T>(name: string, run: () => T): StageResult<T> {
   try {
@@ -363,8 +349,8 @@ async function sampleStems(): Promise<string[]> {
   return stems.sort();
 }
 
-/** The `.eml` file names in one directory, sorted; empty for a directory that does not exist, which
- * is the ordinary state of a checkout awaiting the user's confirmation emails (AAP 0.12.3). */
+/** The `.eml` file names in one directory, sorted; empty for a directory that does not exist, which is the ordinary
+ * state of a checkout awaiting the user's confirmation emails (AAP 0.12.3). */
 async function sampleFiles(directory: string): Promise<string[]> {
   const names = await readdir(directory).catch(() => []);
   return names.filter((name) => name.toLowerCase().endsWith('.eml')).sort();
@@ -418,8 +404,8 @@ function reasonOf(error: unknown): string {
 }
 
 /**
- * Reads the command line: at most one positional issuer stem, with the bare `--` a package script
- * separates its arguments with ignored (AAP 0.8.1).
+ * Reads the command line: at most one positional issuer stem, with the bare `--` a package script separates its
+ * arguments with ignored.
  */
 function parseArgs(argv: readonly string[]): string | undefined {
   const args = argv.filter((argument) => argument !== '--');
@@ -434,17 +420,12 @@ function parseArgs(argv: readonly string[]): string | undefined {
 }
 
 /**
- * End the process with `code` once every byte already written to stdout and stderr has reached its
- * consumer.
+ * Ends the process with `code` once every byte already written to stdout and stderr has reached its consumer.
  *
- * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
- * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
- * script exists to print. An empty write queued behind the real ones calls back once they have been
- * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
- * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
- * this script decided is what stands in either case.
- *
- * @param code - the status the explicit exit this replaces carried.
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued — under
+ * `| tee` or a CI log collector that is the last, machine-readable line this script exists to print. An empty write
+ * queued behind the real ones calls back once they have flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer
+ * that never drains.
  */
 function exitAfterFlush(code: number): void {
   process.exitCode = code;
@@ -481,8 +462,8 @@ function exitAfterFlush(code: number): void {
 }
 
 /**
- * Runs the command line. Every failure is reported as `check-samples: <message>` with exit code 1,
- * and no failure prints a stack trace or a byte of a sample.
+ * Runs the command line. Every failure is reported as `check-samples: <message>` with exit code 1, and no failure
+ * prints a stack trace or a byte of a sample.
  */
 async function main(): Promise<void> {
   let code = 1;
@@ -491,9 +472,8 @@ async function main(): Promise<void> {
   } catch (error) {
     process.stderr.write(`check-samples: ${reasonOf(error)}\n`);
   }
-  // snarkjs and ffjavascript keep worker threads alive, so node is ended explicitly: setting
-  // process.exitCode alone would leave the process hanging. Draining first is what keeps the last
-  // line of the run from being discarded with the process when stdout is a pipe.
+  // snarkjs and ffjavascript keep worker threads alive, so node is ended explicitly: setting process.exitCode alone
+  // would leave the process hanging, and draining first keeps the last line from being discarded when stdout is a pipe.
   exitAfterFlush(code);
 }
 

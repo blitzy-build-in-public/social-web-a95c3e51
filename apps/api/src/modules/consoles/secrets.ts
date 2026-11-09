@@ -1,19 +1,19 @@
 /**
- * Console-secret issue and lookup (AAP 0.5.1, 0.3.2, 0.11.2): the one place a venue's or a lodging's console secret
- * is minted, given the shape a row stores, and found again by its header.
+ * Console-secret issue and lookup: the one place a venue's or a lodging's console secret is minted, given the shape
+ * a row stores, and found again by its header.
  *
- * AAP 0.3.2 fixes that shape: a secret is 32 random bytes shown once at issue, and what a row keeps is a SHA-256
- * *lookup* hash beside an AES-256-GCM ciphertext. The hash is what `X-Venue-Secret` and `X-Lodging-Secret` are
- * matched on, so a leaked table yields no usable secret; the ciphertext exists because the code generator needs the
- * secret itself back, since `totp.ts` derives its HKDF key from the UTF-8 text of this exact string. The format is
- * shared, never restated: `packages/db/seed/secrets-out.ts` writes seeded consoles through the same helpers.
+ * The shape is fixed: a secret is 32 random bytes shown once at issue, and what a row keeps is a SHA-256 *lookup*
+ * hash beside an AES-256-GCM ciphertext. The hash is what `X-Venue-Secret` and `X-Lodging-Secret` are matched on, so
+ * a leaked table yields no usable secret; the ciphertext exists because the code generator needs the secret itself
+ * back, since `totp.ts` derives its HKDF key from the UTF-8 text of this exact string. The format is shared, never
+ * restated: `packages/db/seed/secrets-out.ts` writes seeded consoles through the same helpers.
  *
  * A lookup answers `null` for everything that is not a live secret: a header that is absent, duplicated, empty or
  * over {@link MAX_HEADER_CHARACTERS}, an unknown hash, a row never issued a secret, and a row whose stored secret is
- * not the presented one ({@link timingSafeEqualString}, AAP 0.11.2). Failing to *decrypt* a stored value is not one
- * of those cases: the process cannot open its own row, which is a key misconfiguration, so the error propagates to
- * `500` instead of being misread as a wrong secret. Nothing here logs (AAP 0.11.1): header, secret, hash and
- * ciphertext stay out of every log line, no stored form reaches a caller, and nothing reads time.
+ * not the presented one ({@link timingSafeEqualString}). Failing to *decrypt* a stored value is not one of those
+ * cases: the process cannot open its own row, which is a key misconfiguration, so the error propagates to `500`
+ * instead of being misread as a wrong secret. Nothing here logs: header, secret, hash and ciphertext stay out of
+ * every log line, no stored form reaches a caller, and nothing reads time.
  */
 
 import {
@@ -70,13 +70,7 @@ export function issueSecret(services: Pick<AppServices, 'keyring'>): ConsoleSecr
   };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Lookup by header
-// ---------------------------------------------------------------------------------------------
-
-/** The four columns both lookups select, and all they ever load (AAP 0.5.2). `secretCiphertext` is
- * nullable because a row exists before a secret is issued to it, and such a row can never produce a
- * valid code, so a lookup answers `null` rather than failing. */
+/** nullable because a row exists before a secret is issued to it, and such a row can never produce a */
 interface ConsoleSecretRow {
   readonly id: string;
   readonly cityId: string;
@@ -179,13 +173,7 @@ export async function findLodgingBySecret(
       };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The secret behind a check-in code
-// ---------------------------------------------------------------------------------------------
-
-/** The one read {@link venueSecretFor} performs: a venue by id. Stated as a capability so both the
- * guarded client and an interactive transaction client satisfy it, which is what lets
- * `meetups/check-in.ts` pass the transaction it is already inside. */
+/** guarded client and an interactive transaction client satisfy it, which is what lets */
 interface VenueSecretReader {
   findUnique(args: {
     where: { id: string };

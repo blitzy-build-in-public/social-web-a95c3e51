@@ -1,5 +1,4 @@
-/** The age gate at `/age-gate` (AAP 0.5.8, 0.7.1 row 1, 0.12.2): the 18+ confirmation and the terms
- * a traveler accepts before any feature route will answer them. */
+/** The age gate at `/age-gate`: the 18+ confirmation and the terms a traveler accepts before any feature route answers them. */
 import { useMutation } from '@tanstack/react-query';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';

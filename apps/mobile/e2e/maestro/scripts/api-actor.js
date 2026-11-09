@@ -2,21 +2,20 @@
 /*
  * The API side of the native criterion 1 walks (AAP 0.8.1, 0.11.2): one `runScript` step per action.
  * `criterion1-initiator.yaml` and `criterion1-recipient.yaml` each play one actor on the device and drive
- * the counterpart — and, where only an operator can act, the operator — through the API.
- *
- * Actions: signin, clear-pair, fresh-day, propose, accept, check-in, advance-to, settle, resolve-dispute,
- * assert-settled. The last carries criterion 1's pass checks: both holds released after settlement, a
- * completion rate of 100% for one meetup, and the pair's one completion read back through the disclosure
- * tier the API computes (tier 2 after one completed meetup, tier 3 after two).
+ * the counterpart — and, where only an operator can act, the operator — through the API. Actions: signin,
+ * clear-pair, fresh-day, propose, accept, check-in, advance-to, settle, resolve-dispute, assert-settled.
+ * The last carries criterion 1's pass checks: both holds released after settlement, a completion rate of
+ * 100% for one meetup, and the pair's one completion read back through the disclosure tier the API
+ * computes (tier 2 after one completed meetup, tier 3 after two).
  *
  * Flow env: ACTION, ROLE (`a`, `b` or `operator`), API_URL, TEST_CONTROL_TOKEN (every step that moves the
  * clock or settles) and OFFSET_MIN (minutes from the start, for advance-to), each read as
- * `typeof X !== 'undefined'` because a flow's `env:` values arrive as globals rather than as
- * declarations. `output` read: `e2e` (from `.local/e2e/fixture-proofs.js`, written by `prepare-maestro`
- * in apps/mobile/e2e/playwright/support/api-actor.ts), `token`, `code`, `sessions`, `meetupId`,
- * `meetupRole`, `day`, `pairCompletedBefore`. `output` set: `sessions[ROLE]`, `meetupId`, `meetupRole`,
- * `day`, `pairCompletedBefore` and `e2e.stay.cursor`; `token` is deleted once exchanged. No message here
- * carries a token, the venue secret, a check-in code or a coordinate.
+ * `typeof X !== 'undefined'` because a flow's `env:` values arrive as globals rather than as declarations.
+ * `output` read: `e2e` (from `.local/e2e/fixture-proofs.js`, written by `prepare-maestro` in
+ * apps/mobile/e2e/playwright/support/api-actor.ts), `token`, `code`, `sessions`, `meetupId`, `meetupRole`,
+ * `day`, `pairCompletedBefore`. `output` set: `sessions[ROLE]`, `meetupId`, `meetupRole`, `day`,
+ * `pairCompletedBefore` and `e2e.stay.cursor`; `token` is deleted once exchanged. No message here carries a
+ * token, the venue secret, a check-in code or a coordinate.
  */
 (function () {
   'use strict';
@@ -95,9 +94,9 @@
     const suffix = hint ? ` — ${hint}` : '';
     throw new Error(`${method} /v1${path} failed: HTTP ${res.status} ${code(res)}${suffix}`);
   }
-  /* One authenticated request, refreshing an expired access token once: a walk jumps the test clock far
-   * past the token's 15 minutes, and the API rotates refresh tokens and revokes the whole session when
-   * one is presented twice, so the rotated pair is stored before the retry. */
+  /* One authenticated request, refreshing an expired access token once: a walk jumps the test clock far past
+   * the token's 15 minutes, and the API rotates refresh tokens and revokes the whole session when one is
+   * presented twice, so the rotated pair is stored before the retry. */
   function call(actorRole, method, path, body) {
     let session = output.sessions[actorRole];
     if (!session) {
@@ -351,9 +350,9 @@
       if (day > addDays(stay.overlapEnd, -1)) {
         throw new Error('stay overlap exhausted — reset the stack');
       }
-      /* 09:00 UTC, with the meetup at noon UTC on that date: noon UTC falls on one local date in every
-       * launch city (UTC−6 … +8), so the day the dashboard ranges over is that date whichever zone the
-       * API applies, each walk gets a day of its own, and no `Intl` zone data is needed. */
+      /* 09:00 UTC, with the meetup at noon UTC on that date: noon UTC falls on one local date in every launch
+       * city (UTC−6 … +8), so the day the dashboard ranges over is that date whichever zone the API applies,
+       * each walk gets a day of its own, and no `Intl` zone data is needed. */
       setClock(Date.parse(`${day}T09:00:00Z`));
       /* Written back in the shape `prepare-maestro` left, so a cursor record keeps its fields. */
       if (cursor && typeof cursor === 'object') cursor.lastLocalDate = day;

@@ -1,18 +1,16 @@
 /**
- * Tablemate Expo app configuration. The Expo CLI evaluates this file for `expo start`, `expo config`,
- * `expo prebuild`, `expo export` and `eas build`, and it validates the build-time environment there, so a
- * build fails with the name of the variable it needs instead of producing a bundle that cannot reach the API.
+ * Tablemate Expo app configuration. The Expo CLI evaluates this file for `expo start`, `expo config`, `expo prebuild`,
+ * `expo export` and `eas build`, and it validates the build-time environment there, so a build fails with the name of
+ * the variable it needs instead of producing a bundle that cannot reach the API.
  *
  * Required: `EXPO_PUBLIC_API_URL` and `EXPO_PUBLIC_WS_URL`. Optional: `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY`,
  * `EXPO_PUBLIC_ZK_BENCH` and `EAS_PROJECT_ID`, which is the one value that reaches the config object.
- *
- * The file stays self-contained on purpose: the config loader transpiles this one file, so no workspace
- * package and no schema library is in reach of it. Validated values are deliberately not copied into `extra`:
- * `babel-preset-expo` inlines `process.env.EXPO_PUBLIC_*` into the bundle, and the client reads them there.
+ * The file stays self-contained on purpose: the config loader transpiles this one file, so no workspace package and no
+ * schema library is in reach of it. Validated values are deliberately not copied into `extra`: `babel-preset-expo`
+ * inlines `process.env.EXPO_PUBLIC_*` into the bundle, and the client reads them there.
  */
 
 import type { ConfigContext, ExpoConfig } from 'expo/config';
-
 /**
  * Treating unset, empty and whitespace-only values alike: compose and EAS both pass `""` for a variable they
  * leave unset, and an empty string must not reach a check as a value.
@@ -59,7 +57,6 @@ function assertOrigin(
 
 /** Stripe publishable keys are the only Stripe material the app ever holds. */
 const STRIPE_PUBLISHABLE_KEY = /^pk_(test|live)_[A-Za-z0-9_]+$/;
-
 /**
  * Optional. The default local stack runs `STRIPE_MODE=mock`, where no card can be confirmed and the card
  * screens say that payments are not configured; with Stripe in test mode the key is required for a hold to
@@ -140,7 +137,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // verbatim from `apps/mobile/public/favicon.ico` into the export's root.
     ios: {
       bundleIdentifier: 'com.tablemate.app',
-      // Phones only: every screen is a single column.
       supportsTablet: false,
       infoPlist: {
         // "Open in" from Mail or Files hands the .eml to the proof import screen.
@@ -156,14 +152,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         // of handing over the original. That copy is app-owned, and the .eml intake
         // deletes it after every attempt, on success, failure and cancel alike.
         LSSupportsOpeningDocumentsInPlace: false,
-        // Simulator and bench builds reach the local API and the artefacts service over http.
         NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
       },
     },
     android: {
       package: 'com.tablemate.app',
-      // Viewing a .eml in a file manager, mail client or download list opens the import
-      // screen; sharing one is handled by expo-share-intent below.
       intentFilters: [
         {
           action: 'VIEW',
@@ -187,8 +180,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // a route is served, not how the graph behind it is built: the web graph splits by route, which is
     // the `extra.router` note below.
     web: { bundler: 'metro', output: 'single' },
-    // Route types are not generated for this app; the API client is typed from the
-    // shared contract schemas instead.
     experiments: { typedRoutes: false },
     plugins: [
       'expo-router',
@@ -204,8 +195,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
             compileSdkVersion: 35,
             targetSdkVersion: 34,
             buildToolsVersion: '35.0.0',
-            // A release bench build downloads the proving artefacts from the local
-            // artefacts service over http; debug builds already allow cleartext.
             usesCleartextTraffic: zkBench,
           },
         },
@@ -239,11 +228,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         },
       ],
       'expo-notifications',
-      // `cameraPermission: false` is deliberately not set: expo-image-picker reads it
-      // as "this app never uses the camera" and then blocks android.permission.CAMERA
-      // in the manifest (tools:node="remove") and deletes NSCameraUsageDescription on
-      // iOS, which would leave the venue QR scan — the only camera use the app has —
-      // without a permission. The camera strings come from the expo-camera entry above.
       [
         'expo-image-picker',
         {
@@ -252,9 +236,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           microphonePermission: false,
         },
       ],
-      // PaymentSheet in setup mode only: the app stores a card with Stripe and the API
-      // places every hold. No Apple Pay or Google Pay is configured, hence the empty
-      // merchant identifier list.
       ['@stripe/stripe-react-native', { merchantIdentifier: [], enableGooglePay: false }],
     ],
     // Only the EAS project id and the router's split setting belong here, and no secret does: the app

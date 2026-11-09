@@ -3,9 +3,7 @@ import CryptoKit
 import Foundation
 
 /// The path handed over by the JS layer does not resolve to an existing file.
-///
-/// Its reason is fixed text: it never carries the path, which names the app's
-/// document directory, and never any part of the file.
+/// Its reason is fixed text: it never carries the path, which names the app's document directory, and never any part of the file.
 final class FileMissingException: Exception {
   override var code: String {
     "ERR_FILE_MISSING"
@@ -27,13 +25,8 @@ final class HashFailedException: Exception {
   }
 }
 
-/// Incremental SHA-256 over a file on disk, used to check a downloaded proving key
-/// against the hash in `artifacts.manifest.json`.
-///
-/// A proving key runs from hundreds of megabytes to gigabytes, so the file is never
-/// held in memory and never memory-mapped: the digest is fed one chunk at a time and
-/// peak memory stays at about one chunk. `hex` is synchronous and keeps no state
-/// between calls; the caller owns the thread it runs on.
+/// Incremental SHA-256 over a file on disk, used to check a downloaded proving key against the hash in `artifacts.manifest.json`.
+/// A proving key runs from hundreds of megabytes to gigabytes, so the file is never held in memory and never memory-mapped: the digest is fed one chunk at a time and peak memory stays at about one chunk; `hex` is synchronous and keeps no state between calls.
 enum Sha256File {
   private static let chunkSize = 1 << 20
 
@@ -59,8 +52,7 @@ enum Sha256File {
 
     var hasher = SHA256()
     while true {
-      // Each chunk waits in an autorelease pool, so the Data a read returns is
-      // released before the next read, whatever the size of the file.
+      // Each chunk waits in an autorelease pool, so the Data a read returns is released before the next read, whatever the size of the file.
       let data: Data?
       do {
         data = try autoreleasepool { try handle.read(upToCount: Sha256File.chunkSize) }

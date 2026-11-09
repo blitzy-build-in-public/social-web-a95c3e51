@@ -1,7 +1,4 @@
-/**
- * One lodging's detail page: its identity and witnessed-meetup standing, the travelers staying
- * there and the door to claiming a stay (AAP 0.5.8, AAP 0.5.4, criterion 15).
- */
+/** One lodging's detail page: its identity and witnessed-meetup standing, the travelers staying there and the door to claiming a stay. */
 import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';

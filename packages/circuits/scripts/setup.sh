@@ -8,23 +8,21 @@
 #   build/verification_key.json      the only circuit artefact the api image mounts
 #   build/artifacts.manifest.json    sizes and SHA-256 of the three artefacts, the clients' check
 #
-# In order: `groth16 setup` against the phase 1 file powersOfTau28_hez_final_22.ptau, two contributions, a
-# public beacon, a full `zkey verify` against the R1CS, and the verification-key export. The transcript, the
-# contribution hashes and the final key hashes go to docs/zk-proofs.md. A development ceremony for this
-# environment only: the contributions are made by this script alone and the beacon is public.
+# In order: `groth16 setup` against the phase 1 file powersOfTau28_hez_final_22.ptau, two contributions, a public
+# beacon, a full `zkey verify` against the R1CS, and the verification-key export. The transcript, the contribution
+# hashes and the final key hashes go to docs/zk-proofs.md. A development ceremony for this environment only: the
+# contributions are made by this script alone and the beacon is public.
 #
-# Invoked as `bash scripts/setup.sh` through the `circuit:setup` package script and root `circuits:setup`;
-# root `circuits:build` runs compile.sh first, which this script does not repeat.
+# Invoked as `bash scripts/setup.sh` through the `circuit:setup` package script and root `circuits:setup`; root
+# `circuits:build` runs compile.sh first, which this script does not repeat.
 #
-# Environment knobs, all optional; `bash scripts/setup.sh --help` prints the same list. PTAU_PATH names the
-# phase 1 file (default build/ptau/powersOfTau28_hez_final_22.ptau) and an existing file at that path is used
-# as it stands and skips the download, which is the fast path for a fresh checkout: point it at a verified
-# copy rather than fetch 4.8 GB again. BEACON_HASH is the beacon's entropy: a supplied value reproduces an
-# earlier ceremony and must be 64 hex characters, and otherwise 32 fresh random bytes are used and recorded,
-# a beacon being public by definition. CIRCUITS_NODE_HEAP_MB is node's heap for the ceremony, which needs well
-# over node's default (16384 MB). TMPDIR is where the transcript, the step-output and the docs-block temp
-# files are created (default /tmp); the temp write_doc_block renames into place is created next to the
-# document instead, so its rename is atomic whatever TMPDIR is.
+# Environment knobs, all optional; `--help` prints the same list. PTAU_PATH names the phase 1 file (default
+# build/ptau/powersOfTau28_hez_final_22.ptau), and an existing file at that path is used as it stands and skips the
+# download — point it at a verified copy rather than fetch 4.8 GB again. BEACON_HASH is the beacon's entropy: a supplied
+# value reproduces an earlier ceremony and must be 64 hex characters, and otherwise 32 fresh random bytes are used and
+# recorded, a beacon being public by definition. CIRCUITS_NODE_HEAP_MB is node's heap for the ceremony, which needs well
+# over node's default (16384 MB). TMPDIR is where the transcript, the step-output and the docs-block temp files are
+# created (default /tmp); the temp write_doc_block renames into place is created next to the document instead.
 
 set -euo pipefail
 
@@ -41,16 +39,14 @@ VKEY="$BUILD_DIR/verification_key.json"
 MANIFEST="$BUILD_DIR/artifacts.manifest.json"
 DOC="$REPO_ROOT/docs/zk-proofs.md"
 
-# The phase 1 file, its published digest and its byte size. The digest is the
-# powersOfTau28_hez_final_22.ptau row of the snarkjs README's "Prepare phase 2" ptau table, which the
-# v0.7.5 tag and current master list identically, and BLAKE2b-512 is the algorithm that table
-# publishes. The size check reads no bytes and catches a truncated download before the digest pass,
-# which alone takes minutes on 4.8 GB.
+# The phase 1 file, its published digest and its byte size. The digest is the powersOfTau28_hez_final_22.ptau row of
+# the snarkjs README's "Prepare phase 2" ptau table, which the v0.7.5 tag and current master list identically, and
+# BLAKE2b-512 is the algorithm that table publishes. The size check reads no bytes and catches a truncated download
+# before the digest pass, which alone takes minutes on 4.8 GB.
 #
-# The primary URL is the one that answers in the environments this ships to; the fallback is the
-# googleapis URL the pinned snarkjs README's own table names, which answers 403 there, so it is tried
-# only once the primary has failed. Both are overridable (PTAU_URL, PTAU_MIRROR), and neither is
-# contacted when PTAU_PATH already names an existing file.
+# The primary URL is the one that answers in the environments this ships to; the fallback is the googleapis URL the
+# pinned snarkjs README's own table names, which answers 403 there, so it is tried only once the primary has failed.
+# Both are overridable (PTAU_URL, PTAU_MIRROR), and neither is contacted when PTAU_PATH names an existing file.
 PTAU="${PTAU_PATH:-$BUILD_DIR/ptau/powersOfTau28_hez_final_22.ptau}"
 PTAU_B2SUM=0d64f63dba1a6f11139df765cb690da69d9b2f469a1ddd0de5e4aa628abb28f787f04c6a5fb84a235ec5ea7f41d0548746653ecab0559add658a83502d1cb21b
 PTAU_SIZE=4831921304
@@ -110,26 +106,21 @@ done
 
 # The build directory lock
 
-# build/ is shared with compile.sh, and every writing step here uses a fixed name inside it (the
-# phase 1 file, the intermediate keys, the proving key, the verification key and the manifest), so
-# one run at a time owns it: two runs interleaving those writes can leave a proving key, a
-# verification key or a manifest that corresponds to no single ceremony. The lock is taken before the
-# first of those writes and held for the whole run.
+# build/ is shared with compile.sh, and every writing step here uses a fixed name inside it (the phase 1 file, the
+# intermediate keys, the proving key, the verification key and the manifest), so one run at a time owns it: two runs
+# interleaving those writes can leave a proving key, a verification key or a manifest that corresponds to no single
+# ceremony. The lock is taken before the first of those writes and held for the whole run.
 #
-# flock is preferred where it exists, because the kernel drops the lock when the process ends, a
-# killed one included. macOS ships no flock, so the fallback is an atomic mkdir, which does outlive a
-# killed run and therefore names itself and the remedy in its message. `-n` gives up at once instead
-# of queueing: a second run in one checkout is a mistake to report, not a run to hold for the tens of
-# minutes a ceremony takes.
+# flock is preferred where it exists, because the kernel drops the lock when the process ends, a killed one included.
+# macOS ships no flock, so the fallback is an atomic mkdir. `-n` gives up at once instead of queueing: a second run in
+# one checkout is a mistake to report, not a run to hold for the tens of minutes a ceremony takes.
 LOCK_DIR="$BUILD_DIR/.lock.d"
 LOCK_HELD=""
 mkdir -p "$BUILD_DIR"
 if command -v flock >/dev/null 2>&1; then
-    # The lock is the build directory itself, opened read-only: a read-only open has neither
-    # O_CREAT nor O_TRUNC, so no file is created for a local writer to plant a symlink at, and a
-    # fixed lock-file name can no longer be followed and truncated as `9>"$BUILD_DIR/.lock"` was.
-    # The directory both runs agree on already exists, so they lock the same inode without
-    # creating anything.
+    # The lock is the build directory itself, opened read-only: a read-only open has neither O_CREAT nor O_TRUNC, so no
+    # file is created for a local writer to plant a symlink at, and a fixed lock-file name can no longer be followed and
+    # truncated as `9>"$BUILD_DIR/.lock"` was.
     exec 9<"$BUILD_DIR"
     flock -n 9 ||
         die "another compile or ceremony holds the build directory lock $BUILD_DIR; wait for it to finish and run again"
@@ -149,11 +140,10 @@ release_lock() {
     fi
 }
 
-# Registered at acquisition, so a failure before the trap below is covered too; that trap releases
-# the lock by calling cleanup, which calls release_lock in turn. The signal handlers release the lock
-# and then end the run, because a trapped signal no longer terminates the shell by default: a
-# `kill`ed ceremony must still stop it, which is how it behaved before the lock existed. 130 and 143
-# are the shell's status for SIGINT and SIGTERM.
+# Registered at acquisition, so a failure before the trap below is covered too; that trap releases the lock by calling
+# cleanup, which calls release_lock in turn. The signal handlers release the lock and then end the run, because a trapped
+# signal no longer terminates the shell by default: a `kill`ed ceremony must still stop it. 130 and 143 are the shell's
+# status for SIGINT and SIGTERM.
 trap release_lock EXIT
 trap 'release_lock; exit 130' INT
 trap 'release_lock; exit 143' TERM
@@ -177,25 +167,22 @@ done
 
 # Phase 1 — the compiled circuit and the powers-of-tau file
 
-# CIRCUITS_NODE_HEAP_MB is the heap node gets for the whole ceremony, exported as NODE_OPTIONS
-# before the first step. It comes from the environment, so a value it cannot use is rejected here,
-# before the phase 1 file is verified, before any download and before any ceremony step: node refuses
-# such a value at its next invocation itself, and there the complaint is about that invocation rather
-# than about the value that caused it. Only a plain decimal count of megabytes with no leading zero is
-# accepted, written as the rejections that leave exactly it: a glob such as [1-9][0-9]* would also
-# match "16G", because its trailing * means any characters, and a leading zero is the octal spelling
-# of a number.
+# CIRCUITS_NODE_HEAP_MB is the heap node gets for the whole ceremony, exported as NODE_OPTIONS before the first step.
+# It comes from the environment, so a value it cannot use is rejected here, before the phase 1 file is verified, before
+# any download and before any ceremony step: node refuses such a value at its next invocation itself, and there the
+# complaint is about that invocation rather than the value that caused it. Only a plain decimal count of megabytes with
+# no leading zero is accepted: a glob such as [1-9][0-9]* would also match "16G", because its trailing * means any
+# characters, and a leading zero is the octal spelling of a number.
 CIRCUITS_NODE_HEAP_MB="${CIRCUITS_NODE_HEAP_MB:-16384}"
 case "$CIRCUITS_NODE_HEAP_MB" in
     ''|0*|*[!0-9]*) die "CIRCUITS_NODE_HEAP_MB must be a positive integer number of megabytes, without a sign and without a leading zero (for example 16384); got: '$CIRCUITS_NODE_HEAP_MB'" ;;
 esac
 
-# A supplied beacon stands in the transcript as a full-strength part of the ceremony, and snarkjs
-# refuses a malformed hash without failing its step, so the loss would surface at the verify gate
-# three retries later and be read as a key that does not match the circuit. The form is therefore
-# checked here, before any artefact, download or ceremony step: hex only, and the 64 characters (32
-# bytes) this script generates for a beacon of its own. Every run of this environment is a
-# development ceremony, so the width is a record-keeping rule, not a strength policy.
+# A supplied beacon stands in the transcript as a full-strength part of the ceremony, and snarkjs refuses a malformed
+# hash without failing its step, so the loss would surface at the verify gate three retries later and be read as a key
+# that does not match the circuit. The form is therefore checked here, before any artefact, download or ceremony step:
+# hex only, and the 64 characters (32 bytes) this script generates for a beacon of its own. Every run of this
+# environment is a development ceremony, so the width is a record-keeping rule, not a strength policy.
 if [ -n "$BEACON_HASH" ]; then
     case "$BEACON_HASH" in
         *[!0-9a-fA-F]*) die "BEACON_HASH must be 64 hex characters (32 bytes) and '$BEACON_HASH' is not hex" ;;
@@ -409,11 +396,10 @@ run_step 'phase 2: beacon' \
     "$SNARKJS" zkey beacon "$ARTIFACT"_0002.zkey "$ZKEY" "$BEACON_HASH" "$BEACON_EXP" -n="tablemate dev beacon"
 BEACON_CONTRIBUTION="$(extract_hash 'Contribution Hash')"
 
-# The `ZKey Ok!` line is the authoritative check of the whole ceremony. snarkjs's H-section test
-# draws a random linear combination and, on a circuit small enough to drive its worker threads into
-# degenerate sizes, reports a mismatch for a key that verifies, while a genuinely wrong key fails
-# every attempt. The check only reads the R1CS, the phase 1 file and the key, all unchanged between
-# attempts, so it is retried rather than trusted once.
+# The `ZKey Ok!` line is the authoritative check of the whole ceremony. snarkjs's H-section test draws a random linear
+# combination and, on a circuit small enough to drive its worker threads into degenerate sizes, reports a mismatch for a
+# key that verifies, while a genuinely wrong key fails every attempt. The check only reads the R1CS, the phase 1 file and
+# the key, all unchanged between attempts, so it is retried rather than trusted once.
 ZKEY_VERIFIED=""
 for attempt in 1 2 3; do
     if run_check 'phase 2: verifying the final key against the R1CS and the phase 1 file (slow)' \
@@ -463,11 +449,11 @@ manifest_entry() {
     printf '\n  }\n}\n'
 } > "$MANIFEST"
 
-# The manifest is a contract with ArtifactsManifest in packages/shared, so it is parsed rather than
-# trusted: an unknown key, an uppercase digest or a missing file entry stops the ceremony here. One
-# rejection handler ends the chain, so a missing import, a JSON syntax error and a schema mismatch all
-# report a single line and exit 1 instead of an unhandled rejection with a raw parser stack; a schema
-# error's message spans several lines by itself, so it is collapsed to keep that line single.
+# The manifest is a contract with ArtifactsManifest in packages/shared, so it is parsed rather than trusted: an unknown
+# key, an uppercase digest or a missing file entry stops the ceremony here. One rejection handler ends the chain, so a
+# missing import, a JSON syntax error and a schema mismatch all report a single line and exit 1 instead of an unhandled
+# rejection with a raw parser stack; a schema error's message spans several lines by itself, so it is collapsed to keep
+# that line single.
 manifest_check='Promise.all([import("@tablemate/shared"), import("node:fs")]).then(([shared, fs]) => {
   shared.ArtifactsManifest.parse(JSON.parse(fs.readFileSync(process.env.MANIFEST_PATH, "utf8")));
 }).catch((error) => {
@@ -491,12 +477,9 @@ write_doc_block() {
     begin="<!-- BEGIN $name -->"
     end="<!-- END $name -->"
     mkdir -p "$(dirname "$file")"
-    # The temp file stays in the document's own directory, so the rename below is atomic, but its
-    # name is generated rather than derived from this process's pid and the document's name: a
-    # symlink planted at a name a local writer can predict can then no longer make this script
-    # truncate a file outside the repository through the write below (CWE-377, CWE-59). mktemp
-    # creates it 0600, and the document it becomes ships with the 0644 mode of every other tracked
-    # file under docs/ while holding nothing but public hashes.
+    # The temp file stays in the document's own directory, so the rename below is atomic, but its name is generated
+    # rather than derived from this process's pid and the document's name: a symlink planted at a predictable name can
+    # then no longer make this script truncate a file outside the repository (CWE-377, CWE-59). mktemp creates it 0600.
     tmp="$(mktemp "${file}.tmp.XXXXXX")" || die "could not create a temporary file next to $file"
     chmod 0644 "$tmp"
     if [ -f "$file" ] && grep -qF "$begin" "$file" && grep -qF "$end" "$file"; then

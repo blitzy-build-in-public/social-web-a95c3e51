@@ -1,11 +1,9 @@
 /**
- * Integration tests for the three lodging-claim routes and the consequences a claim's outcomes
- * have: the encrypted booking fields, the `create_call_task` outbox row the workers turn into a
- * verification call, the `409 call_in_progress` refusal and the deletion.
+ * Integration tests for the three lodging-claim routes and the consequences a claim's outcomes have: the encrypted booking fields, the
+ * `create_call_task` outbox row the workers turn into a verification call, the `409 call_in_progress` refusal and the deletion.
  *
- * The 72-hour expiry itself does not run here: `claim-expire` lives in `apps/workers/src/jobs/` and
- * `@tablemate/api` cannot import it without a dependency cycle, so the last group writes the state
- * that job produces and asserts only what the API does with it.
+ * The 72-hour expiry itself does not run here: `claim-expire` lives in `apps/workers/src/jobs/` and `@tablemate/api` cannot import it without a
+ * dependency cycle, so the last group writes the state that job produces.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -142,9 +140,8 @@ function claimRow(claimId: string) {
 }
 
 /**
- * Give a claim the verification task `apps/workers` would have created for it, and one attempt in
- * the state the case is about. The task id is answered because the assertion after a deletion reads
- * the task by its own id: the deletion nulls the claim link a lookup would use.
+ * Give a claim the verification task `apps/workers` would have created for it, and one attempt in the state the case is about. The task id is answered
+ * because the assertion after a deletion reads the task by its own id: the deletion nulls the claim link a lookup would use.
  */
 async function seedVerification(
   claimId: string,
@@ -181,8 +178,8 @@ interface CreationRow {
 }
 
 /**
- * The refusal table, in the order `createClaim` checks its rules (AAP 0.5.4). Two rows state the
- * precedence that order implies: a request breaking two rules is answered with the earlier one.
+ * The refusal table, in the order `createClaim` checks its rules (AAP 0.5.4). Two rows state the precedence that order implies: a request breaking two
+ * rules is answered with the earlier one.
  */
 const creationRows = rows<CreationRow>([
   {
@@ -396,9 +393,8 @@ describe('reading and deleting a claim (AAP 0.5.4)', () => {
     readonly expectedTask: CallTaskStatus;
   }
   /**
-   * Deletion succeeds after each non-live outcome of AAP 0.5.3: an ended call leaves the task queued
-   * for its second attempt, a task in the operator queue and an unreachable one are cancelled with
-   * it, and a terminal refusal is left exactly as it stands.
+   * Deletion succeeds after each non-live outcome of AAP 0.5.3: an ended call leaves the task queued for its second attempt, a task in the operator queue
+   * and an unreachable one are cancelled with it, and a terminal refusal is left exactly as it stands.
    */
   const outcomeRows = rows<OutcomeRow>([
     {

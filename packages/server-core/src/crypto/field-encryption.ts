@@ -1,8 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-
 /** Shape of a field encryption key id, as set in `FIELD_ENCRYPTION_KEY_ID`. */
 export const FIELD_KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,16}$/;
-
 const ALGORITHM = 'aes-256-gcm';
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
@@ -11,16 +9,11 @@ const MIN_PAYLOAD_BYTES = IV_BYTES + TAG_BYTES; // IV and tag of an empty plaint
 const PAYLOAD_PATTERN = /^[A-Za-z0-9_-]+$/;
 const INSPECT_CUSTOM = Symbol.for('nodejs.util.inspect.custom'); // Read by `util.inspect`.
 const CONSTRUCTION_TOKEN = Symbol('tablemate.field-keyring'); // Module-private; see FieldKeyring.
-
-/**
- * Whether `base64` is the canonical RFC 4648 §4 encoding of one 32-byte AES-256-GCM key, which is
- * what `FIELD_ENCRYPTION_KEY` must hold.
- */
+/** Whether `base64` is the canonical RFC 4648 §4 encoding of one 32-byte AES-256-GCM key, which is what `FIELD_ENCRYPTION_KEY` must hold. */
 export function isValidFieldKey(base64: string): boolean {
   const decoded = Buffer.from(base64, 'base64');
   return decoded.length === KEY_BYTES && decoded.toString('base64') === base64;
 }
-
 /** Raised when a keyring cannot be built or holds no key for an id. */
 export class FieldKeyringError extends Error {
   constructor(message: string) {
@@ -28,10 +21,8 @@ export class FieldKeyringError extends Error {
     this.name = 'FieldKeyringError';
   }
 }
-
 /** Why a stored value could not be decrypted. */
 export type FieldDecryptionReason = 'unknown_key_id' | 'malformed' | 'authentication_failed';
-
 /** Raised when a stored value cannot be decrypted. */
 export class FieldDecryptionError extends Error {
   readonly reason: FieldDecryptionReason;
@@ -41,15 +32,12 @@ export class FieldDecryptionError extends Error {
     this.reason = reason;
   }
 }
-
 function malformed(detail: string): FieldDecryptionError {
   return new FieldDecryptionError('malformed', `encrypted field is malformed: ${detail}`);
 }
-
 function keyIdLabel(keyId: string): string {
   return /^[ -~]{1,32}$/.test(keyId) ? `key id '${keyId}'` : 'key id';
 }
-
 /** The AES-256-GCM keys a process may decrypt under, plus the id new values are written with. */
 export class FieldKeyring {
   readonly #keys: Map<string, Buffer>;
@@ -80,7 +68,6 @@ export class FieldKeyring {
     return this.toJSON();
   }
 }
-
 /** Builds a keyring from validated key material, decoding each key once. */
 export function createFieldKeyring(input: {
   currentKeyId: string;
@@ -105,11 +92,7 @@ export function createFieldKeyring(input: {
   }
   return new FieldKeyring(CONSTRUCTION_TOKEN, input.currentKeyId, keys);
 }
-
-/**
- * Builds the keyring the environment describes: the current key from `FIELD_ENCRYPTION_KEY_ID` and
- * `FIELD_ENCRYPTION_KEY`, plus `extraKeys` so values written under a retired id still decrypt.
- */
+/** Builds the keyring the environment describes: the current key from `FIELD_ENCRYPTION_KEY_ID` and `FIELD_ENCRYPTION_KEY`, plus `extraKeys` so values written under a retired id still decrypt. */
 export function keyringFromEnv(
   env: { FIELD_ENCRYPTION_KEY: string; FIELD_ENCRYPTION_KEY_ID: string },
   extraKeys?: Record<string, string>,
@@ -124,11 +107,7 @@ export function keyringFromEnv(
   keys[env.FIELD_ENCRYPTION_KEY_ID] = env.FIELD_ENCRYPTION_KEY;
   return createFieldKeyring({ currentKeyId: env.FIELD_ENCRYPTION_KEY_ID, keys });
 }
-
-/**
- * Encrypts one field with AES-256-GCM under the ring's current key and a fresh random IV, so equal
- * plaintexts always produce different values.
- */
+/** Encrypts one field with AES-256-GCM under the ring's current key and a fresh random IV, so equal plaintexts always produce different values. */
 export function encryptField(keyring: FieldKeyring, plaintext: string): string {
   const keyId = keyring.currentKeyId;
   const key = keyring.keyFor(keyId);
@@ -140,11 +119,7 @@ export function encryptField(keyring: FieldKeyring, plaintext: string): string {
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   return `${keyId}.${Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString('base64url')}`;
 }
-
-/**
- * Decrypts a value written by {@link encryptField}, using the key id the value itself carries so
- * that values written before a rotation stay readable.
- */
+/** Decrypts a value written by {@link encryptField}, using the key id the value itself carries so that values written before a rotation stay readable. */
 export function decryptField(keyring: FieldKeyring, value: string): string {
   const separator = value.indexOf('.');
   if (separator <= 0 || value.indexOf('.', separator + 1) >= 0) {

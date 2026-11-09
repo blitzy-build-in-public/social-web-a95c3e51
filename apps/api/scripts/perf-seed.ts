@@ -1,23 +1,20 @@
 /**
- * `perf-seed`: the data the 50 requests-per-second k6 load test reads (AAP 0.12.2, 0.11.2, 0.8.1).
+ * `perf-seed`: the data the 50 requests-per-second k6 load test reads.
  *
  * It seeds 1,000 traveler accounts with a valid test-issuer proof each, 200 meetups over distinct pairs (60
  * `proposed`, 80 `locked`, 60 `completed`), 20 messages per locked or completed pair and one access token per
- * account, then writes the file the k6 profile reads. The default output is the git-ignored
- * `.local/perf/seed.json`, mounted at `/results`; it carries bearer tokens, so it is written mode 0600, and
- * nothing here ever prints a token, a secret or an address.
+ * account, then writes the file the k6 profile reads. The default output is the git-ignored `.local/perf/seed.json`,
+ * mounted at `/results`; it carries bearer tokens, so it is written mode 0600, and nothing here ever prints a token,
+ * a secret or an address.
  *
- * **Run it against the environment the API runs in, and immediately before the run**: the tokens are signed with
- * the API's `JWT_SECRET`, the rows live in its `DATABASE_URL`, the addresses are encrypted with its
+ * Run it against the environment the API runs in, and immediately before the run: the tokens are signed with the
+ * API's `JWT_SECRET`, the rows live in its `DATABASE_URL`, the addresses are encrypted with its
  * `FIELD_ENCRYPTION_KEY`, and in `STRIPE_MODE=mock` the holds are placed at the proxy the API itself talks to.
- *
- * `APP_ENV` must be `test` or `demo` (AAP 0.5.2 admits fixtures nowhere else), which also excludes
- * `STRIPE_MODE=live`. A rerun first deletes everything a previous run or load test left behind, in foreign-key
- * order, and touches nothing else, so seeding is idempotent. In `STRIPE_MODE=test` no provider object is created
- * at all — a load test must not litter a real test mode with 1,000 customers — so a propose answers `402
- * hold_failed`; in `mock` every account gets a customer with a saved card on the proxy. The API's sweeper settles
- * the 80 locked meetups 55 minutes after this script runs, so restoring them is a rerun of this script, and the
- * one load-generator IP needs the raised `RATE_LIMIT_IP_PER_MIN` root `pnpm perf` sets.
+ * `APP_ENV` must be `test` or `demo` (fixtures are admitted nowhere else), which also excludes `STRIPE_MODE=live`.
+ * A rerun first deletes everything a previous run or load test left behind, in foreign-key order, and touches
+ * nothing else. In `STRIPE_MODE=test` no provider object is created at all, so a propose answers `402 hold_failed`;
+ * the API's sweeper settles the 80 locked meetups 55 minutes after this script runs, and the one load-generator IP
+ * needs the raised `RATE_LIMIT_IP_PER_MIN` root `pnpm perf` sets.
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -309,10 +306,6 @@ async function run(argv: readonly string[]): Promise<number> {
   }
 }
 
-/*
- * Arguments, the environment and the app's container
- */
-
 /**
  * Read the argument list: the two optional flags, each taking the value that follows it, and `--`
  * skipped — `pnpm run` forwards it verbatim. A repeated flag keeps its last value; anything else, or a
@@ -392,10 +385,6 @@ function apiUrlFor(invocation: Invocation, env: ApiEnv): string {
 function outPathFor(invocation: Invocation): string {
   return invocation.outPath ?? path.join(findRepoRoot(), OUTPUT_FILE);
 }
-
-/*
- * Preconditions and the rerun's cleanup (AAP 0.5.2)
- */
 
 /**
  * Require what this seed writes against: every configured city, and at least one active partner fixture
@@ -569,10 +558,6 @@ async function deleteOutboxRows(
   }
 }
 
-/*
- * Accounts, proofs and cards (AAP 0.12.2, 0.5.2)
- */
-
 /**
  * Seed the 1,000 accounts in bounded concurrency: each an account with its consents recorded, a saved card, its
  * handle and one proof row. The builder writes the account, its experiment assignment, its session and the
@@ -660,10 +645,6 @@ function testIssuerId(): number {
   }
   return issuer.config.issuerId;
 }
-
-/*
- * Meetups and the message history (AAP 0.12.2, 0.5.3)
- */
 
 /**
  * Seed 200 meetups over distinct pairs, through the fixture builder, so each carries the deposits, payment
@@ -812,10 +793,6 @@ async function seedMessages(ctx: FactoryContext, meetups: readonly PerfMeetup[])
   await ctx.services.db.message.createMany({ data: rows });
   return rows.length;
 }
-
-/*
- * Tokens, the seed file and the closing check (AAP 0.3.3, 0.12.2)
- */
 
 /**
  * Sign one access token per account, last, so the whole 15-minute lifetime is left for the run: the load

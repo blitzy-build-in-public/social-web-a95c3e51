@@ -1,13 +1,10 @@
 /**
- * Disclosure layer 3 of 3: the tier's allowlist copied into a fresh object and parsed through the tier's
- * own schema, plus the two readers every profile response is built from (AAP 0.5.1, 0.5.4).
+ * Disclosure layer 3 of 3: the tier's allowlist copied into a fresh object and parsed through the tier's own schema, plus
+ * the two readers every profile response is built from.
  *
- * {@link serializeProfile} walks `TIER_FIELDS[tier]`, calls one builder per field from an exhaustive map
- * and ends in `PROFILE_SCHEMA_BY_TIER[tier]`, whose strip mode drops every key the schema does not
- * declare. A row is never spread, so a column added to `User` tomorrow cannot reach a response by
- * accident, and a field above the viewer's tier is never loaded, let alone returned (AAP 0.12.2,
- * criterion 5). The readers never write, and the instant they reason about arrives as a `now` argument
- * from the caller's injected clock (AAP 0.11.1).
+ * {@link serializeProfile} walks `TIER_FIELDS[tier]`, calls one builder per field from an exhaustive map and ends in
+ * `PROFILE_SCHEMA_BY_TIER[tier]`, whose strip mode drops every key the schema does not declare. A row is never spread, so a
+ * column added to `User` tomorrow cannot reach a response, and a field above the viewer's tier is never loaded.
  */
 import { decryptField, FieldDecryptionError } from '@tablemate/server-core';
 import {
@@ -42,10 +39,8 @@ export type SerializationServices = Pick<AppServices, 'keyring' | 'logger'>;
 
 export type ReaderServices = Pick<AppServices, 'db' | 'keyring' | 'logger'>;
 
-/**
- * The response type of each tier, over the shared profile schemas: a map rather than the union, so a
- * caller holding the tier keeps the exact type instead of the union of all four (AAP 0.5.4).
- */
+/** The response type of each tier: a map rather than the union, so a caller holding the tier keeps the exact type instead
+ * of the union of all four. */
 export type ProfileByTier = {
   0: Tier0Profile;
   1: Tier1Profile;
@@ -53,21 +48,16 @@ export type ProfileByTier = {
   3: Tier3Profile;
 };
 
-/**
- * The response schema of a tier, for a route that declares `AnyTierProfile`; every field a tier adds is
- * required and nullable rather than optional, so the union never narrows a higher-tier payload (AAP 0.5.4).
- */
+/** The response schema of a tier: every field a tier adds is required and nullable rather than optional, so the union never
+ * narrows a higher-tier payload. */
 export function profileSchemaFor<T extends DisclosureTier>(
   tier: T,
 ): (typeof PROFILE_SCHEMA_BY_TIER)[T] {
   return PROFILE_SCHEMA_BY_TIER[tier];
 }
 
-/**
- * The fields of a profile that come from outside the row (AAP 0.5.4): `reputation` is always present,
- * `currentProof` is `null` for a traveler with no valid proof — which leaves `currentCityId` and
- * `proofDates` `null` — and `canMessage` belongs to the viewer-and-target pair, not to the target.
- */
+/** The fields of a profile that come from outside the row: `reputation` is always present, `currentProof` is `null` for a
+ * traveler with no valid proof, and `canMessage` belongs to the viewer-and-target pair, not to the target. */
 export type ProfileExtras = {
   reputation: Reputation;
   currentProof: ProofSummary | null;
@@ -75,10 +65,9 @@ export type ProfileExtras = {
 };
 
 /**
- * The disclosure columns any tier's select loads, as one structural view: `ProfileRow<DisclosureTier>` is a
- * union of four payloads and a tier-0 payload carries neither `profilePhoto` nor a ciphertext, so widening
- * once gives every builder one shape to read, and each field it touches is either loaded by the tier or
- * answered as `null`, `false` or `[]` (AAP 0.5.4).
+ * The disclosure columns any tier's select loads, as one structural view: a tier-0 payload carries neither `profilePhoto`
+ * nor a ciphertext, so widening once gives every builder one shape to read, and each field it touches is either loaded by
+ * the tier or answered as `null`, `false` or `[]`.
  */
 interface DisclosureColumns {
   readonly interestTags?: readonly string[];
@@ -105,10 +94,8 @@ interface BuildContext {
 
 type FieldBuilder = (context: BuildContext) => unknown;
 
-/**
- * The counters of a user with no witnessed meetup and no no-show, frozen because more than one profile may
- * be handed it; `countersForMany` zero-fills every id it is asked for (AAP 0.5.7).
- */
+/** The counters of a user with no witnessed meetup and no no-show, frozen because more than one profile may be handed it;
+ * `countersForMany` zero-fills every id it is asked for. */
 const EMPTY_REPUTATION: Reputation = Object.freeze({
   witnessedMeetups: 0,
   distinctCounterparts: 0,
@@ -117,10 +104,8 @@ const EMPTY_REPUTATION: Reputation = Object.freeze({
   noShows90d: 0,
 });
 
-/**
- * The stay dates a viewer receives, from the current valid proof, at the day precision the circuit proved
- * them: no time, nullifier or registry root, and `null` without a valid proof (AAP 0.5.4).
- */
+/** The stay dates a viewer receives, at the day precision the circuit proved them: no time, nullifier or registry root, and
+ * `null` without a valid proof. */
 function proofDatesOf(
   proof: ProofSummary | null,
 ): { arrivalDate: string; departureDate: string } | null {
@@ -130,9 +115,8 @@ function proofDatesOf(
 }
 
 /**
- * The tag list a viewer receives, filtered to the shared vocabulary and capped (AAP 0.5.2): this is a
- * fail-safe for what is stored, because a tag later dropped from the vocabulary would otherwise fail every
- * profile read in the app and an over-long list would fail the tier schema inside a response.
+ * The tag list a viewer receives, filtered to the shared vocabulary and capped: a fail-safe for what is stored, because a
+ * tag dropped from the vocabulary would otherwise fail every profile read and an over-long list would fail the tier schema.
  */
 function interestTagsOf(tags: readonly string[] | undefined): InterestTag[] {
   const kept: InterestTag[] = [];
@@ -150,10 +134,9 @@ function interestTagsOf(tags: readonly string[] | undefined): InterestTag[] {
 }
 
 /**
- * A tier-3 field, decrypted, or `null` when it is unset or unreadable: only tier 3 reaches this function,
- * and a value the keyring cannot open is logged and answered `null` rather than raised, because one
- * unreadable field must not fail the whole profile read. The log carries the event, the user id and the
- * field name, never the ciphertext or the plaintext (AAP 0.5.2, 0.11.1).
+ * A tier-3 field, decrypted, or `null` when it is unset or unreadable: a value the keyring cannot open is logged and
+ * answered `null` rather than raised, because one unreadable field must not fail the whole profile read. The log carries
+ * the event, the user id and the field name, never the ciphertext or the plaintext.
  */
 function decryptFieldOrNull(
   context: BuildContext,
@@ -181,10 +164,8 @@ function decryptFieldOrNull(
   }
 }
 
-/**
- * One builder per response field, exhaustive over `ProfileField`, so a field added to the shared allowlist
- * stops the build until it has a builder here (AAP 0.5.4).
- */
+/** One builder per response field, exhaustive over `ProfileField`, so a field added to the shared allowlist stops the build
+ * until it has a builder here. */
 const BUILDERS: Record<ProfileField, FieldBuilder> = {
   id: ({ row }) => row.id,
   handle: ({ row }) => row.handle,
@@ -203,23 +184,20 @@ const BUILDERS: Record<ProfileField, FieldBuilder> = {
 };
 
 /**
- * Parses a built object through its tier's schema (AAP 0.5.4).
+ * Parses a built object through its tier's schema.
  *
- * The file's one cast, and the step the compiler cannot follow: `profileSchemaFor(tier)` types as the union
- * of the four schemas while the schema actually held is that tier's own, whose key set is exactly its
- * tier's field list — the invariant `packages/shared/test/tiers.test.ts` holds. A parse failure throws:
- * failing closed leaves the caller with `500 internal_error`, where the unparsed object would answer with
- * something no schema has vouched for (AAP 0.12.2).
+ * The file's one cast, and the step the compiler cannot follow: `profileSchemaFor(tier)` types as the union of the four
+ * schemas while the schema actually held is that tier's own. A parse failure throws, because failing closed leaves the
+ * caller with `500 internal_error` rather than an object no schema has vouched for.
  */
 function parseProfile<T extends DisclosureTier>(tier: T, value: unknown): ProfileByTier[T] {
   return profileSchemaFor(tier).parse(value) as ProfileByTier[T];
 }
 
 /**
- * Serializes one loaded row into the profile its viewer has earned (AAP 0.5.1, 0.5.4): a NEW object holding
- * the tier's fields and nothing else, never a spread, because a serialized profile is the last place a
- * column the select happened to load could escape. The tier's own schema then parses the result, so a
- * builder's mistake fails the request instead of reaching a viewer.
+ * Serializes one loaded row into the profile its viewer has earned: a NEW object holding the tier's fields and nothing
+ * else, never a spread, because a serialized profile is the last place a column the select happened to load could escape.
+ * The tier's own schema then parses the result, so a builder's mistake fails the request instead of reaching a viewer.
  */
 export function serializeProfile<T extends DisclosureTier>(
   services: SerializationServices,
@@ -241,10 +219,8 @@ export interface LoadedProfile {
 }
 
 /**
- * Loads one target's profile for one viewer, at the tier between them: the pair's facts decide the tier,
- * the tier's select loads only its columns and {@link serializeProfile} builds and parses the response. A
- * viewer's own row is never gated, and the self check lowercases both ids as `tier.ts` does, because an id
- * can arrive from a path in any case (AAP 0.5.1, 0.5.4).
+ * Loads one target's profile for one viewer, at the tier between them: the pair's facts decide the tier, the tier's select
+ * loads only its columns and {@link serializeProfile} builds and parses the response. A viewer's own row is never gated.
  */
 export async function loadProfile(
   services: ReaderServices,
@@ -284,10 +260,8 @@ export async function loadProfile(
   };
 }
 
-/**
- * The facts of a self pair, stated rather than read: a viewer looking at themselves has no row in `block`,
- * `pair_history` or `meetup` to measure, and `canMessageFrom` is false for a self pair (AAP 0.5.7).
- */
+/** The facts of a self pair, stated rather than read: a viewer looking at themselves has no row in `block`, `pair_history`
+ * or `meetup` to measure, and `canMessageFrom` is false for a self pair. */
 const SELF_PAIR_FACTS: PairFacts = {
   blocked: false,
   completedCount: 0,
@@ -296,14 +270,13 @@ const SELF_PAIR_FACTS: PairFacts = {
 };
 
 /**
- * Loads a page of targets' profiles for one viewer, each at the tier between them (AAP 0.5.1, 0.5.4).
+ * Loads a page of targets' profiles for one viewer, each at the tier between them.
  *
- * The batched form of {@link loadProfile}: a self id is tier 3 with stated facts and no pair query, every
- * other id takes its facts from `pairFactsFor` and `tierFrom`, a `'blocked'` result is tier 0 under
- * `blocked: 'tier0'` and is left out otherwise, and an id with no row — or with the `handle` or
- * `avatarSeed` erasure nulled — is not served. It pays those rules once for the whole page: one pair-facts
- * statement, one `user` read per tier the page holds, one counters call and one current-proof read,
- * whatever the page's length, and batching widens nothing (AAP 0.12.2).
+ * The batched form of {@link loadProfile}: a self id is tier 3 with stated facts and no pair query, every other id takes its
+ * facts from `pairFactsFor` and `tierFrom`, a `'blocked'` result is tier 0 under `blocked: 'tier0'`, and an id with no row —
+ * or with the `handle` or `avatarSeed` erasure nulled — is not served. It pays those rules once for the whole page: one
+ * pair-facts statement, one `user` read per tier the page holds, one counters call and one current-proof read, whatever the
+ * page's length.
  */
 export async function loadProfiles(
   services: ReaderServices,
@@ -380,12 +353,10 @@ export async function loadProfiles(
 }
 
 /**
- * Builds the tier-0 profile of every requested user, in the order they were requested: discovery, lodging
- * guest lists and counterpart lists all show strangers, so every item is tier 0 whatever the caller's tier
- * is, and a page costs four queries rather than two per row. This function does not know the viewer and
- * cannot exclude a blocked pair: a caller that knows the viewer excludes those in its own query. Unknown
- * ids and tombstones are absent from the result rather than answered as empty profiles, which is what makes
- * an erased user vanish from every list (AAP 0.5.2, 0.5.4).
+ * Builds the tier-0 profile of every requested user, in the order they were requested: discovery, lodging guest lists and
+ * counterpart lists all show strangers, so every item is tier 0 whatever the caller's tier is, and a page costs four queries
+ * rather than two per row. This function does not know the viewer, so a caller that does excludes a blocked pair in its own
+ * query; unknown ids and tombstones are absent from the result, which is what makes an erased user vanish from every list.
  */
 export async function tier0Profiles(
   services: ReaderServices,

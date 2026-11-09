@@ -1,5 +1,4 @@
-/** One traveler's profile at the viewer's own disclosure tier — the route `/users/[userId]`
- * (AAP 0.5.8, AAP 0.8.1). */
+/** One traveler's profile at the viewer's own disclosure tier — the route `/users/[userId]`, where the screen branches on field presence and filters nothing itself. */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';

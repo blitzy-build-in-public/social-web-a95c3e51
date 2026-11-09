@@ -1,7 +1,6 @@
 /**
- * Integration tests for `POST /v1/admin/price-jobs` and the daily caps it refuses a city for.
- * Both caps are read from the loaded environment rather than a literal, so a changed
- * `CAP_CALLS_PER_CITY_DAY` or `CAP_LLM_USD_PER_CITY_DAY` moves these cases with it.
+ * Integration tests for `POST /v1/admin/price-jobs` and the daily caps it refuses a city for. Both caps are read from the loaded environment rather than a
+ * literal, so a changed `CAP_CALLS_PER_CITY_DAY` or `CAP_LLM_USD_PER_CITY_DAY` moves these cases with it.
  */
 
 import assert from 'node:assert/strict';
@@ -86,10 +85,8 @@ async function recordUsage(cityId: string, localDate: string, usage: DayUsage): 
 }
 
 /**
- * A day that has used up `kind`'s cap: the calls it was allotted, or the committed language-model
- * spend it was allotted, split across both columns so that neither reaches the cap on its own — the
- * route reads the two together (AAP 0.5.6), and a day charged one way only would be refused by a
- * mistake the split rules out.
+ * A day that has used up `kind`'s cap: the calls it was allotted, or the committed language-model spend it was allotted, split across both columns so that
+ * neither reaches the cap on its own — the route reads the two together (AAP 0.5.6).
  */
 function cappedUsage(kind: PriceJobKind): DayUsage {
   if (kind === 'calls') {

@@ -1,18 +1,14 @@
-# Criterion 8 on native (AAP 0.12.1): every capability of the AAP 0.5.8 navigation table that a flow
-# without a locked meetup can reach is walked from the tab bar on iOS and Android — proof import,
-# discovery, proposal up to the card step, block, report, the lodging directory with both of its
-# leaderboard sorts, the lodging claim, the visibility toggle and account deletion (AAP 0.11.2). The
-# capabilities that need a locked meetup — accept and lock, check-in, messaging, Report a problem and
-# day-plan suggestions — are reached in criterion1-initiator.yaml and criterion1-recipient.yaml, which
-# run in Stripe test mode only.
-#
-# This flow needs no counterpart: the magic-link budget of five links per address per hour (AAP 0.5.4)
-# leaves no link for one, so it works with actor A alone — and in test mode it reuses the session
-# criterion1-initiator leaves on the device rather than spending one of A's links.
-#
-# Maestro binds a literal flow-header value over a command-line `-e`, so every default below reads the
-# incoming value first. API_URL and MAILPIT_URL are the origins the harness script's own HTTP requests
-# use, and DEV_CLIENT_URL is the expo-development-client project link a development build needs.
+# Criterion 8 on native (AAP 0.12.1): every capability of the AAP 0.5.8 navigation table a flow without a
+# locked meetup can reach is walked from the tab bar on iOS and Android — proof import, discovery, proposal up
+# to the card step, block, report, the lodging directory with both leaderboard sorts, the lodging claim, the
+# visibility toggle and account deletion (AAP 0.11.2). Those needing a locked meetup — accept and lock,
+# check-in, messaging, Report a problem, day-plan suggestions — are reached in criterion1-initiator.yaml and
+# criterion1-recipient.yaml under Stripe test mode. This flow needs no counterpart: five magic links per
+# address per hour (AAP 0.5.4) leave none for one, so it works with actor A alone, reusing in test mode the
+# session criterion1-initiator leaves on the device. Maestro binds a literal flow-header value over a
+# command-line `-e`, so every default below reads the incoming value first: API_URL and MAILPIT_URL are the
+# origins the harness script's own HTTP requests use, and DEV_CLIENT_URL is the expo-development-client project
+# link a development build needs.
 appId: com.tablemate.app
 name: reachability
 tags: [e2e]
@@ -26,7 +22,6 @@ env:
 # scripts/e2e.ts performs before any flow; it carries no proof and no token.
 - runScript:
     file: ../../../../.local/e2e/fixture-proofs.js
-
 # Launch, granting the permissions the device flows need and clearing no state: a session already on
 # the device is what this flow prefers to reuse.
 - launchApp:
@@ -43,7 +38,6 @@ env:
     visible:
       id: 'tab-discover|sign-in-email'
     timeout: 60000
-
 # A's session may already be on the device: criterion1-initiator signs A in, and this flow runs second.
 # It is A's session only if the discovery list holds B, the other traveler of the venue's city, so a
 # missing B means another account is signed in and it is signed out rather than used.
@@ -75,7 +69,6 @@ env:
                 visible:
                   id: sign-in-email
                 timeout: 15000
-
 # Sign A in when the device holds no session. In mock mode this is A's only device link on the stack.
 - runFlow:
     when:
@@ -117,7 +110,6 @@ env:
           visible:
             id: tab-discover
           timeout: 60000
-
 # Leaving a pushed screen for the tab bar takes no single command: Maestro's `back` is Android and web
 # only, and the Android header's back arrow is drawn without a label, so Android presses the system back
 # while iOS taps the header's button the root Stack labels `Back`. Each pair below is one departure, and
@@ -128,7 +120,6 @@ env:
     id: tab-discover
 - assertVisible:
     id: traveler-${output.e2e.actors.b.userId}
-
 # Capability: proposal (Discover → traveler → Propose, AAP 0.5.8). The framing copy of A's variant, the
 # safety notice and the submit control after it are asserted as the screen orders them, and nothing is
 # submitted: no meetup, no card hold and no funnel event exists when the flow ends. The submit control is
@@ -156,7 +147,6 @@ env:
     id: propose-submit
     below:
       id: safety-notice
-
 # Capability: block (traveler profile → More → Block, AAP 0.5.8). The confirmation is opened once and
 # closed with its own Cancel: a confirmed block has no undo and would break every later suite that pairs A
 # with B, which is why the confirm control — it reuses the `user-block` id — is never pressed twice.
@@ -172,7 +162,6 @@ env:
     id: user-block-cancel
 - assertVisible:
     id: user-propose
-
 # Capability: report (traveler profile → More → Report, AAP 0.5.8). The reason is this flow's own
 # text, the report is filed against B once, and Done leaves the success state for B's profile.
 - tapOn:
@@ -186,11 +175,8 @@ env:
     id: report-success
 - tapOn:
     id: report-done
-
-# Leave B's profile for the tab bar.
 - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
 - runFlow: { when: { platform: Android }, commands: [back] }
-
 # Capability: proof import (Profile → Verify my stay, AAP 0.5.8). The picker is asserted and never used:
 # A's booking is already spent.
 - tapOn:
@@ -202,7 +188,6 @@ env:
 
 - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
 - runFlow: { when: { platform: Android }, commands: [back] }
-
 # Capability: the lodging directory and both leaderboard sorts (Lodgings tab, AAP 0.5.8; criterion 15). A
 # row's id holds the lodging's own UUID, so the pattern ties the assertion to the seeded directory.
 - tapOn:
@@ -215,7 +200,6 @@ env:
     id: lodgings-sort-name
 - assertVisible:
     id: 'lodging-[0-9a-f-]{36}'
-
 # Capability: the lodging claim (Lodgings → lodging → I'm staying here, AAP 0.5.8). The consent control
 # is asserted in the state the app gives it on arrival — the notice is not rendered until the booking
 # details are filled in, and the switch stays disabled until it is (AAP 0.12.2) — and nothing is
@@ -236,13 +220,10 @@ env:
 - assertVisible:
     id: claim-submit
     enabled: false
-
-# Leave the claim screen and then the lodging for the tab bar.
 - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
 - runFlow: { when: { platform: Android }, commands: [back] }
 - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
 - runFlow: { when: { platform: Android }, commands: [back] }
-
 # Capability: the visibility toggle (Profile → My stay, AAP 0.5.8). With no verified claim the screen
 # offers the directory instead of the toggle; with one it shows the safety warning before the toggle.
 # Nothing is toggled either way, because the API answers 409 no_verified_claim without a verified claim.
@@ -266,7 +247,6 @@ env:
 
 - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
 - runFlow: { when: { platform: Android }, commands: [back] }
-
 # Capability: account deletion (Profile → Settings → Delete account, AAP 0.5.8), the flow's last step
 # because it ends the session. It deletes a throwaway account created here rather than A, whom later flows
 # still need, and a new account's age gate is reached and passed on the way in.

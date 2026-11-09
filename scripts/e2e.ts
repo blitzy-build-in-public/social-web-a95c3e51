@@ -1,22 +1,16 @@
 /**
  * `pnpm test:e2e` — the end-to-end orchestration (AAP 0.8.1, 0.11.2).
  *
- * One run does four things: it selects the Stripe mode the environment affords, starts the compose
- * project the checkout itself owns ({@link composeProjectName}), so a sibling checkout's containers,
- * `pgdata` volume and image tags are never recreated or dropped, drives the Playwright web suite and —
- * where a device is attached — the Maestro native flows, records the outcome in the `e2e` block of
- * `docs/acceptance.md` and the `e2e:web-proving` block of `docs/zk-performance.md`, and tears the stack
- * down again.
- *
- * Criterion 1 needs real test-mode holds and no client payment adapter is mocked (AAP 0.11.2), so the
- * mode decides what runs. With `sk_test_`/`pk_test_` keys the criterion walks run and `stripe-cli`
- * forwards the webhook events; without them the stack runs `STRIPE_MODE=mock`, every spec and flow that
- * needs no confirmed hold still runs, and each criterion 1 and locked-step cell is recorded as
- * {@link BLOCKED_REASON}. Blocked and pending cells never fail a run — a stack that did not start and a
+ * One run selects the Stripe mode the environment affords, starts the compose project the checkout itself owns
+ * ({@link composeProjectName}) so a sibling checkout's containers and volumes are never touched, drives the
+ * Playwright web suite and — where a device is attached — the Maestro flows, records the outcome in the `e2e` block
+ * of `docs/acceptance.md` and the `e2e:web-proving` block of `docs/zk-performance.md`, and tears the stack down.
+ * With `sk_test_`/`pk_test_` keys the criterion walks run; without them the stack runs `STRIPE_MODE=mock`,
+ * everything that needs no confirmed hold still runs, and each criterion 1 and locked-step cell is recorded as
+ * {@link BLOCKED_REASON}. Blocked and pending cells never fail a run; a stack that did not start and an executed
  * suite that failed do.
- *
- * Exit codes: 0 every executed suite passed (blocked and pending cells are recorded, not failures),
- * 1 the stack failed to start or an executed suite failed, 130/143 the run was interrupted.
+ * Exit codes: 0 every executed suite passed, 1 the stack failed to start or an executed suite failed, 130/143 the
+ * run was interrupted.
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -28,10 +22,6 @@ import { pathToFileURL } from 'node:url';
 
 import type { ChildProcess } from 'node:child_process';
 import type { FileHandle } from 'node:fs/promises';
-
-/*
- * Constants.
- */
 
 /** The Stripe posture one run selected from the environment it found (AAP 0.11.2). */
 export type StripeMode = 'test' | 'mock';
@@ -56,11 +46,7 @@ const TEST_PUBLISHABLE_PREFIX = 'pk_test_';
 /** The app the native flows drive; `app.config.ts` declares it for both stores. */
 const APP_ID = 'com.tablemate.app';
 
-/**
- * The prefix of the compose project one run owns: {@link composeProjectName} appends the checkout's own
- * slug to it, so a run never touches a developer's own stack, another checkout's containers and volumes,
- * or another run's image tags.
- */
+/** The compose project prefix; {@link composeProjectName} appends the checkout's own slug. */
 const COMPOSE_PROJECT_PREFIX = 'tablemate-e2e';
 
 /** The block each document holds for this run, delimited by the marker convention (AAP 0.8.1). */
@@ -98,11 +84,7 @@ const METRO_PORT = 8081;
 /** The ceiling on one captured command's output, generous enough for `compose config --format json`. */
 const CAPTURE_LIMIT = 32 * 1024 * 1024;
 
-/**
- * How long an exit's drain may wait for the reader of stdout and stderr before the process is ended
- * anyway (one second): the stack is down or kept by then, and a consumer that never reads — a stopped
- * `tee`, a detached log collector — must not hold the run open.
- */
+/** The ceiling on an exit's drain (one second); a consumer that never reads must not hold the run open. */
 const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
 /** The published defaults of the compose stack's host ports, for a checkout with no `.env`. */
@@ -138,10 +120,6 @@ const COMPOSE_PORTS: readonly { name: PortName; service: string; target: number 
   { name: 'mailpit', service: 'mailpit', target: 8025 },
 ];
 
-/*
- * Small readers and the pure helpers the run's decisions come from.
- */
-
 /** One command's working directory and environment; the environment is never printed. */
 interface Command {
   readonly cwd: string;
@@ -155,7 +133,6 @@ interface Captured {
   readonly stderr: string;
 }
 
-/** Whether a parsed value is a JSON object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -165,7 +142,6 @@ function readValue(value: string | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-/** `value` when it holds something, `fallback` otherwise. */
 function valueOr(value: string | undefined, fallback: string): string {
   const trimmed = readValue(value);
   return trimmed === '' ? fallback : trimmed;
@@ -178,11 +154,9 @@ function firstLine(text: string): string {
 }
 
 /**
- * The Stripe mode this run uses, from the keys the environment holds (AAP 0.11.2). Both keys absent is
- * `mock`, the credential-free stack built on `stripe-mock` behind the stateful proxy; a matching
- * test-mode pair is `test`. Anything else — one key without the other, or a key that is not a test-mode
- * one — is refused here, before a container starts, because a live key must never reach a non-production
- * stack (AAP 0.3.3). The message names the variables and never a value.
+ * The Stripe mode this run uses, from the keys the environment holds (AAP 0.11.2): both absent is `mock`,
+ * a matching test-mode pair is `test`. Anything else is refused before a container starts, because a live
+ * key must never reach a non-production stack (AAP 0.3.3). The message names no value.
  */
 export function resolveStripeMode(env: NodeJS.ProcessEnv): StripeMode {
   const secret = readValue(env.STRIPE_SECRET_KEY);
@@ -208,9 +182,8 @@ export function modeLine(mode: StripeMode): string {
 }
 
 /**
- * The numbers an automated call may reach, as the fixtures define them (AAP 0.5.2): every number in
- * the three E.164 ranges reserved for fiction, which are the only numbers the scripted simulator
- * answers. Only the test environment carries this list.
+ * Every number in the three E.164 ranges reserved for fiction, and so the only numbers the scripted
+ * simulator answers (AAP 0.5.2). Only the test environment carries this list.
  */
 export function fixtureCallAllowlist(): string {
   const numbers: string[] = [];
@@ -223,14 +196,13 @@ export function fixtureCallAllowlist(): string {
 }
 
 /**
- * A published nullifier salt: the decimal value of 31 random bytes, which is below the BN254 scalar
- * field order the schema requires (AAP 0.5.5) and always a valid field element.
+ * 31 random bytes as a decimal string: below the BN254 scalar field order the schema requires, so always
+ * a valid field element (AAP 0.5.5).
  */
 export function randomFieldElement(): string {
   return BigInt(`0x${randomBytes(31).toString('hex')}`).toString(10);
 }
 
-/** The published host port of one compose service's container port, or null when it has none. */
 function publishedPortOf(ports: unknown, target: number): number | null {
   if (!Array.isArray(ports)) {
     return null;
@@ -247,15 +219,10 @@ function publishedPortOf(ports: unknown, target: number): number | null {
   return null;
 }
 
-/**
- * The five host ports of a resolved compose configuration, falling back to {@link DEFAULT_PORTS} for any
- * service that publishes nothing.
- *
- * `docker compose config` is the one authority on which port a stack publishes: compose interpolates
- * `API_PORT`, `WEB_PORT` and their siblings from the shell and from the checkout's own `.env`, and a
- * checkout that reserved a port block of its own — as the clone instructions require — must be driven on
- * the ports it actually took.
- */
+/** The five host ports of a resolved compose configuration, falling back to {@link DEFAULT_PORTS} for any service
+ * that publishes nothing. `docker compose config` is the one authority: compose interpolates `API_PORT` and its
+ * siblings from the shell and the checkout's `.env`, so a checkout that reserved a port block of its own must be
+ * driven on the ports it actually took. */
 export function publishedPorts(config: unknown): Ports {
   const services = isRecord(config) && isRecord(config.services) ? config.services : {};
   const resolved: Record<PortName, number> = { ...DEFAULT_PORTS };
@@ -272,7 +239,6 @@ export function publishedPorts(config: unknown): Ports {
   return resolved;
 }
 
-/** The origin each published port answers on, on the loopback interface compose binds alone. */
 export function originsFromPorts(ports: Ports): Origins {
   return {
     api: `http://localhost:${ports.api}`,
@@ -291,20 +257,9 @@ function composeNameSlug(value: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/**
- * The compose project one run owns, named after the checkout it was started in.
- *
- * Compose derives its project name from the directory it is run in, and this harness has to name the same
- * project for the `docker compose config`, `up` and `down` calls it makes from the repository root, for
- * the volumes and image tags compose then creates, and for the `--keep` instruction it prints. Deriving
- * that name from the checkout keeps all of them on one project, so a run never recreates another
- * checkout's containers on the shared daemon nor drops the `pgdata` volume a concurrent run is using —
- * the separation `docker-compose.yml` states for two checkouts on one host.
- *
- * The result is valid for compose: it opens with the `t` of {@link COMPOSE_PROJECT_PREFIX} and the slug
- * that follows is lowercased with every run of characters outside `[a-z0-9_-]` replaced by a single `-`.
- * `E2E_COMPOSE_PROJECT` pins the whole name instead, for a host that runs one stack at a time.
- */
+/** The compose project one run owns, named after the checkout it was started in, so `docker compose config`, `up`
+ * and `down` name the same project from the repository root and a run stays off another checkout's containers,
+ * image tags and `pgdata` volume. `E2E_COMPOSE_PROJECT` pins the whole name instead. */
 export function composeProjectName(source: NodeJS.ProcessEnv, checkout: string): string {
   const pinned = readValue(source.E2E_COMPOSE_PROJECT);
   if (pinned !== '') {
@@ -316,9 +271,8 @@ export function composeProjectName(source: NodeJS.ProcessEnv, checkout: string):
 }
 
 /**
- * A markdown table in the shape prettier gives one, which `pnpm format:check` holds every document
- * under `docs/` to: each column as wide as its widest cell counted in code points, the rule row as
- * many dashes, and no trailing whitespace.
+ * A markdown table in the shape prettier gives one, which `pnpm format:check` holds every document under
+ * `docs/` to: each column as wide as its widest cell counted in code points, and no trailing whitespace.
  */
 export function markdownTable(
   header: readonly string[],
@@ -340,8 +294,7 @@ export function markdownTable(
 
 /**
  * A document with the named block replaced, or the block appended when either marker is absent — the
- * convention `packages/circuits/scripts/*.sh` and `scripts/count-lines.ts` write their records with.
- * Everything outside the markers is left byte-identical.
+ * convention every record-writing script uses. Everything outside the markers stays byte-identical.
  */
 export function applyBlock(document: string, id: string, content: string): string {
   const begin = `<!-- BEGIN ${id} -->`;
@@ -356,20 +309,10 @@ export function applyBlock(document: string, id: string, content: string): strin
   return `${document.slice(0, start)}${begin}${content}${document.slice(stop)}`;
 }
 
-/*
- * The environment one run starts the stack and the suites with.
- */
-
-/**
- * The environment the stack, the web bundle, the console and the suites share.
- *
- * It is built in memory and never printed or written to disk, because it holds the run's own secrets.
- * Only the values a mode needs are generated, and only when the environment does not already carry one,
- * so a caller can pin any of them. One set of origins covers the whole run: the published host ports the
- * URL variables in it name are the ones the browser loads the bundle from, the CORS allowlist admits,
- * the magic links point at and the suite's own callers use, so no part of the run can disagree about
- * where the stack is.
- */
+/** The environment the stack, the web bundle, the console and the suites share, built in memory and never printed,
+ * because it holds the run's own secrets. Only the values a mode needs are generated, so a caller can pin any of
+ * them, and one set of origins covers the whole run: the browser loads the bundle from them, the CORS allowlist
+ * admits them, the magic links point at them and the suite's callers use them. */
 export function buildSuiteEnv(
   source: NodeJS.ProcessEnv,
   stripeMode: StripeMode,
@@ -398,11 +341,9 @@ export function buildSuiteEnv(
   env.FIELD_ENCRYPTION_KEY = valueOr(env.FIELD_ENCRYPTION_KEY, randomBytes(32).toString('base64'));
   env.FIELD_ENCRYPTION_KEY_ID = valueOr(env.FIELD_ENCRYPTION_KEY_ID, 'e2e');
   env.NULLIFIER_SALT = valueOr(env.NULLIFIER_SALT, randomFieldElement());
-  /* The compose file pins both of these itself, to the names only the compose network resolves: a
-   * host-addressed value from `.env` — as a clone that reserved a port block writes — would leave a
-   * container dialling itself, so the notifications job would never reach Mailpit and no magic link
-   * would arrive. Set here to the same values as well, so a harness process that reads this
-   * environment matches what the containers use (AAP 0.3.3). */
+  /* Pinned to the names only the compose network resolves: a host-addressed value from `.env` would
+   * leave a container dialling itself, so the notifications job would never reach Mailpit and no magic
+   * link would arrive (AAP 0.3.3). Set here too, so a harness process matches what the containers use. */
   env.SMTP_URL = 'smtp://mailpit:1025';
   env.VOICE_SIM_URL = 'http://voice-sim:4010';
   /* The origins the stack, the web bundle and the console are built and started against. */
@@ -420,17 +361,12 @@ export function buildSuiteEnv(
   env.E2E_MAILPIT_URL = valueOr(env.E2E_MAILPIT_URL, origins.mailpit);
   env.API_URL = env.E2E_API_URL;
   env.MAILPIT_URL = env.E2E_MAILPIT_URL;
-  /* Only a test-mode stack can confirm a card, so only then does the bundle carry a publishable key
-   * (AAP 0.11.2); in mock mode the card screens report that payments are not configured. */
+  /* Only a test-mode stack can confirm a card, so only then does the bundle carry a key (AAP 0.11.2). */
   if (stripeMode === 'test') {
     env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY = readValue(env.STRIPE_PUBLISHABLE_KEY);
   }
   return env;
 }
-
-/*
- * What the host offers the native suite (AAP 0.12.3).
- */
 
 /** The two platforms the native flows run on. */
 export type NativePlatformId = 'ios' | 'android';
@@ -455,7 +391,6 @@ export interface NativePlatform {
   readonly device?: string;
 }
 
-/** Whether Maestro is installed, and what each platform offers. */
 export interface NativeAvailability {
   readonly maestro: boolean;
   readonly ios: NativePlatform;
@@ -499,11 +434,9 @@ export function attachedDevice(stdout: string): string | null {
 }
 
 /**
- * What the native suite can run, detected without side effects: no build, no install, no boot. The iOS
- * row judges the host before the tooling, because a host that is not a Mac can never run an iOS simulator
- * however the tools are installed, and its pending reason says so rather than naming a missing CLI
- * (AAP 0.12.3); everything else is best effort, a missing or failing command being that platform's
- * pending reason rather than a failure of the run.
+ * What the native suite can run, detected without side effects: no build, no install, no boot. The iOS row
+ * judges the host before the tooling, a host that is not a Mac never running an iOS simulator however the tools
+ * are installed (AAP 0.12.3); elsewhere a missing or failing command is that platform's pending reason.
  */
 export async function detectNative(where: Command): Promise<NativeAvailability> {
   const maestro = (await runCapture('maestro', ['--version'], where)).ok;
@@ -531,7 +464,6 @@ export async function detectNative(where: Command): Promise<NativeAvailability> 
   return { maestro, ios, android };
 }
 
-/** The booted iOS simulator holding the development build, or the reason there is none. */
 async function detectIosSimulator(where: Command): Promise<NativePlatform> {
   const list = await runCapture('xcrun', ['simctl', 'list', 'devices', 'booted', '-j'], where);
   const udid = list.ok ? bootedSimulator(list.stdout) : null;
@@ -543,10 +475,6 @@ async function detectIosSimulator(where: Command): Promise<NativePlatform> {
     ? { id: 'ios', pending: null, device: udid }
     : { id: 'ios', pending: PENDING_DEV_BUILD };
 }
-
-/*
- * What a run observed, and the two documents it is recorded in (AAP 0.12).
- */
 
 /** One web spec: the id its cells carry and the file that walks it. */
 export type WebSpecId = 'reachability' | 'a11y' | 'web-proving' | 'console-clock' | 'criterion1';
@@ -611,13 +539,10 @@ export const ACCEPTANCE_CHECKS: readonly AcceptanceCheck[] = [
   { id: 'console-clock', label: 'Console clock skew', native: false },
 ];
 
-/**
- * The `e2e` block's cells, from what the run observed. The two rows that need a locked meetup —
- * criterion 1 and the locked steps of criterion 8 — are blocked as a whole in mock mode, on every
- * platform, because no walk of them can run at all, so the blocked sentence outranks a platform's
- * pending reason there (AAP 0.11.2); everywhere else a platform that could not run reports its own
- * reason, and a suite that ran reports pass or fail.
- */
+/** The `e2e` block's cells, from what the run observed. The two rows that need a locked meetup — criterion 1 and
+ * the locked steps of criterion 8 — are blocked as a whole in mock mode on every platform, so the blocked sentence
+ * outranks a platform's pending reason there (AAP 0.11.2); elsewhere a platform that could not run reports its own
+ * reason and a suite that ran reports pass or fail. */
 export function acceptanceCells(report: RunReport): Record<AcceptanceCheckId, PlatformCells> {
   const blocked: PlatformCells = {
     web: BLOCKED_REASON,
@@ -633,8 +558,7 @@ export function acceptanceCells(report: RunReport): Record<AcceptanceCheckId, Pl
     return names.every((name) => platform.flows[name] === true) ? 'pass' : 'fail';
   };
   const criterion = (id: NativePlatformId): string => flows(id, CRITERION_FLOWS);
-  /* The locked-step walks are part of the criterion 1 spec and of the reachability spec's own
-   * second group, so their web evidence is whether those two walks passed (AAP 0.12.1 criterion 8). */
+  /* The locked-step walks are part of the criterion 1 spec and the reachability spec's second group. */
   const lockedWeb =
     report.web.criterion1 === true && report.web.reachability === true ? 'pass' : 'fail';
   const tested = report.stripeMode === 'test';
@@ -671,9 +595,8 @@ export function renderAcceptanceBlock(report: RunReport): string {
   const heading =
     `Run ${report.date} · commit ${report.commit} · ${modeLine(report.stripeMode)} · ` +
     'telephony: simulator · LLM: fake';
-  /* The content opens and closes with a blank line: the first ends the marker's own line and leaves
-   * the blank one after it, and the last leaves the blank line before the closing marker, which is
-   * the shape prettier gives a block in these documents. */
+  /* The content opens and closes with a blank line: the first ends the marker's own line, the last ends
+   * the block, which is the shape prettier gives one in these documents. */
   return [
     '',
     '',
@@ -706,13 +629,10 @@ export interface WebProvingReport {
   readonly engines: Partial<Record<WebProvingEngineId, WebProvingRow>>;
 }
 
-/**
- * One engine's row from the file `web-proving.spec.ts` wrote, or null when this run produced no evidence:
- * a missing file, a shape the spec does not write, or a file older than the run, which would otherwise be
- * reported as this run's own result. A walk that failed can leave a file with no duration, and it still
- * carries the engine's own verdict: the row then reads `fail` with `n/a` for the timing rather than
- * `pending`, which is reserved for an engine whose check has not run at all (AAP 0.3.4).
- */
+/** One engine's row from the file `web-proving.spec.ts` wrote, or null when this run produced no evidence: a
+ * missing file, a shape the spec does not write, or a file older than the run. A failed walk still carries the
+ * engine's verdict, so the row reads `fail` with `n/a` for the timing rather than `pending`, which is reserved for
+ * an engine whose check never ran (AAP 0.3.4). */
 export function webProvingRow(raw: unknown, startedAtMs: number): WebProvingRow | null {
   if (!isRecord(raw)) {
     return null;
@@ -758,12 +678,8 @@ export function renderWebProvingBlock(report: WebProvingReport): string {
   ].join('\n');
 }
 
-/*
- * The run: preflight, the stack, the suites, the record, the teardown.
- */
-
-/* The state every exit path reads, which is why it lives at the module's scope: the signal handlers
- * and the `finally` both tear the run down, and teardown has to know what is up. */
+/* The state every exit path reads: the signal handlers and the `finally` both tear the run down, and
+ * teardown has to know what is up. */
 let root = '';
 let composeProject = '';
 let suiteEnv: NodeJS.ProcessEnv = process.env;
@@ -797,8 +713,8 @@ function isMissing(error: unknown): boolean {
 }
 
 /**
- * Runs one command with its output captured and its environment inherited; it never throws, so a
- * caller decides what a failure means. The environment is passed through, never echoed.
+ * Runs one command with its output captured and its environment inherited; it never throws, so a caller decides
+ * what a failure means.
  */
 async function runCapture(
   command: string,
@@ -849,7 +765,6 @@ async function runInherit(
   });
 }
 
-/** Requires a tool, naming it and how to install it. */
 async function requireTool(
   command: string,
   args: readonly string[],
@@ -878,7 +793,6 @@ async function requireArtefacts(): Promise<void> {
   }
 }
 
-/** The five host ports the compose project resolves to, from compose itself. */
 async function resolvePorts(env: NodeJS.ProcessEnv): Promise<Ports> {
   const resolved = await runCapture('docker', ['compose', 'config', '--format', 'json'], {
     cwd: root,
@@ -916,8 +830,8 @@ async function requireFreePorts(ports: Ports): Promise<void> {
 }
 
 /**
- * The signing secret `stripe-cli` forwards with, read from the CLI and never printed: the forwarding
- * service signs with its own secret, so the API has to be given the same one (AAP 0.11.2).
+ * The signing secret `stripe-cli` forwards with, read from the CLI and never printed: the forwarding service
+ * signs with its own secret, so the API has to be given the same one (AAP 0.11.2).
  */
 async function webhookSecret(): Promise<string> {
   const printed = await runCapture(
@@ -934,7 +848,6 @@ async function webhookSecret(): Promise<string> {
   return secret;
 }
 
-/** Whether one URL answers 2xx. */
 async function isOk(url: string): Promise<boolean> {
   try {
     return (await fetch(url)).ok;
@@ -959,10 +872,9 @@ async function waitForEndpoints(origins: Origins): Promise<boolean> {
 }
 
 /**
- * Starts the stack, or reports that it did not come up. The volumes are dropped first: a database from an
- * earlier run holds the fixture bookings' spent nullifiers, and a harness proof of one would be refused
- * with `409 nullifier_used` (AAP 0.5.2). `--build` matters because the web image inlines the client's
- * origins and publishable key at build time, so the bundle the browser loads has to be built by this run.
+ * Starts the stack, or reports that it did not come up. The volumes are dropped first: a database from an earlier
+ * run holds the fixture bookings' spent nullifiers, and a harness proof of one would be refused with `409
+ * nullifier_used` (AAP 0.5.2). `--build` matters because the web image inlines the client's origins at build time.
  */
 async function startStack(origins: Origins, stripeMode: StripeMode): Promise<boolean> {
   const where: Command = { cwd: root, env: suiteEnv };
@@ -1052,11 +964,8 @@ async function prepareMaestro(): Promise<boolean> {
 }
 
 /**
- * One Maestro flow on one device.
- *
- * `--device` is a global option Maestro takes before `test`, so it cannot be appended to the
- * `e2e:native` script: this is that script's own command aimed at a single device, with the same
- * variables and with the flow file named rather than selected by tag.
+ * One Maestro flow on one device. `--device` is a global option Maestro takes before `test`, so this is the
+ * `e2e:native` script's own command aimed at one device, with the flow file named rather than selected by tag.
  */
 async function runNativeFlow(device: string, flow: NativeFlowId): Promise<boolean> {
   const args = [
@@ -1077,11 +986,10 @@ async function runNativeFlow(device: string, flow: NativeFlowId): Promise<boolea
 }
 
 /**
- * The native suite, per platform that offers a device. Criterion 1 runs on every platform it can,
- * whichever role the device plays, and the reachability walk runs everywhere; in mock mode the criterion
- * 1 flows are not invoked at all, because their cells are recorded as blocked (AAP 0.11.2). A platform
- * that offers nothing keeps its pending reason, and a run whose dev server or preparation fails records
- * the flows it could not attempt as failures rather than leaving them blank.
+ * The native suite, per platform that offers a device. The reachability walk runs everywhere; in mock mode the
+ * criterion 1 flows are not invoked at all, their cells being recorded as blocked (AAP 0.11.2). A platform that
+ * offers nothing keeps its pending reason, and a run whose dev server or preparation fails records the flows it
+ * could not attempt as failures rather than leaving them blank.
  */
 async function runNativeSuite(
   availability: NativeAvailability,
@@ -1104,8 +1012,7 @@ async function runNativeSuite(
     const device = platform.device ?? platform.id;
     if (platform.id === 'android') {
       adbDevices = [...adbDevices, device];
-      /* The emulator reaches the host's services as `localhost`, which is what the flows' own
-       * variables and the dev-client bundle name. */
+      /* The emulator reaches the host's services as `localhost`, which the flows' variables name. */
       for (const port of [...Object.values(ports), METRO_PORT]) {
         await runCapture('adb', ['-s', device, 'reverse', `tcp:${port}`, `tcp:${port}`], {
           cwd: root,
@@ -1145,10 +1052,9 @@ async function readEngineRows(
 }
 
 /**
- * Writes one block into its document, creating the document when it is absent and leaving everything
- * outside the markers byte-identical. The write goes through a randomly named temporary file in the
- * document's own directory and a rename, so a reader never sees a half-written document and no
- * predictable name can be planted to redirect the write (CWE-377).
+ * Writes one block into its document, creating the document when it is absent and leaving everything outside the
+ * markers byte-identical. The write goes through a randomly named temporary file beside the document and a
+ * rename, so a reader never sees a half-written document and no predictable name can be planted (CWE-377).
  */
 async function writeDocBlock(file: string, id: string, content: string): Promise<void> {
   const absolute = path.join(root, file);
@@ -1156,8 +1062,7 @@ async function writeDocBlock(file: string, id: string, content: string): Promise
   try {
     existing = await readFile(absolute, 'utf8');
   } catch (error) {
-    /* Only a missing document is created: an unreadable one is a problem to report, never a file to
-     * replace with this block alone. */
+    /* Only a missing document is created; an unreadable one is an error to report, not to replace. */
     if (!isMissing(error)) {
       throw error;
     }
@@ -1209,7 +1114,7 @@ function tearDown(): Promise<void> {
 
 /**
  * Stops the dev server, drops the device port forwards and takes the stack down with its volumes.
- * `--keep` leaves the stack up for debugging and prints how to stop it.
+ * `--keep` leaves the stack up and prints how to stop it.
  */
 async function performTeardown(): Promise<void> {
   stopMetro();
@@ -1236,14 +1141,10 @@ async function performTeardown(): Promise<void> {
 }
 
 /**
- * End the process with `code` once every byte already written to stdout and stderr has reached its
- * consumer.
- *
- * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued
- * — and under `| tee` or a CI log collector that is the last line this run exists to print, the record of
- * what the interrupt did. An empty write queued behind the real ones calls back once they have been
- * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains, while a consumer that
- * has stopped reading closes the pipe instead (`| head`) and ends the drain the same way.
+ * End the process with `code` once every byte already written to stdout and stderr has reached its consumer. A
+ * write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued — under
+ * `| tee` or a CI log collector, the record of what the interrupt did. An empty write queued behind the real ones
+ * calls back once they have flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains.
  */
 function exitAfterFlush(code: number): void {
   process.exitCode = code;
@@ -1288,11 +1189,9 @@ function installSignalHandlers(): void {
 }
 
 /**
- * The run: preflight, the stack, the suites, the record, the teardown.
- *
- * The preflight refuses everything it can before a container exists — a missing tool, an incomplete
- * circuit build, a key that is not a test-mode one, a port another stack holds — and the teardown
- * runs on every exit path, including an interrupt.
+ * The run: preflight, the stack, the suites, the record, the teardown. The preflight refuses everything it can
+ * before a container exists — a missing tool, an incomplete circuit build, a non-test key, a port another stack
+ * holds — and the teardown runs on every exit path, an interrupt included.
  */
 export async function runE2E(argv: readonly string[] = []): Promise<number> {
   const startedAtMs = Date.now();
@@ -1334,8 +1233,7 @@ export async function runE2E(argv: readonly string[] = []): Promise<number> {
       return 1;
     }
     for (const spec of WEB_SPECS) {
-      /* The criterion 1 walk confirms real holds and no adapter mocks one, so in mock mode the spec
-       * is not invoked at all; its own `test.skip` is the backstop (AAP 0.11.2). */
+      /* The criterion 1 walk confirms real holds, so in mock mode the spec is not invoked at all. */
       if (spec.id === 'criterion1' && stripeMode !== 'test') {
         continue;
       }
@@ -1371,9 +1269,6 @@ export async function runE2E(argv: readonly string[] = []): Promise<number> {
   return failures.length === 0 ? 0 : 1;
 }
 
-/*
- * Entry point: a direct execution runs the suite, an import only gets the helpers above.
- */
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   try {

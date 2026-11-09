@@ -1,8 +1,4 @@
-/**
- * Integration tests for the weekly OpenStreetMap place and lodging refresh
- * (`apps/workers/src/jobs/place-refresh.ts`) against the recorded Overpass answers in
- * `test/fixtures/overpass/` (AAP 0.3.3, 0.5.6).
- */
+/** Integration tests for the weekly OpenStreetMap place and lodging refresh (`apps/workers/src/jobs/place-refresh.ts`) against the recorded Overpass answers in `test/fixtures/overpass/` (AAP 0.3.3, 0.5.6). */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -47,33 +43,16 @@ import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../
 
 /** The launch city the refresh is driven for: configured, so `seedCities` writes its `bbox` too. */
 const CITY = 'lisbon';
-
-/**
- * A second city with no active partner venue and no lodging holding a console secret (AAP 0.5.6).
- */
+/** A second city with no active partner venue and no lodging holding a console secret (AAP 0.5.6). */
 const OTHER_CITY = 'cascais';
-
 /** The job name this queue accepts, which is the only one the processor may be driven with. */
 const JOB_NAME = JOB[QUEUE.placeRefresh].refresh;
-
 /** Where the only active partner venue of the first run stands, in Lisbon (AAP 0.5.6). */
 const VENUE_POINT = { lat: 38.711, lng: -9.142 } as const;
-
-/**
- * The number an operator enters on the lodging whose OSM phone the refresh answers twice with a
- * different value (AAP 0.5.6). It is a reserved fictional number that appears in neither lodging
- * fixture, which the second refresh asserts at run time so the two can never agree by accident.
- */
+/** The number an operator enters on the lodging whose OSM phone the refresh answers twice with a different value (AAP 0.5.6). It is a reserved fictional number that appears in neither lodging fixture, which the second refresh asserts at run time so the two can never agree by accident. */
 const OPERATOR_PHONE = '+14155550195';
-
 const REFRESH_INTERVAL = { days: 7 } as const;
-
-/**
- * The place rows that already exist before the first refresh, each with deliberately stale fields, so
- * the run proves the `update` half of the upsert as well as the `insert` half (AAP 0.5.6). The last
- * one is owned by {@link OTHER_CITY}: a row the refresh must rewrite without ever writing its
- * `cityId`.
- */
+/** The place rows that already exist before the first refresh, each with deliberately stale fields, so the run proves the `update` half of the upsert as well as the `insert` half (AAP 0.5.6). The last one is owned by {@link OTHER_CITY}: a row the refresh must rewrite without ever writing its `cityId`. */
 const STALE_PLACES = [
   { key: 'node/910001', cityId: CITY, name: 'Fixture Stale Tasca' },
   { key: 'node/910003', cityId: CITY, name: 'Fixture Stale Sem Telefone' },
@@ -81,16 +60,9 @@ const STALE_PLACES = [
   { key: 'node/910006', cityId: CITY, name: 'Fixture Stale Pastelaria' },
   { key: 'node/910010', cityId: OTHER_CITY, name: 'Fixture Stale Bar' },
 ] as const;
-
-/**
- * The two places whose seeded price records make the price work skip them (AAP 0.5.7): the first has
- * a fresh approved `online_menu` record, so no `menu-ingest` job is queued for it, and the second a
- * fresh approved `phone_quote`, so it takes no `menu_prices` fallback. Every other place with a link
- * is queued and every other place without one falls back.
- */
+/** The two places whose seeded price records make the price work skip them (AAP 0.5.7): the first has a fresh approved `online_menu` record, so no `menu-ingest` job is queued for it, and the second a fresh approved `phone_quote`, so it takes no `menu_prices` fallback. Every other place with a link is queued and every other place without one falls back. */
 const PRICED_ONLINE_KEY = 'node/910001';
 const PRICED_PHONE_KEY = 'node/910003';
-
 interface FixtureElement {
   readonly type: string;
   readonly id: number;
@@ -147,35 +119,20 @@ interface ServedCall {
 }
 
 type LodgingsAnswer = 'first' | 'refresh' | 'empty';
-
 let testApp: TestApp;
-
 let worker: WorkerContext;
-
-/**
- * The console secret issued to a lodging between the two refreshes (AAP 0.5.6), with the ciphertext
- * and lookup hash its row is written with. The value is minted at run time, so no secret shape ever
- * appears in this file.
- */
+/** The console secret issued to a lodging between the two refreshes (AAP 0.5.6), with the ciphertext and lookup hash its row is written with. The value is minted at run time, so no secret shape ever appears in this file. */
 let lodgingSecret: string;
-
 let removedClaimId: string;
 let removedFactIds: readonly string[];
-
 let removedLodgingId: string;
-
 let server: Server | undefined;
-
 /** Every request the fixture server answered, in order, which is what the query assertions read. */
 const served: ServedCall[] = [];
-
 /** Every log line the job wrote, captured instead of printed (AAP 0.11.1). */
 const logs: Record<string, unknown>[] = [];
-
 let lodgingsAnswer: LodgingsAnswer = 'first';
-
 let stop: (() => Promise<void>) | undefined;
-
 /** `START` moved back by `days`, so one instant describes the age of every seeded price (AAP 0.5.7). */
 function daysBefore(days: number): Date {
   return new Date(Date.parse(DEFAULT_TEST_NOW) - days * DAY_MS);
@@ -183,7 +140,6 @@ function daysBefore(days: number): Date {
 
 function findRepoFile(relativePath: string): string {
   const from = dirname(fileURLToPath(import.meta.url));
-
   for (let dir = from; ; dir = dirname(dir)) {
     const candidate = join(dir, relativePath);
     if (existsSync(candidate)) {
@@ -200,26 +156,16 @@ const LODGINGS_FIXTURE = findRepoFile('apps/workers/test/fixtures/overpass/lisbo
 const LODGINGS_REFRESH_FIXTURE = findRepoFile(
   'apps/workers/test/fixtures/overpass/lisbon-lodgings-refresh.json',
 );
-
-/*
- * The three recorded answers, parsed as this module is loaded rather than in `beforeAll`: a table
- * given to `it.each` is built at collection time, before any hook runs, and every row of it has to
- * come from the fixture it describes. Reading the files synchronously here is what lets one parse
- * serve both the case tables and the fixture server (AAP 0.3.3, 0.5.6).
- */
+/** The three recorded answers, parsed as this module is loaded rather than in `beforeAll`: a table given to `it.each` is built at collection time, before any hook runs, and every row of it has to come from the fixture it describes. Reading the files synchronously here is what lets one parse serve both the case tables and the fixture server (AAP 0.3.3, 0.5.6). */
 
 const placesFixture = JSON.parse(readFileSync(PLACES_FIXTURE, 'utf8')) as PlacesFixture;
-
 const lodgingsFixture = JSON.parse(readFileSync(LODGINGS_FIXTURE, 'utf8')) as LodgingsFixture;
-
 const lodgingsRefreshFixture = JSON.parse(
   readFileSync(LODGINGS_REFRESH_FIXTURE, 'utf8'),
 ) as LodgingsFixture;
-
 function elementByKey(elements: readonly FixtureElement[], key: string): FixtureElement {
   const [type, id] = key.split('/');
   const found = elements.find((element) => element.type === type && String(element.id) === id);
-
   if (found === undefined) {
     throw new Error(`the recorded answer holds no element "${key}"`);
   }
@@ -235,22 +181,15 @@ function pointOf(element: FixtureElement): { lat: number; lng: number } | null {
   return element.center === undefined ? null : { lat: element.center.lat, lng: element.center.lon };
 }
 
-/**
- * The phone the ingestion stores for an element's tags, by the rule `places/categorize.ts` documents
- * (AAP 0.5.6): the first `;`-separated entry, the separators OSM writes removed, a leading `00` read
- * as `+`, and the result kept only when it is E.164. Deriving the expectation from the fixture's own
- * tag is what keeps this table and the fixture from drifting apart.
- */
+/** The phone the ingestion stores for an element's tags, by the rule `places/categorize.ts` documents (AAP 0.5.6): the first `;`-separated entry, the separators OSM writes removed, a leading `00` read as `+`, and the result kept only when it is E.164. Deriving the expectation from the fixture's own tag is what keeps this table and the fixture from drifting apart. */
 function expectedPhone(tags: Readonly<Record<string, string>> | undefined): string | null {
   const first = (tags?.['phone'] ?? tags?.['contact:phone'])?.split(';')[0]?.trim() ?? '';
-
   if (first === '') {
     return null;
   }
 
   const digits = first.replace(/[\s\u00A0\-.()/]/g, '');
   const normalized = digits.startsWith('00') ? `+${digits.slice(2)}` : digits;
-
   return E164.safeParse(normalized).success ? normalized : null;
 }
 
@@ -262,7 +201,6 @@ function casePairs(cases: Readonly<Record<string, readonly string[]>>): [string,
 
 function mappedPlaceKeys(): string[] {
   const skipped = new Set(placesFixture._cases.skipped);
-
   return placesFixture.elements
     .map((element) => `${element.type}/${element.id}`)
     .filter((key) => !skipped.has(key));
@@ -274,7 +212,6 @@ function expectedMenuKeys(): string[] {
 
 function expectedFallbackKeys(): string[] {
   const linked = new Set(placesFixture._cases.withMenuLink);
-
   return mappedPlaceKeys().filter((key) => !linked.has(key) && key !== PRICED_PHONE_KEY);
 }
 
@@ -285,20 +222,13 @@ const PHONE_CASES: readonly string[] = [
   ...placesFixture._cases.nonE164Phone,
   ...placesFixture._cases.noPhone,
 ];
-
-/**
- * Every place the answer gives a category for, paired with the category its `_cases` key names, so a
- * fixture edit that changes the mapping fails here rather than passing unnoticed.
- */
+/** Every place the answer gives a category for, paired with the category its `_cases` key names, so a fixture edit that changes the mapping fails here rather than passing unnoticed. */
 const CATEGORY_CASES: [string, string][] = casePairs(placesFixture._cases.categories);
-
 const LODGING_CASES: [string, string][] = casePairs(lodgingsFixture._cases.kinds);
-
 const CENTRE_CASES: readonly string[] = [
   ...placesFixture._cases.fromCenter,
   ...lodgingsFixture._cases.fromCenter,
 ];
-
 interface PlaceRow {
   readonly id: string;
   readonly cityId: string;
@@ -342,7 +272,6 @@ const PLACE_COLUMNS = {
   isFixture: true,
   nearestPartnerDistanceM: true,
 } as const;
-
 const LODGING_COLUMNS = {
   id: true,
   cityId: true,
@@ -358,14 +287,12 @@ const LODGING_COLUMNS = {
   secretCiphertext: true,
   secretIssuedAt: true,
 } as const;
-
 function db(): DbClient {
   return testApp.services.db;
 }
 
 function splitKey(key: string): { osmType: string; osmId: bigint } {
   const [osmType, osmId] = key.split('/');
-
   if (osmType === undefined || osmId === undefined) {
     throw new Error(`"${key}" is not an <osmType>/<osmId> key`);
   }
@@ -396,7 +323,6 @@ type ManualLodgingRow = LodgingRow & {
   readonly osmId: bigint | null;
   readonly createdAt: Date;
 };
-
 /** The manually entered lodging: the one row no refresh may select, because it has no OSM key. */
 async function manualLodging(): Promise<ManualLodgingRow> {
   return await db().lodging.findFirstOrThrow({
@@ -414,7 +340,6 @@ async function coordinates(
 }> {
   const points = await readPoints(db(), table, [id], 'test');
   const point = points.get(id);
-
   return { lat: point?.lat, lng: point?.lng };
 }
 
@@ -422,7 +347,6 @@ async function menuIngestJobs(): Promise<{ id: string | undefined; data: unknown
   const jobs = await worker.queues
     .get(QUEUE.menuIngest)
     .getJobs(['waiting', 'prioritized', 'delayed']);
-
   return jobs.map((job) => ({ id: job.id, data: job.data as unknown }));
 }
 
@@ -431,7 +355,6 @@ async function menuTaskPlaceIds(): Promise<string[]> {
     where: { kind: 'menu_prices' },
     select: { placeId: true },
   });
-
   return rows
     .map((row) => row.placeId)
     .filter((placeId): placeId is string => placeId !== null)
@@ -440,7 +363,6 @@ async function menuTaskPlaceIds(): Promise<string[]> {
 
 async function rowSnapshot(): Promise<unknown> {
   const client = db();
-
   return {
     places: await client.place.findMany({
       orderBy: { osmId: 'asc' },
@@ -461,10 +383,7 @@ async function refresh(cityId: string): Promise<unknown> {
   return await refreshPlaces({ id: `test-${cityId}`, name: JOB_NAME, data: { cityId } }, worker);
 }
 
-/**
- * Starts the server that plays Overpass (AAP 0.3.3).
- * @returns The endpoint URL the workers environment is given.
- */
+/** Starts the server that plays Overpass (AAP 0.3.3). @returns The endpoint URL the workers environment is given. */
 async function startFixtureServer(): Promise<string> {
   const created = createServer((request, response) => {
     let body = '';
@@ -483,14 +402,11 @@ async function startFixtureServer(): Promise<string> {
       response.end(JSON.stringify(lodgings ? lodgingsBody() : placesFixture));
     });
   });
-
   await new Promise<void>((resolve) => {
     created.listen(0, '127.0.0.1', resolve);
   });
-
   server = created;
   const address = created.address();
-
   if (address === null || typeof address === 'string') {
     throw new Error('the fixture server did not start on a port');
   }
@@ -509,7 +425,6 @@ function lodgingsBody(): unknown {
 }
 
 const MANUAL_LODGING_NAME = 'Fixture Manual Lodging';
-
 const REMOVED_KEY = caseValue('removed', lodgingsRefreshFixture._cases.removed);
 const RENAMED_KEY = caseValue('renamed', lodgingsRefreshFixture._cases.renamed);
 const NEW_KEY = caseValue('new', lodgingsRefreshFixture._cases.new);
@@ -519,12 +434,10 @@ const OSM_PHONE_CHANGED_KEY = caseValue(
   'osmPhoneChanged',
   lodgingsRefreshFixture._cases.osmPhoneChanged,
 );
-
 const BATCH_ONLINE = 'cccccccc-0000-4000-8000-000000000001';
 const BATCH_UNREVIEWED = 'cccccccc-0000-4000-8000-000000000002';
 const BATCH_PHONE = 'cccccccc-0000-4000-8000-000000000003';
 const BATCH_STALE = 'cccccccc-0000-4000-8000-000000000004';
-
 /** A `_cases` value the assertions depend on, refused rather than read as `undefined`. */
 function caseValue(name: string, value: string | undefined): string {
   if (value === undefined) {
@@ -536,7 +449,6 @@ function caseValue(name: string, value: string | undefined): string {
 
 function nameOf(element: FixtureElement): string {
   const name = element.tags?.['name'];
-
   if (name === undefined) {
     throw new Error(`element ${element.type}/${element.id} carries no name`);
   }
@@ -546,7 +458,6 @@ function nameOf(element: FixtureElement): string {
 
 function lodgingKindFrom(element: FixtureElement): LodgingKind {
   const kind = lodgingKindOf(element.tags);
-
   if (kind === null) {
     throw new Error(`element ${element.type}/${element.id} is no lodging kind`);
   }
@@ -554,20 +465,12 @@ function lodgingKindFrom(element: FixtureElement): LodgingKind {
   return kind;
 }
 
-/**
- * Writes the state the refresh answers are compared against (AAP 0.5.2, 0.5.6): the two cities, the
- * one active partner venue, a manually entered lodging, a lodging OSM dropped and the places and
- * price records that decide both the `update` half of the place upsert and the price work.
- */
+/** Writes the state the refresh answers are compared against (AAP 0.5.2, 0.5.6): the two cities, the one active partner venue, a manually entered lodging, a lodging OSM dropped and the places and price records that decide both the `update` half of the place upsert and the price work. */
 async function seed(): Promise<void> {
   const client = db();
-
-  // The launch cities, from `config/cities.json`: `lisbon` also brings the `bbox` the lodgings query
-  // is built from (AAP 0.5.6).
+  // The launch cities, from `config/cities.json`: `lisbon` also brings the `bbox` the lodgings query is built from (AAP 0.5.6).
   await testApp.seedCities();
-
-  // A city no venue serves and no lodging of which holds a console secret: it proves that a row
-  // another city owns keeps its city, and the run that reaches the lodgings query alone (AAP 0.5.6).
+  // A city no venue serves and no lodging of which holds a console secret: it proves that a row another city owns keeps its city, and the run that reaches the lodgings query alone (AAP 0.5.6).
   await client.city.create({
     data: {
       id: OTHER_CITY,
@@ -580,14 +483,12 @@ async function seed(): Promise<void> {
       bbox: { south: 38.6, west: -9.3, north: 38.62, east: -9.28 },
     },
   });
-
   await makeVenue(testApp, {
     cityId: CITY,
     lat: VENUE_POINT.lat,
     lng: VENUE_POINT.lng,
     isActivePartner: true,
   });
-
   // A manually entered lodging: it carries no OSM key, so no refresh may select it (AAP 0.5.6).
   const manual = await makeLodging(testApp, {
     cityId: CITY,
@@ -600,9 +501,7 @@ async function seed(): Promise<void> {
     where: { id: manual.id },
     data: { name: MANUAL_LODGING_NAME },
   });
-
-  // A row OSM dropped three days ago, which the second answer lists again: the run has to clear the
-  // mark and keep the id every claim and activity fact references (AAP 0.5.6).
+  // A row OSM dropped three days ago, which the second answer lists again: the run has to clear the mark and keep the id every claim and activity fact references (AAP 0.5.6).
   const returning = elementByKey(lodgingsRefreshFixture.elements, RETURNED_KEY);
   const returningPoint = pointOf(returning);
   const returningRow = await client.lodging.create({
@@ -618,7 +517,6 @@ async function seed(): Promise<void> {
     },
     select: { id: true },
   });
-
   if (returningPoint !== null) {
     await setPoint(db(), 'lodging', returningRow.id, returningPoint);
   }
@@ -679,7 +577,6 @@ async function seedPrice(input: {
 }): Promise<void> {
   const row = await place(input.key);
   const main = input.days % 2 === 1;
-
   await db().priceRecord.create({
     data: {
       placeId: row.id,
@@ -705,14 +602,10 @@ async function seedPrice(input: {
 
 beforeAll(async () => {
   const overpassUrl = await startFixtureServer();
-
   testApp = await createTestApp();
   await testApp.resetState();
   await seed();
-
-  // The context the processor is called with: the harness's clock — one clock for the suite, which is
-  // what lets a window be crossed in a tick (AAP 0.11.1) — its Redis for the producers, and a logger
-  // that keeps every line in memory so the redaction rule can be asserted (AAP 0.11.1).
+  // The context the processor is called with: the harness's clock — one clock for the suite, which is what lets a window be crossed in a tick (AAP 0.11.1) — its Redis for the producers, and a logger that keeps every line in memory so the redaction rule can be asserted (AAP 0.11.1).
   worker = await createWorkerContext(
     loadWorkersEnv(testWorkersEnv({ OVERPASS_URL: overpassUrl })),
     {
@@ -729,9 +622,7 @@ beforeAll(async () => {
       }),
     },
   );
-
   lodgingSecret = randomSecret();
-
   stop = async () => {
     await closeWorkerContext(worker);
     await testApp.close();
@@ -741,19 +632,13 @@ beforeAll(async () => {
     }
   };
 }, 300_000);
-
 afterAll(async () => {
   // A `beforeAll` that failed before reaching the teardown must report its own error, not a second one.
   if (stop !== undefined) {
     await stop();
   }
 });
-
-/*
- * The cases run in order over one seeded city and one shared instant: each one leaves the database
- * where the next expects it (the two refreshes of AAP 0.5.6 are one flow), so this file is not a
- * collection of independent fixtures and must not be reordered.
- */
+/** The cases run in order over one seeded city and one shared instant: each one leaves the database where the next expects it (the two refreshes of AAP 0.5.6 are one flow), so this file is not a collection of independent fixtures and must not be reordered. */
 describe('place-refresh', () => {
   it('refuses a job name its queue does not accept, and data that is not a city', async () => {
     await expect(
@@ -774,8 +659,7 @@ describe('place-refresh', () => {
     const before = served.length;
     const result = await refresh(CITY);
     const calls = served.slice(before);
-    // The places query runs around the city's one centre and the lodgings query inside its bbox, one
-    // after the other, each identifying the crawler (AAP 0.3.3, 0.5.6).
+    // The places query runs around the city's one centre and the lodgings query inside its bbox, one after the other, each identifying the crawler (AAP 0.3.3, 0.5.6).
     expect(calls.map((call) => call.kind)).toEqual(['places', 'lodgings']);
     expect(calls.map((call) => call.userAgent)).toEqual([
       worker.env.crawlerUserAgent,
@@ -942,13 +826,11 @@ describe('place-refresh', () => {
         secretIssuedAt: testApp.clock.now(),
       },
     });
-    // The number an operator entered appears in none of the recorded answers, so the OSM phone of
-    // that same row cannot be mistaken for it (AAP 0.5.6).
+    // The number an operator entered appears in none of the recorded answers, so the OSM phone of that same row cannot be mistaken for it (AAP 0.5.6).
     for (const path of [PLACES_FIXTURE, LODGINGS_FIXTURE, LODGINGS_REFRESH_FIXTURE]) {
       expect(readFileSync(path, 'utf8')).not.toContain(OPERATOR_PHONE);
     }
-    // The lodging the second answer stops listing carries a claim and an activity fact that reference
-    // its id: hiding it from the directory must not detach either of them (AAP 0.5.6, 0.5.7).
+    // The lodging the second answer stops listing carries a claim and an activity fact that reference its id: hiding it from the directory must not detach either of them (AAP 0.5.6, 0.5.7).
     const removed = await lodging(REMOVED_KEY);
     removedLodgingId = removed.id;
     const claimant = await makeUser(testApp, { card: 'none' });
@@ -1004,9 +886,7 @@ describe('place-refresh', () => {
       lodgingSecret,
     );
     expect(await manualLodging()).toEqual(manualBefore);
-    // The dropped lodging keeps its row — and therefore the id its claim and its activity fact
-    // reference — with the instant this run marked it; the one that came back loses its mark, and the
-    // new element was inserted as an OSM row (AAP 0.5.6).
+    // The dropped lodging keeps its row — and therefore the id its claim and its activity fact reference — with the instant this run marked it; the one that came back loses its mark, and the new element was inserted as an OSM row (AAP 0.5.6).
     const dropped = await lodging(REMOVED_KEY);
     expect(dropped.osmMissingAt?.getTime()).toBe(testApp.clock.now().getTime());
     expect(
@@ -1054,9 +934,7 @@ describe('place-refresh', () => {
       menuJobs: expectedMenuKeys().length,
       callTasks: 0,
     });
-    // The custom id `<queue>-<placeId>-<localDate>` bounds a place to one ingestion per city-local
-    // day, so two runs' worth of jobs stand in the queue and the third added none of them again; an
-    // open fallback task is left alone the same way (AAP 0.3.2, 0.5.6).
+    // The custom id `<queue>-<placeId>-<localDate>` bounds a place to one ingestion per city-local day, so two runs' worth of jobs stand in the queue and the third added none of them again; an open fallback task is left alone the same way (AAP 0.3.2, 0.5.6).
     expect(await menuIngestJobs()).toEqual(jobsBefore);
     expect(jobsBefore).toHaveLength(expectedMenuKeys().length * 2);
     expect(await menuTaskPlaceIds()).toEqual(tasksBefore);
@@ -1076,8 +954,7 @@ describe('place-refresh', () => {
       menuJobs: 0,
       callTasks: 0,
     });
-    // An empty answer is a data-source fault, not mass closure: the city's place is left as it stands
-    // (AAP 0.5.2).
+    // An empty answer is a data-source fault, not mass closure: the city's place is left as it stands (AAP 0.5.2).
     expect((await place('node/910010')).name).toBe('Fixture Bar Sem Site');
   });
 });

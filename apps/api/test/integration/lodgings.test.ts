@@ -1,14 +1,12 @@
 /**
  * The lodging directory, its guest list and its leaderboard, end to end.
  *
- * The rules the cases turn on: a verified guest count below `GUEST_COUNT_THRESHOLD` is never a
- * number — it is `GUEST_COUNT_BELOW_LABEL`, in the directory and on the detail alike — an opted-in
- * guest is released only to a caller holding a valid proof for the lodging's city, and the city
- * board counts one pair once in any 30 days and ignores facts older than its 90-day window.
+ * The rules the cases turn on: a verified guest count below `GUEST_COUNT_THRESHOLD` is never a number — it is `GUEST_COUNT_BELOW_LABEL`, in the
+ * directory and on the detail alike — an opted-in guest is released only to a caller holding a valid proof for the lodging's city, and the city board
+ * counts one pair once in any 30 days and ignores facts older than its 90-day window.
  *
- * The directory is cached in Redis for `LEADERBOARD_CACHE_SECONDS` under
- * `leaderboard:<APP_ENV>:<cityId>`, whose TTL is wall-clock: the reader drops this run's own key
- * before every read that must see rows a case has just written.
+ * The directory is cached in Redis under `leaderboard:<APP_ENV>:<cityId>`, whose TTL is wall-clock: the reader drops this run's own key before every
+ * read that must see rows a case has just written.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -75,9 +73,7 @@ const UNKNOWN_CITY = 'narnia';
 const MISSING_LODGING_ID = '00000000-0000-4000-8000-000000000000';
 
 /**
- * The directory's cache entry under this run's own fixture policy,
- * `leaderboard:test:<cityId>`, rewritten by every recomputation. `APP_ENV` is in the key, so the
- * integration project's own `test` policy is named here.
+ * The directory's cache entry under this run's own fixture policy, `leaderboard:test:<cityId>`, rewritten by every recomputation.
  */
 const CACHE_KEY = `leaderboard:test:${LISBON}`;
 
@@ -136,13 +132,9 @@ async function setStaying(actor: UserFixture, showStaying: boolean): Promise<Rou
 }
 
 /**
- * The city's activity-ordered directory, read past the cache: the key is dropped first so the board
- * reflects the rows the case has just written, and the TTL the write left behind is asserted, which
- * pins the cache key, its lifetime and the fact that a read repopulates it. `sort=name` re-sorts the
- * same board and writes the same entry, so the check holds for both orders.
- *
- * @param sort - `activity` (the default) or `name`.
- * @returns The directory entries, in the order the route answered with.
+ * The city's activity-ordered directory, read past the cache: the key is dropped first so the board reflects the rows the case has just written, and the
+ * TTL the write left behind is asserted, which pins the cache key, its lifetime and the fact that a read repopulates it. `sort=name` re-sorts the same
+ * board and writes the same entry.
  */
 async function board(sort: LodgingSort = 'activity'): Promise<readonly LodgingSummary[]> {
   await t.services.redis.client.del(CACHE_KEY);
@@ -194,17 +186,15 @@ function dayFrom(now: Date, days: number): string {
 }
 
 /**
- * A pair for one lodging fact. A fact carries a keyed hash of two traveler ids and no user id at
- * all, so the pair needs no account rows: two fresh ids are what the key is taken over.
+ * A pair for one lodging fact. A fact carries a keyed hash of two traveler ids and no user id at all, so the pair needs no account rows.
  */
 function pairOf(): readonly [FixtureRef, FixtureRef] {
   return [{ id: randomUUID() }, { id: randomUUID() }];
 }
 
 /**
- * One lodging under a name the case controls. `makeLodging` numbers its own names from a counter
- * that runs for the whole process, so their alphabetical order is not the order the cases create
- * them in; the leaderboard orders by name, so the scenario's own names are written over it.
+ * One lodging under a name the case controls. `makeLodging` numbers its own names from a counter that runs for the whole process, so their alphabetical
+ * order is not the order the cases create them in; the leaderboard orders by name, so the scenario's own names are written over it.
  */
 async function namedLodging(name: string): Promise<LodgingFixture> {
   const lodging = await makeLodging(t, { cityId: LISBON });
@@ -224,9 +214,8 @@ interface GuestFixture {
 }
 
 /**
- * One guest with a claim on `lodging`, `verified` unless the case says otherwise. A verified claim
- * whose `stayTo` has not passed is what the guest count, the guest list and the visibility toggle
- * all read, so this is the shape every criterion-15 case starts from.
+ * One guest with a claim on `lodging`, `verified` unless the case says otherwise. A verified claim whose `stayTo` has not passed is what the guest count,
+ * the guest list and the visibility toggle all read.
  */
 async function makeGuest(
   lodging: LodgingFixture,
@@ -312,8 +301,7 @@ interface GuestCountRow {
 }
 
 /**
- * The counts criterion 15 is read at, straddling `GUEST_COUNT_THRESHOLD`: below it the count is the
- * label, at and above it the number itself.
+ * The counts criterion 15 is read at, straddling `GUEST_COUNT_THRESHOLD`: below it the count is the label, at and above it the number itself.
  */
 const GUEST_COUNTS: readonly GuestCountRow[] = [
   { guests: 0, expected: GUEST_COUNT_BELOW_LABEL },
@@ -478,10 +466,8 @@ interface BoardExpectation {
 /**
  * What the seeded scenario must produce on the activity board.
  *
- * Two properties make these rows a test of the rule rather than of the fixtures: Bravo's 3 come from
- * three distinct pairs and a fourth fact older than the 90-day window, which no score counts; and
- * Alpha and Charlie both score 2, so their order is the guest-count tie-break, Alpha holding three
- * current verified guests to Charlie's one.
+ * Two properties make these rows a test of the rule rather than of the fixtures: Bravo's 3 come from three distinct pairs and a fourth fact older than the
+ * 90-day window; and Alpha and Charlie both score 2, so their order is the guest-count tie-break.
  */
 const SEEDED_BOARD: readonly BoardExpectation[] = [
   { name: 'Bravo Lodge', score: 3, rank: 1, guestCount: GUEST_COUNT_BELOW_LABEL },
@@ -589,12 +575,8 @@ interface RecordedServices {
 }
 
 /**
- * The run's own services over a logger that keeps every warning the module writes, so a case can read
- * the line a bounded answer is reported with (AAP 0.11.1).
- *
- * The directory route calls this module with services built the same way — `t.services` narrowed to
- * {@link LodgingLeaderboardServices} — so the line asserted here is the line the route writes; only
- * the logger differs, because the app's own logger writes to the process rather than to the case.
+ * The run's own services over a logger that keeps every warning the module writes, so a case can read the line a bounded answer is reported with
+ * (AAP 0.11.1). The directory route calls this module with services built the same way, so the line asserted here is the line the route writes.
  */
 function recordingServices(db: DbClient): RecordedServices {
   const warnings: WarningLine[] = [];
@@ -814,9 +796,8 @@ describe('the detail route over a bounded directory', () => {
 });
 
 /**
- * The entries a hit must refuse rather than serve (AAP 0.5.7), as (title, raw entry) rows: a bare
- * array an older process wrote, a stamp a later version wrote, a value that is not an object, and
- * JSON that will not parse.
+ * The entries a hit must refuse rather than serve (AAP 0.5.7), as (title, raw entry) rows: a bare array an older process wrote, a stamp a later version
+ * wrote, a value that is not an object, and JSON that will not parse.
  */
 const STALE_ENTRIES: readonly (readonly [string, string])[] = [
   ['a bare array', JSON.stringify([])],
@@ -849,13 +830,10 @@ const REFUSING_ENV = 'staging' as const;
 const REFUSING_CACHE_KEY = `leaderboard:${REFUSING_ENV}:${LISBON}`;
 
 /**
- * The services of the fixture-refusing policy: the run's own Redis, clock and logger, over a client
- * built for an environment outside `test` and `demo`.
+ * The services of the fixture-refusing policy: the run's own Redis, clock and logger, over a client built for an environment outside `test` and `demo`.
  *
- * The case drives the module's exported {@link leaderboard} rather than a second app, because the
- * harness cannot build one: `buildApp` refuses a fault injector outside `APP_ENV=test` and the
- * factory always supplies one. The directory route calls exactly this function with exactly these
- * services, so the cache key under test is the one the route reads and writes.
+ * The case drives the module's exported {@link leaderboard} rather than a second app, because the harness cannot build one: `buildApp` refuses a fault
+ * injector outside `APP_ENV=test` and the factory always supplies one.
  */
 function refusingServices(db: DbClient): LodgingLeaderboardServices {
   return {
@@ -882,15 +860,10 @@ async function cachedVersion(key: string): Promise<unknown> {
 }
 
 /**
- * The envelope one cache key holds: the board `items` carries, and the `v` stamp that gates a hit
- * (AAP 0.5.7).
+ * The envelope one cache key holds: the board `items` carries, and the `v` stamp that gates a hit (AAP 0.5.7).
  *
- * The entry is the version-stamped envelope the module writes, not the bare board — a bare array is a
- * shape the module refuses and recomputes — so a case reads both halves; `items` is parsed as the
- * board the contract publishes, which is what an older process's array could not satisfy.
- *
- * @param key - The cache key to read.
- * @returns The entry's stamp and its board.
+ * The entry is the version-stamped envelope the module writes, not the bare board — a bare array is a shape the module refuses and recomputes — so a case
+ * reads both halves.
  */
 async function cachedEntry(
   key: string,

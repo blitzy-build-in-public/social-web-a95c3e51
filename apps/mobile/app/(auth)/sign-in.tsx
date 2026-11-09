@@ -1,7 +1,4 @@
-/**
- * The sign-in screen at `/sign-in` (AAP 0.5.8, AAP 0.7.1 row 1, AAP 0.8.1): the one way into
- * Tablemate, and the first of the four WCAG 2.1 AA core flows.
- */
+/** The sign-in screen at `/sign-in`: the one way into Tablemate, and the first of the four WCAG 2.1 AA core flows. */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, type TextInputProps } from 'react-native';
 import { Stack, router } from 'expo-router';
@@ -29,7 +26,7 @@ const EMAIL_INPUT_PROPS: TextInputProps = {
 };
 const SUBMIT_PROPS = { label: 'Email me a sign-in link', testID: 'sign-in-submit' } as const;
 const ERROR_BANNER = { tone: 'error', testID: 'sign-in-error' } as const;
-/** The sentence for a failed request; never the API's own `message` text (AAP 0.11.1). */
+/** The sentence for a failed request; never the API's own `message` text. */
 function failureMessage(error: unknown): string {
   if (!isApiError(error)) return userMessageFor('network_error');
   const message = userMessageFor(error.code);

@@ -1,7 +1,4 @@
-/**
- * The payment-card screen (`/profile/payment`): the saved-card step a meetup deposit needs
- * (AAP 0.1.1, AAP 0.3.4, AAP 0.5.4, AAP 0.8.1).
- */
+/** The payment-card screen (`/profile/payment`): the saved-card step a meetup deposit needs. */
 import { useCallback, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';

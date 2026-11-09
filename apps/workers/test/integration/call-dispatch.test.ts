@@ -1,7 +1,4 @@
-/**
- * Integration tests for the `call-dispatch` queue: eligibility, the calling window, the call a
- * dispatcher creates, and the two ways a dispatch is given up on (AAP 0.3.2, 0.5.3, 0.5.6, 0.5.7).
- */
+/** Integration tests for the `call-dispatch` queue: eligibility, the calling window, the call a dispatcher creates, and the two ways a dispatch is given up on (AAP 0.3.2, 0.5.3, 0.5.6, 0.5.7). */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -54,29 +51,20 @@ const CITY = 'lisbon';
 const LISBON = 'Europe/Lisbon';
 const DAY_ONE = '2026-11-10';
 const DAY_TWO = '2026-11-11';
-
-/**
- * The instant every case starts at: Lisbon 10:00, inside the calling window with room for a call that
- * runs its whole `CAP_CALL_SECONDS` allowance. Lisbon is on WET in November, so this is 10:00 UTC.
- */
+/** The instant every case starts at: Lisbon 10:00, inside the calling window with room for a call that runs its whole `CAP_CALL_SECONDS` allowance. Lisbon is on WET in November, so this is 10:00 UTC. */
 const NOW = localTimeOn(LISBON, DAY_ONE, '10:00');
-
 const SECOND_MS = 1_000;
-
 /** Two numbers the test allowlist holds, and one it does not, so the guard must refuse it. */
 const MENU_PHONE = '+14155550161';
 const LODGING_PHONE = '+14155550171';
 const STRANGER_PHONE = '+16175550142';
-
 let app: TestApp;
 let store: DbClient;
 let ctx: WorkerContext;
-
 beforeAll(async () => {
   app = await createTestApp();
   store = app.services.db;
-  // Binding the API is what gives the simulator its target: it signs over `API_PUBLIC_URL` and posts
-  // every callback to the address this call resolves, so the signed URL and the real one agree.
+  // Binding the API is what gives the simulator its target: it signs over `API_PUBLIC_URL` and posts every callback to the address this call resolves, so the signed URL and the real one agree.
   await app.listen();
   ctx = await createWorkerContext(
     loadWorkersEnv(
@@ -88,22 +76,18 @@ beforeAll(async () => {
     { clock: app.clock, twilioHttpClient: app.simulator.httpClient },
   );
 });
-
 afterAll(async () => {
   await app.simulator.waitIdle();
   await closeWorkerContext(ctx);
   await app.close();
 });
-
 beforeEach(async () => {
-  // `resetState` returns the database, Redis and the simulator to a state a fresh run would see and
-  // puts the clock back at the harness's own default, so the clock is moved after it.
+  // `resetState` returns the database, Redis and the simulator to a state a fresh run would see and puts the clock back at the harness's own default, so the clock is moved after it.
   await app.resetState();
   await app.seedCities();
   app.time.at(NOW);
   app.simulator.reset();
 });
-
 function now(): Date {
   return app.clock.now();
 }
@@ -169,11 +153,7 @@ async function requireAttempt(taskId: string): Promise<AttemptView> {
   return attempt;
 }
 
-/**
- * One city-local day's call and language-model counters (AAP 0.5.6), or `null` for a day nothing
- * reserved against. `call_budget_day.local_date` is a `date`, so the key is that day's UTC midnight,
- * which is the day `localDateKey` names it by.
- */
+/** One city-local day's call and language-model counters (AAP 0.5.6), or `null` for a day nothing reserved against. `call_budget_day.local_date` is a `date`, so the key is that day's UTC midnight, which is the day `localDateKey` names it by. */
 async function budgetOn(
   localDate: string,
 ): Promise<{ calls: number; llmReservedMicros: bigint } | null> {
@@ -199,16 +179,10 @@ async function seedMenuTask(phone: string = MENU_PHONE): Promise<string> {
     placeId: place.id,
     nextAttemptAt: now(),
   });
-
   return task.id;
 }
 
-/**
- * Apply the result the API's status webhook recorded on an attempt (AAP 0.3.2): the
- * `apply_call_result` outbox row that route wrote in the transaction recording the outcome, then the
- * `call-results` / `apply` job the row becomes. The row is read from the database rather than
- * rebuilt, so what the case applies is what the API really committed.
- */
+/** Apply the result the API's status webhook recorded on an attempt (AAP 0.3.2): the `apply_call_result` outbox row that route wrote in the transaction recording the outcome, then the `call-results` / `apply` job the row becomes. The row is read from the database rather than rebuilt, so what the case applies is what the API really committed. */
 async function applyRecordedResult(attemptId: string): Promise<void> {
   const row = await store.outboxMessage.findFirstOrThrow({
     where: { kind: 'apply_call_result' },
@@ -218,14 +192,12 @@ async function applyRecordedResult(attemptId: string): Promise<void> {
   expect(parseOutboxPayload('apply_call_result', row.payload)).toEqual({
     callAttemptId: attemptId,
   });
-
   const job: CallResultsJob = {
     id: outboxJobId(row.id),
     name: JOB[QUEUE.callResults].apply,
     data: { outboxId: row.id, callAttemptId: attemptId },
     opts: { attempts: QUEUE_JOB_OPTIONS[QUEUE.callResults].attempts ?? 1 },
   };
-
   await runCallResults(job, ctx);
 }
 
@@ -236,8 +208,7 @@ function vendorBackoffAt(failures: number, at: Date): Date {
 
 describe('call dispatch', () => {
   it('leaves a task whose number the guard refuses queued, and never dials it', async () => {
-    // Stated at run time rather than assumed: the number is outside every prefix the test allowlist
-    // holds, which is what makes the verdict below the guard's refusal rather than a fixture gap.
+    // Stated at run time rather than assumed: the number is outside every prefix the test allowlist holds, which is what makes the verdict below the guard's refusal rather than a fixture gap.
     expect(testCallAllowlist().split(',')).not.toContain(STRANGER_PHONE);
     const taskId = await seedMenuTask(STRANGER_PHONE);
     await expect(dispatchCity(ctx)).resolves.toMatchObject({ decisions: { allowlist_block: 1 } });
@@ -249,12 +220,10 @@ describe('call dispatch', () => {
     expect(await attemptsOf(taskId)).toHaveLength(0);
     expect((await budgetOn(localDateKey(LISBON, NOW)))?.calls ?? 0).toBe(0);
   });
-
   /** One calling-window case: the instant to stand at, and what a pass there must make of it. */
   type HoursCase =
     | { readonly name: string; readonly at: Date; readonly dials: false; readonly until: Date }
     | { readonly name: string; readonly at: Date; readonly dials: true };
-
   const HOURS_CASES = [
     {
       name: 'defers a call a minute before the window opens to 09:00 the same local day',
@@ -392,9 +361,7 @@ describe('call dispatch', () => {
   });
 
   it('never redials an ambiguous create, and hands the task to the operator once the grace elapses', async () => {
-    // A create answered `503` reached the vendor, so a call may exist that nothing can disprove: the
-    // attempt becomes `dispatch_unknown`, the call slot and the dialogue budget stay consumed, and no
-    // later pass may dial again (AAP 0.3.2).
+    // A create answered `503` reached the vendor, so a call may exist that nothing can disprove: the attempt becomes `dispatch_unknown`, the call slot and the dialogue budget stay consumed, and no later pass may dial again (AAP 0.3.2).
     const real = app.simulator.httpClient;
     let creates = 0;
     const wrapper: TwilioHttpClient = {
@@ -456,7 +423,6 @@ describe('call dispatch', () => {
       await closeWorkerContext(context);
     }
   });
-
   /** One claim case: how the lodging a claim names can be called, and what that opens. */
   interface ClaimCase {
     readonly name: string;

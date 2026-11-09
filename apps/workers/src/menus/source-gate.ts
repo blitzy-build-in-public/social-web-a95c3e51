@@ -1,53 +1,28 @@
 /**
  * The no-invention source gate of the menu pipeline (AAP 0.5.6).
  *
- * An extracted item survives only when its `priceText` occurs in the extracted source text —
- * compared as whitespace-normalized strings — and `./price-parse.ts` parses that same substring to
- * one unambiguous positive amount in the currency the source declares. Everything else is dropped
- * and counted, so a price the source never printed is never stored: criterion 11's "100% of
- * extracted price strings found in the source text" then holds by construction (AAP 0.12.2).
+ * An extracted item survives only when its `priceText` occurs in the extracted source text — compared as whitespace-normalized
+ * strings — and `./price-parse.ts` parses that same substring to one unambiguous positive amount in the currency the source
+ * declares. Everything else is dropped and counted, so a price the source never printed is never stored: criterion 11's "100%
+ * of extracted price strings found in the source text" then holds by construction (AAP 0.12.2).
  *
- * Pure and total: no I/O, no clock, no logger, and a malformed item is counted rather than thrown.
- * The caller (`../jobs/menu-ingest.ts`) owns logging and reads the returned drop counts; source
- * text is neither logged nor returned.
- *
- * kept items, and 0.8.1 for this file.
+ * Pure and total: no I/O, no clock, no logger, and a malformed item is counted rather than thrown. The caller
+ * (`../jobs/menu-ingest.ts`) owns logging and reads the returned drop counts; source text is neither logged nor returned.
  */
 
 import type { ExtractedMenuItem } from '@tablemate/shared';
 
 import { hasExplicitCurrencyMarker, isPriceCurrency, parsePrice } from './price-parse.ts';
 
-/**
- * Collapses every Unicode whitespace run to one ASCII space and trims the result (AAP 0.5.6), so a
- * price the extractor restated with a regular space still matches a source written with a no-break
- * space (U+00A0), a narrow no-break space (U+202F), a thin space, a tab or a newline.
- *
- * Deliberately the only normalization: no NFKC, no case folding, no punctuation change. The kept
- * `priceText` has to occur literally in the whitespace-normalized source — the criterion-11 check
- * itself — so normalizing further would let a stored price differ from its source text.
- */
+/** Collapses every Unicode whitespace run to one ASCII space and trims the result (AAP 0.5.6), so a price the extractor restated with a regular space still matches a source written with a no-break space (U+00A0), a narrow no-break space (U+202F), a thin space, a tab or a newline. Deliberately the only normalization: no NFKC, no case folding, no punctuation change. The kept `priceText` has to occur literally in the whitespace-normalized source — the criterion-11 check itself — so normalizing further would let a stored price differ from its source text. */
 export function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/gu, ' ').trim();
 }
 
-/**
- * One gated item: the extracted item with its `priceText` replaced by the normalized string the
- * gate found in the source, plus `localAmountMinor`, the amount that string parses to in the ISO
- * 4217 minor unit of its own currency (AAP 0.5.6, 0.5.7).
- *
- * Field for field this is the contract's `PriceItemInput`, so the pipeline stores the item as it
- * stands after converting `localAmountMinor` to USD cents with the capture date's `FxRate`.
- */
+/** One gated item: the extracted item with its `priceText` replaced by the normalized string the gate found in the source, plus `localAmountMinor`, the amount that string parses to in the ISO 4217 minor unit of its own currency (AAP 0.5.6, 0.5.7). Field for field this is the contract's `PriceItemInput`, so the pipeline stores the item as it stands after converting `localAmountMinor` to USD cents with the capture date's `FxRate`. */
 export type GatedMenuItem = ExtractedMenuItem & { localAmountMinor: number };
-
-/**
- * What the gate dropped, by reason (AAP 0.5.6): `not_in_source` counts a `priceText` that does not
- * occur in the extracted source text, `unparseable` counts one that does occur but is not one
- * positive amount in the currency the source declares. The caller logs both counts.
- */
+/** What the gate dropped, by reason (AAP 0.5.6): `not_in_source` counts a `priceText` that does not occur in the extracted source text, `unparseable` counts one that does occur but is not one positive amount in the currency the source declares. The caller logs both counts. */
 export type GateDrops = { not_in_source: number; unparseable: number };
-
 /**
  * Keeps the extracted items whose price is provably in the source and drops the rest (AAP 0.5.6),
  * checking each item in this order, the first failure deciding the drop:
@@ -88,8 +63,7 @@ export function gateItems(
       drops.unparseable += 1;
       continue;
     }
-    // `parsePrice` refuses zero and negatives; the range check keeps the gate's "positive amount"
-    // contract true however that parser bounds its own return value.
+    // `parsePrice` refuses zero and negatives; the range check keeps the gate's "positive amount" contract true however that parser bounds its own return value.
     const amount = parsePrice(priceText, itemCurrency);
     if (amount === null || amount <= 0) {
       drops.unparseable += 1;

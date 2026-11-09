@@ -1,20 +1,13 @@
 /**
- * The web header's back control, drawn rather than loaded (AAP 0.5.8).
+ * The web header's back control, drawn rather than loaded (AAP 0.5.8). A navigator's own control is an `Image` over a
+ * bundled 96x96 PNG, so every header with a back entry makes an image request as soon as it renders; this draws the same
+ * chevron with `react-native-svg`, already in the web bundle.
  *
- * A navigator's own back control is an `Image` over a bundled 96x96 PNG, so every header that holds a
- * back entry makes an image request as soon as it renders — before the first paint of the entry route,
- * on every screen of the stack, for a glyph the browser then scales down to 24x24. This control draws
- * the same left-pointing chevron with `react-native-svg`, which is already in the web bundle, so the
- * web build requests no image for the header at all and nothing is downscaled.
- *
- * Its accessible name and role are stated outright rather than left to the glyph, so assistive
- * technology announces what the default control announced — `Go back`, as a button — and a keyboard
- * reaches it by Tab and activates it with Enter or Space (WCAG 2.1 AA, AAP 0.5.8). Its focus ring is
- * the reserved boundary band `Button` paints, so focusing it moves no layout.
- *
- * {@link renderWebHeaderLeft} is what `./NavigationHeader`'s `navigationHeaderOptions` spreads into a
- * web navigator's screen options, and only under `Platform.OS === 'web'`: on iOS and Android the
- * platform header keeps the control it has today, and no option, component or request changes there.
+ * Its accessible name and role are stated outright rather than left to the glyph, so assistive technology announces what
+ * the default control announced — `Go back`, as a button — and a keyboard reaches it by Tab and activates it with Enter
+ * or Space (WCAG 2.1 AA). Its focus ring is the reserved boundary band `Button` paints, so focusing it moves no layout.
+ * {@link renderWebHeaderLeft} is what `./NavigationHeader` spreads into a web navigator's screen options, and only under
+ * `Platform.OS === 'web'`: on iOS and Android the platform header keeps the control it has today.
  */
 import { useCallback, useState } from 'react';
 import type { ReactElement } from 'react';
@@ -29,72 +22,41 @@ import {
   radii,
   spacing,
 } from '@tablemate/shared';
-
 /**
- * The props a header hands its back control.
- *
- * Every field is optional, because each navigator passes what its own header holds: the props are
- * spread straight from `expo-router`'s `Stack` and `Tabs` screen options, where a native-stack screen
- * passes `canGoBack`, `tintColor`, `label` and `href` and the elements-backed header behind `Tabs`
- * passes those plus `onPress`, `pressColor`, `displayMode`, `titleLayout` and `screenLayout`. A field
- * this control does not read is tolerated and ignored rather than declared: it draws its own glyph and
- * paints its own states.
+ * The props a header hands its back control. Every field is optional, because the props are spread straight from
+ * `expo-router`'s `Stack` and `Tabs` screen options, so a field this control does not read is tolerated and
+ * ignored rather than declared; it draws its own glyph and paints its own states.
  */
 export interface HeaderBackButtonProps {
-  /** Whether a previous screen exists. Not `true` draws nothing at all. */
   canGoBack?: boolean;
-
-  /**
-   * The navigator's own go-back. Without it nothing is drawn: a back control that cannot navigate
-   * back is worse than no control, and the tab roots that hold no back entry pass none.
-   */
+  /** The navigator's own go-back. Without it nothing is drawn: a back control that cannot navigate back is worse than no control. */
   onPress?: () => void;
-
-  /** The header's tint, which the chevron is drawn in. Defaults to `colors.text`. */
   tintColor?: string;
-
   /** The navigator's label for the previous screen. Not read: the accessible name is fixed below. */
   label?: string;
 }
 
-/**
- * The name assistive technology announces for this control, which is the name the platform's own back
- * control announces on web and the one a screen reader user already knows.
- */
+// The name assistive technology announces, which is the name the platform's own back control announces on web.
 const GO_BACK_NAME = 'Go back';
 
-/**
- * The square the chevron is drawn in, in points / CSS px: 24, the size the header's own glyph renders
- * at today, which is `spacing.xl`.
- */
+// The square the chevron is drawn in: 24, the size the header's own glyph renders at today (`spacing.xl`).
 const GLYPH_SIZE = spacing.xl;
 
-/**
- * The chevron, in the `GLYPH_SIZE`-unit box: a point at x 15 opening to y 4.5 and 19.5, so the glyph
- * sits centred in its square and points the way the platform's own arrow points.
- */
+// The chevron in that box: a point at x 15 opening to y 4.5 and 19.5, so it sits centred and points the way the platform's own arrow points.
 const CHEVRON = 'M15 4.5 L7.5 12 L15 19.5';
-
 /** The chevron's weight, the 2-point stroke a control's own boundary paints. */
 const CHEVRON_STROKE = borderWidths.control;
 
-/**
- * Keeps the browser's own focus outline off the reserved band on web, where it would otherwise be
- * painted over the band and the ring a keyboard user sees would be the browser's default rather than
- * `colors.focusRing` (WCAG 2.4.7). React Native 0.76 declares no `outline` style, so the long form is
- * asserted once here; react-native-web drops the `outline` shorthand as an invalid short form. The
- * value is empty off web, which never reads it.
- */
+// The browser's own focus outline is kept off the band this control reserves for its focus ring, so the ring a
+// keyboard user sees is the app's own; on web React Native declares no `outline` style, so the long form is asserted
+// here and the value is empty off web, which never reads it.
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
-
 /**
- * Keeps the glyph out of the accessibility tree, so the control is announced once, under its own name.
- *
- * Native reads a different prop per platform — `accessibilityElementsHidden` on iOS,
- * `importantForAccessibility` on Android — while react-native-web renders the ARIA attribute alone.
- * The two React Native props are left off web on purpose: react-native-svg's web element would
- * otherwise emit them into the DOM as invalid attributes, which React reports as a warning on every
- * render.
+ * Keeps the glyph out of the accessibility tree, so the control is announced once, under its own name. Native
+ * reads a different prop per platform — `accessibilityElementsHidden` on iOS, `importantForAccessibility` on
+ * Android — while react-native-web renders the ARIA attribute alone; the two React Native props are left off web
+ * on purpose, because react-native-svg's web element would emit them into the DOM as invalid attributes, which
+ * React reports as a warning on every render.
  */
 const GLYPH_HIDDEN: Pick<
   ViewProps,
@@ -108,8 +70,7 @@ const styles = StyleSheet.create({
   control: {
     alignItems: 'center',
     justifyContent: 'center',
-    // The target stays at least `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44), which the glyph plus the
-    // padding already reaches.
+    // The target stays at least `MIN_TOUCH_TARGET` (AAP 0.5.8: 44x44), which the glyph plus the padding reaches.
     minHeight: MIN_TOUCH_TARGET,
     minWidth: MIN_TOUCH_TARGET,
     paddingHorizontal: spacing.sm,
@@ -120,27 +81,17 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   pressed: { opacity: interactionOpacity.pressed },
-  // The ring is this reserved band rather than an added one, which is what keeps the layout still:
-  // React Native 0.76 exposes no outline style of its own and `webFocusRingReset` keeps the browser's
-  // focus outline off the band on web, so the band is the ring a keyboard user sees.
+  // The ring is this reserved band rather than an added one, which is what keeps the layout still.
   focused: { borderColor: colors.focusRing },
 });
 
-/**
- * The web header's back control. See the module doc for why it is drawn and {@link HeaderBackButtonProps}
- * for the contract.
- *
- * @param props - What the navigator's header holds for its back entry.
- * @returns The control, or `null` when there is no previous screen or no way to reach it.
- */
 export function HeaderBackButton(props: HeaderBackButtonProps): ReactElement | null {
   const { canGoBack, onPress, tintColor } = props;
   const [focused, setFocused] = useState(false);
   const handleFocus = useCallback(() => setFocused(true), []);
   const handleBlur = useCallback(() => setFocused(false), []);
 
-  // A tab root holds no back entry and a header may pass no handler; both render nothing here, which
-  // is what those headers render today.
+  // A tab root holds no back entry and a header may pass no handler; both render nothing here.
   if (canGoBack !== true || onPress === undefined) return null;
 
   return (
@@ -177,17 +128,9 @@ export function HeaderBackButton(props: HeaderBackButtonProps): ReactElement | n
 }
 
 /**
- * The `headerLeft` renderer the app's chrome hands every web navigator (AAP 0.5.8), so the
- * navigator's own image-backed control is never drawn there:
- *
- * ```ts
- * const chrome = { headerLeft: renderWebHeaderLeft }; // web only; see ./NavigationHeader
- * ```
- *
- * Off web no such option is spread, which leaves the platform header exactly as it is.
- *
- * @param props - What the navigator's header hands `headerLeft`.
- * @returns The drawn control, or `null` where the header holds no back entry.
+ * The `headerLeft` renderer the app's chrome hands every web navigator (AAP 0.5.8), so the navigator's own
+ * image-backed control is never drawn there. Off web no such option is spread, which leaves the platform header
+ * exactly as it is.
  */
 export function renderWebHeaderLeft(props: HeaderBackButtonProps): ReactElement | null {
   return <HeaderBackButton {...props} />;

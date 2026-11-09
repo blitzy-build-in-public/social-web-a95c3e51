@@ -2,18 +2,13 @@
  * Saved-card setup in the browser: the web half of the `card-setup` platform pair (AAP 0.3.4, AAP 0.5.1).
  *
  * `tsconfig.json`'s `moduleSuffixes` types an extensionless importer — and this file's own exports — against the native
- * half, whose module doc is the contract for both, so every shared export below names its native counterpart's type
- * rather than restating it.
- *
+ * half, whose module doc is the contract for both.
  * The card is entered inside Stripe's own Payment Element and nowhere else, so no card number, expiry or CVC reaches
- * this app's code, the API or a log line (AAP 0.12.2), and the publishable key is the only Stripe credential the page
- * holds (AAP 0.3.2). Stripe.js is loaded from `@stripe/stripe-js/pure`, whose `loadStripe` injects js.stripe.com on
- * first use rather than at import, so the credential-free `STRIPE_MODE=mock` stack says payments are not configured
- * rather than reaching Stripe at all (AAP 0.6.2, 0.11.2).
- *
- * This file imports `@stripe/stripe-js` and `@stripe/react-stripe-js` and never `@stripe/stripe-react-native`. The
- * page's Content-Security-Policy must allow js.stripe.com, api.stripe.com and Stripe's frames; that policy lives in
- * `infra/nginx/web.conf`, so a console block is a change there rather than here.
+ * this app's code, the API or a log line, and the publishable key is the only Stripe credential the page holds.
+ * Stripe.js is loaded from `@stripe/stripe-js/pure`, whose `loadStripe` injects js.stripe.com on first use rather than at
+ * import, so the credential-free `STRIPE_MODE=mock` stack says payments are not configured rather than reaching Stripe at
+ * all. This file imports the two Stripe.js packages and never `@stripe/stripe-react-native`; the page's CSP must allow
+ * js.stripe.com, api.stripe.com and Stripe's frames, and that policy lives in `infra/nginx/web.conf`.
  */
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
@@ -22,19 +17,13 @@ import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-
 import { loadStripe } from '@stripe/stripe-js/pure';
 import type { Stripe, StripeError, StripePaymentElement } from '@stripe/stripe-js';
 import { spacing } from '@tablemate/shared';
-
 import { apiClient } from '../api/client';
 import { isApiError, userMessageFor } from '../api/errors';
 import { CARD_PAYMENTS_UNAVAILABLE } from '../copy/strings';
 import { Banner, Button, Screen, announce } from '../ui';
-
 import type * as Native from './card-setup.native';
 import type { CardSetupErrorCode, CardSetupResult, UseCardSetupResult } from './card-setup.native';
 
-/*
- * The types a screen may name are the native half's, re-exported rather than restated, so the two
- * halves of the pair cannot drift apart (AAP 0.5.1).
- */
 export type {
   CardSetupErrorCode,
   CardSetupProps,
@@ -42,38 +31,14 @@ export type {
   PaymentsProviderProps,
   UseCardSetupResult,
 } from './card-setup.native';
-
-/**
- * A card-only SetupIntent never leaves the page, so the web half never uses it; it exists so both halves of
- * the pair export one name (AAP 0.3.4).
- */
 export const STRIPE_RETURN_URL: typeof Native.STRIPE_RETURN_URL = 'tablemate://stripe-redirect';
-
-/** The label of the setup control. UI labels are not in the fixed-string table of AAP 0.5.8. */
 const ADD_CARD_LABEL = 'Add a card';
-
-/** The label of the control that confirms the card with Stripe. */
 const SAVE_CARD_LABEL = 'Save card';
-
-/** The label of the control that abandons an attempt, and the modal's only one while it loads. */
 const CANCEL_LABEL = 'Cancel';
-
-/** The modal's heading, which names the step the traveller is in. */
 const ADD_CARD_TITLE = 'Add a card';
-
-/** The setup flow's test id: the native half's default, so one flow drives both platforms. */
 const DEFAULT_TEST_ID = 'payment-setup';
-
-/**
- * In the app's own words for a payment route that could not be reached (AAP 0.5.8). Resolved once: the map is
- * constant.
- */
 const PAYMENT_UNAVAILABLE_MESSAGE = userMessageFor('payment_unavailable');
 
-/**
- * Read once, on the literal `process.env.EXPO_PUBLIC_*` reference alone, because `babel-preset-expo` inlines
- * only that form at build time; `app.config.ts` has already refused a secret key there.
- */
 function readPublishableKey(): string | null {
   const configured: unknown = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   const value = typeof configured === 'string' ? configured.trim() : '';
@@ -83,17 +48,10 @@ function readPublishableKey(): string | null {
 /** This build's Stripe publishable key, or null. The only Stripe credential the page holds. */
 const PUBLISHABLE_KEY = readPublishableKey();
 
-/**
- * False on the credential-free default stack, where `STRIPE_MODE=mock` leaves the app without a publishable
- * key, so nothing here renders a card field or reaches Stripe (AAP 0.6.2, 0.11.2). A screen that only wants to
- * warn reads this instead of mounting a {@link CardSetup}.
- */
 export const isPaymentsConfigured: typeof Native.isPaymentsConfigured = () =>
   PUBLISHABLE_KEY !== null;
-
 /** The one Stripe.js instance promise for this page, created by the first {@link getStripe} call. */
 let stripePromise: Promise<Stripe | null> | null = null;
-
 /**
  * Web-only: `next-action.web.tsx` imports it through the explicit `./card-setup.web` specifier — an
  * extensionless import would type-check against the native half, which has no `getStripe` — and no screen
@@ -122,20 +80,13 @@ function messageFor(code: CardSetupErrorCode): string {
     : userMessageFor(code);
 }
 
-/**
- * Null for every other failure — a card error Stripe sent without a message included. A non-null sentence is
- * what the form shows and stays open on; null means the app's own sentence stands in and the failure is
- * remembered as one the form cannot fix (AAP 0.5.8).
- */
 function cardErrorMessage(error: StripeError): string | null {
   if (error.type !== 'card_error' && error.type !== 'validation_error') return null;
   const message = error.message?.trim();
   return message === undefined || message === '' ? null : message;
 }
 
-/** What {@link createSetupIntent} resolved to: the secret, or the code the attempt failed with. */
 type SetupIntentOutcome = { secret: string } | { code: CardSetupErrorCode };
-
 /**
  * The API creates the Customer when the traveller has none, the SetupIntent with it and an ephemeral key;
  * only the secret is this file's business, since the key belongs to PaymentSheet on native. A failure is
@@ -151,23 +102,13 @@ async function createSetupIntent(): Promise<SetupIntentOutcome> {
   }
 }
 
-/** Props of the internal {@link SetupForm}. */
 interface SetupFormProps {
   /** The SetupIntent's client secret from `POST /v1/me/payment-setup`. Never rendered or logged. */
   clientSecret: string;
-  /** The test id base of the form's own controls. */
   testID: string;
-  /** Called once the attempt ends, with its outcome. */
   onDone: (result: CardSetupResult) => void;
 }
 
-/**
- * Internal, because {@link CardSetup} and the provider's modal are the two ways a traveller reaches a card
- * form. `key={clientSecret}` is load-bearing: an Element group is created from one client secret and can
- * never be given another, so a changed secret replaces the group rather than updating it. The `stripe` prop is
- * the same module-level promise on every render, which is what `Elements` requires — it warns about a changed
- * `stripe` prop after mount.
- */
 function SetupForm({ clientSecret, testID, onDone }: SetupFormProps): ReactElement {
   // Kept stable per secret: `Elements` accepts `clientSecret` and `fonts` as later updates only, and
   // the key above is what actually replaces the group.
@@ -179,22 +120,11 @@ function SetupForm({ clientSecret, testID, onDone }: SetupFormProps): ReactEleme
   );
 }
 
-/** Props of the internal {@link SetupFields}, which renders inside Stripe's Element group. */
 interface SetupFieldsProps {
-  /** The test id base of the form's own controls. */
   testID: string;
-  /** Called once the attempt ends, with its outcome. */
   onDone: (result: CardSetupResult) => void;
 }
 
-/**
- * Reading and focus order is source order: the failure notice, the card fields, the control that confirms,
- * then the way out. `Save card` is disabled until Stripe and its Element group have resolved, and reports
- * itself busy while a confirmation runs, so a second press cannot confirm twice. Stripe's sentence for a card
- * or validation error is shown in the error {@link Banner}, whose live region interrupts on the web; where
- * Stripe gave none the app's own sentence stands in, and the failure is then remembered as one the form
- * cannot fix, so leaving reports it rather than a change of mind (AAP 0.5.8).
- */
 function SetupFields({ testID, onDone }: SetupFieldsProps): ReactElement {
   const stripe = useStripe();
   const elements = useElements();
@@ -218,9 +148,7 @@ function SetupFields({ testID, onDone }: SetupFieldsProps): ReactElement {
     announce(message);
   }, []);
   const handleSubmit = useCallback(() => {
-    // Both are resolved by the Element group above; the guard is for the type and the first paint.
     if (stripe === null || elements === null) return;
-    // The previous failure stops being true the moment a new attempt starts.
     setErrorMessage(null);
     setBusy(true);
     void (async () => {
@@ -276,23 +204,11 @@ function SetupFields({ testID, onDone }: SetupFieldsProps): ReactElement {
   );
 }
 
-/**
- * One primary control that creates a SetupIntent and then renders Stripe's Payment Element for it, and the
- * app's own sentence for a failure. Where the build has no publishable key the control is rendered disabled
- * under the `CARD_PAYMENTS_UNAVAILABLE` notice, so it stays discoverable without pretending a card can be
- * added (AAP 0.11.2).
- *
- * The SetupIntent is created on press, never on mount: a screen a traveller opens twice must not leave two
- * SetupIntents behind. The secret it returns lives in state for as long as the form is mounted — handed to
- * Stripe through `Elements`, never rendered, stored or logged. Roles, accessible names, the 44x44 target, the
- * live region and the focus ring all come from {@link Button} and {@link Banner}.
- */
 export const CardSetup: typeof Native.CardSetup = ({ onDone, testID = DEFAULT_TEST_ID }) => {
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const handlePress = useCallback(() => {
-    // The previous attempt's failure stops being true the moment a new one starts.
     setErrorMessage(null);
     setBusy(true);
     void (async () => {
@@ -310,8 +226,6 @@ export const CardSetup: typeof Native.CardSetup = ({ onDone, testID = DEFAULT_TE
   }, [onDone]);
   const handleSetupDone = useCallback(
     (result: CardSetupResult) => {
-      // The form owns its failure notice while it is mounted; once it goes, the step shows the same
-      // sentence, so the reason stays on screen.
       setClientSecret(null);
       if (result.status === 'failed') {
         const message = messageFor(result.code);
@@ -348,48 +262,24 @@ export const CardSetup: typeof Native.CardSetup = ({ onDone, testID = DEFAULT_TE
   );
 };
 
-/** What {@link PaymentsProvider} hands to {@link useCardSetup}. */
 interface CardSetupModalValue {
   /** Opens the modal and resolves with the attempt's outcome, joining one already in flight. */
   open: () => Promise<CardSetupResult>;
 }
 
-/**
- * The web needs a provider to own the one modal a page may show, and a caller outside one has no form to
- * open, which {@link useCardSetup} reports as `payments_unconfigured`.
- */
 const CardSetupModalContext = createContext<CardSetupModalValue | null>(null);
 
-/** The attempt in flight, if any: its promise is what a second `open()` returns. */
 interface PendingSetup {
-  /** Resolves when the attempt ends, however it ends. */
   promise: Promise<CardSetupResult>;
-  /** Settles {@link promise}. Called once per attempt. */
   resolve: (result: CardSetupResult) => void;
 }
 
-/**
- * The whole of what the web half needs from a provider: `apps/mobile/app/_layout.tsx` mounts it once, above
- * every screen that can reach a card step. Where the build has no publishable key it renders its children
- * unchanged, so no screen has to guard it and {@link CardSetup} explains the card step itself.
- *
- * The modal opens as soon as an attempt starts, so a traveller sees the step their press began rather than a
- * screen that appears to do nothing, and shows the card form from the moment the SetupIntent arrives; a second
- * `open()` while one is pending returns the same promise, so a double press cannot leave a second SetupIntent
- * behind. A failure to create the SetupIntent closes the modal and resolves the failure, which the screen that
- * asked for a card renders in its own banner — the same place the native half's failure lands.
- *
- * `Modal` is the one control react-native-web renders with `role="dialog"`, `aria-modal`, a focus trap and
- * Escape handling: the focus trap reaches the card fields or Cancel as soon as the step opens, and Escape
- * reaches `onRequestClose`, which abandons the attempt.
- */
 export const PaymentsProvider: typeof Native.PaymentsProvider = ({ children }) => {
   const [visible, setVisible] = useState(false);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   // A ref rather than state: the attempt's promise is never rendered, and a second open() has to
   // read it before React has re-rendered anything.
   const pending = useRef<PendingSetup | null>(null);
-  /** Settles the attempt in flight and closes the modal. Harmless when none is open. */
   const finish = useCallback((result: CardSetupResult) => {
     const running = pending.current;
     pending.current = null;
@@ -457,14 +347,6 @@ export const PaymentsProvider: typeof Native.PaymentsProvider = ({ children }) =
   );
 };
 
-/**
- * It opens the provider's modal and resolves with the attempt's outcome, holding one `setupCard` for the life
- * of the component so that a double press joins the attempt in flight rather than starting a second.
- *
- * `configured` is false on a build with no publishable key, and `setupCard` then resolves
- * `payments_unconfigured` without touching the API; with a key but outside {@link PaymentsProvider} there is
- * no modal to open, so it resolves the same code rather than failing silently.
- */
 export const useCardSetup: typeof Native.useCardSetup = (): UseCardSetupResult => {
   const modal = useContext(CardSetupModalContext);
   const setupCard = useCallback((): Promise<CardSetupResult> => {

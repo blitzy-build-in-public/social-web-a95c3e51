@@ -1,10 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-
-// `@tablemate/db` declares no zod of its own, and cannot gain one without regenerating the shared
-// root lockfile; the workspace's hoisted linker resolves the single 4.6.7 copy the sibling packages
-// pin (AAP 0.4.1), and the two file schemas below are written with that copy.
+// `@tablemate/db` declares no zod of its own, and cannot gain one without regenerating the shared root lockfile; the workspace's hoisted linker resolves the single 4.6.7 copy the sibling packages pin (AAP 0.4.1), and the two file schemas below are written with that copy.
 import { z } from 'zod';
 
 import {
@@ -18,24 +15,14 @@ import type { Clock, FieldKeyring } from '@tablemate/server-core';
 import { AppEnv, CitySlug, IsoDateTime, Uuid } from '@tablemate/shared';
 
 import type { DbClient, DbTx } from '../src/index.ts';
-
 /** Where the fixture console secrets are written, relative to the repository root (AAP 0.5.2). */
 export const FIXTURE_SECRETS_RELATIVE_PATH = '.local/fixture-secrets.json';
-
 const SECRET_BYTES = 32;
-
 const TEMP_SUFFIX_BYTES = 6;
-
 const FILE_MODE = 0o600;
-
 const DIRECTORY_MODE = 0o700;
-
-/**
- * The identity of one fixture row whose console secret is issued (AAP 0.5.2): the row `seed.ts`
- * upserted, named so the local file says which console a human can open with the secret.
- */
+/** The identity of one fixture row whose console secret is issued (AAP 0.5.2): the row `seed.ts` upserted, named so the local file says which console a human can open with the secret. */
 export type FixtureSecretTarget = { id: string; cityId: string; name: string };
-
 /** One fixture row and its console secret, as the local file carries it (AAP 0.5.2). */
 export const FixtureSecretEntry = z.strictObject({
   id: Uuid,
@@ -44,11 +31,7 @@ export const FixtureSecretEntry = z.strictObject({
   secret: z.string().min(1),
 });
 export type FixtureSecretEntry = z.infer<typeof FixtureSecretEntry>;
-
-/**
- * The local fixture-secret file (AAP 0.5.2): the environment it was written in, when it was
- * written, and one entry per fixture venue and lodging.
- */
+/** The local fixture-secret file (AAP 0.5.2): the environment it was written in, when it was written, and one entry per fixture venue and lodging. */
 export const FixtureSecretsFile = z.strictObject({
   appEnv: AppEnv,
   generatedAt: IsoDateTime,
@@ -56,13 +39,11 @@ export const FixtureSecretsFile = z.strictObject({
   lodgings: z.array(FixtureSecretEntry),
 });
 export type FixtureSecretsFile = z.infer<typeof FixtureSecretsFile>;
-
 type SecretRow = {
   id: string;
   secretLookupHash: string | null;
   secretCiphertext: string | null;
 };
-
 type FixtureSecretDelegate = {
   findMany(args: {
     where: { id: { in: string[] } };
@@ -73,11 +54,8 @@ type FixtureSecretDelegate = {
     data: { secretLookupHash?: string; secretCiphertext?: string; secretIssuedAt?: Date };
   }): Promise<{ id: string }>;
 };
-
 type IssueContext = { keyring: FieldKeyring; clock: Clock };
-
 type FixtureKind = 'venue' | 'lodging';
-
 function isMissingFile(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -86,7 +64,6 @@ function isMissingFile(error: unknown): boolean {
     (error as { readonly code?: unknown }).code === 'ENOENT'
   );
 }
-
 function decryptOrNull(keyring: FieldKeyring, ciphertext: string): string | null {
   try {
     return decryptField(keyring, ciphertext);
@@ -97,7 +74,6 @@ function decryptOrNull(keyring: FieldKeyring, ciphertext: string): string | null
     throw error;
   }
 }
-
 /** Reads the local fixture-secret file (AAP 0.5.2). */
 export async function readFixtureSecrets(filePath: string): Promise<FixtureSecretsFile | null> {
   let text: string;
@@ -118,11 +94,7 @@ export async function readFixtureSecrets(filePath: string): Promise<FixtureSecre
   const parsed = FixtureSecretsFile.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
-
-/**
- * Gives every fixture row in `venues` and `lodgings` a console secret, keeping the one it already
- * has (AAP 0.5.2, 0.3.2).
- */
+/** Gives every fixture row in `venues` and `lodgings` a console secret, keeping the one it already has (AAP 0.5.2, 0.3.2). */
 export async function issueFixtureSecrets(
   db: DbClient | DbTx,
   options: {
@@ -151,7 +123,6 @@ export async function issueFixtureSecrets(
     ),
   };
 }
-
 async function issueKind(
   delegate: FixtureSecretDelegate,
   kind: FixtureKind,
@@ -183,7 +154,6 @@ async function issueKind(
   }
   return entries;
 }
-
 async function secretFor(
   delegate: FixtureSecretDelegate,
   target: FixtureSecretTarget,
@@ -200,9 +170,7 @@ async function secretFor(
   ) {
     return stored; // Readable and matching, so nothing is written and `secretIssuedAt` stands.
   }
-  // A wipe is not a rotation: a row the seed re-created carries no stored digest at all, so the
-  // entry the file holds for its id is the secret this console already has. The row is re-stored
-  // with it, digest and issue instant included, because there is nothing stored to compare against.
+  // A wipe is not a rotation: a row the seed re-created carries no stored digest at all, so the entry the file holds for its id is the secret this console already has. The row is re-stored with it, digest and issue instant included, because there is nothing stored to compare against.
   if (previous !== undefined && row.secretLookupHash === null) {
     await delegate.update({
       where: { id: target.id },
@@ -233,7 +201,6 @@ async function secretFor(
   });
   return secret;
 }
-
 /** Writes the local fixture-secret file (AAP 0.5.2). */
 export async function writeFixtureSecrets(
   filePath: string,

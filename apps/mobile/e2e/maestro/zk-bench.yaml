@@ -1,19 +1,15 @@
 # Device proving benchmark and native smoke check (AAP 0.5.5, criterion 4). It drives
 # app/dev/zk-bench.tsx — present only in a build with EXPO_PUBLIC_ZK_BENCH=1, i.e. the eas.json `bench`
-# profile — which proves the bundled fixture .eml on the device and renders one JSON line. Run it with
-# packages/circuits/scripts/native-smoke.sh (RUNS=1; RUNS defaults to 30) and by hand on a physical device
-# for the 30-run benchmark.
+# profile — which proves the bundled fixture .eml on the device and renders one JSON line; run it with
+# packages/circuits/scripts/native-smoke.sh (RUNS=1) and by hand on a physical device for the 30-run
+# benchmark. Maestro binds command-line `-e` values first and lets a literal header value win, so every
+# default below reads the incoming value first: a literal here would turn the smoke check into 30 runs.
 #
-# Maestro binds command-line `-e` values first and lets a literal header value win, so every default below
-# reads the incoming value first — a literal here would turn the smoke check into 30 runs. RUNS is 1 for
-# the smoke check and 30 for the benchmark; ARTIFACTS_URL is the origin of the `artifacts` nginx service
-# serving the .wasm, .zkey and manifest; OUTPUT is the file native-smoke.sh writes the result to, echoed
-# back in the emitted payload; COLLECT_URL is an optional HTTP sink for that payload; SALT is an optional
-# nullifier salt the app defaults to 1.
-#
-# scripts/collect-bench.js validates the copied result and prints the single `ZK_BENCH_RESULT <json>` line
-# native-smoke.sh writes to OUTPUT, because Maestro's GraalJS cannot write files itself. Tagged `bench`,
-# never `e2e`, so the `e2e:native` run cannot select it.
+# RUNS, ARTIFACTS_URL (the origin of the `artifacts` service), OUTPUT (the file native-smoke.sh writes
+# the result to, echoed back in the payload), COLLECT_URL (an optional HTTP sink) and SALT (the app
+# defaults to 1) are the flow's own inputs. Tagged `bench`, never `e2e`, so the `e2e:native` run cannot
+# select it; scripts/collect-bench.js prints the one `ZK_BENCH_RESULT <json>` line, because GraalJS
+# cannot write files itself.
 appId: com.tablemate.app
 name: zk-bench
 tags: [bench]

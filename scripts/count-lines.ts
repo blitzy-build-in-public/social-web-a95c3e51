@@ -1,16 +1,13 @@
 /**
  * `pnpm loc` — the delivered-code ceiling check (AAP 0.7.1, 0.8.1, 0.12.2).
  *
- * Counts the physical lines — blank and comment lines included — of every text file the run
- * delivers, sums them per area of the AAP 0.8.1 budget table and reports each area against its
- * budget. The check fails on a total at or above {@link LINE_CEILING}, on an area over its budget by
- * more than the 10% allowance other areas' unused budget must cover, and on a counted file that
- * belongs to no area.
- *
- * The file set is the working tree — tracked files plus untracked files that are not git-ignored —
- * so a count taken at a phase exit includes work not yet committed. `--json` prints the report as
- * JSON; `--write` records it in the `loc` block of `docs/acceptance.md` (AAP 0.12.2). Exit codes: 0
- * the check passes, 1 it fails, 2 a usage error.
+ * Counts the physical lines — blank and comment lines included — of every text file the run delivers, sums them
+ * per area of the AAP 0.8.1 budget table and reports each area against its budget. The check fails on a total at
+ * or above {@link LINE_CEILING}, on an area over its budget by more than the 10% allowance other areas' unused
+ * budget must cover, and on a counted file that belongs to no area. The file set is the working tree, so a count
+ * taken at a phase exit includes work not yet committed. `--json` prints the report as JSON; `--write` records it
+ * in the `loc` block of `docs/acceptance.md` (AAP 0.12.2). Exit codes: 0 the check passes, 1 it fails, 2 a usage
+ * error.
  */
 import { execFile } from 'node:child_process';
 import { lstat, readFile, writeFile } from 'node:fs/promises';
@@ -24,13 +21,13 @@ export const EXCLUDED_FILES: ReadonlySet<string> = new Set([
   'docs/api/openapi.json',
 ]);
 
-/** Extensions the rule excludes (AAP 0.7.1): the binary menu fixtures. Only these three, compared case-insensitively, so a text file with any other extension is still counted. */
+/** Extensions the rule excludes (AAP 0.7.1): the binary menu fixtures, compared case-insensitively. */
 export const EXCLUDED_EXTENSIONS: ReadonlySet<string> = new Set(['.pdf', '.png', '.jpg']);
 
 /** The ceiling on delivered code (AAP 0.7.1); the total must stay strictly below it. */
 export const LINE_CEILING = 100_000;
 
-/** The sum of the {@link AREAS} budgets (AAP 0.8.1), asserted below so a budget edit cannot drift. */
+/** The sum of the {@link AREAS} budgets (AAP 0.8.1), asserted on read so a budget edit cannot drift. */
 export const TOTAL_BUDGET = 83_300;
 
 /** The share of its budget an area may run over (AAP 0.8.1). */
@@ -44,11 +41,8 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 const RIGHT_ALIGNED: ReadonlySet<number> = new Set([1, 2, 3]);
 
-/**
- * The lines of a file's bytes: every line feed, plus the last line when the file does not end in
- * one. An empty file has none. Bytes rather than characters, so a CRLF file counts as `wc -l` counts
- * it.
- */
+/** The lines of a file's bytes: every line feed, plus the last when the file does not end in one. Bytes rather
+ * than characters, so a CRLF file counts as `wc -l` counts it. */
 export function countPhysicalLines(bytes: Uint8Array): number {
   if (bytes.byteLength === 0) {
     return 0;
@@ -84,11 +78,8 @@ export type AreaId =
   | 'docs'
   | 'root';
 
-/**
- * How an area stands against its budget (AAP 0.8.1): `ok` within budget; `over` above it by no more
- * than its 10% allowance, which another area's unused budget may cover; `over_limit` above that
- * allowance, which has to be cut back before the phase ends.
- */
+/** How an area stands against its budget (AAP 0.8.1): `ok` within budget; `over` above it by no more than its 10%
+ * allowance, which another area's unused budget may cover; `over_limit` above that allowance. */
 export type AreaStatus = 'ok' | 'over' | 'over_limit';
 
 /** One area of the AAP 0.8.1 budget table. */
@@ -103,9 +94,8 @@ function underAny(...directories: readonly string[]): (filePath: string) => bool
   return (filePath) => directories.some((directory) => filePath.startsWith(`${directory}/`));
 }
 
-// Every area but the last is the files under its directories, with the rows in the AAP 0.8.1 order.
-// The order is load-bearing: `classify` takes the first match, which is what keeps the narrower
-// rules (`apps/mobile/app/**`) ahead of the broader ones (all of `apps/mobile/`).
+// Every area but the last is the files under its directories, in the AAP 0.8.1 row order: `classify` takes
+// the first match, which keeps the narrower rules (`apps/mobile/app/**`) ahead of the broader ones.
 const AREA_TABLE: readonly (readonly [AreaId, number, string, readonly string[]])[] = [
   ['mobile-prover', 1_200, 'prover module', ['apps/mobile/modules/tablemate-prover']],
   ['mobile-app', 9_000, 'app screens', ['apps/mobile/app']],
@@ -125,13 +115,8 @@ const AREA_TABLE: readonly (readonly [AreaId, number, string, readonly string[]]
   ['docs', 3_000, 'documents and results', ['docs']],
 ];
 
-/**
- * The areas and budgets of the AAP 0.8.1 table.
- *
- * The last row is root tooling in full: the files sitting at the repository root itself, which carry
- * no `/`, the build and check scripts, the compose and nginx infrastructure, and the pnpm patches
- * `pnpm-workspace.yaml` pins, which share that budget rather than forming an area of their own.
- */
+/** The areas and budgets of the AAP 0.8.1 table, the last being root tooling in full: the files at the repository
+ * root, the build and check scripts, the compose and nginx infrastructure and the pnpm patches. */
 export const AREAS: readonly Area[] = [
   ...AREA_TABLE.map(([id, budget, label, directories]) => ({
     id,
@@ -155,9 +140,7 @@ if (BUDGET_TOTAL !== TOTAL_BUDGET) {
   throw new Error(`area budgets total ${BUDGET_TOTAL} lines, expected ${TOTAL_BUDGET}`);
 }
 
-/**
- * The area a counted file belongs to.
- */
+/** The area a counted file belongs to. */
 export function classify(filePath: string): AreaId | null {
   for (const area of AREAS) {
     if (area.matches(filePath)) {
@@ -241,14 +224,9 @@ function looksBinary(bytes: Uint8Array): boolean {
   return false;
 }
 
-/**
- * The bytes of a counted file, or `null` when the path holds nothing to count.
- *
- * A path that is not a regular file is skipped rather than followed, so a symlink cannot make the
- * count depend on something outside the repository, and a tracked file deleted from the working tree
- * is skipped because it has no lines of its own. Every other read failure propagates, so a
- * permission problem cannot quietly shrink the count.
- */
+/** The bytes of a counted file, or `null` when the path holds nothing to count. A path that is not a regular file
+ * is skipped rather than followed, so a symlink cannot make the count depend on something outside the repository;
+ * every other read failure propagates, so a permission problem cannot quietly shrink the count. */
 async function readCountedFile(repoRoot: string, filePath: string): Promise<Uint8Array | null> {
   const absolute = path.join(repoRoot, filePath);
 
@@ -266,15 +244,10 @@ async function readCountedFile(repoRoot: string, filePath: string): Promise<Uint
   }
 }
 
-/**
- * Counts the working tree: the lines of every text file the run delivers, per area (AAP 0.7.1).
- *
- * The file set is `git ls-files --cached --others --exclude-standard` at the repository root.
- * Tracked files are what the run commits; untracked files that are not git-ignored are counted too,
- * so a count taken mid-phase sees work not yet committed. Git-ignored outputs — circuit artefacts,
- * `.local/`, `node_modules`, `dist`, the native build directories, samples — need no rule of their
- * own, because `.gitignore` already excludes them.
- */
+/** Counts the working tree: the lines of every text file the run delivers, per area (AAP 0.7.1). The file set is
+ * `git ls-files --cached --others --exclude-standard` at the repository root: tracked files are what the run
+ * commits, and untracked files that are not git-ignored are counted too, so a count taken mid-phase sees work not
+ * yet committed. Git-ignored outputs need no rule of their own. */
 async function scan(repoRoot: string): Promise<ScanResult> {
   const listing = await git(
     ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--full-name'],
@@ -314,16 +287,11 @@ async function scan(repoRoot: string): Promise<ScanResult> {
   return { counts, unassigned, excluded, skippedBinary };
 }
 
-/**
- * Judges the counts against the budgets (AAP 0.8.1).
- *
- * An area within its budget is `ok`. One over by no more than 10% of its budget is `over`, which is
- * allowed only while the areas together stay within {@link TOTAL_BUDGET}, since an area may be over
- * "only when another area gives up the same number of lines". One over by more than its allowance
- * has to be cut back and is `over_limit`. The total at or above {@link LINE_CEILING} fails on its
- * own, and so does a counted file in no area: its lines would sit outside every budget and bypass
- * the ceiling the check exists to enforce.
- */
+/** Judges the counts against the budgets (AAP 0.8.1). An area within its budget is `ok`; one over by no more than
+ * 10% of it is `over`, allowed only while the areas together stay within {@link TOTAL_BUDGET}, since an area may be
+ * over "only when another area gives up the same number of lines"; one over by more than its allowance is
+ * `over_limit`. The total at or above {@link LINE_CEILING} fails on its own, and so does a counted file in no area,
+ * whose lines would sit outside every budget and bypass the ceiling the check exists to enforce. */
 export function evaluate(
   counts: Map<AreaId, number>,
   unassigned: readonly string[],
@@ -453,7 +421,6 @@ const DOC_PATH = 'docs/acceptance.md';
 
 const DOC_BEGIN = '<!-- BEGIN loc -->';
 const DOC_END = '<!-- END loc -->';
-
 function renderDocBlock(report: Report, date: string, commit: string): string {
   const rows = report.areas.map((area) => [
     area.label,
@@ -527,9 +494,8 @@ function parseOptions(argv: readonly string[]): { json: boolean; write: boolean 
         write = true;
         break;
       case '--':
-        // pnpm forwards the separator of its own `pnpm loc -- --write` form to the script, so a bare
-        // `--` is dropped instead of rejected: that documented invocation has to reach the flags
-        // that follow it.
+        // pnpm forwards the separator of its own `pnpm loc -- --write` form to the script, so a bare `--`
+        // is dropped rather than rejected: that documented invocation has to reach the flags after it.
         break;
       default:
         throw new Error(`unknown argument "${argument}"`);
@@ -539,9 +505,7 @@ function parseOptions(argv: readonly string[]): { json: boolean; write: boolean 
   return { json, write };
 }
 
-/**
- * Runs the check.
- */
+/** Runs the check. */
 async function main(argv: readonly string[]): Promise<number> {
   let options: { json: boolean; write: boolean };
   try {
@@ -583,8 +547,8 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// An import of this module — by a test, a tool, an editor — must not run the check; only the direct
-// run does, which is the only way the flags of the command line reach it.
+// An import of this module — by a test, a tool, an editor — must not run the check; only the direct run
+// does, which is the only way the command line's flags reach it.
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   process.exitCode = await main(process.argv.slice(2));

@@ -1,37 +1,26 @@
 /**
  * RFC 6376 canonicalization and the body-hash check behind the itinerary statement (AAP 0.5.5).
  *
- * The bytes returned here are the ones the in-circuit `EmailVerifier` feeds to SHA-256: a device
- * builds the exact signed header and the exact canonical body of a booking confirmation without the
- * message leaving it, `./build-inputs.ts` pads them through `./sha-partial.ts`, and
- * `scripts/make-test-fixtures.ts` signs with these same functions. No RSA verification happens here —
- * the circuit is the authority on the signature — so the one property this module owes is
- * byte-exactness.
- *
- * Client-safe: it runs under Hermes (React Native 0.76.9), in the browser Web Worker and in Node tests, so it
- * imports `@noble/hashes/sha2.js` and `./eml-parse.ts` and nothing else — no Node built-in, no global
- * `Buffer`, no `TextEncoder`, no DOM API, no randomness, no I/O and no logging. Every refusal is a code, never
- * a message: the only error it raises is `body_hash_mismatch`, from {@link verifyBodyHash}.
+ * The bytes returned here are the ones the in-circuit `EmailVerifier` feeds to SHA-256: a device builds the exact
+ * signed header and the exact canonical body of a booking confirmation without the message leaving it, and
+ * `scripts/make-test-fixtures.ts` signs with these same functions. No RSA verification happens here — the circuit is
+ * the authority on the signature — so the one property this module owes is byte-exactness.
+ * Client-safe: Hermes, the browser Web Worker and Node tests run it, so it imports `@noble/hashes/sha2.js` and
+ * `./eml-parse.ts` and nothing else. Every refusal is a code, never a message: the only error it raises is
+ * `body_hash_mismatch`, from {@link verifyBodyHash}.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 
 import { COLON, CR, HTAB, LF, SEMI, SP, concatBytes, fail, latin1ToBytes } from './eml-parse.ts';
 import type { Canonicalization, DkimSignature, HeaderField, ParsedEml } from './eml-parse.ts';
 
-/** The line ending every canonicalized line ends with, and the separator of the header's lines. */
 const CRLF = new Uint8Array([CR, LF]);
 
 /**
- * Canonicalizes one header field for signing, ending it with CRLF (RFC 6376 §3.4.2, §3.4.3).
- *
- * `simple` returns the field's bytes untouched, continuation lines and all. `relaxed` returns
- * `lowercase-name:value`: the name ASCII-lowercased with the WSP before the colon dropped, and the
- * value unfolded, with every run of WSP inside it reduced to one SP and its leading and trailing WSP
- * removed, so no space follows the colon.
- *
- * @param field - The field to canonicalize.
- * @param mode - The header canonicalization the signature's `c=` tag selected.
- * @returns The canonical field, ending with CRLF.
+ * Canonicalizes one header field for signing, ending it with CRLF (RFC 6376 §3.4.2, §3.4.3). `simple` returns the
+ * field's bytes untouched, continuation lines and all; `relaxed` returns `lowercase-name:value` — the name
+ * ASCII-lowercased with the WSP before the colon dropped, and the value unfolded, with every run of WSP inside it
+ * reduced to one SP and its leading and trailing WSP removed, so no space follows the colon.
  */
 export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalization): Uint8Array {
   if (mode === 'simple') return concatBytes([field.raw, CRLF]);
@@ -46,25 +35,19 @@ export function canonicalizeHeaderField(field: HeaderField, mode: Canonicalizati
     true,
     false,
   );
-  // `lowerName` is the parser's ASCII-lowercased name with its trailing WSP removed, which is the
-  // name §3.4.2 asks for; a field name is RFC 5322 ftext, so one latin1 byte per code unit.
+  // `lowerName` is the parser's ASCII-lowercased name with its trailing WSP removed, which is the name §3.4.2 asks
+  // for.
   return concatBytes([latin1ToBytes(`${field.lowerName}:`), value.subarray(0, length), CRLF]);
 }
 
 /**
  * Picks the header fields a signature covers, in the order its `h=` tag lists them (RFC 6376 §5.4.2).
  *
- * The n-th occurrence of a name in `h=` takes the n-th instance of that name counted from the bottom of the
- * header block, and an occurrence with no instance left contributes nothing: that is how a signature covers
- * every instance of a name it repeats, and how oversigning (`h=from:from`) refuses a field added above the
- * signed ones afterwards.
- *
- * The signature field itself is never selected — RFC 6376 §3.5 forbids a signature covering itself through
- * `h=` — because {@link canonicalSignedHeader} appends it separately, with its value emptied.
- *
- * @param parsed - The parsed message.
- * @param sig - The signature whose `h=` tag selects the fields.
- * @returns The selected fields, in `h=` order.
+ * The n-th occurrence of a name in `h=` takes the n-th instance of that name counted from the bottom of the header
+ * block, and an occurrence with no instance left contributes nothing: that is how a signature covers every instance of
+ * a name it repeats, and how oversigning (`h=from:from`) refuses a field added above the signed ones afterwards. The
+ * signature field itself is never selected — §3.5 forbids a signature covering itself through `h=` — because
+ * {@link canonicalSignedHeader} appends it separately, with its value emptied.
  */
 export function selectSignedHeaderFields(parsed: ParsedEml, sig: DkimSignature): HeaderField[] {
   const selected: HeaderField[] = [];
@@ -88,15 +71,10 @@ export function selectSignedHeaderFields(parsed: ParsedEml, sig: DkimSignature):
 }
 
 /**
- * Empties the `b=` tag value of a `DKIM-Signature` header line, which is what the signer computes
- * over and what a verifier checks (RFC 6376 §3.7).
- *
- * The tag is found by its own bytes, so `bh=` is never touched — its `b` is followed by `h` — and only the
- * first occurrence is emptied. The line is returned as it stands when it carries no such tag, or when the
- * tag's value is already empty.
- *
- * @param line - A header field line, with or without its trailing CRLF.
- * @returns The line with the `b=` value removed.
+ * Empties the `b=` tag value of a `DKIM-Signature` header line, which is what the signer computes over and what a
+ * verifier checks (RFC 6376 §3.7). The tag is found by its own bytes after a tag boundary, so `bh=` is never touched —
+ * its `b` is followed by `h` — and only the first occurrence is emptied. The line is returned as it stands when it
+ * carries no such tag, or when the tag's value is already empty.
  */
 export function stripSignatureValue(line: Uint8Array): Uint8Array {
   for (let i = 1; i + 1 < line.length; i += 1) {
@@ -112,20 +90,15 @@ export function stripSignatureValue(line: Uint8Array): Uint8Array {
 }
 
 /**
- * The exact bytes a signature's RSA-SHA256 signature covers (RFC 6376 §3.5, §3.7).
- *
- * It is the canonical form of every field {@link selectSignedHeaderFields} picked, in `h=` order, followed by
- * the `DKIM-Signature` field itself with its `b=` value emptied and with no trailing CRLF. These are the bytes
- * `EmailVerifier` hashes inside the circuit, and `@zk-email/helpers` 6.4.2 canonicalizes the same string into
- * `emailHeader`, which `test/inputs.test.ts` compares against after padding.
+ * The exact bytes a signature's RSA-SHA256 signature covers (RFC 6376 §3.5, §3.7): the canonical form of every field
+ * {@link selectSignedHeaderFields} picked, in `h=` order, followed by the `DKIM-Signature` field itself with its `b=`
+ * value emptied and with no trailing CRLF. These are the bytes `EmailVerifier` hashes inside the circuit, and
+ * `@zk-email/helpers` 6.4.2 canonicalizes the same string into `emailHeader`, which `test/inputs.test.ts` compares
+ * against after padding.
  *
  * `./build-inputs.ts` additionally requires the signature to be the last line here, matching the circuit's
- * `BodyHashRegex` `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`: a fixture signature is
- * therefore signed `c=relaxed/relaxed`, with `bh=` before `b=` and `; ` between tags.
- *
- * @param parsed - The parsed message.
- * @param sig - The signature the signed header is built for.
- * @returns The signed header bytes.
+ * `BodyHashRegex` `(\r\n|^)dkim-signature:([a-z]+=[^;]+; )+bh=[a-zA-Z0-9+/=]+;`: a fixture signature is therefore
+ * signed `c=relaxed/relaxed`, with `bh=` before `b=` and `; ` between tags.
  */
 export function canonicalSignedHeader(parsed: ParsedEml, sig: DkimSignature): Uint8Array {
   const parts: Uint8Array[] = [];
@@ -135,8 +108,8 @@ export function canonicalSignedHeader(parsed: ParsedEml, sig: DkimSignature): Ui
   if (sig.c.header === 'simple') {
     parts.push(stripSignatureValue(sig.field.raw));
   } else {
-    // Relaxed canonicalizes the signature line before emptying it, as mailauth does; the CRLF that
-    // canonicalization adds ends no line, so it is dropped first — the field is always longer.
+    // Relaxed canonicalizes the signature line before emptying it, as mailauth does; the CRLF that canonicalization
+    // adds ends no line, so it is dropped first — the field is always longer.
     const relaxed = canonicalizeHeaderField(sig.field, 'relaxed');
     parts.push(stripSignatureValue(relaxed.subarray(0, relaxed.length - 2)));
   }
@@ -146,44 +119,31 @@ export function canonicalSignedHeader(parsed: ParsedEml, sig: DkimSignature): Ui
 /**
  * Canonicalizes the message body a signature's `bh=` commits to (RFC 6376 §3.4.3, §3.4.4).
  *
- * `simple` drops the body's trailing CRLFs and ends it with exactly one, so an empty body becomes a single
- * CRLF. `relaxed` drops every line's trailing WSP, reduces each run of WSP inside a line to one SP, and
- * removes the empty lines at the end; a body left with no line at all canonicalizes to nothing, which is what
- * an empty body hashes as. Nothing is truncated — `l=` never reaches here, because `./eml-parse.ts` refuses it
- * as `dkim_unsupported`.
- *
- * The body must already use CRLF, which `parseEml` in `./eml-parse.ts` guarantees through its line ending
- * normalization.
- *
- * @param body - The parsed message body.
- * @param mode - The body canonicalization the signature's `c=` tag selected.
- * @returns The canonical body.
+ * `simple` drops the body's trailing CRLFs and ends it with exactly one, so an empty body becomes a single CRLF.
+ * `relaxed` drops every line's trailing WSP, reduces each run of WSP inside a line to one SP, and removes the empty
+ * lines at the end; a body left with no line at all canonicalizes to nothing, which is what an empty body hashes as.
+ * Nothing is truncated — `l=` never reaches here, because `./eml-parse.ts` refuses it as `dkim_unsupported` — and the
+ * body must already use CRLF, which `parseEml` guarantees through its line ending normalization.
  */
 export function canonicalizeBody(body: Uint8Array, mode: Canonicalization): Uint8Array {
   return mode === 'simple' ? simpleBody(body) : relaxedBody(body);
 }
 
 /**
- * The SHA-256 digest of a canonical body: the value a signature carries in `bh=` (RFC 6376 §3.7),
- * which `scripts/make-test-fixtures.ts` uses to fill that tag once it has signed a draft.
- *
- * @param canonicalBody - The canonical body from {@link canonicalizeBody}.
- * @returns The 32-byte digest.
+ * The SHA-256 digest of a canonical body: the value a signature carries in `bh=` (RFC 6376 §3.7), which
+ * `scripts/make-test-fixtures.ts` uses to fill that tag once it has signed a draft.
  */
 export function computeBodyHash(canonicalBody: Uint8Array): Uint8Array {
   return sha256(canonicalBody);
 }
 
 /**
- * Checks a canonical body against the body hash its signature commits to (RFC 6376 §3.7).
+ * Checks a canonical body against the body hash its signature commits to (RFC 6376 §3.7). The comparison has a fixed
+ * shape — lengths first, then every byte folded into one accumulator with no early exit — so it reports only that the
+ * body did not match.
  *
- * The comparison has a fixed shape — lengths first, then every byte folded into one accumulator with
- * no early exit — so it reports only that the body did not match.
- *
- * @param canonicalBody - The canonical body from {@link canonicalizeBody}.
- * @param sig - The signature whose `bh=` is compared against it.
- * @throws {CircuitInputError} `body_hash_mismatch`, which is what
- *   `packages/circuits/fixtures/test-issuer/tampered.eml` is built to raise.
+ * @throws {CircuitInputError} `body_hash_mismatch`, which is what `packages/circuits/fixtures/test-issuer/tampered.eml`
+ *   is built to raise.
  */
 export function verifyBodyHash(canonicalBody: Uint8Array, sig: DkimSignature): void {
   const digest = computeBodyHash(canonicalBody);
@@ -197,9 +157,8 @@ export function verifyBodyHash(canonicalBody: Uint8Array, sig: DkimSignature): v
 }
 
 /**
- * The offset of the colon that ends a field's name: the first COLON byte of the field. The parser
- * guarantees one — a field is built from the bytes before it — and ftext excludes the colon, so it
- * is the name's own terminator.
+ * The offset of the colon that ends a field's name: the first COLON byte of the field. The parser guarantees one — a
+ * field is built from the bytes before it — and ftext excludes the colon, so it is the name's own terminator.
  */
 function colonOffset(raw: Uint8Array): number {
   for (let i = 0; i < raw.length; i += 1) {
@@ -216,32 +175,17 @@ function isTagBoundary(byte: number): boolean {
 }
 
 /**
- * Writes `bytes[start, end)` into `target` from `offset` with RFC 6376's relaxed whitespace applied:
- * a run of WSP inside the range becomes one SP, a run at its end vanishes, and every other byte is
- * copied as it stands. With `unfold`, a CRLF pair inside the range disappears as well, which joins a
- * folded header value back into one line.
+ * Writes `bytes[start, end)` into `target` from `offset` with RFC 6376's relaxed whitespace applied: a run of WSP
+ * inside the range becomes one SP, a run at its end vanishes, and every other byte is copied as it stands. With
+ * `unfold`, a CRLF pair inside the range disappears as well, which joins a folded header value back into one line.
  *
- * Where the range begins decides how a leading run is treated, and the RFC treats the two places differently:
- * a header value's leading WSP follows the colon and is deleted (§3.4.2 d), while a body line's leading WSP is
- * WSP within the line and collapses to one SP (§3.4.4 a.2). `keepLeadingSpace` selects the second reading, and
- * neither reading emits anything when the range holds no content at all, so a line of nothing but WSP stays
- * empty.
- *
- * WSP is SP and HTAB only (RFC 5322 §3.2.3, RFC 6376 §3.4.2). The oracle this module is measured against
- * canonicalizes a UTF-8-decoded string with the JavaScript `\s` class, so it also collapses a vertical tab, a
- * form feed and a non-breaking space; no such byte can appear in a field name and this run's fixtures carry
- * none, so the two agree on every input the generator meets. Where they could differ, the RFC wins, because
- * that is what real signers implement.
- *
- * @param target - The array to write into; its length bounds what can be written, and collapsing never
- *   lengthens a range, so it always fits.
- * @param offset - Where in `target` to start writing.
- * @param bytes - The bytes holding the range.
- * @param start - The first byte of the range.
- * @param end - One past the range's last byte.
- * @param unfold - Whether a CRLF pair inside the range is removed rather than kept.
- * @param keepLeadingSpace - Whether a WSP run before the range's first content byte becomes one SP (a body
- *   line) instead of vanishing (a header field value).
+ * WSP is SP and HTAB only (RFC 5322 §3.2.3, RFC 6376 §3.4.2), and where the range begins decides how a leading run is
+ * treated: a header value's leading WSP follows the colon and is deleted (§3.4.2 d), while a body line's leading WSP is
+ * WSP within the line and collapses to one SP (§3.4.4 a.2). `keepLeadingSpace` selects the second reading, and neither
+ * reading emits anything when the range holds no content at all. The oracle this module is measured against
+ * canonicalizes a UTF-8-decoded string with the JavaScript `\s` class, which also collapses a vertical tab, a form feed
+ * and a non-breaking space; no such byte can appear in this run's fixtures, and where the two could differ the RFC
+ * wins, because that is what real signers implement.
  * @returns One past the last byte written, which is `offset` when the range carries no content.
  */
 function writeCollapsed(
@@ -293,14 +237,13 @@ function simpleBody(body: Uint8Array): Uint8Array {
 
 /** `relaxed`: collapsed lines joined with CRLF, their trailing empty ones dropped (§3.4.4). */
 function relaxedBody(body: Uint8Array): Uint8Array {
-  // Every line contributes at most its own bytes plus one CRLF, and the body not ending with a CRLF
-  // leaves one unterminated line, so this bound is exact.
+  // Every line contributes at most its own bytes plus one CRLF, and a body not ending with a CRLF leaves one
+  // unterminated line, so this bound is exact.
   const canonical = new Uint8Array(body.length + 2);
   let at = 0;
   let keep = 0;
-  // Each line is written collapsed and followed by CRLF. `keep` remembers where the last line with
-  // content ended, so the trailing empty lines the RFC drops are simply not returned, while an empty
-  // line between two lines with content survives as its own CRLF.
+  // `keep` remembers where the last line with content ended, so the trailing empty lines the RFC drops are not
+  // returned, while an empty line between two lines with content survives as its own CRLF.
   const writeLine = (start: number, end: number): void => {
     const length = writeCollapsed(canonical, at, body, start, end, false, true);
     canonical[length] = CR;

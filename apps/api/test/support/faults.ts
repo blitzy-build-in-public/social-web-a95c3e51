@@ -1,7 +1,7 @@
 /**
- * The fault injector the crash and interruption tests throw from (AAP 0.11.2).
- * Arming is the test's business, never the environment's: `buildApp` refuses `deps.faults` outside
- * `APP_ENV=test`, and every other process carries `noFaults`.
+ * The fault injector the crash and interruption tests throw from (AAP 0.11.2). Arming is the test's
+ * business, never the environment's: `buildApp` refuses `deps.faults` outside `APP_ENV=test`, and every
+ * other process carries `noFaults`.
  */
 
 import type { FaultInjector, FaultPoint } from '../../src/app.ts';
@@ -13,9 +13,9 @@ import type { FaultInjector, FaultPoint } from '../../src/app.ts';
 type FaultContext = Record<string, string>;
 
 /**
- * The five points a test can throw from (AAP 0.11.2), in the order the production code reaches
- * them. Each names a place the corresponding module already passes to {@link FaultInjector.hit}, so
- * this list and the call sites cannot drift apart.
+ * The five points a test can throw from (AAP 0.11.2), in the order the production code reaches them.
+ * Each names a place the corresponding module already passes to {@link FaultInjector.hit}, so this list
+ * and the call sites cannot drift apart.
  */
 export const FAULT_POINTS = [
   'stripe_webhook.after_event_insert',
@@ -26,8 +26,8 @@ export const FAULT_POINTS = [
 ] as const satisfies readonly FaultPoint[];
 
 /**
- * The failure an armed point raises, so a suite can tell an injected crash from a provider error it
- * also catches, and can name the point in the assertion.
+ * The failure an armed point raises, so a suite can tell an injected crash from a provider error it also
+ * catches, and can name the point in the assertion.
  */
 export class InjectedFault extends Error {
   /** Which point threw. */
@@ -58,9 +58,9 @@ export interface ArmOptions {
   /** Throw on the first hit and disarm, or stay armed for every hit. Defaults to `true`. */
   once?: boolean;
   /**
-   * Arm for the hits this accepts, so one arming can fire for one meetup or one payment operation and
-   * not another. Called with the ids the call site passed, on every hit of the armed point; returning
-   * false leaves the arming in place.
+   * Arm for the hits this accepts, so one arming can fire for one meetup or one payment operation and not
+   * another. Called with the ids the call site passed, on every hit of the armed point; returning false
+   * leaves the arming in place.
    */
   when?: (context: FaultContext) => boolean;
 }
@@ -73,14 +73,13 @@ export interface TestFaults extends FaultInjector {
   /** Arm `point`, replacing any earlier arming of it. */
   arm(point: FaultPoint, options?: ArmOptions): void;
   /**
-   * Disarm one point, or every point when called with no argument. Never resets
-   * {@link TestFaults.hits}, so a suite that wants the counters back at zero reads a delta or builds
-   * a fresh injector.
+   * Disarm one point, or every point when called with no argument. Never resets {@link TestFaults.hits},
+   * so a suite that wants the counters back at zero reads a delta or builds a fresh injector.
    */
   disarm(point?: FaultPoint): void;
   /**
-   * How often each point was reached, armed or not: a crash test asserts its point was reached at all
-   * — that the scenario really walked through it — before it asserts what the next run recovered.
+   * How often each point was reached, armed or not: a crash test asserts its point was reached at all —
+   * that the scenario really walked through it — before it asserts what the next run recovered.
    */
   readonly hits: Record<FaultPoint, number>;
 }

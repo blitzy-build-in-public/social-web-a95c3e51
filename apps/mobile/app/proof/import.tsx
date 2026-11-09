@@ -1,7 +1,4 @@
-/**
- * Proof import — the booking confirmation whose proof unlocks meetups (`/proof/import`, AAP 0.5.8,
- * AAP 0.5.5, criterion 3).
- */
+/** Proof import — the booking confirmation whose proof unlocks meetups (`/proof/import`, criterion 3). */
 import { useQuery } from '@tanstack/react-query';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -137,8 +134,6 @@ export default function ProofImportScreen(): ReactElement {
     </Screen>
   );
 }
-
-// --- Styles --------------------------------------------------------------------------------------
 
 const styles = StyleSheet.create({
   statement: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },

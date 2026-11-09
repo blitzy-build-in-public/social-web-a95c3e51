@@ -2,40 +2,24 @@ import type { AppEnv, LatLng } from '@tablemate/shared';
 
 import { Prisma, type RawSqlClient } from './client.ts';
 import { fixturePredicate, SQL_IDENTIFIER } from './fixtures-guard.ts';
-
-// ---------------------------------------------------------------------------------------------
-// Identifiers
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The geography column of each table that carries one, GiST-indexed in the init migration (AAP
- * 0.2.1, 0.5.2).
- */
+/** The geography column of each table that carries one, GiST-indexed in the init migration. */
 export const GEO_COLUMNS = {
   venue: 'location',
   place: 'location',
   lodging: 'location',
   city: 'centroid',
 } as const;
-
-/** A table carrying a geography column (AAP 0.2.1). */
+/** A table carrying a geography column. */
 export type GeoTable = keyof typeof GEO_COLUMNS;
-
-/**
- * The alias each helper below gives its table, so a statement that reads two geography tables can
- * qualify every column.
- */
+/** The alias each helper below gives its table, so a statement that reads two geography tables can qualify every column. */
 export const GEO_ALIASES = { venue: 'v', place: 'p', lodging: 'l', city: 'c' } as const;
-
 const FIXTURE_TABLES: ReadonlySet<GeoTable> = new Set(['venue', 'place', 'lodging']);
-
 function quote(name: string): string {
   if (!SQL_IDENTIFIER.test(name)) {
     throw new RangeError(`Unsafe SQL identifier: ${name}`);
   }
   return `"${name}"`;
 }
-
 function geoColumnName(table: GeoTable): string {
   const columnName: string | undefined = GEO_COLUMNS[table];
   if (columnName === undefined) {
@@ -43,7 +27,6 @@ function geoColumnName(table: GeoTable): string {
   }
   return columnName;
 }
-
 function geoAlias(table: GeoTable): string {
   const alias: string | undefined = GEO_ALIASES[table];
   if (alias === undefined) {
@@ -51,7 +34,6 @@ function geoAlias(table: GeoTable): string {
   }
   return alias;
 }
-
 interface GeoRefs {
   /** The table, `"place"`. */
   readonly table: Prisma.Sql;
@@ -62,7 +44,6 @@ interface GeoRefs {
   /** The bare geography column name, for a statement that may not qualify it. */
   readonly columnName: string;
 }
-
 function geoRefs(table: GeoTable): GeoRefs {
   const columnName = geoColumnName(table);
   const alias = quote(geoAlias(table));
@@ -73,23 +54,15 @@ function geoRefs(table: GeoTable): GeoRefs {
     columnName,
   };
 }
-
 function geoGuard(table: GeoTable, appEnv: AppEnv): Prisma.Sql {
   return FIXTURE_TABLES.has(table) ? fixturePredicate(appEnv, geoAlias(table)) : Prisma.sql`TRUE`;
 }
-
 function idEquals(table: GeoTable, id: string): Prisma.Sql {
   return table === 'city' ? Prisma.sql`"id" = ${id}` : Prisma.sql`"id" = ${id}::uuid`;
 }
-
 function idList(table: GeoTable, ids: readonly string[]): Prisma.Sql {
   return table === 'city' ? Prisma.sql`${ids}::text[]` : Prisma.sql`${ids}::uuid[]`;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Fragments
-// ---------------------------------------------------------------------------------------------
-
 /** A point as a `geography` value: `ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography`. */
 export function geoPoint(point: LatLng): Prisma.Sql {
   if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
@@ -103,47 +76,26 @@ export function geoPoint(point: LatLng): Prisma.Sql {
   }
   return Prisma.sql`ST_SetSRID(ST_MakePoint(${point.lng}::double precision, ${point.lat}::double precision), 4326)::geography`;
 }
-
-/**
- * The geography column of `table` as the alias qualifies it, for a caller composing its own SQL:
- * `geoColumn('p', 'place')` is `"p"."location"`.
- */
+/** The geography column of `table` as the alias qualifies it, for a caller composing its own SQL: `geoColumn('p', 'place')` is `"p"."location"`. */
 export function geoColumn(alias: string, table: GeoTable): Prisma.Sql {
   return Prisma.raw(`${quote(alias)}.${quote(geoColumnName(table))}`);
 }
-
-/**
- * The 2 km suggestion radius and the 150 m check-in geofence, as a bound `ST_DWithin` test (AAP
- * 0.5.7).
- */
+/** The 2 km suggestion radius and the 150 m check-in geofence, as a bound `ST_DWithin` test. */
 export function withinMeters(a: Prisma.Sql, b: Prisma.Sql, meters: number): Prisma.Sql {
   if (!Number.isFinite(meters) || meters < 0) {
     throw new RangeError('withinMeters requires a finite distance of 0 metres or more');
   }
   return Prisma.sql`ST_DWithin(${a}, ${b}, ${meters}::double precision)`;
 }
-
 /** The distance in metres between two geography fragments, measured on the spheroid. */
 export function distanceMeters(a: Prisma.Sql, b: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`ST_Distance(${a}, ${b})`;
 }
-
-/**
- * The `lat` and `lng` select items of a geography column, in the order the DTOs carry them:
- * `ST_Y(column::geometry) AS "lat", ST_X(column::geometry) AS "lng"`.
- */
+/** The `lat` and `lng` select items of a geography column, in the order the DTOs carry them. */
 export function latLngColumns(column: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`ST_Y(${column}::geometry) AS "lat", ST_X(${column}::geometry) AS "lng"`;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Query helpers
-// ---------------------------------------------------------------------------------------------
-
-/**
- * Writes a row's geography column, the only way it can be set, since Prisma cannot write an
- * `Unsupported` field.
- */
+/** Writes a row's geography column, the only way it can be set, since Prisma cannot write an `Unsupported` field. */
 export async function setPoint(
   db: RawSqlClient,
   table: GeoTable,
@@ -160,11 +112,7 @@ export async function setPoint(
     throw new Error(`setPoint matched no row in "${table}"`);
   }
 }
-
-/**
- * Reads the coordinates of several rows at once — `VenueDto.lat`/`lng`, `LodgingDetail.lat`/`lng`
- * and the admin DTOs — as a map keyed by id.
- */
+/** Reads the coordinates of several rows at once — `VenueDto.lat`/`lng`, `LodgingDetail.lat`/`lng` and the admin DTOs — as a map keyed by id. */
 export async function readPoints(
   db: RawSqlClient,
   table: GeoTable,
@@ -189,11 +137,7 @@ export async function readPoints(
   }
   return points;
 }
-
-/**
- * The distance in metres from a row's own geography column to a supplied point, or `null` when the
- * row is missing, the fixture guard filters it out, or it carries no location.
- */
+/** The distance in metres from a row's own geography column to a supplied point, or `null` when the row is missing, the fixture guard filters it out, or it carries no location. */
 export async function distanceFrom(
   db: RawSqlClient,
   table: GeoTable,
@@ -211,11 +155,7 @@ export async function distanceFrom(
   const row = rows[0];
   return row === undefined || row.meters === null ? null : Number(row.meters);
 }
-
-/**
- * Recomputes `place.nearest_partner_distance_m` for one city: the rounded metric distance from each
- * place to the nearest active partner venue of its own city.
- */
+/** Recomputes `place.nearest_partner_distance_m` for one city: the rounded metric distance from each place to the nearest active partner venue of its own city. */
 export async function refreshNearestPartnerDistances(
   db: RawSqlClient,
   cityId: string,

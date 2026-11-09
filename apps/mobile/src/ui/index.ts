@@ -1,7 +1,4 @@
-/**
- * The UI primitive barrel (AAP 0.8.1): each styled only from `@tablemate/shared` ui-tokens and each
- * painting only the recorded WCAG 2.1 AA contrast pairs.
- */
+/** The UI primitive barrel: `@tablemate/shared` ui-tokens only, a recorded contrast pair each. */
 export { Avatar, avatarPattern } from './Avatar';
 export type { AvatarProps } from './Avatar';
 export { AppNoticeProvider, useAppNoticeMessage } from './app-notice';

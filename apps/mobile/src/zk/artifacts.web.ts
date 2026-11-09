@@ -1,33 +1,15 @@
 /**
- * Proving-artefact delivery on the web, page side, and the launcher of the proving Worker (AAP 0.3.4,
- * AAP 0.5.5 "Delivery of proving artefacts — Web", AAP 0.8.1).
+ * Proving-artefact delivery on the web, page side, and the launcher of the proving Worker (AAP 0.3.4, AAP 0.5.5).
  *
- * The download belongs to the Worker — it streams the circuit WASM and the proving key into the Origin Private
- * File System, hashing each as it arrives, and serves the request from the artefacts' published URLs where that
- * file system cannot be used — so this page holds no byte of the key and takes no view of which source served
- * it: only the Worker can see whether the origin private file system works (AAP 0.3.4). What this page owns is
- * the Worker's lifetime, its frame protocol, the reclaim of what a failed attempt left in the store, and the
- * cheap question a generate screen asks before a gigabyte moves.
- *
- * That reclaim is a sweep that retries, because terminating a Worker does not release the entry it was writing
- * at once: its synchronous access handle outlives it by seconds while its last writes land, and for that whole
- * window the store refuses this page's read of the entry and its removal, so one sweep inside the window
- * reclaims nothing at all. It is never awaited either — the failure a traveller waits on must not wait for space
- * — and it removes only an entry whose size differs from the declaration, because an entry of the declared size
- * may still be the artefact the next attempt's digest check accepts.
- *
- * A Worker never outlives an attempt: while it proves it holds the whole key plus the witness buffers, and no
- * message cancels a run in flight, so terminating it is both how that memory comes back and the only
- * cancellation the web proving path has. A Worker the browser kills for holding that much leaves no event
- * behind, so its silence is bounded here. A failure leaves as one {@link ZkClientErrorCode}, never as text that
- * could carry a booking confirmation.
- *
- * Everything here is `import type` except `expo-constants`, so the app's bundle carries no snarkjs and no
- * `@noble/hashes`: those load only in the Worker, and `prover.web.ts` reuses {@link runWorker} for its `prove`
- * frames.
+ * The download belongs to the Worker — it streams the circuit WASM and the proving key into the Origin Private File
+ * System, hashing each as it arrives, and serves from the artefacts' published URLs where that file system cannot be used
+ * — so this page holds no byte of the key. What this page owns is the Worker's lifetime, its frame protocol, the reclaim
+ * of what a failed attempt left, and the cheap question a generate screen asks before a gigabyte moves.
+ * A Worker never outlives an attempt, and no message cancels a run in flight, so terminating it is both how its memory
+ * comes back and the only cancellation the web path has. A Worker the browser kills leaves no event behind, so its
+ * silence is bounded here, and a failure leaves as one {@link ZkClientErrorCode}, never as text.
  */
 import Constants from 'expo-constants';
-
 import type { ZkConfig } from '@tablemate/shared';
 
 import type {
@@ -38,19 +20,11 @@ import type {
   ZkClientErrorCode,
 } from './prover.ts';
 import type { WorkerRequest, WorkerResponse } from './prover.worker.ts';
-
-/** A `snake_case` code, the only form a frame, an error and a screen's sentence carry. */
 const CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
-/**
- * The client's own error, shaped as `prover.ts`'s `errorCodeOf` reads it. Its `message` is the code
- * alone, so no text can travel out of an attempt.
- */
 function fail(code: ZkClientErrorCode): Error {
   return Object.assign(new Error(code), { name: 'ZkClientError', code });
 }
-
-/* --- Where the Worker comes from (AAP 0.5.5) ------------------------------------------------- */
 
 /*
  * Metro's own bundle of the Worker entry in development — relative to Metro's server root, this pnpm workspace's
@@ -60,15 +34,11 @@ function fail(code: ZkClientErrorCode): Error {
 const DEV_WORKER_URL =
   '/apps/mobile/src/zk/prover.worker.bundle?platform=web&dev=true&minify=false';
 const EXPORTED_WORKER_URL = '/prover.worker.js';
-
 /** This build's Worker URL: a classic same-origin script, which `worker-src 'self' blob:` allows. */
 export function proverWorkerUrl(): string {
   return __DEV__ ? DEV_WORKER_URL : EXPORTED_WORKER_URL;
 }
 
-/* --- The launcher (AAP 0.5.5) ---------------------------------------------------------------- */
-
-/** The fields of either side's frames, before any of them is trusted. */
 interface FrameFields {
   readonly type?: unknown;
   readonly id?: unknown;
@@ -78,17 +48,14 @@ interface FrameFields {
   readonly code?: unknown;
 }
 
-/** One message's fields, or null when the message is not an object at all. */
 function frameOf(data: unknown): FrameFields | null {
   return typeof data === 'object' && data !== null ? data : null;
 }
 
-/** A number a frame reported, or 0 when it reported something that is not one. */
 function numberOf(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-/** The code an `error` frame reported, as one of this client's own (`worker_failed` otherwise). */
 function codeOf(value: unknown): ZkClientErrorCode {
   return typeof value === 'string' && CODE_PATTERN.test(value)
     ? (value as ZkClientErrorCode)
@@ -113,7 +80,6 @@ type ReplyFor<T extends WorkerName> = Extract<
   { readonly type: T extends 'ensure' ? 'ensured' : T extends 'prove' ? 'proved' : T }
 >;
 
-/** What {@link runWorker} may be told besides the request itself. */
 export interface RunWorkerOptions {
   /** Called as the Worker reports bytes, for its download, verify and load phases. */
   onProgress?: (progress: DownloadProgress) => void;
@@ -138,14 +104,12 @@ export interface RunWorkerOptions {
  */
 const WATCHDOG_TRANSFER_MS = 5 * 60_000;
 const WATCHDOG_PROVING_MS = 30 * 60_000;
-
 /**
  * Runs one request in a fresh proving Worker and answers with its reply (AAP 0.3.4, AAP 0.5.5).
  *
  * The Worker serves this call alone and is terminated before the promise settles, on every path — a reply, a
  * failure, an abort — which is the memory and cancellation contract of the web path. Nothing about the request is
  * retained: `postMessage` structured-clones it, so this frame keeps no reference to a `prove` frame's `inputsJson`.
- *
  * A Worker that answers nothing is failed rather than waited on: the browser can kill one that holds the whole
  * key, and that death leaves no event behind, so each frame restarts a deadline sized by the phase it names and a
  * silence past it is `worker_failed`. Silence is the one signal a Worker cannot send, and this deadline is what
@@ -162,9 +126,7 @@ export function runWorker<T extends WorkerName = WorkerRequest['type']>(
   return new Promise<ReplyFor<T>>((resolve, reject) => {
     const worker = new Worker(proverWorkerUrl());
     const id = request.id;
-    /** The deadline bounding the current silence, or null once the attempt has ended. */
     let watchdog: ReturnType<typeof setTimeout> | null = null;
-    /** Settles the attempt: the listeners go, and then the Worker and all it holds go with them. */
     const end = (): void => {
       if (watchdog !== null) {
         clearTimeout(watchdog);
@@ -185,7 +147,6 @@ export function runWorker<T extends WorkerName = WorkerRequest['type']>(
       end();
       reject(fail('worker_failed'));
     }
-    /** Restarts the deadline at the pace of the phase the frame that arrived belongs to. */
     function armWatchdog(phase: unknown): void {
       if (watchdog !== null) clearTimeout(watchdog);
       watchdog = setTimeout(
@@ -253,8 +214,6 @@ export function runWorker<T extends WorkerName = WorkerRequest['type']>(
   });
 }
 
-/* --- The artefact store (AAP 0.5.1, AAP 0.5.5) ----------------------------------------------- */
-
 /** The OPFS directory the Worker keeps both artefacts and their records in, and the entry names it
  * stores them under. `location` in its `ensured` reply carries one of these names when the Worker
  * stored the artefact, and the artefact's published URL when it could not store it. */
@@ -263,14 +222,12 @@ const WASM_FILE = 'tablemate_itinerary.wasm';
 const ZKEY_FILE = 'tablemate_itinerary.zkey';
 const META_SUFFIX = '.meta.json';
 
-/** The record the Worker writes beside a verified artefact, as far as this page reads it. */
 interface StoredMeta {
   readonly sha256: string;
   readonly size: number;
   readonly appVersion: string;
 }
 
-/** That record once it is known to be one, or null for anything else a file might hold. */
 function asStoredMeta(value: unknown): StoredMeta | null {
   const meta = value as Partial<StoredMeta> | null;
   const wellFormed =
@@ -309,7 +266,6 @@ async function openedDirectory(): Promise<FileSystemDirectoryHandle | null> {
   }
 }
 
-/** One entry of the directory, or null when the directory holds no such file. */
 async function existingHandle(
   directory: FileSystemDirectoryHandle,
   name: string,
@@ -368,7 +324,6 @@ async function isCurrent(
  * read and a record it cannot parse all answer with the whole download, because none of them can show that a
  * download is unnecessary. `connection` is always `unknown`, because a browser exposes no dependable way to tell
  * Wi-Fi from cellular and a guess would drive the warning the traveller reads.
- *
  * The artefact reclaim is fired here as well, unawaited, so a residue a tab left behind by closing inside its
  * retry window goes on the next visit; it changes nothing about the answer.
  */
@@ -410,7 +365,6 @@ export async function plan(artifacts: ZkConfig['artifacts']): Promise<ArtifactPl
  */
 const RECLAIM_RETRY_MS = 500;
 const RECLAIM_ATTEMPTS = 30;
-
 /** Resolves after `ms`: how the reclaim waits out a store that is still refusing it. */
 function waitForRetry(ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -454,12 +408,10 @@ async function removeIncompleteArtifacts(artifacts: ZkConfig['artifacts']): Prom
  * this page's read of the entry and its removal — so a sweep that ran once and gave up would reclaim nothing in
  * exactly the case it exists for; this one is asked again every {@link RECLAIM_RETRY_MS} until it succeeds, or
  * until the store has refused it {@link RECLAIM_ATTEMPTS} times, after which it gives up quietly.
- *
  * Nothing on this page can finish that download, and an entry whose size differs from the declaration can never
  * become the artefact either, so the bytes are removed rather than held until the next attempt overwrites them; an
  * entry of the declared size and every record are left alone, for the reasons {@link removeIncompleteArtifacts}
  * gives.
- *
  * The returned promise always resolves, and no caller awaits it: reclaiming space is a best effort beside a failure
  * that has already happened, and the cancellation a traveller is waiting on must not wait up to
  * {@link RECLAIM_ATTEMPTS} × {@link RECLAIM_RETRY_MS} for it. Giving up is silent for the same reason, because
@@ -485,7 +437,6 @@ async function reclaimPartialArtifacts(artifacts: ZkConfig['artifacts']): Promis
  * page's main thread; this call owns the attempt — one `ensure` request, its progress reports, and the Worker's
  * termination when it ends. Which source serves that request is the Worker's to decide, and either way the reply's
  * `location`s are what `prover.web.ts` passes straight back in its `prove` frames (AAP 0.3.4).
- *
  * An attempt that fails or is cancelled takes its Worker with it, so the partial artefact that Worker was writing is
  * reclaimed by the sweep {@link reclaimPartialArtifacts} starts here, which retries until the terminated Worker's
  * handle releases the entry; the failure itself travels on at once instead of waiting for that sweep. Throws

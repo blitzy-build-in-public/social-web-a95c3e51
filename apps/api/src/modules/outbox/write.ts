@@ -1,27 +1,26 @@
 /**
- * The transactional outbox's write half: `transact` and `writeOutbox` (AAP 0.3.2, 0.5.1, 0.5.3, 0.6.2).
+ * The transactional outbox's write half: `transact` and `writeOutbox`.
  *
  * Every state change in the API is one interactive transaction, and this module is the only place that opens one.
- * {@link transact} runs the account-deletion write fence first, hands the caller the transaction client, and runs
- * the callbacks registered through `after` only once the commit has happened. {@link writeOutbox} writes an
+ * {@link transact} runs the account-deletion write fence first, hands the caller the transaction client, and runs the
+ * callbacks registered through `after` only once the commit has happened. {@link writeOutbox} writes an
  * `OutboxMessage` row inside that same transaction, so the work it announces becomes durable with the change it
  * describes, and `dispatcher.ts` delivers it afterwards.
  *
  * The rules that follow from that shape:
  *
- *  - **One transaction per change, at ReadCommitted.** A handler that needs several writes passes one `fn`:
- *    Prisma cannot nest interactive transactions, and the fence and the outbox binding belong to the outer one.
- *  - **The fence first.** `opts.fenceUserId` takes `SELECT … FOR SHARE` on the acting user's row before `fn` runs,
- *    which is what serializes a mutation against `DELETE /me` (AAP 0.5.3): the deletion takes `FOR UPDATE` on the
- *    same row, so a mutation in flight commits before it and a later one is refused `401 token_invalid`.
- *  - **No external call inside `fn`.** Stripe, Twilio, the language model and Redis stay outside, in `after` or
- *    after `transact` returns: a transaction holding a row lock across a provider call blocks every other writer.
- *  - **Meetup mutations lock first.** `lockMeetup` is taken at the top of `fn`; that lock is the state machine's.
- *  - **Callbacks never fail the request.** They run after the commit, so one that throws is logged and the next
- *    still runs.
+ * - **One transaction per change, at ReadCommitted.** A handler that needs several writes passes one `fn`: Prisma
+ *   cannot nest interactive transactions, and the fence and the outbox binding belong to the outer one.
+ * - **The fence first.** `opts.fenceUserId` takes `SELECT … FOR SHARE` on the acting user's row before `fn` runs,
+ *   which is what serializes a mutation against `DELETE /me`: the deletion takes `FOR UPDATE` on the same row, so a
+ *   mutation in flight commits before it and a later one is refused `401 token_invalid`.
+ * - **No external call inside `fn`.** Stripe, Twilio, the language model and Redis stay outside, in `after` or after
+ *   `transact` returns: a transaction holding a row lock across a provider call blocks every other writer.
+ * - **Meetup mutations lock first.** `lockMeetup` is taken at the top of `fn`; that lock is the state machine's.
+ * - **Callbacks never fail the request.** They run after the commit, so one that throws is logged and the next still
+ *   runs.
  *
- * A `after_commit_failed` line carries the failure's own short token — its `code`, else its name — and nothing
- * else: never the message, the stack or an enumerable key (AAP 0.11.1).
+ * An `after_commit_failed` line carries the failure's own short token — its `code`, else its name — and nothing else.
  */
 
 import { Prisma, type DbTx } from '@tablemate/db';
@@ -38,10 +37,6 @@ const DEFAULT_MAX_WAIT_MS = 5_000;
 
 /** How long one transaction may run before Prisma's own deadline ends it as a `P2028`. */
 const DEFAULT_TX_TIMEOUT_MS = 15_000;
-
-// ---------------------------------------------------------------------------------------------
-// Exported types
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Registers a callback to run after the transaction commits (AAP 0.3.2): in registration order, each awaited, its
@@ -69,10 +64,6 @@ export interface TransactOptions {
  */
 export type TransactServices = Pick<AppServices, 'db' | 'clock' | 'logger' | 'outbox'>;
 
-// ---------------------------------------------------------------------------------------------
-// Per-transaction state
-// ---------------------------------------------------------------------------------------------
-
 /** What {@link writeOutbox} reads off the transaction it was handed. */
 interface TxState {
   /**
@@ -89,10 +80,6 @@ interface TxState {
  * ended transaction is collected with no bookkeeping here.
  */
 const txState = new WeakMap<object, TxState>();
-
-// ---------------------------------------------------------------------------------------------
-// transact
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Run one state change as a single interactive transaction (AAP 0.3.2, 0.5.3).
@@ -163,10 +150,6 @@ export async function transact<T>(
   }
   return result;
 }
-
-// ---------------------------------------------------------------------------------------------
-// writeOutbox
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Write one `OutboxMessage` inside the transaction {@link transact} opened (AAP 0.3.2, 0.5.2).

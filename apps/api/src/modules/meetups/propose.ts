@@ -1,30 +1,29 @@
 /**
- * The proposal handler, `POST /meetups`: the commitment lock's first half (AAP 0.5.1, 0.5.3, 0.5.4).
+ * The proposal handler, `POST /meetups`: the commitment lock's first half.
  *
- * One request creates the meetup as `proposed`, its initiator's deposit and that deposit's first hold attempt,
- * and then places the hold. The guards run in the order AAP 0.5.4 lists them: `422 self_proposal` first, before
- * any read or write, because that failure has to leave no meetup, deposit, operation or PaymentIntent behind;
- * then `404 venue_not_found` / `404 user_not_found` (also when a block exists in either direction),
- * `403 no_valid_proof` for either participant, `422 venue_not_partner`, `422 starts_at_invalid`,
- * `422 deposit_invalid` and `409 meetup_exists`.
+ * One request creates the meetup as `proposed`, its initiator's deposit and that deposit's first hold attempt, and
+ * then places the hold. The guards run in the order the contract lists them: `422 self_proposal` first, before any
+ * read or write, because that failure has to leave no meetup, deposit, operation or PaymentIntent behind; then
+ * `404 venue_not_found` / `404 user_not_found` (also when a block exists in either direction), `403 no_valid_proof`
+ * for either participant, `422 venue_not_partner`, `422 starts_at_invalid`, `422 deposit_invalid` and
+ * `409 meetup_exists`.
  *
- * **The proposal is invisible until the money decision is durable (AAP 0.5.3).** Everything but the guards is one
- * transaction — the meetup with `proposalVisibleAt` and `recipientDeadline` left null, the initiator's `Deposit`
- * at attempt 1, the `hold` `PaymentOperation` — and the hold runs after the commit, because its result is the
- * response. A `held` outcome makes the proposal visible through `applyHoldOutcome`, which sets
- * `recipientDeadline = min(proposalVisibleAt + 48 h, startsAt)`, notifies the recipient and emits
- * `proposal_sent`; a `requires_action` hold is completed by the client's 3-D Secure step and made visible by the
- * webhook. This file's only timer is the lapse at `createdAt + 48 h`, which covers the window in which the
- * recipient sees nothing.
+ * **The proposal is invisible until the money decision is durable.** Everything but the guards is one transaction —
+ * the meetup with `proposalVisibleAt` and `recipientDeadline` left null, the initiator's `Deposit` at attempt 1, the
+ * `hold` `PaymentOperation` — and the hold runs after the commit, because its result is the response. A `held`
+ * outcome makes the proposal visible through `applyHoldOutcome`, which sets
+ * `recipientDeadline = min(proposalVisibleAt + 48 h, startsAt)`, notifies the recipient and emits `proposal_sent`; a
+ * `requires_action` hold is completed by the client's 3-D Secure step and made visible by the webhook. This file's
+ * only timer is the lapse at `createdAt + 48 h`, which covers the window in which the recipient sees nothing.
  *
  * **A failed hold does not lose the proposal.** `402 hold_failed` leaves the meetup `proposed`, so the initiator
- * recovers its id from `GET /meetups` and retries through `POST /meetups/:id/hold`; `503 payment_unavailable`
- * leaves the deposit `pending` while the sweeper replays the identical create under the original key (AAP 0.3.2).
- * Neither creates a second authorization, and no caller is ever answered with the counterpart's client secret.
- * {@link inlineHoldOrThrow} is exported because `accept.ts` and the hold-retry handler map the same outcomes.
+ * recovers its id from `GET /meetups` and retries through `POST /meetups/:id/hold`; `503 payment_unavailable` leaves
+ * the deposit `pending` while the sweeper replays the identical create under the original key. Neither creates a
+ * second authorization, and no caller is ever answered with the counterpart's client secret. {@link inlineHoldOrThrow}
+ * is exported because `accept.ts` and the hold-retry handler map the same outcomes.
  *
- * No Stripe or Redis call runs inside the transaction; time comes only from `now`, which is `request.receivedAt`,
- * and money is integer USD cents (AAP 0.11.1).
+ * No Stripe or Redis call runs inside the transaction; time comes only from `now`, which is `request.receivedAt`, and
+ * money is integer USD cents.
  */
 
 import {
@@ -52,10 +51,6 @@ import { scheduleLapse } from '../settlement/timers.ts';
 // erased at compile time, and nothing of that module is read here at runtime.
 import type { AppServices } from '../../app.ts';
 
-/*
- * Constants (AAP 0.5.2, 0.5.3, 0.11.1)
- */
-
 /**
  * The partial unique index that admits one open meetup per pair, in either initiator/recipient order:
  * `UNIQUE (LEAST(initiator_id, recipient_id), GREATEST(...)) WHERE status IN ('proposed', 'locked')`.
@@ -71,10 +66,6 @@ const OPEN_STATUSES = ['proposed', 'locked'] as const satisfies readonly MeetupS
 
 /** The event name the single log line of this file carries (AAP 0.11.1). */
 const PROPOSE_EVENT = 'meetup_proposed';
-
-/*
- * The inline-hold result mapping (AAP 0.5.4)
- */
 
 /** What {@link inlineHoldOrThrow} is told about the route asking (AAP 0.5.4). */
 export interface InlineHoldOptions {
@@ -133,10 +124,6 @@ export function inlineHoldOrThrow(result: HoldExecution, opts: InlineHoldOptions
   }
 }
 
-/*
- * Transaction helpers (AAP 0.5.2, 0.5.3)
- */
-
 /**
  * Whether a block stands between two accounts in either direction (AAP 0.5.3). The row is read by its pair, never
  * by the caller's direction alone, so the blocked side receives the same answer as the blocker; asked before the
@@ -181,10 +168,6 @@ interface ProposalCommit {
   /** The `hold` operation the executor runs after the commit. */
   readonly operationId: string;
 }
-
-/*
- * The route (AAP 0.5.3, 0.5.4)
- */
 
 /**
  * Propose a meetup and place the initiator's commitment-lock hold (AAP 0.5.4).

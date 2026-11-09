@@ -1,22 +1,17 @@
 /**
- * The client input generator measured against its oracle, `@zk-email/helpers` 6.4.2 (AAP 0.5.5). The oracle
- * is a Node-side reference that reads the issuer's DKIM key over DNS-over-HTTPS, which a device cannot do, and
- * it is never imported by the client-safe generator. The suites below hold four things:
+ * The client input generator measured against its oracle, `@zk-email/helpers` 6.4.2 (AAP 0.5.5). The oracle is a
+ * Node-side reference that reads the issuer's DKIM key over DNS-over-HTTPS, which a device cannot do, and it is never
+ * imported by the client-safe generator. These suites hold four things: every EmailVerifier signal
+ * `buildEmailVerifierInputs` produces equals the oracle's for each validly signed fixture, both given the same 960-byte
+ * body window and the same SHA-256 precompute cut the circuit's `lib/body_window.circom` fixes; the two honest
+ * fixtures yield the city, the issuer and one nullifier per booking; the generator refuses the tampered, wrong-issuer,
+ * ambiguous-anchor, header-only and invalid-date fixtures with a code; and an LF-ended message and its CRLF twin
+ * produce one witness.
  *
- *   - every EmailVerifier signal `buildEmailVerifierInputs` produces equals the oracle's for each validly
- *     signed fixture, with the oracle given the same 960-byte body window and the same SHA-256 precompute cut
- *     the circuit's `lib/body_window.circom` fixes, so both read the same bytes;
- *   - the two honest fixtures yield the city, the issuer and one nullifier per booking;
- *   - the generator refuses the tampered, wrong-issuer, ambiguous-anchor, header-only and invalid-date
- *     fixtures with a code, never with any part of the message;
- *   - an LF-ended message and its CRLF twin produce one witness.
- *
- * No circuit is compiled and no `build/` artefact is needed: the oracle verifies the signature with Node's
- * crypto, and the `p=` record it resolves over DoH is built from the published `modulusBase64`, so the suite
- * runs from a fresh checkout. Nothing here writes to the repository, and the only outbound call the run can
- * make is the oracle's own DoH query: the fetch stub below answers the test issuer's name, returns NXDOMAIN
- * for any other name, and throws for any other host, so an unexpected request fails the test instead of
- * hanging.
+ * No circuit is compiled and no `build/` artefact is needed: the oracle verifies the signature with Node's crypto, and
+ * the `p=` record it resolves over DoH is built from the published `modulusBase64`. Nothing here writes to the
+ * repository, and the only outbound call the run can make is the oracle's own DoH query: the fetch stub below answers
+ * the test issuer's name, returns NXDOMAIN for any other name, and throws for any other host.
  */
 
 import { createPublicKey } from 'node:crypto';
@@ -66,18 +61,15 @@ const PRIVACY_WINDOW = 12;
 /** The two DoH servers `@zk-email/helpers` 6.4.2 queries, in the order `resolveDNSHTTP` queries them. */
 const DOH_HOSTS = ['dns.google', 'cloudflare-dns.com'];
 
-/** The path of the signed fixtures and of the committed configuration, from this file. */
 const FIXTURE_PATH = '../fixtures/test-issuer/';
 const CONFIG_PATH = '../../../config/';
 
-/** One validly signed fixture and, for the two the AAP names, which window case it covers. */
 type SignedFixture = readonly [path: string, windowCase: 'precomputed' | 'whole' | undefined];
 
 /**
- * The fixtures whose DKIM signature verifies (AAP 0.5.5). The five `adversarial/` bodies are signed
- * by the test key exactly as the honest two are, so they differ from them only in where the stay
- * fields sit: the extraction refuses them, and everything up to that point must agree with the
- * oracle. `valid.eml` and `valid-second.eml` are the two window cases body_window.circom admits.
+ * The fixtures whose DKIM signature verifies (AAP 0.5.5). The five `adversarial/` bodies are signed by the test key
+ * exactly as the honest two are, so they differ from them only in where the stay fields sit: the extraction refuses
+ * them, and everything up to that point must agree with the oracle.
  */
 const SIGNED_FIXTURES: readonly SignedFixture[] = [
   // Padded body 1,664 bytes: the window is its last 960, so the precompute cut falls inside it.
@@ -91,7 +83,6 @@ const SIGNED_FIXTURES: readonly SignedFixture[] = [
   ['adversarial/date-non-digit.eml', undefined],
 ];
 
-/** One refused fixture: its path, the code reported for it, and the slot for a `field_*` code. */
 type RefusalCase = readonly [
   path: string,
   code: CircuitInputErrorCode,
@@ -112,7 +103,6 @@ const REFUSALS: readonly RefusalCase[] = [
 /** The published test issuer, `config/issuers/tablemate-test.json` (AAP 0.5.5). */
 const testIssuer = IssuerConfig.parse(readConfig('issuers/tablemate-test.json'));
 
-/** The registry carrying the test issuer's key leaf, `config/registry/test.json`. */
 const testRegistry = RegistryFile.parse(readConfig('registry/test.json'));
 
 /** The launch cities, whose `circuitCityId` the witness's `cityId` must equal. */
@@ -121,31 +111,26 @@ const cities = CitiesFile.parse(readConfig('cities.json')).cities;
 /** The issuer's extraction template; a key is only ever selected for an issuer that carries one. */
 const template = requireTemplate();
 
-/** The DNS name the stub answers and the TXT record it holds, both derived from the published key. */
 const dkimRecord = buildDkimRecord();
 
 /** The names the stub was asked for, so the generator itself can be shown to resolve none. */
 const dnsQueries: string[] = [];
 
-/** One JSON file of the committed configuration. */
 function readConfig(path: string): unknown {
   return JSON.parse(readFileSync(new URL(CONFIG_PATH + path, import.meta.url), 'utf8'));
 }
 
-/** One signed fixture as the plain bytes the file picker would hand the generator. */
 function fixtureBytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(new URL(FIXTURE_PATH + path, import.meta.url)));
 }
 
-/** The same bytes with every CRLF line ending replaced by LF. */
 function lfTwin(bytes: Uint8Array): Uint8Array {
   const twin = new Uint8Array(bytes.length);
   let length = 0;
   for (let i = 0; i < bytes.length; i += 1) {
-    // A CRLF whose own CR is preceded by a CR is left alone. Every fixture ends its four stay-field
-    // lines that way — the template's terminator byte is a CR, and the line's ending follows it — and
-    // an LF-ended file cannot spell "content CR then line ending" distinctly: normalizing such a file
-    // would see the terminator CR as the line ending's own CR and drop a byte of the signed body.
+    // A CRLF whose own CR is preceded by a CR is left alone: the template's terminator byte is a CR, so an LF-ended
+    // file cannot spell "content CR then line ending" distinctly, and normalizing it would drop a byte of the signed
+    // body.
     const convertible = bytes[i] === CR && bytes[i + 1] === LF && i > 0 && bytes[i - 1] !== CR;
     twin[length] = convertible ? LF : (bytes[i] ?? 0);
     length += 1;
@@ -155,15 +140,15 @@ function lfTwin(bytes: Uint8Array): Uint8Array {
 }
 
 /**
- * The oracle's `p=` record for the test issuer: SPKI DER, base64, as a DKIM TXT answer carries it.
- * The `p=` a real sender publishes encloses the same modulus, so the oracle's own RSA verification
- * checks the fixture's signature against the published key rather than a copy of it.
+ * The oracle's `p=` record for the test issuer: SPKI DER, base64, as a DKIM TXT answer carries it. The `p=` a real
+ * sender publishes encloses the same modulus, so the oracle's own RSA verification checks the fixture's signature
+ * against the published key rather than a copy of it.
  */
 function buildDkimRecord(): { name: string; data: string } {
   const key = testIssuer.keys[0];
   if (key === undefined) throw new RangeError('the test issuer records no DKIM key');
-  // The JWK parameter is the modulus in unsigned big-endian base64url with no leading zero, which is
-  // the byte range `p=` encloses once the base64 is decoded.
+  // The JWK parameter is the modulus in unsigned big-endian base64url with no leading zero, the byte range `p=`
+  // encloses once the base64 is decoded.
   const hex = modulusFromBase64(key.modulusBase64).toString(16);
   const der = createPublicKey({
     key: {
@@ -192,9 +177,9 @@ function dohUrl(host: string, name: string): URL {
 }
 
 /**
- * The oracle's DKIM key lookup, standing in for the network: it answers the test issuer's own name
- * with the record built from the published modulus, reports NXDOMAIN for every other name, and
- * throws for any other host, so a request the suite does not expect fails rather than reaching out.
+ * The oracle's DKIM key lookup, standing in for the network: it answers the test issuer's own name with the record
+ * built from the published modulus, reports NXDOMAIN for every other name, and throws for any other host, so a request
+ * the suite does not expect fails rather than reaching out.
  */
 function dohFetch(input: unknown): Promise<Response> {
   const target = input instanceof Request ? input.url : String(input);
@@ -233,8 +218,8 @@ interface WindowCase {
 /**
  * The padded body of a fixture, the window cut, and the selector that aims the oracle's cut at it.
  *
- * The body is canonicalized exactly as the generator does and padded with `sha256Pad`, so the cut is
- * the one `lib/body_window.circom` constrains rather than a second opinion on it.
+ * The body is canonicalized exactly as the generator does and padded with `sha256Pad`, so the cut is the one
+ * `lib/body_window.circom` constrains rather than a second opinion on it.
  */
 function windowOf(bytes: Uint8Array): WindowCase {
   const parsed = parseEml(bytes);
@@ -248,9 +233,9 @@ function windowOf(bytes: Uint8Array): WindowCase {
 }
 
 /**
- * The selector that makes the oracle cut the padded body at `cut`: the shortest printable slice from
- * the window's start whose *first* occurrence in the padded body lies in the window's first 64-byte
- * block, which is where `floor(index / 64) * 64` lands.
+ * The selector that makes the oracle cut the padded body at `cut`: the shortest printable slice from the window's start
+ * whose first occurrence in the padded body lies in the window's first 64-byte block, which is where
+ * `floor(index / 64) * 64` lands.
  */
 function precomputeSelector(
   padded: Uint8Array,
@@ -288,9 +273,9 @@ function oracleInputs(
 /**
  * Asserts one of the two arrays that carry the body window matches the oracle's.
  *
- * The oracle pads its window array to its own body bound and this generator pads to the circuit's
- * 1,024-byte signal, so the two differ in width exactly where the zero fill beyond the window
- * begins: the shared prefix must be equal and every entry past it zero on both sides.
+ * The oracle pads its window array to its own body bound and this generator pads to the circuit's 1,024-byte signal,
+ * so the two differ in width exactly where the zero fill beyond the window begins: the shared prefix must be equal and
+ * every entry past it zero on both sides.
  */
 function expectSameWindow(ours: readonly string[], oracle: readonly string[]): void {
   const shared = Math.min(ours.length, oracle.length);
@@ -300,9 +285,9 @@ function expectSameWindow(ours: readonly string[], oracle: readonly string[]): v
 }
 
 /**
- * The soft line break removal `removeSoftLineBreaks` of `@zk-email/circuits` 6.3.4 performs, written
- * here from the rule rather than read back from the generator: every `=` CR LF inside the window is
- * deleted and the rest is compacted into its place, zero-filled to the circuit's body bound.
+ * The soft line break removal `removeSoftLineBreaks` of `@zk-email/circuits` 6.3.4 performs, written here from the rule
+ * rather than read back from the generator: every `=` CR LF inside the window is deleted and the rest is compacted into
+ * its place, zero-filled to the circuit's body bound.
  */
 function decodeWindow(encoded: Uint8Array): string[] {
   const decoded: string[] = new Array<string>(MAX_BODY_LENGTH).fill('0');
@@ -406,7 +391,6 @@ function escapePattern(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Every {@link PRIVACY_WINDOW}-character run of one string, as a membership set. */
 function textWindows(text: string): Set<string> {
   const windows = new Set<string>();
   for (let i = 0; i + PRIVACY_WINDOW <= text.length; i += 1) {
@@ -458,9 +442,8 @@ describe('the EmailVerifier inputs the circuit and the oracle agree on', () => {
       const bytes = fixtureBytes(path);
       const window = windowOf(bytes);
       if (windowCase !== undefined) {
-        // The two window cases body_window.circom admits: the cut inside the padded body, which the
-        // oracle can only be aimed at with a selector, and the whole padded body from block 0, which
-        // takes none.
+        // The two window cases body_window.circom admits: the cut inside the padded body, which the oracle can only be
+        // aimed at with a selector, and the whole padded body from block 0, which takes none.
         expect(window.cut > 0).toBe(windowCase === 'precomputed');
         expect(window.selector !== undefined).toBe(windowCase === 'precomputed');
       }
@@ -487,8 +470,8 @@ describe('the EmailVerifier inputs the circuit and the oracle agree on', () => {
         dec(ours.decodedEmailBodyIn),
         dec(required(oracle.decodedEmailBodyIn, 'decodedEmailBodyIn')),
       );
-      // The decoded window is the encoded one with every soft line break deleted, derived here from
-      // the bytes the two sides agreed on rather than read back from either of them.
+      // The decoded window is the encoded one with every soft line break deleted, derived here from the bytes the two
+      // sides agreed on rather than read back from either of them.
       expect(dec(ours.decodedEmailBodyIn)).toEqual(decodeWindow(ours.emailBody));
     },
   );
@@ -500,8 +483,8 @@ describe('the codes the generator refuses a fixture with, and the privacy of its
     expect(error).toBeInstanceOf(CircuitInputError);
     expect(error?.code).toBe(code);
     if (field !== undefined) expect(error?.field).toBe(field);
-    // The one thing every refusal says about the message is its code, and the message it carries is
-    // that code, so a caller can log or show it without a value ever reaching the surface.
+    // The one thing every refusal says about the message is its code, and the message it carries is that code, so a
+    // caller can log or show it without a value ever reaching the surface.
     expect(error?.message).toBe(error?.code);
   });
   it('accepts both honest fixtures and reports the city, the issuer and one nullifier per booking', () => {
@@ -511,8 +494,8 @@ describe('the codes the generator refuses a fixture with, and the privacy of its
     expect(second.issuerId).toBe(testIssuer.issuerId);
     expect(valid.cityId).toBe(cityCircuitIdOf(fixtureBytes('valid.eml')));
     expect(second.cityId).toBe(cityCircuitIdOf(fixtureBytes('valid-second.eml')));
-    // The reference bytes the witness locates are the nullifier's own input, and the two bookings are
-    // different references of the same length, so one booking yields one nullifier and not the other.
+    // The reference bytes the witness locates are the nullifier's own input, and the two bookings are different
+    // references of the same length, so one booking yields one nullifier and not the other.
     const first = referenceOf(valid.inputs);
     const other = referenceOf(second.inputs);
     expect(bytesToLatin1(first)).not.toBe(bytesToLatin1(other));
@@ -524,8 +507,8 @@ describe('the codes the generator refuses a fixture with, and the privacy of its
     (path) => {
       const bytes = fixtureBytes(path);
       const twin = lfTwin(bytes);
-      // The twin is genuinely LF-ended: only the four stay-field lines keep their terminator CR, so a
-      // line ending is a bare LF here, which `parseEml` normalizes back to the CRLF the signature covers.
+      // The twin is genuinely LF-ended: only the four stay-field lines keep their terminator CR, so a line ending here
+      // is a bare LF, which `parseEml` normalizes back to the CRLF the signature covers.
       expect(twin.length).toBeLessThan(bytes.length);
       expect(JSON.stringify(witnessOf(twin).inputs)).toBe(JSON.stringify(witnessOf(bytes).inputs));
     },

@@ -1,23 +1,19 @@
 /**
- * Generates the DKIM-signed test-issuer fixtures (AAP 0.4.2, AAP 0.5.5, AAP 0.8.1): the nine `.eml`
- * files under `fixtures/test-issuer/`, the public key they are signed with, and the rebuilt registries.
+ * Generates the DKIM-signed test-issuer fixtures (AAP 0.4.2, AAP 0.5.5): the nine `.eml` files under
+ * `fixtures/test-issuer/`, the public key they are signed with, and the rebuilt registries.
  *
  * The RSA-2048 key pair is generated per run and kept in memory: only the public modulus reaches
- * `config/issuers/tablemate-test.json`, and the private key is never exported, written or logged, so no key
- * material can reach the repository (AAP 0.12.2, `scripts/check-secrets.ts`). A rerun therefore rotates the
- * key, which is why every file this script writes belongs in the same commit as its fixtures.
- *
- * The fixtures are the input side of the circuit statement (AAP 0.5.5). `valid.eml` and `valid-second.eml`
- * prove for two travellers staying in one city; `tampered.eml` holds `valid.eml`'s own signed bytes with one
- * byte of its departure date changed after the signature was made, so the header still verifies while the body
- * no longer hashes to the `bh=` it commits to; `other-issuer.eml` is signed by a key the registry does not
- * hold; and the five `adversarial/` bodies are DKIM-honest messages only the circuit rejects: a repeated
- * anchor, a field that lives only in a signed header, and three dates no calendar has. Every other body is
- * rendered from the issuer's own template, so a change to its anchors, terminators, charsets or date layout is
- * carried into them. Every check runs before the first write, so a failure leaves the previous fixture set in
- * place.
- *
- * Run as `pnpm --filter @tablemate/circuits fixtures`.
+ * `config/issuers/tablemate-test.json`, and the private key is never exported, written or logged, so no key material
+ * can reach the repository (AAP 0.12.2). A rerun therefore rotates the key, which is why every file this script writes
+ * belongs in the same commit as its fixtures.
+ * The fixtures are the input side of the circuit statement (AAP 0.5.5). `valid.eml` and `valid-second.eml` prove for
+ * two travellers staying in one city; `tampered.eml` holds `valid.eml`'s own signed bytes with one byte of its
+ * departure date changed after the signature was made, so the header still verifies while the body no longer hashes to
+ * the `bh=` it commits to; `other-issuer.eml` is signed by a key the registry does not hold; and the five
+ * `adversarial/` bodies are DKIM-honest messages only the circuit rejects: a repeated anchor, a field that lives only
+ * in a signed header, and three dates no calendar has. Every other body is rendered from the issuer's own template, so a
+ * change to its anchors, terminators, charsets or date layout is carried into them. Every check runs before the first
+ * write, so a failure leaves the previous fixture set in place.
  */
 import { generateKeyPairSync, sign, verify } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
@@ -125,10 +121,9 @@ interface StaySpec {
 }
 
 /**
- * The two stays the tests and the end-to-end runs set the test clock inside (AAP 0.5.5). They share
- * the fixture city and overlap, so criterion 1 has two valid accounts to propose between. Renewing
- * them is an edit to this table plus a `pnpm circuits:fixtures` run, because the fixtures, the issuer
- * key and the test registry are rewritten together.
+ * The two stays the tests and the end-to-end runs set the test clock inside (AAP 0.5.5). They share the fixture city
+ * and overlap, so criterion 1 has two valid accounts to propose between. Renewing them is an edit to this table plus a
+ * fixtures run, because the fixtures, the issuer key and the test registry are rewritten together.
  */
 const VALID: StaySpec = {
   guest: 'Fixture Marlow Quenby',
@@ -153,9 +148,9 @@ const OTHER_ISSUER: StaySpec = {
 };
 
 /**
- * The long boilerplate of `valid.eml`: distinctive fictional prose whose text criterion 3 searches the
- * request body for. It carries no `=` and none of the four anchors, and it is long enough that the
- * padded body needs the 960-byte tail window `valid.eml` exists to exercise.
+ * The long boilerplate of `valid.eml`: distinctive fictional prose whose text criterion 3 searches the request body
+ * for. It carries no `=` and none of the four anchors, and it is long enough that the padded body needs the 960-byte
+ * tail window `valid.eml` exists to exercise.
  */
 const LONG_BOILERPLATE: readonly string[] = [
   'Thank you for booking with Fixture Stays. This confirmation repeats every detail our reservation record holds for your stay, and it is the only document the property needs at the desk.',
@@ -165,16 +160,16 @@ const LONG_BOILERPLATE: readonly string[] = [
 ];
 
 /**
- * The short boilerplate of `valid-second.eml` and the adversarial bodies: the same voice, sized so the
- * whole padded body fits the window and no SHA-256 precompute is needed (AAP 0.5.5).
+ * The short boilerplate of `valid-second.eml` and the adversarial bodies: the same voice, sized so the whole padded
+ * body fits the window and no SHA-256 precompute is needed (AAP 0.5.5).
  */
 const SHORT_BOILERPLATE: readonly string[] = [
   'Thank you for booking with Fixture Stays. Your reservation is confirmed and the property has been notified of your dates. Keep this message for your own records.',
 ];
 
 /**
- * The lines after the guest line of the long body `valid.eml` carries, and so of `tampered.eml`, which
- * shares its bytes: they sit inside the 960-byte window the circuit hashes.
+ * The lines after the guest line of the long body `valid.eml` carries, and so of `tampered.eml`, which shares its
+ * bytes: they sit inside the 960-byte window the circuit hashes.
  */
 const LONG_FOOTER: readonly string[] = [
   'Fixture Stays Reservations, 1 Example Bay, Example Port',
@@ -229,10 +224,9 @@ function at<T>(list: readonly T[], index: number, what: string): T {
 }
 
 /**
- * A calendar date in one of the four layouts `date_parse.circom` reads, byte for byte as its grammar
- * writes them: `2026-03-04`, `4 March 2026`, `March 4, 2026` and `Wed, 4 Mar 2026`. The day carries no
- * leading zero, the names are the circuit's capitalised English tables, and the weekday is the real one
- * for the date.
+ * A calendar date in one of the four layouts `date_parse.circom` reads, byte for byte as its grammar writes them:
+ * `2026-03-04`, `4 March 2026`, `March 4, 2026` and `Wed, 4 Mar 2026`. The day carries no leading zero, the names are
+ * the circuit's capitalised English tables, and the weekday is the real one for the date.
  *
  * @throws {Error} When the layout needs a month name a month above 12 has none of.
  */
@@ -270,8 +264,8 @@ function fieldValue(template: IssuerTemplate, spec: FixtureSpec, field: Template
 }
 
 /**
- * A field line: the template's anchor, the value, and the terminator byte — which for the configured
- * template is a carriage return, so the line ends `\r\r\n` once the body's own CRLF follows it.
+ * A field line: the template's anchor, the value, and the terminator byte — which for the configured template is a
+ * carriage return, so the line ends `\r\r\n` once the body's own CRLF follows it.
  */
 function fieldLine(template: IssuerTemplate, field: TemplateFieldName, value: string): string {
   const { anchor, terminator } = template.fields[field];
@@ -279,9 +273,9 @@ function fieldLine(template: IssuerTemplate, field: TemplateFieldName, value: st
 }
 
 /**
- * Checks a value against the template exactly as `FieldExtract` does (AAP 0.5.5): 1-32 bytes, every one
- * of them in the field's charset, and none of them the terminator, which would shorten the value and
- * move the field's boundary. Nothing about the value reaches the message (AAP 0.12.2).
+ * Checks a value against the template exactly as `FieldExtract` does (AAP 0.5.5): 1-32 bytes, every one of them in the
+ * field's charset, and none of them the terminator, which would shorten the value and move the field's boundary.
+ * Nothing about the value reaches the message (AAP 0.12.2).
  */
 function assertFieldValue(template: IssuerTemplate, field: TemplateFieldName, value: string): void {
   const { terminator, charset } = template.fields[field];
@@ -307,10 +301,9 @@ function assertNoAnchor(template: IssuerTemplate, text: readonly string[]): void
 }
 
 /**
- * Refuses a stay outside the 1-120 day rule the API enforces (AAP 0.5.4), which the fixtures would
- * otherwise only discover after a proving run. A date no calendar has — a 30 February, a month 13, or
- * text written as given — leaves the check alone: what refuses those fixtures is the circuit's own date
- * parse, and the span between a rolled-over instant and a real one is not the property it tests.
+ * Refuses a stay outside the 1-120 day rule the API enforces (AAP 0.5.4), which the fixtures would otherwise only
+ * discover after a proving run. A date no calendar has — a 30 February, a month 13, or text written as given — leaves
+ * the check alone: what refuses those fixtures is the circuit's own date parse.
  */
 function assertStay(stay: StaySpec): void {
   const arrival = typeof stay.arrival === 'string' ? null : calendarInstant(stay.arrival);
@@ -333,9 +326,9 @@ function calendarInstant(date: Exclude<StayDate, string>): number | null {
 }
 
 /**
- * A rendered stay date as a UTC instant, or `null` for text in another layout or a day no month has.
- * Only the `ISO_YMD` layout the test template must use reaches a date: `main` refuses any other, and a
- * value of any other shape is refused here rather than read as a date it does not spell.
+ * A rendered stay date as a UTC instant, or `null` for text in another layout or a day no month has. Only the `ISO_YMD`
+ * layout the test template must use reaches a date: `main` refuses any other, and a value of any other shape is
+ * refused here rather than read as a date it does not spell.
  */
 function renderedInstant(value: string): number | null {
   const parts = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value);
@@ -356,11 +349,11 @@ function renderedStayDays(arrival: StayDate, departure: string): number | null {
 }
 
 /**
- * The departure value `tampered.eml` carries: the rendered one with its last digit advanced, one digit
- * at a time and wrapping past nine, to the first that still names a real calendar date with a stay of
- * 1-120 days. A digit the field's charset or the calendar would refuse, or a stay the API would answer
- * `422 stay_out_of_range` for, would leave the fixture failing a check other than its body hash, and
- * would no longer show that the circuit's body-hash binding is what rejects it (AAP 0.5.5).
+ * The departure value `tampered.eml` carries: the rendered one with its last digit advanced, one digit at a time and
+ * wrapping past nine, to the first that still names a real calendar date with a stay of 1-120 days. A digit the field's
+ * charset or the calendar would refuse, or a stay the API would answer `422 stay_out_of_range` for, would leave the
+ * fixture failing a check other than its body hash, and would no longer show that the circuit's body-hash binding is
+ * what rejects it (AAP 0.5.5).
  *
  * @throws {Error} When the rendered value ends in no digit, or no digit keeps the stay a real date.
  */
@@ -380,13 +373,13 @@ function tamperedDepartureValue(stay: StaySpec, format: DateFormat): string {
 }
 
 /**
- * Wraps quoted-printable text with a soft line break — `= CR LF` — at every `WRAP_WIDTH`, so no encoded
- * line exceeds the 76 characters RFC 2045 §6.7 allows. The break follows a space the reader keeps, so
- * removing the soft breaks returns the text with its single spaces intact, and no `=` in the plain text
- * means the wrap is the only escape byte the body carries.
+ * Wraps quoted-printable text with a soft line break — `= CR LF` — at every `WRAP_WIDTH`, so no encoded line exceeds
+ * the 76 characters RFC 2045 §6.7 allows. The break follows a space the reader keeps, so removing the soft breaks
+ * returns the text with its single spaces intact, and no `=` in the plain text means the wrap is the only escape byte
+ * the body carries.
  *
- * @throws {Error} When the text carries an `=` or is padded with whitespace, either of which would make
- *   the encoding ambiguous.
+ * @throws {Error} When the text carries an `=` or is padded with whitespace, either of which would make the encoding
+ *   ambiguous.
  */
 function qpWrap(text: string, width = WRAP_WIDTH): string[] {
   if (text.includes('=') || text.trim() !== text || text === '') {
@@ -409,10 +402,10 @@ function qpWrap(text: string, width = WRAP_WIDTH): string[] {
 }
 
 /**
- * Renders one fixture body (AAP 0.5.5): the boilerplate, the four field lines in template order, the
- * guest line and the footer, every line CRLF-terminated. A field line is never wrapped — a soft break
- * inside one would move its terminator — and the text outside the fields is checked for a repeated
- * anchor, which would leave that field with no unique boundary.
+ * Renders one fixture body (AAP 0.5.5): the boilerplate, the four field lines in template order, the guest line and the
+ * footer, every line CRLF-terminated. A field line is never wrapped — a soft break inside one would move its
+ * terminator — and the text outside the fields is checked for a repeated anchor, which would leave that field with no
+ * unique boundary.
  */
 function renderBody(template: IssuerTemplate, spec: FixtureSpec): string {
   assertStay(spec.stay);
@@ -459,9 +452,9 @@ function assemble(signer: Signer, spec: FixtureSpec, body: string, dkimHeader: s
 }
 
 /**
- * Signs one fixture (AAP 0.5.5). The draft carries a placeholder `b=`, which canonicalization empties
- * anyway, so the bytes signed and the bytes a verifier recomputes are the same once the real base64
- * signature replaces it. The finished message is re-parsed and checked before it is returned.
+ * Signs one fixture (AAP 0.5.5). The draft carries a placeholder `b=`, which canonicalization empties anyway, so the
+ * bytes signed and the bytes a verifier recomputes are the same once the real base64 signature replaces it. The
+ * finished message is re-parsed and checked before it is returned.
  */
 function renderMessage(template: IssuerTemplate, signer: Signer, spec: FixtureSpec): Buffer {
   const body = renderBody(template, spec);
@@ -479,8 +472,8 @@ function renderMessage(template: IssuerTemplate, signer: Signer, spec: FixtureSp
 }
 
 /**
- * Checks a finished fixture: the RSA signature over the canonical header verifies under the key the
- * issuer record will carry, the body hashes to the `bh=` it commits to, and the header fits its bound.
+ * Checks a finished fixture: the RSA signature over the canonical header verifies under the key the issuer record will
+ * carry, the body hashes to the `bh=` it commits to, and the header fits its bound.
  */
 function assertSigned(message: Buffer, signer: Signer, name: string): void {
   const parsed = parseEml(message);
@@ -498,9 +491,9 @@ function assertSigned(message: Buffer, signer: Signer, name: string): void {
 }
 
 /**
- * The modulus as `DkimKey.modulusBase64` records it (AAP 0.5.5): standard base64 of the unsigned
- * big-endian modulus with no leading zero byte, the encoding `../src/registry/leaves.ts` decodes and
- * `./fetch-dkim-key.ts` writes. It comes from the JWK export, so the private key is never read.
+ * The modulus as `DkimKey.modulusBase64` records it (AAP 0.5.5): standard base64 of the unsigned big-endian modulus
+ * with no leading zero byte, the encoding `../src/registry/leaves.ts` decodes and `./fetch-dkim-key.ts` writes. It comes
+ * from the JWK export, so the private key is never read.
  */
 function modulusBase64Of(publicKey: KeyObject): string {
   const n = (publicKey.export({ format: 'jwk' }) as { n?: unknown }).n;
@@ -512,10 +505,10 @@ function modulusBase64Of(publicKey: KeyObject): string {
 }
 
 /**
- * The city's first alias the template can carry (AAP 0.5.5): 1-32 bytes, every one of them in the city
- * field's charset, none of them its terminator, and none needing a quoted-printable escape. Only soft
- * line breaks are removed from the window the circuit reads, so an alias written with an escape (a
- * non-ASCII name, or any `=`) would appear there as bytes the field cannot hold.
+ * The city's first alias the template can carry (AAP 0.5.5): 1-32 bytes, every one of them in the city field's charset,
+ * none of them its terminator, and none needing a quoted-printable escape. Only soft line breaks are removed from the
+ * window the circuit reads, so an alias written with an escape (a non-ASCII name, or any `=`) would appear there as
+ * bytes the field cannot hold.
  */
 function chooseAlias(city: CityConfig, template: IssuerTemplate, params: TemplateParams): string {
   const charset = at(params.charset, CITY_FIELD, 'city charset');
@@ -541,9 +534,9 @@ function chooseAlias(city: CityConfig, template: IssuerTemplate, params: Templat
 }
 
 /**
- * The records the test registry takes production leaves from: every other `verified` record, with the
- * placeholder keys the registry builder drops (AAP 0.5.5, AAP 0.8.1). The selection mirrors
- * `buildRegistries`, so the in-memory root and the written one are the same value.
+ * The records the test registry takes production leaves from: every other `verified` record, with the placeholder keys
+ * the registry builder drops (AAP 0.5.5). The selection mirrors `buildRegistries`, so the in-memory root and the written
+ * one are the same value.
  */
 function productionIssuers(issuers: readonly LoadedIssuer[]): IssuerConfig[] {
   return issuers
@@ -558,8 +551,8 @@ function productionIssuers(issuers: readonly LoadedIssuer[]): IssuerConfig[] {
 }
 
 /**
- * Checks one fixture's body window (AAP 0.5.5): that the padded body needs the precomputed tail the
- * fixture exists for, and that every field's anchor is inside the window the circuit hashes.
+ * Checks one fixture's body window (AAP 0.5.5): that the padded body needs the precomputed tail the fixture exists for,
+ * and that every field's anchor is inside the window the circuit hashes.
  */
 function checkWindow(
   template: IssuerTemplate,
@@ -582,11 +575,11 @@ function checkWindow(
 }
 
 /**
- * Checks what makes `tampered.eml` the fixture criterion 3 needs (AAP 0.5.5): it is `valid.eml` byte for
- * byte except one, that byte lies inside the departure value, the value it changed sits inside the body
- * window the circuit hashes, and the signature the two files share still verifies. Nothing but the body
- * hash can then separate a proof of one message from a proof of the other, and the change cannot be
- * hidden in the precomputed SHA-256 prefix, which is a private input.
+ * Checks what makes `tampered.eml` the fixture criterion 3 needs (AAP 0.5.5): it is `valid.eml` byte for byte except
+ * one, that byte lies inside the departure value, the value it changed sits inside the body window the circuit hashes,
+ * and the signature the two files share still verifies. Nothing but the body hash can then separate a proof of one
+ * message from a proof of the other, and the change cannot be hidden in the precomputed SHA-256 prefix, which is a
+ * private input.
  *
  * @throws {Error} When any of those properties does not hold.
  */
@@ -695,8 +688,8 @@ async function main(): Promise<void> {
     const arrival = renderDate(VALID.arrival, template.dateFormat);
     const nonDigit = arrival.replace(/[0-9]/, 'O');
     if (nonDigit === arrival) throw new Error('the arrival date carries no digit to replace');
-    // The three dates no calendar has: the circuit's `DateParse` is what refuses them, and each one
-    // differs from the honest body in that value alone.
+    // The three dates no calendar has: the circuit's `DateParse` is what refuses them, and each one differs from the
+    // honest body in that value alone.
     const feb30: StaySpec = { ...VALID, arrival: { year: 2026, month: 2, day: 30 } };
     const month13: StaySpec = { ...VALID, arrival: { year: 2026, month: 13, day: 5 } };
     const badDigit: StaySpec = { ...VALID, arrival: nonDigit };
@@ -744,8 +737,8 @@ async function main(): Promise<void> {
       return found;
     };
     for (const spec of specs) generated.set(spec.path, renderMessage(template, signer, spec));
-    // Not listed in `h=`, so the signature does not cover it: a test reads it to build a rogue registry
-    // whose root the API never publishes (AAP 0.5.5).
+    // Not listed in `h=`, so the signature does not cover it: a test reads it to build a rogue registry whose root
+    // the API never publishes (AAP 0.5.5).
     generated.set(
       'other-issuer.eml',
       renderMessage(
@@ -765,11 +758,9 @@ async function main(): Promise<void> {
         },
       ),
     );
-    // `tampered.eml` is the signed `valid.eml` bytes with one byte of the departure date changed after
-    // that signature was made: nothing else differs, so the header still verifies under the test key and
-    // the body no longer hashes to the `bh=` it commits to (AAP 0.5.5, criterion 3). Deriving it from
-    // `valid.eml`'s own bytes rather than signing a second message is what makes the pair a one-byte
-    // counterexample, and the changed byte has to sit inside the 960-byte tail the circuit hashes,
+    // `tampered.eml` is the signed `valid.eml` bytes with one byte of the departure date changed after that signature
+    // was made: nothing else differs, so the header still verifies under the test key and the body no longer hashes to
+    // the `bh=` it commits to (criterion 3). The changed byte has to sit inside the 960-byte tail the circuit hashes,
     // because the precomputed SHA-256 prefix state is a private input a prover may state dishonestly.
     const departureLine = fieldLine(
       template,
@@ -798,8 +789,8 @@ async function main(): Promise<void> {
       keys: [{ domain, selector, modulusBase64 }],
       template,
     });
-    // The outside key's message is checked against a record of its own: it is not an allowlisted
-    // issuer, so the test issuer's keys would not select its signature at all.
+    // The outside key's message is checked against a record of its own: it is not an allowlisted issuer, so the test
+    // issuer's keys would not select its signature at all.
     const outsideIssuer: SupportedIssuer = {
       issuerId: issuer.issuerId,
       displayName: issuer.displayName,
@@ -813,8 +804,8 @@ async function main(): Promise<void> {
         cities: cities.cities,
       }).registry,
     );
-    // Both valid fixtures must build inputs, and the two ids they prove must be the ones the registry
-    // recorded: the city the alias belongs to and the issuer whose key signed them (AAP 0.5.5).
+    // Both valid fixtures must build inputs, and the two ids they prove must be the ones the registry recorded: the
+    // city the alias belongs to and the issuer whose key signed them (AAP 0.5.5).
     for (const name of ['valid.eml', 'valid-second.eml']) {
       const built = buildCircuitInputs(bytes(name), [issuer], registry, {
         nullifierSalt: NULLIFIER_SALT,
@@ -825,8 +816,8 @@ async function main(): Promise<void> {
         );
       }
     }
-    // `tampered.eml` and `header-field.eml` are absent here: the first fails its body hash before a
-    // window exists, and the second omits its reference anchor from the body on purpose.
+    // `tampered.eml` and `header-field.eml` are absent here: the first fails its body hash before a window exists,
+    // and the second omits its reference anchor from the body on purpose.
     for (const [name, precomputed] of [
       ['valid.eml', true],
       ['valid-second.eml', false],
@@ -838,9 +829,8 @@ async function main(): Promise<void> {
     ] as const) {
       checkWindow(template, name, bytes(name), [issuer, outsideIssuer], precomputed);
     }
-    // `tampered.eml` is checked outside that loop because it is not a message of its own: it keeps
-    // `valid.eml`'s signature, so what has to hold is that one byte differs, inside the departure value,
-    // inside the window the circuit hashes (AAP 0.5.5).
+    // `tampered.eml` is checked outside that loop because it is not a message of its own: it keeps `valid.eml`'s
+    // signature, so what has to hold is that one byte differs, inside the departure value, inside the hashed window.
     checkTampered(
       template,
       bytes('valid.eml'),
@@ -848,8 +838,8 @@ async function main(): Promise<void> {
       test.publicKey,
       buildEmailVerifierInputs(bytes('valid.eml'), [issuer, outsideIssuer]).emailBody,
     );
-    // The three date fixtures parse, pass DKIM and build EmailVerifier inputs; what refuses them is the
-    // circuit's own date parse, so no code is asserted for them (AAP 0.5.5).
+    // The three date fixtures parse, pass DKIM and build EmailVerifier inputs; what refuses them is the circuit's own
+    // date parse, so no code is asserted for them (AAP 0.5.5).
     for (const [name, code] of [
       ['tampered.eml', 'body_hash_mismatch'],
       ['other-issuer.eml', 'unsupported_issuer'],
@@ -858,12 +848,9 @@ async function main(): Promise<void> {
     ] as const) {
       expectCode(issuer, registry, name, bytes(name), code);
     }
-    // The one check that needs the registry builder runs here, while every input is still in memory and
-    // nothing has been written: it compares the test root the freshly generated record produces with the
-    // root of the registry the fixtures were just checked against. It passes that record in rather than
-    // letting the builder read the file, because the file on disk still holds the previous run's
-    // modulus and the test root is a function of that modulus, so a comparison against it would fail on
-    // every run.
+    // The one check that needs the registry builder runs here, while every input is still in memory and nothing has
+    // been written: it passes the freshly generated record in rather than letting the builder read the file, because
+    // the file on disk still holds the previous run's modulus and the test root is a function of that modulus.
     const rebuilt = await buildRegistries({ testIssuer: issuer });
     if (rebuilt.test.root !== registry.root) {
       throw new Error(
@@ -873,8 +860,8 @@ async function main(): Promise<void> {
     currentStep = 'writes';
     const directory = path.join(PKG_DIR, 'fixtures', 'test-issuer');
     const files: readonly FixtureFile[] = [...generated].map(([name, eml]) => ({ name, eml }));
-    // Read before the writes for the reason the checks are: a message that cannot be summarised must not
-    // leave the tree already rewritten.
+    // Read before the writes for the reason the checks are: a message that cannot be summarised must not leave the
+    // tree already rewritten.
     const summaries = files.map((file) => summaryOf(file));
     for (const file of files) {
       const target = path.join(directory, file.name);

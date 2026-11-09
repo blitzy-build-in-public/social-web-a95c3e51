@@ -1,13 +1,10 @@
 /**
- * Criterion 12 (AAP 0.12.1): the price phone fallback, end to end across `api`, `workers` and the
- * scripted telephony simulator.
+ * Criterion 12 (AAP 0.12.1): the price phone fallback, end to end across `api`, `workers` and the scripted telephony
+ * simulator.
  */
-
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
 import { createTestApp, testWorkersEnv, type TestApp } from '@tablemate/api/test-support/app';
 import {
   callRoute,
@@ -39,23 +36,18 @@ import { process as dispatchCity } from '@tablemate/workers/jobs/call-dispatch';
 import { process as applyCallResult } from '@tablemate/workers/jobs/call-results';
 import { process as refreshFx } from '@tablemate/workers/jobs/fx-refresh';
 import { ingestPlace } from '@tablemate/workers/jobs/menu-ingest';
-
 const CITY = 'lisbon';
-
 const CITY_ZONE = 'Europe/Lisbon';
 
 /** The currency the call quotes in, which is the city's own. */
 const CITY_CURRENCY = 'EUR';
-
 const DAY = '2026-11-17';
-
 const START_LOCAL_TIME = '10:00';
 
 /**
- * The numbers the cases call, one each, from the reserved fictional ranges of AAP 0.5.2. The `+1 202`
- * block is used rather than the factory's own `+1 415` one, whose per-process counter would collide
- * with a fixed value: no two rows may share a number, because a `do_not_call` reply is about the
- * number and not about the row it was dialed from (AAP 0.5.3).
+ * The numbers the cases call, one each, from the reserved fictional ranges of AAP 0.5.2. The `+1 202` block is used
+ * rather than the factory's own `+1 415` one, whose per-process counter would collide with a fixed value: no two rows
+ * may share a number, because a `do_not_call` reply is about the number and not about the row it was dialed from.
  */
 const PHONE = {
   happy: '+12025550121',
@@ -67,9 +59,7 @@ const PHONE = {
 
 /** `CAP_CALL_SECONDS`' documented default (AAP 0.6.2): no call may run longer. */
 const CALL_SECONDS = 300;
-
 const STATUS_CALLBACK_EVENTS = ['initiated', 'ringing', 'answered', 'completed'];
-
 const DISCLOSURE_KEY = 'greeting.menu_prices';
 
 /** Where that template lives, read rather than duplicated so an edited greeting cannot drift. */
@@ -77,11 +67,9 @@ const PT_PT_I18N = new URL(
   '../../apps/api/src/modules/voice-agent/i18n/pt-PT.json',
   import.meta.url,
 );
-
 const FX_FIXTURE = new URL('../../apps/workers/test/fixtures/fx/usd-latest.json', import.meta.url);
 
 /* What the `prices-high` scenario answers with, and what the pipeline must store (AAP 0.5.6) */
-
 interface ExpectedItem {
   /** The name as the callee said it, which becomes `PriceRecord.itemName`. */
   readonly name: string;
@@ -91,7 +79,6 @@ interface ExpectedItem {
   /** `localAmountMinor / 100 * 1.25 * 100`, rounded half up: the FX fixture quotes EUR at 0.8/USD. */
   readonly priceUsdCents: number;
 }
-
 const EXPECTED_ITEMS: readonly ExpectedItem[] = [
   { name: 'bitoque', itemCategory: 'main', localAmountMinor: 950, priceUsdCents: 1_188 },
   {
@@ -104,31 +91,26 @@ const EXPECTED_ITEMS: readonly ExpectedItem[] = [
 ];
 
 /**
- * The estimate those items produce (AAP 0.5.7): the median main course, `(1,188 + 4,000) / 2`, plus
- * the one non-alcoholic drink at 150 — 2,744 cents, which fits the 3,000-cent budget the day-plan
- * read names. The range spans the cheapest main plus the cheapest drink to the dearest of each.
+ * The estimate those items produce (AAP 0.5.7): the median main course, `(1,188 + 4,000) / 2`, plus the one
+ * non-alcoholic drink at 150 — 2,744 cents, which fits the 3,000-cent budget the day-plan read names. The range spans
+ * the cheapest main plus the cheapest drink to the dearest of each.
  */
 const ESTIMATE_CENTS = 2_744;
 const ESTIMATE_LOW_CENTS = 1_338;
 const ESTIMATE_HIGH_CENTS = 4_150;
-
 const BUDGET_CENTS = 3_000;
 
 /**
- * The two local times a task must not be dialed at (AAP 0.5.6): 08:59 is before the window opens, and
- * 19:56 leaves less than the five minutes a call may last, so both wait for the next 09:00 local.
+ * The two local times a task must not be dialed at (AAP 0.5.6): 08:59 is before the window opens, and 19:56 leaves
+ * less than the five minutes a call may last, so both wait for the next 09:00 local.
  */
 const CALLING_HOURS_CASES = rows([
   { localTime: '08:59', phone: PHONE.beforeHours },
   { localTime: '19:56', phone: PHONE.afterHours },
 ]);
-
 const CASE_TIMEOUT_MS = 120_000;
-
 const DRAIN_POLLS = 60;
-
 const DRAIN_INTERVAL_MS = 250;
-
 let t: TestApp;
 let ctx: WorkerContext;
 let fx: Server;
@@ -144,14 +126,12 @@ const mailer: WorkerContext['mailer'] = {
     return Promise.resolve();
   },
 };
-
 beforeAll(async () => {
   const table = await readFile(FX_FIXTURE, 'utf8');
   fx = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
     response.end(table);
   });
-
   t = await createTestApp();
   ctx = await createWorkerContext(
     loadWorkersEnv(testWorkersEnv({ FX_URL: `${await listenOnLoopback(fx)}/usd-latest.json` })),
@@ -162,7 +142,6 @@ beforeAll(async () => {
   // address, so it listens and the simulator is pointed at where it does (AAP 0.11.2).
   await t.listen();
 });
-
 afterAll(async () => {
   fx.closeAllConnections();
   await new Promise<void>((resolve) => {
@@ -170,11 +149,9 @@ afterAll(async () => {
       resolve();
     });
   });
-
   await closeWorkerContext(ctx);
   await t.close();
 });
-
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
@@ -185,26 +162,22 @@ beforeEach(async () => {
   await refreshFx({ name: JOB[QUEUE.fxRefresh].refresh, data: {} }, ctx);
   venue = await makeVenue(t, { cityId: CITY, isActivePartner: true });
 });
-
 async function listenOnLoopback(server: Server): Promise<string> {
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       resolve();
     });
   });
-
   const address = server.address();
-
   if (address === null || typeof address === 'string') {
     throw new Error('the FX fixture server bound no TCP port');
   }
-
   return `http://127.0.0.1:${address.port}`;
 }
 
 /**
- * One place the pipeline can only reach by phone: a restaurant `200 m` from the venue, publishing no
- * website and no menu link, with the city's opening hours and its own reserved number.
+ * One place the pipeline can only reach by phone: a restaurant `200 m` from the venue, publishing no website and no
+ * menu link, with the city's opening hours and its own reserved number.
  */
 function menuPlace(phone: string): Promise<PlaceFixture> {
   return makePlace(t, {
@@ -215,7 +188,6 @@ function menuPlace(phone: string): Promise<PlaceFixture> {
     openingHours: 'Mo-Su 09:00-23:30',
   });
 }
-
 function runDispatchCity(): Promise<unknown> {
   return dispatchCity({ name: JOB[QUEUE.callDispatch].dispatchCity, data: { cityId: CITY } }, ctx);
 }
@@ -253,11 +225,9 @@ function tasksOf(placeId: string): Promise<TaskRow[]> {
 /** The one task a case created, so an assertion never reads through a possibly-absent element. */
 function onlyTask(tasks: readonly TaskRow[]): TaskRow {
   const task = tasks[0];
-
   if (task === undefined) {
     throw new Error('the place has no call task');
   }
-
   return task;
 }
 
@@ -268,27 +238,23 @@ async function lastAttemptEndedAt(taskId: string): Promise<Date> {
     orderBy: { startedAt: 'desc' },
     select: { endedAt: true },
   });
-
   if (attempt.endedAt === null) {
     throw new Error('the call task has an attempt that never ended');
   }
-
   return attempt.endedAt;
 }
 
 /**
- * The one call the simulator made to `phone`. The count is asserted on its own, so a failure's diff
- * never carries a phone number (AAP 0.11.1).
+ * The one call the simulator made to `phone`. The count is asserted on its own, so a failure's diff never carries a
+ * phone number (AAP 0.11.1).
  */
 function callTo(phone: string): SimCall {
   const calls = t.simulator.callsTo(phone);
   expect(calls.length, 'exactly one call is expected to this number').toBe(1);
-
   const call = calls[0];
   if (call === undefined) {
     throw new Error('the simulator recorded no call to this number');
   }
-
   return call;
 }
 
@@ -299,7 +265,6 @@ function callTo(phone: string): SimCall {
  */
 async function drainCallResults(): Promise<number> {
   const queue = t.services.queues.get(QUEUE.callResults);
-
   for (let poll = 0; poll < DRAIN_POLLS; poll += 1) {
     await t.services.outbox.runOnce();
     const jobs = await queue.getJobs(['waiting', 'delayed', 'prioritized']);
@@ -314,21 +279,16 @@ async function drainCallResults(): Promise<number> {
       setTimeout(resolve, DRAIN_INTERVAL_MS);
     });
   }
-
   throw new Error('the call result was never delivered to the call-results queue');
 }
-
 async function disclosureTemplate(): Promise<string> {
   const document: unknown = JSON.parse(await readFile(PT_PT_I18N, 'utf8')) as unknown;
   const template = (document as Record<string, unknown>)[DISCLOSURE_KEY];
-
   if (typeof template !== 'string') {
     throw new Error(`pt-PT.json carries no ${DISCLOSURE_KEY}`);
   }
-
   return template;
 }
-
 describe('the price phone fallback', { timeout: CASE_TIMEOUT_MS }, () => {
   it('stores a phone quote and serves it in the pair day plan', async () => {
     const place = await menuPlace(PHONE.happy);
@@ -429,7 +389,6 @@ describe('the price phone fallback', { timeout: CASE_TIMEOUT_MS }, () => {
       ),
     ).toBe(true);
   });
-
   it.each(CALLING_HOURS_CASES)(
     'a task at $localTime local waits for the next 09:00 and is never dialed',
     async ({ localTime, phone }) => {
@@ -444,7 +403,6 @@ describe('the price phone fallback', { timeout: CASE_TIMEOUT_MS }, () => {
       expect(t.simulator.callsTo(phone).length).toBe(0);
     },
   );
-
   it('stops calling once two attempts have gone unanswered', async () => {
     const place = await menuPlace(PHONE.unanswered);
     await ingestPlace(ctx, place.id);
@@ -473,7 +431,6 @@ describe('the price phone fallback', { timeout: CASE_TIMEOUT_MS }, () => {
     await t.simulator.waitIdle();
     expect(t.simulator.callsTo(place.phone).length).toBe(CALL_MAX_ATTEMPTS);
   });
-
   it('honours a request not to be called again', async () => {
     const place = await menuPlace(PHONE.refused);
     await ingestPlace(ctx, place.id);

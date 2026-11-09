@@ -1,19 +1,14 @@
 /**
- * The price-job trigger behind `POST /admin/price-jobs` (AAP 0.5.1, 0.5.4, 0.5.6): `kind: "menus"`
- * queues one menu-ingestion fan-out for a city and `kind: "calls"` its phone fallback.
+ * The price-job trigger behind `POST /admin/price-jobs`: `kind: "menus"` queues one menu-ingestion fan-out for a city and `kind:
+ * "calls"` its phone fallback.
  *
- * This module only enqueues: the workers' `menu-ingest`/`ingest-city` expands it into per-place jobs in
- * the call-and-menu priority order of AAP 0.5.7, and `call-dispatch`/`dispatch-city` takes the city's
- * queued call tasks — which is what keeps a slow crawl, a telephony outage and a language-model failure
- * out of every request path (AAP 0.3.2).
+ * This module only enqueues: the workers' `menu-ingest`/`ingest-city` expands it into per-place jobs in the call-and-menu priority
+ * order, and `call-dispatch`/`dispatch-city` takes the city's queued call tasks — which is what keeps a slow crawl, a telephony outage
+ * and a language-model failure out of every request path.
  *
- * The cap check here is an early refusal for the operator, never the enforcement point: both caps are
- * still enforced where the work happens, so a job admitted here can still be deferred to the next local
- * day (AAP 0.5.6). With `TELEPHONY_MODE=off` no worker processes `call-dispatch`, so a `calls` job waits
- * in its queue and the request still answers `202 { jobId }`.
- *
- * Refusals are ordered as the route fixes them (AAP 0.5.4): an unknown city answers `404
- * city_not_found`, and a used-up daily cap answers `429 daily_cap_reached` with nothing queued.
+ * The cap check here is an early refusal for the operator, never the enforcement point: both caps are still enforced where the work
+ * happens, so a job admitted here can still be deferred to the next local day. With `TELEPHONY_MODE=off` no worker processes
+ * `call-dispatch`, so a `calls` job waits in its queue and the request still answers `202 { jobId }`.
  */
 
 import type { Queue } from 'bullmq';
@@ -26,17 +21,13 @@ import type { PriceJobKind, PriceJobRequest, PriceJobResponse } from '@tablemate
 import { AppError } from '../../plugins/errors.ts';
 
 /**
- * What {@link enqueuePriceJob} needs: the app's services, narrowed to the capabilities this module reads.
- *
- * Narrowed on purpose: the dependency whitelist of this file admits `@tablemate/db`, `@tablemate/server-core` and
- * `@tablemate/shared` only, so the module states exactly what it uses rather than importing the app's services type.
+ * What {@link enqueuePriceJob} needs: the app's services, narrowed to the capabilities this module reads. Narrowed on purpose, because
+ * the dependency whitelist of this file admits `@tablemate/db`, `@tablemate/server-core` and `@tablemate/shared` only.
  */
 export interface PriceJobServices {
   readonly db: Pick<DbClient, 'city' | 'callBudgetDay'>;
-  /**
-   * The BullMQ producers the app built, keyed by queue name. `undefined` for a queue no producer was created for,
-   * which fails the request as an unexpected error rather than queueing nowhere.
-   */
+  /** The BullMQ producers the app built, keyed by queue name; `undefined` for a queue no producer was created for, which fails the
+   * request as an unexpected error rather than queueing nowhere. */
   readonly queues: { get(name: QueueName): Queue | undefined };
   readonly env: Pick<CommonEnv, 'CAP_CALLS_PER_CITY_DAY' | 'capLlmMicrosPerCityDay'>;
   readonly logger: Pick<Logger, 'info' | 'error'>;
@@ -46,13 +37,12 @@ const PRICE_JOB_ENQUEUED = 'price_job_enqueued';
 const PRICE_JOB_ENQUEUE_FAILED = 'price_job_enqueue_failed';
 
 /**
- * Refuses a city whose local day has used up the cap `kind` is counted against, then queues the city's fan-out job
- * (AAP 0.5.4, 0.5.6).
+ * Refuses a city whose local day has used up the cap `kind` is counted against, then queues the city's fan-out job.
  *
- * `now` comes from the request's received time — this module reads no clock of its own (AAP 0.11.1) — and the cap is
- * counted against the city's local day at `now`: `city_not_found` for a city that is not configured, and
- * `daily_cap_reached` when the day's calls or committed language-model spend has reached its cap. A job that cannot
- * be queued throws a plain `Error` instead, which the errors plugin answers as `500 internal_error` (AAP 0.11.1).
+ * `now` comes from the request's received time — this module reads no clock of its own — and the cap is counted against the city's
+ * local day at `now`: `city_not_found` for a city that is not configured, and `daily_cap_reached` when the day's calls or committed
+ * language-model spend has reached its cap. A job that cannot be queued throws a plain `Error`, which the errors plugin answers as
+ * `500 internal_error`.
  */
 export async function enqueuePriceJob(
   services: PriceJobServices,
@@ -103,9 +93,8 @@ export async function enqueuePriceJob(
 /**
  * Throws `429 daily_cap_reached` when `kind`'s cap for the city's current local day is reached.
  *
- * A missing `CallBudgetDay` row is zero usage, which is how a city that has never been called or spent on starts: the
- * row is created by the first reservation, not by this read (AAP 0.5.6). The spend totals are `BigInt` columns,
- * compared as `BigInt` so a day near the cap is never decided by a float.
+ * A missing `CallBudgetDay` row is zero usage, which is how a city that has never been called or spent on starts. The spend totals are
+ * `BigInt` columns, compared as `BigInt` so a day near the cap is never decided by a float.
  */
 async function assertUnderDailyCap(
   services: PriceJobServices,
@@ -136,19 +125,15 @@ async function assertUnderDailyCap(
 }
 
 /**
+ * `data` arrives already parsed by `parseJobData` at the call site, where the queue and its job name are literal constants: that literal
+ * pair is what lets the payload schema be resolved, so the parse happens there rather than under this call's wider types.
  *
- * `data` arrives already parsed by `parseJobData` at the call site, where the queue and its job name are literal
- * constants: that literal pair is what lets the payload schema be resolved, so the parse happens there rather than
- * under this call's wider types.
+ * No custom `jobId` is passed: a stable id suppresses a duplicate `add` in BullMQ, and an operator asking twice for the same city wants
+ * two runs of the work, not one. The retries and retention come from `jobOptionsFor`.
  *
- * No custom `jobId` is passed: a stable id suppresses a duplicate `add` in BullMQ, and an operator asking twice for
- * the same city wants two runs of the work, not one. The retries and retention come from `jobOptionsFor`, so the job
- * table's per-queue exceptions travel with the job.
- *
- * An unreachable Redis, a queue with no producer and a job BullMQ returns without an id all throw a plain `Error`
- * rather than an `AppError`: the route's contract names three errors and nothing else (AAP 0.5.4), so this is an
- * unexpected failure, answered as `500 internal_error` with the request id while the operator's own signal is the
- * `price_job_enqueue_failed` line, which carries the city and the kind and nothing else (AAP 0.11.1).
+ * An unreachable Redis, a queue with no producer and a job BullMQ returns without an id all throw a plain `Error` rather than an
+ * `AppError`: the route's contract names three errors and nothing else, so this is an unexpected failure, answered as
+ * `500 internal_error` with the request id while the operator's own signal is the `price_job_enqueue_failed` line.
  */
 async function enqueueCityJob(
   services: PriceJobServices,

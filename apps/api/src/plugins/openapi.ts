@@ -1,19 +1,16 @@
 /**
- * OpenAPI document generation for the API (AAP 0.4.1, 0.5.1, 0.8.1, 0.11.2).
+ * OpenAPI document generation for the API.
  *
- * Every route is described by the Zod schema it validates its request with and serializes its response through,
- * so the emitted document cannot drift from the contract the code enforces. It is produced once, by
- * `apps/api/scripts/emit-openapi.ts`, which calls `app.swagger()` after `ready()` and writes
- * `docs/api/openapi.json`; no route serves it, and Swagger UI is not mounted (AAP 0.8.1).
+ * Every route is described by the Zod schema it validates its request with and serializes its response through, so the
+ * emitted document cannot drift from the contract the code enforces. It is produced once, by
+ * `apps/api/scripts/emit-openapi.ts`, which writes `docs/api/openapi.json`; no route serves it.
  *
- * Three invariants hold for the registration below. `@fastify/swagger` collects routes through an `onRoute`
- * hook, so `app.ts` must call {@link registerOpenApi} before it registers any route plugin, and every route must
- * be declared inside a plugin registered after this call. The declared OpenAPI version is what the Zod transform
- * reads to pick its JSON Schema dialect: `3.0.3` selects the `openapi-3.0` output, which writes a nullable value
- * as `nullable: true` and a single-value enum as `enum`, rather than the JSON Schema 2020-12 forms an OpenAPI 3.0
- * document may not carry. And a route that must stay out of the document sets `schema.hide`, while nothing
- * registered here carries a timestamp, a random id or the environment it ran in, so two emits of the same tree
- * are byte-identical.
+ * Two invariants hold for the registration below. `@fastify/swagger` collects routes through an `onRoute` hook, so
+ * `app.ts` must call {@link registerOpenApi} before it registers any route plugin — and a route that must stay out of
+ * the document sets `schema.hide`. The declared OpenAPI version is what the Zod transform reads to pick its JSON Schema
+ * dialect: `3.0.3` selects the `openapi-3.0` output, which writes a nullable value as `nullable: true` rather than the
+ * JSON Schema 2020-12 forms an OpenAPI 3.0 document may not carry. Nothing registered here carries a timestamp, a
+ * random id or the environment it ran in, so two emits of the same tree are byte-identical.
  */
 import swagger from '@fastify/swagger';
 import { jsonSchemaTransform } from 'fastify-type-provider-zod';
@@ -26,11 +23,10 @@ import type { ApiEnv } from '@tablemate/server-core';
 import type { App } from '../app.ts';
 
 /**
- * The tag every route groups under, in the order the document lists them. A route names one through
- * `schema.tags`, which is what keeps the emitted operations grouped the way `docs/api/README.md`
- * indexes them (AAP 0.11.2); an untagged route still appears, under no tag. The order below is
- * document order, so it is also the order a reader meets the API in: the public and account routes
- * first, the partner consoles and the operator area next, and the provider callbacks after them.
+ * The tag every route groups under, in the order the document lists them. A route names one through `schema.tags`,
+ * which keeps the emitted operations grouped the way `docs/api/README.md` indexes them; an untagged route still
+ * appears, under no tag. The order below is document order: the public and account routes first, the partner consoles
+ * and the operator area next, and the provider callbacks after them.
  */
 export const OPENAPI_TAGS = [
   'health',
@@ -51,18 +47,14 @@ export const OPENAPI_TAGS = [
   'test',
 ] as const;
 
-/** One tag a route may group under: a member of {@link OPENAPI_TAGS}. */
 export type OpenApiTag = (typeof OPENAPI_TAGS)[number];
 
 /**
- * The `security` requirement a route declares, one entry per authentication mode the API has
- * (AAP 0.3.3): `bearer` for the traveler and operator routes that carry the 15-minute access token,
- * and the two console schemes, whose secret a route reads from the header named beside it. Route
- * schemas set `security: OPENAPI_SECURITY.bearer` and so on; a public route, a webhook and a health
- * check declare no `security` at all, which is what marks them as open in the document.
- *
- * The two header names are the constants the console handlers read, so the document and the code
- * cannot disagree about where a secret travels.
+ * The `security` requirement a route declares: `bearer` for the traveler and operator routes that carry the
+ * 15-minute access token, and the two console schemes, whose secret a route reads from the header named beside it. A
+ * public route, a webhook and a health check declare no `security` at all, which is what marks them as open in the
+ * document. The two header names are the constants the console handlers read, so the document and the code cannot
+ * disagree about where a secret travels.
  */
 export const OPENAPI_SECURITY = {
   bearer: [{ bearer: [] }],
@@ -71,16 +63,13 @@ export const OPENAPI_SECURITY = {
 } as const;
 
 /**
- * Registers the OpenAPI generator on `app` (AAP 0.4.1, 0.5.1).
+ * Registers the OpenAPI generator on `app`. Synchronous, so the composition root keeps its synchronous `buildApp`
+ * contract — the registration is queued on the instance and loaded during `ready()` — and it must therefore run
+ * before any route plugin is registered, as the header of this file sets out.
  *
- * Synchronous, so the composition root keeps its synchronous `buildApp` contract: the registration
- * is queued on the instance and the plugin is loaded during `ready()`. It must therefore run before
- * any route plugin is registered, as the header of this file sets out.
- *
- * The single server is the API's public URL — what a client calls, never the address the process
- * listens on — and the three security schemes are the ones {@link OPENAPI_SECURITY} names. The
- * description points a reader at `docs/api/README.md`, where the routes and error codes the pilot
- * adds to the contract are listed as additions (AAP 0.5.4).
+ * The single server is the API's public URL — what a client calls, never the address the process listens on — and the
+ * description points a reader at `docs/api/README.md`, which lists the routes and error codes the pilot adds to the
+ * contract as additions.
  */
 export function registerOpenApi(app: App, env: Pick<ApiEnv, 'API_PUBLIC_URL'>): void {
   app.register(swagger, {

@@ -1,37 +1,29 @@
 /**
- * Where a traveler sleeps is the most sensitive disclosure in the product, so it is opt-in twice over:
- * nothing is listed until they turn `showStaying` on, and the toggle can be turned on only for a claim
- * that is `verified` and still inside its stay (AAP 0.5.7 "Lodging visibility", 0.12.2 "Guest list
- * opt-in, off by default, with a safety warning"; the warning itself is the client's, in
- * `apps/mobile/app/profile/stay.tsx`). Hiding always succeeds.
+ * Where a traveler sleeps is the most sensitive disclosure in the product, so it is opt-in twice over: nothing is
+ * listed until they turn `showStaying` on, and the toggle can be turned on only for a claim that is `verified` and
+ * still inside its stay. The warning itself is the client's, in `apps/mobile/app/profile/stay.tsx`. Hiding always
+ * succeeds.
  *
- * {@link setVisibility} is the write: one transaction behind the account-deletion write fence (AAP
- * 0.5.3), so a traveler whose deletion has been requested cannot opt in, and it re-points the visibility
- * row at the claim the opt-in was granted for on every turn-on, so a new stay never inherits an older
- * stay's consent. It writes no outbox row, emits no analytics event and touches no cache: a guest list is
- * read live, and the leaderboard's guest count counts every current verified guest whether or not they
- * opted in.
+ * {@link setVisibility} is the write: one transaction behind the account-deletion write fence, so a traveler whose
+ * deletion has been requested cannot opt in, and it re-points the visibility row at the claim the opt-in was granted
+ * for on every turn-on, so a new stay never inherits an older stay's consent. It writes no outbox row, emits no
+ * analytics event and touches no cache: a guest list is read live, and the leaderboard's guest count counts every
+ * current verified guest whether or not they opted in.
  *
- * {@link guestsFor} is the read: the opted-in travelers currently staying at one lodging, as tier-0
- * profiles — the same shape a stranger sees in discovery, and never a room number, a stay date, a booking
- * field or a claim id (AAP 0.5.4) — answered to a viewer holding a valid proof for the lodging's city.
- * A deleted or deletion-requested traveler, and every pair with a block in either direction, are absent.
+ * {@link guestsFor} is the read: the opted-in travelers currently staying at one lodging, as tier-0 profiles — the
+ * same shape a stranger sees in discovery, and never a room number, a stay date, a booking field or a claim id —
+ * answered to a viewer holding a valid proof for the lodging's city. A deleted or deletion-requested traveler, and
+ * every pair with a block in either direction, are absent.
  *
  * Four invariants the SQL keeps: the toggle's claim lookup and the guest list share
- * {@link currentStayPredicate}, so "active" means the lodging's local today in both, and a stay stops
- * counting at the end of its `stayTo` in city time, before the daily `stay-expiry` job in `apps/workers`
- * gets round to turning the flag off; both statements read `lodging`, and each adds
- * {@link fixturePredicate} for that alias because a raw query bypasses the guarded client's fixture
- * extension (AAP 0.5.2); the guest list is bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, the most
- * recently resolved stay first, with the bound visible rather than silent, because the DTO's own
- * `guestCount` counts every current verified guest, so a shorter list reads as a cut list and not as a
- * claim that nobody else is staying there (AAP 0.5.4, 0.5.7); and the opt-in is written under a share
- * lock on the claim row it names, so a claim deleted between the lookup and the upsert makes the upsert
- * wait rather than fail on the foreign key.
- *
- * The services each function takes is the app's own services object narrowed structurally, the way
- * `lodgings/leaderboard.ts` narrows it, rather than the composition root's `AppServices` type:
- * `apps/api/src/app.ts` is another file's deliverable and is not on this file's dependency whitelist.
+ * {@link currentStayPredicate}, so active means the lodging's local today in both, and a stay stops counting at the
+ * end of its `stayTo` in city time, before the daily `stay-expiry` job in `apps/workers` turns the flag off; both
+ * statements read `lodging`, and each adds {@link fixturePredicate} for that alias because a raw query bypasses the
+ * guarded client's fixture extension; the guest list is bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, the
+ * most recently resolved stay first, with the bound visible rather than silent, because the DTO's own `guestCount`
+ * counts every current verified guest, so a shorter list reads as a cut list rather than as a claim that nobody else
+ * is staying there; and the opt-in is written under a share lock on the claim row it names, so a claim deleted
+ * between the lookup and the upsert makes the upsert wait rather than fail on the foreign key.
  */
 
 import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';

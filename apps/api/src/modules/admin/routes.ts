@@ -1,23 +1,20 @@
 /**
- * The operator routes of `/v1/admin/*` (AAP 0.5.1 `admin/routes.ts`, 0.5.4, 0.8.1): the dashboard,
- * the four operator queues with the resolutions that act on them, the price-job trigger, venue and
- * lodging onboarding with their console-secret issue routes, the report queue, the crawl-domain
- * review queue and the language-model re-enable of AAP 0.5.6.
+ * The operator routes of `/v1/admin/*`: the dashboard, the four operator queues with the resolutions that act on
+ * them, the price-job trigger, venue and lodging onboarding with their console-secret issue routes, the report queue,
+ * the crawl-domain review queue and the language-model re-enable.
  *
- * Every handler here is a call and nothing else: the rule each route exposes is decided in the
- * module beside it, a handler passes that function the app's services, the authenticated operator's
- * id and `request.receivedAt`, and `plugins/errors.ts` renders a module's `AppError` into the shared
- * envelope with the status AAP 0.5.4 fixes (AAP 0.11.1).
+ * Every handler here is a call and nothing else: the rule each route exposes is decided in the module beside it, a
+ * handler passes that function the app's services, the authenticated operator's id and `request.receivedAt`, and
+ * `plugins/errors.ts` renders a module's `AppError` into the shared envelope with the status the contract fixes.
  *
- * The guard is group-level and never global (AAP 0.5.4): `app.addHook('onRequest', requireOperator)`
- * covers exactly the routes below and cannot reach the traveler routes, the public routes, the
- * provider webhooks or the console routes. `/admin/*` is outside the 18+ age gate. Reads are
- * unlimited and writes are counted: every POST and PATCH spreads `mutatingLimits(app)`.
+ * The guard is group-level and never global: `app.addHook('onRequest', requireOperator)` covers exactly the routes
+ * below and cannot reach the traveler routes, the public routes, the provider webhooks or the console routes.
+ * `/admin/*` is outside the 18+ age gate. Reads are unlimited and writes are counted: every POST and PATCH spreads
+ * `mutatingLimits(app)`.
  *
- * Three answers carry a value nobody else may hold — the two plaintext console secrets, shown once,
- * and a guest's decrypted booking name and reference — so all three set `Cache-Control: no-store`
- * (AAP 0.3.2, 0.5.4). Time is the request's own instant, `request.receivedAt`, and this file reads no
- * clock of its own and logs nothing (AAP 0.11.1).
+ * Three answers carry a value nobody else may hold — the two plaintext console secrets, shown once, and a guest's
+ * decrypted booking name and reference — so all three set `Cache-Control: no-store`. Time is the request's own
+ * instant, `request.receivedAt`, and this file reads no clock of its own and logs nothing.
  */
 
 import {
@@ -98,7 +95,6 @@ const ADMIN_TAG = 'admin' satisfies OpenApiTag;
 const NO_STORE_CACHE_CONTROL = 'no-store';
 
 /**
- *
  * The group guard above admitted this request, so `request.auth` is set — but that is a property of
  * the registration, not of the handler: a hook that were moved, removed or shadowed would otherwise
  * leave a `TypeError` to be answered as `500 internal_error` where the contract requires `401
@@ -114,7 +110,6 @@ function operatorAuth(request: FastifyRequest): AuthContext {
 }
 
 /**
- *
  * The guard comes first and covers this context alone: `requireOperator` reads the access token and
  * the account's role, and installing it here rather than globally is what keeps `/admin/*` guarded
  * while the traveler, public, provider and console routes stay outside it (AAP 0.5.4). Every handler

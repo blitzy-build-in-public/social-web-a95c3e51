@@ -1,20 +1,13 @@
 /**
- * The extraction parameters an issuer template hands the circuit, and the Poseidon hash of them that
- * binds a proof to that template (AAP 0.5.5).
- *
- * The off-circuit mirror of `TemplateHash` in `circuits/lib/template_hash.circom`, which
- * `tablemate_itinerary.circom` feeds the same `anchors[4][32]`, `anchorLength[4]`, `terminator[4]`,
- * `charset[4]` and `dateFormat` signals into. Both must produce the identical value, because an issuer's
- * registry leaf is `Poseidon(1, issuerId, pubkeyHash, templateHash)`: a template differing from the
- * registered one in any anchor byte, anchor length, terminator, charset code or date-format code hashes to a
- * value the registry holds no leaf for, so no proof can name that issuer.
+ * The extraction parameters an issuer template hands the circuit, and the Poseidon hash that binds a proof to that
+ * template (AAP 0.5.5). Off-circuit mirror of `circuits/lib/template_hash.circom`, and the value an issuer's
+ * `Poseidon(1, issuerId, pubkeyHash, templateHash)` leaf commits to: both must produce the identical value, because a
+ * template differing from the registered one in any anchor byte, anchor length, terminator, charset code or
+ * date-format code hashes to a value the registry holds no leaf for, so no proof can name that issuer.
  *
  * An anchor is the literal text preceding a value in the decoded body window, which `FieldExtract` in
- * `circuits/lib/anchor_extract.circom` matches: 1-32 non-zero bytes, zero-padded to 32 here and hashed with
- * their length, because the fill after an anchor is not signed text.
- *
- * Client-safe: it runs under Hermes (React Native 0.76.9) through `../inputs/build-inputs.ts` and in the
- * browser Web Worker, so it imports `poseidon-lite`, the shared contract and `./leaves.ts` only.
+ * `circuits/lib/anchor_extract.circom` matches: 1-32 non-zero bytes, zero-padded to 32 here because the fill after an
+ * anchor is not signed text. Client-safe: Hermes and the browser Web Worker run it too.
  */
 import type { IssuerTemplate } from '@tablemate/shared';
 
@@ -24,10 +17,9 @@ import { poseidon13, poseidon2, poseidon8 } from 'poseidon-lite';
 import { PACKED_VALUE_BYTES, packBytes, utf8Encode } from './leaves.ts';
 
 /**
- * The field order of every `[4]` array the circuit takes and of every array in {@link TemplateParams}: city
- * at 0, arrival at 1, departure at 2, booking reference at 3 (AAP 0.5.5). `../inputs/template-locate.ts` and
- * `../inputs/build-inputs.ts` import this order and none of them redeclares it, because the circuit's
- * `anchors[4][32]`, the `FieldExtract` instances wired to it and the extraction itself are all positional.
+ * The field order of every `[4]` array the circuit takes and of every array in {@link TemplateParams}: city at 0,
+ * arrival at 1, departure at 2, booking reference at 3 (AAP 0.5.5). Nothing redeclares it, because the circuit's
+ * `anchors[4][32]`, the `FieldExtract` instances wired to it and the extraction are all positional.
  */
 export const TEMPLATE_FIELD_ORDER = ['city', 'arrival', 'departure', 'reference'] as const;
 
@@ -38,20 +30,16 @@ export type TemplateFieldName = (typeof TEMPLATE_FIELD_ORDER)[number];
 const TEMPLATE_FIELD_COUNT = TEMPLATE_FIELD_ORDER.length;
 
 /**
- * An issuer template as the circuit takes it: the shape `../inputs/build-inputs.ts` emits as the
- * `anchors[4][32]`, `anchorLength[4]`, `terminator[4]`, `charset[4]` and `dateFormat` signals, and the
- * shape {@link templateHash} hashes.
- *
- * Every array holds exactly {@link TEMPLATE_FIELD_COUNT} entries in {@link TEMPLATE_FIELD_ORDER}.
- * {@link templateParams} produces a value whose anchors are 32 bytes and whose lengths are 1-32; a
- * value built by hand and passed straight to {@link templateHash} is structurally checked only, so
+ * An issuer template as the circuit takes it: the shape `../inputs/build-inputs.ts` emits as the `anchors[4][32]`,
+ * `anchorLength[4]`, `terminator[4]`, `charset[4]` and `dateFormat` signals, and the shape {@link templateHash}
+ * hashes. Every array holds exactly {@link TEMPLATE_FIELD_COUNT} entries in {@link TEMPLATE_FIELD_ORDER};
+ * {@link templateParams} produces a well-formed value, while one built by hand is structurally checked only, so
  * parameters differing from an issuer's registered ones can still be hashed and compared.
  */
 export interface TemplateParams {
   /**
-   * The four anchors in field order, each zero-padded to {@link PACKED_VALUE_BYTES} (32) bytes. This is
-   * the circuit input `anchors[4][32]`, whose bytes `FieldExtract` requires to be non-zero inside the
-   * anchor's length and zero after it.
+   * The four anchors in field order, each zero-padded to {@link PACKED_VALUE_BYTES} (32) bytes: the circuit input
+   * `anchors[4][32]`, whose bytes `FieldExtract` requires to be non-zero inside the anchor's length and zero after it.
    */
   readonly anchors: readonly Uint8Array[];
   /** The anchors' lengths in bytes, 1-32: the circuit input `anchorLength[4]`. */
@@ -65,27 +53,17 @@ export interface TemplateParams {
 }
 
 /**
- * Validates a configured issuer template and converts it to the parameters the circuit takes.
+ * Validates a configured issuer template and converts it to the parameters the circuit takes, so a malformed
+ * configuration fails on the registry build and on the client rather than in witness generation. An anchor is 1-32
+ * UTF-8 bytes none of which is `0x00`, which zk-email's substring matcher would read as a wildcard; a terminator is
+ * 1-255, because a zero would let a value run through the `0x00` after the body's SHA-256 padding into the length
+ * field; and a charset and a date format must be names of the coded sets whose values `TemplateHash` pins to 1-4, since
+ * anything outside them needs a circuit revision rather than a configuration edit. Anchors are matched against the
+ * soft-line-break-decoded body window, which still carries quoted-printable escapes, so an anchor containing one is
+ * written literally in configuration.
  *
- * The rules the circuit enforces are enforced here, so a malformed configuration fails on the registry build
- * and on the client rather than in witness generation:
- *
- * - an anchor is 1-32 UTF-8 bytes and none of its bytes is `0x00` — zk-email's substring matcher treats a zero
- *   pattern byte as a wildcard, and `FieldExtract` asserts the zero fill beyond the anchor's declared length;
- * - a terminator is 1-255. The shared schema admits 0-255, so this is the gate: a zero terminator would let a
- *   value run through the `0x00` after the body's SHA-256 padding into the length field;
- * - a charset and a date format are named in the coded sets `CHARSET_CODE` and `DATE_FORMAT_CODE`, whose
- *   values `TemplateHash` pins to 1-4. A format, terminator class or charset outside them needs a circuit
- *   revision, not a configuration edit.
- *
- * Anchors are matched against the soft-line-break-decoded body window, which still carries quoted-printable
- * escapes, so an anchor needing one is written literally in configuration (for example `=C3=A9`), exactly as a
- * city alias is (AAP 0.5.5).
- *
- * @param template - The issuer's registered template.
- * @returns The template's circuit parameters, anchors zero-padded to 32 bytes.
- * @throws {RangeError} When an anchor is empty or longer than 32 bytes, contains a zero byte, the terminator
- *   is not 1-255, or a charset or date format is not a name of its coded set.
+ * @throws {RangeError} When an anchor is empty or longer than 32 bytes, contains a zero byte, the terminator is not
+ *   1-255, or a charset or date format is not a name of its coded set.
  */
 export function templateParams(template: IssuerTemplate): TemplateParams {
   const anchors: Uint8Array[] = [];
@@ -123,24 +101,16 @@ export function templateParams(template: IssuerTemplate): TemplateParams {
 }
 
 /**
- * The `templateHash` of an issuer leaf, `Poseidon(1, issuerId, pubkeyHash, templateHash)`: the hash of
- * the extraction parameters a proof actually used, equal to `TemplateHash` in
- * `circuits/lib/template_hash.circom` (AAP 0.5.5). `./merkle.ts` takes it once per issuer to build the
- * registry, and `../inputs/build-inputs.ts` compares it with the registry entry it proves against.
+ * The `templateHash` of an issuer leaf, `Poseidon(1, issuerId, pubkeyHash, templateHash)`: the hash of the extraction
+ * parameters a proof actually used, equal to `TemplateHash` in `circuits/lib/template_hash.circom`, and the value
+ * `../inputs/build-inputs.ts` compares with the registry entry it proves against (AAP 0.5.5).
  *
- * Two nesting levels, because circomlib's `Poseidon` admits at most 16 inputs: `Poseidon(8)` over the four
- * anchors packed by {@link packBytes} in field order — `[out[0], out[1]]` per anchor, bytes 0-30 little-endian
- * in the first element and byte 31 in the second; `Poseidon(13)` over the four lengths, then the four
- * terminators, then the four charset codes, then the date format; and `Poseidon(2)` over those two.
- *
- * A template differing in any anchor byte, anchor length, terminator, charset code or date-format code hashes
- * to a value with no registry leaf, hence no path to the published root.
- *
- * @param template - An issuer template, or already-converted template parameters.
- * @returns The template hash, the fourth input of `RegistryMembership`'s issuer leaf.
+ * Two nesting levels, because circomlib's `Poseidon` admits at most 16 inputs: `Poseidon(8)` over the four anchors
+ * packed by {@link packBytes} in field order, `Poseidon(13)` over the lengths, terminators, charset codes and date
+ * format, and `Poseidon(2)` over those two.
  * @throws {RangeError} When the input is an `IssuerTemplate` breaking a rule of {@link templateParams}, or a
- *   `TemplateParams` that is not four 32-byte anchors with four lengths, four terminators, four charset codes
- *   and a date format, all non-negative safe integers.
+ *   `TemplateParams` that is not four 32-byte anchors with four lengths, four terminators, four charset codes and a
+ *   date format, all non-negative safe integers.
  */
 export function templateHash(template: IssuerTemplate | TemplateParams): bigint {
   const params = 'fields' in template ? templateParams(template) : template;
@@ -161,14 +131,13 @@ export function templateHash(template: IssuerTemplate | TemplateParams): bigint 
 }
 
 /**
- * Structure only, so {@link templateHash} can hash the deliberately altered parameters of the
- * adversarial "Templates" cases (AAP 0.5.5) while still refusing a shape the circuit's arrays would
- * reject. Values are checked to be non-negative safe integers, not to be in range: a length of 33 or a
- * charset code of 5 hashes, and that hash rightly has no leaf.
+ * Structure only, so {@link templateHash} can hash the deliberately altered parameters of the adversarial
+ * "Templates" cases (AAP 0.5.5) while still refusing a shape the circuit's arrays would reject. Values are checked to
+ * be non-negative safe integers, not to be in range, so a length of 33 or a charset code of 5 hashes — and that hash
+ * rightly has no leaf.
  *
- * @param params - The parameters to check.
- * @throws {RangeError} When an array is not four entries long, an anchor is not 32 bytes, or a number
- *   is not a non-negative safe integer.
+ * @throws {RangeError} When an array is not four entries long, an anchor is not 32 bytes, or a number is not a
+ *   non-negative safe integer.
  */
 function assertTemplateParams(params: TemplateParams): void {
   // The three arrays whose length and integer range are checked, beyond the anchors.
@@ -188,10 +157,8 @@ function assertTemplateParams(params: TemplateParams): void {
 }
 
 /**
- * The code `CHARSET_CODE` gives a charset name, or `undefined` for a name outside its vocabulary.
- *
- * The lookup is widened to a string key because the configuration reaches this module through a parsed
- * `IssuerTemplate` as well as from unvalidated input, where the name may be any string at all.
+ * The code `CHARSET_CODE` gives a charset name, or `undefined` for a name outside its vocabulary. The lookup is
+ * widened to a string key because unvalidated configuration reaches this module too.
  */
 function charsetCodeOf(name: string): number | undefined {
   return (CHARSET_CODE as Readonly<Record<string, number | undefined>>)[name];

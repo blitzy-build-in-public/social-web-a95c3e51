@@ -1,8 +1,4 @@
-/**
- * The magic-link landing screen (AAP 0.5.4, AAP 0.5.8): the app's only caller of
- * `POST /auth/verify`, which exchanges the link's token for a session and routes on what the
- * account still needs.
- */
+/** The magic-link landing screen: the app's only caller of `POST /auth/verify`, which exchanges the link's token for a session and routes on what the account still needs. */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Linking, Platform } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';

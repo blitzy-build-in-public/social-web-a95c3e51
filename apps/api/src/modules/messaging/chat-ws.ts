@@ -1,15 +1,19 @@
 /**
- * `WS /v1/chat`: the one socket the traveler app holds, carrying pair chat and the meetup-status pushes that
- * arrive beside it (AAP 0.3.3, 0.5.1, 0.5.3, 0.5.4, 0.8.1).
+ * `WS /v1/chat`: the one socket the traveler app holds, carrying pair chat and the meetup-status pushes that arrive
+ * beside it. The handshake authenticates with the `Sec-WebSocket-Protocol: bearer, <accessToken>` subprotocol and the
+ * API answers with `bearer` alone, so a refusal is a plain `401 token_invalid` on a connection never upgraded.
  *
- * A browser `WebSocket` cannot set an `Authorization` header, so the handshake authenticates with the
- * `Sec-WebSocket-Protocol: bearer, <accessToken>` subprotocol and the API answers with `bearer` alone (AAP 0.3.3).
- * `requireWebSocketBearer` reads the token there, applies the age gate as the REST traveler guard does, and runs
- * before `@fastify/websocket` hijacks the connection, so a refusal is answered as plain `401 token_invalid` on a
- * connection that is never upgraded. This route is deliberately not inside the traveler route group, whose guard
- * reads the header a browser cannot set.
+ * Invariants for the life of an accepted socket:
  *
- * Five invariants hold for the life of an accepted socket:
+ * - Frames are processed one at a time, in order: each inbound frame's work is appended to a per-socket promise chain
+ *   and turns every failure it can meet into a frame, since a rejected chain would stall the frames behind it.
+ * - The access check runs inside the transaction that writes the message, behind the account-deletion write fence,
+ *   with the session re-resolved from PostgreSQL (`assertLiveSession`, never the 30-second cache).
+ * - No Redis call runs inside that transaction: the publish goes through `after`, so a failed publish costs only the
+ *   live frame.
+ * - Delivery is the pub/sub echo, so the sender's confirmation is the same `MessageFrame` the counterpart receives.
+ * - A socket is bounded and always given up: `CHAT_MAX_SOCKETS_PER_USER` per account per instance, refused before
+ *   attachment; sixty sends per rolling minute; a 30-second heartbeat that ends a socket which stopped answering.
  *
  *  - **Frames are processed one at a time, in order.** Every inbound frame's work is appended to a per-socket
  *    promise chain, so two messages from one sender commit in the order they were sent and a frame written the
@@ -56,18 +60,14 @@ import type { AuthContext } from '../../plugins/auth.ts';
 import type { App, AppServices } from '../../app.ts';
 
 /**
- * How many `chat_send` frames one socket may have accepted inside a rolling minute.
- *
- * The allowance belongs to the socket rather than to the account, because a WebSocket write carries
- * no HTTP request for `@fastify/rate-limit` to count; the REST routes keep their own per-user and
- * per-IP limits (AAP 0.5.4).
+ * How many `chat_send` frames one socket may have accepted inside a rolling minute: the allowance belongs to the
+ * socket, because a WebSocket write carries no HTTP request for `@fastify/rate-limit` to count.
  */
 export const CHAT_SEND_LIMIT_PER_MINUTE = 60;
 
 /**
- * How often an accepted socket is pinged, and therefore how long an unanswered ping may stand before
- * the socket is terminated. Half of the relay's own 10-minute call budget, and long enough that a
- * mobile client on a slow network is not ended by one late pong (AAP 0.3.2).
+ * How often an accepted socket is pinged: half the relay's 10-minute call budget, and long enough that a slow mobile
+ * client is not ended by one late pong.
  */
 export const CHAT_HEARTBEAT_MS = 30_000;
 
@@ -77,18 +77,11 @@ export const CHAT_HEARTBEAT_MS = 30_000;
  */
 const CLOSE_INTERNAL_ERROR = 1011;
 
-/**
- * What this module needs from the app's services (AAP 0.5.1): a `Pick` narrowed to what a socket reads — the
- * guarded database client, the injected clock, the logger, the outbox, the pub/sub fan-out and the configuration
- * the account's socket allowance is read from — so test doubles stay small.
- */
 type ChatServices = Pick<AppServices, 'db' | 'clock' | 'logger' | 'outbox' | 'pubsub' | 'env'>;
 
 /**
- * One `Message` row, as the insert hands it back and as the pair's history loads it (AAP 0.5.2). `senderId` is
- * nullable here although `Message.senderId` is not: erasure leaves the counterpart's messages in their history, so
- * a retained row may name a sender whose account is gone, and the history route nulls it in the DTO. Declared
- * structurally, so the one DTO builder serves every caller of either shape.
+ * One `Message` row, as the insert hands it back and as the pair's history loads it. `senderId` is nullable because
+ * erasure leaves the counterpart's messages in history, although `Message.senderId` is not.
  */
 export interface MessageRow {
   readonly id: string;
@@ -98,22 +91,15 @@ export interface MessageRow {
   readonly createdAt: Date;
 }
 
-/** One open socket's state: the connection, the frames it may still accept, and its frame chain. */
 interface ChatConnection {
-  /** The app's services, as the attach, the fenced transaction and the publish each need them. */
   readonly services: ChatServices;
-  /** The upgraded socket. */
   readonly socket: WebSocket;
-  /** The authenticated caller, read from `request.auth` once the upgrade hook admitted it. */
   readonly userId: string;
   /**
-   * The session that upgrade was authenticated with, carried for the life of the socket so every
-   * write can re-resolve it inside its own transaction (AAP 0.5.3).
+   * The session the upgrade authenticated with, carried so every write re-resolves it in its own transaction.
    */
   readonly sessionId: string;
-  /** The request's own logger, which already carries the request id (AAP 0.11.1). */
   readonly log: FastifyRequest['log'];
-  /** Writes one server frame to this socket, when it is still open. */
   readonly send: (frame: ServerFrame) => void;
   /** Epoch milliseconds of the sends accepted inside the current rolling minute, oldest first. */
   readonly sendTimes: number[];
@@ -122,11 +108,8 @@ interface ChatConnection {
 }
 
 /**
- * One stored message as the contract's `Message` (AAP 0.5.4).
- *
- * Built field by field rather than spread, so no column the model grows can reach a client through
- * this shape, and shared with `GET /meetups/:id/messages`, so the socket and the history route can
- * never disagree about a message (AAP 0.5.4, 0.11.1).
+ * One stored message as the contract's `Message`, built field by field so no column the model grows can reach a
+ * client, and shared with `GET /meetups/:id/messages` so socket and history cannot disagree.
  */
 export function toMessageDto(row: MessageRow, senderErased: boolean): Message {
   const senderId = row.senderId;
@@ -139,18 +122,12 @@ export function toMessageDto(row: MessageRow, senderErased: boolean): Message {
   };
 }
 
-/** An error's name, or `Error` for a value that is not one (AAP 0.11.1). */
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : 'Error';
 }
 
-/**
- * The text of a text frame, or `null` when the frame arrived as binary.
- *
- * A frame is one buffer, an `ArrayBuffer` or the fragments `ws` collected, so the chunks are decoded
- * with one streaming decoder: a multi-byte character split across two fragments is therefore joined
- * before it is parsed rather than replaced with a replacement character (AAP 0.3.3).
- */
+/** The text of a text frame, or `null` for a binary frame: one streaming decoder, so a multi-byte character split
+ * across fragments is joined rather than replaced. */
 function frameText(data: RawData, isBinary: boolean): string | null {
   if (isBinary) return null;
   const chunks = Array.isArray(data) ? data : [data];
@@ -162,12 +139,8 @@ function frameText(data: RawData, isBinary: boolean): string | null {
   return text + decoder.decode();
 }
 
-/**
- * One inbound frame, or `null` when the payload is not a frame the contract allows (AAP 0.5.4).
- *
- * The returned value is the parsed frame, not the text it came from: `ChatSend` trims its `body`, so
- * what is validated is what is stored.
- */
+/** One inbound frame, or `null` when the payload is not one the contract allows. The parsed frame is returned, not
+ * the text it came from, so what `ChatSend` trimmed is what is stored. */
 function parseClientFrame(data: RawData, isBinary: boolean): ClientFrame | null {
   const text = frameText(data, isBinary);
   if (text === null) return null;
@@ -181,13 +154,8 @@ function parseClientFrame(data: RawData, isBinary: boolean): ClientFrame | null 
   return parsed.success ? parsed.data : null;
 }
 
-/**
- * Whether one more send fits the socket's allowance, and records it when it does (AAP 0.5.4).
- *
- * A rolling minute rather than a fixed one, so a sender cannot write `2 × CHAT_SEND_LIMIT_PER_MINUTE`
- * back to back across a bucket boundary. The instant comes from the injected clock (AAP 0.11.1), and
- * the window is pruned as it moves, so the array holds at most the allowance in timestamps.
- */
+/** Whether one more send fits the socket's allowance, recording it when it does: a rolling minute, so a sender cannot
+ * write twice the allowance across a bucket boundary. */
 function withinSendAllowance(sendTimes: number[], nowMs: number): boolean {
   const cutoff = nowMs - MINUTE_MS;
   for (;;) {
@@ -200,13 +168,8 @@ function withinSendAllowance(sendTimes: number[], nowMs: number): boolean {
   return true;
 }
 
-/**
- * Writes one server frame to a socket that is still open (AAP 0.5.4).
- *
- * Only `ServerFrame`-shaped JSON leaves this module, and only while the socket can carry it: a frame
- * written after the close costs one failed send and nothing else, because what it announced is read
- * back from the route that owns it (AAP 0.3.2).
- */
+/** Writes one server frame to a socket that is still open; only `ServerFrame`-shaped JSON leaves this module, and a
+ * frame written after the close costs one failed send and nothing else. */
 function sendFrame(socket: WebSocket, frame: ServerFrame, log: FastifyRequest['log']): void {
   if (socket.readyState !== socket.OPEN) return;
   try {
@@ -217,13 +180,10 @@ function sendFrame(socket: WebSocket, frame: ServerFrame, log: FastifyRequest['l
 }
 
 /**
- * Stores one chat message and announces it to both participants (AAP 0.5.3, 0.5.4).
- *
- * The access check, the sender's re-resolved session and the insert share one transaction behind the sender's
- * write fence, so a logout, revocation, block or deletion that committed first is refused with nothing written. The
- * meetup joins the writer's own socket through that transaction's commit chain, ahead of the publish, so the frame
- * confirming the write is not also the moment the socket first carries the chat (AAP 0.5.1). The publish is
- * registered through `after` and runs after the commit (AAP 0.3.2).
+ * Stores one chat message and announces it to both participants. The access check, the sender's re-resolved session
+ * and the insert share one transaction behind the sender's write fence, so a logout, revocation, block or deletion
+ * that committed first is refused with nothing written; the publish is registered through `after` and runs after the
+ * commit.
  */
 async function persistMessage(
   services: ChatServices,
@@ -234,10 +194,8 @@ async function persistMessage(
   await transact(
     services,
     async (tx, after) => {
-      // Before the message is judged and before anything is written: the socket holds the authority
-      // it was admitted with, so a logout, a rotation or a deletion that committed since then refuses
-      // the frame here. Read from PostgreSQL, never from the session cache, which may lag a
-      // revocation by up to its 30-second life (AAP 0.5.3).
+      // Before the message is judged: the socket holds the authority it was admitted with, read from PostgreSQL
+      // rather than the session cache, which may lag a revocation by up to its 30-second life.
       await assertLiveSession(services, tx, { userId: senderId, sessionId });
       const access = await canMessage(tx, frame.meetupId, senderId);
       if (!access.ok) {
@@ -251,17 +209,13 @@ async function persistMessage(
           createdAt: services.clock.now(),
         },
       });
-      // The socket that just wrote in this meetup carries it from now on, on this instance: a send is
-      // the client's own use of the chat, and it is what makes a meetup outside the set that socket
-      // attached with live for the sender (AAP 0.5.1, 0.5.4). Registered before the publish below,
-      // because delivery is the subscription's: the frame coming back is what confirms the write, so
-      // the registration has to exist before the frame is announced. The attach is in process and runs
-      // after the commit, so no Redis call joins the transaction (AAP 0.3.2).
+      // Registered before the publish, which is what confirms the write: this send is what makes a meetup outside
+      // the attached set live for the sender. In process and after the commit, so no Redis call joins the
+      // transaction.
       after(() => {
         services.pubsub.attachMeetup(senderId, frame.meetupId);
       });
-      // The sender's confirmation is this same frame: `publishChat` reaches every instance holding a
-      // socket for the meetup, the sender's included, so no separate acknowledgement is sent.
+      // The sender's confirmation is this same frame: `publishChat` reaches the sender's own socket too.
       after(() =>
         services.pubsub.publishChat(frame.meetupId, {
           type: 'message',
@@ -274,19 +228,14 @@ async function persistMessage(
 }
 
 /**
- * Answers a send that failed, in a frame the client can act on (AAP 0.5.3, 0.5.4).
- *
- * The distinction is what the client must do next: an ended session closes the socket, a momentary
- * refusal is answered in place and leaves it open, because the same pair may lock a meetup later in
- * this socket's life, and anything else is our defect and is logged before it is answered.
+ * Answers a send that failed: an ended session closes the socket, a momentary refusal is answered in place and leaves
+ * it open, and anything else is our defect and is logged before it is answered.
  */
 function refuseSend(connection: ChatConnection, frame: ChatSend, error: unknown): void {
   if (isAppError(error)) {
     if (error.code === 'token_invalid') {
-      // The session is not live — the write fence saw a `DELETE /me` commit first, or the session
-      // the socket was admitted with was revoked or rotated away — so the socket cannot continue.
-      // The frame is answered before the close, so a client that never observes the close code still
-      // learns why the message was not stored (AAP 0.5.3).
+      // The session is not live — the write fence saw a `DELETE /me` commit first, or the session was revoked or
+      // rotated away — so the socket cannot continue. The frame is answered before the close.
       connection.send(errorFrame('token_invalid'));
       connection.socket.close(WS_CLOSE.unauthorized, 'token_invalid');
       return;
@@ -302,10 +251,8 @@ function refuseSend(connection: ChatConnection, frame: ChatSend, error: unknown)
 }
 
 /**
- * Handles one inbound frame: parse, allowance, then the fenced write (AAP 0.5.4).
- *
- * Never rejects. Every failure becomes a frame on the socket or a log line, so the socket's frame
- * chain always advances and one refused message never stalls the messages behind it.
+ * Handles one inbound frame: parse, allowance, then the fenced write. Never rejects, so the socket's frame chain
+ * always advances and one refused message never stalls the messages behind it.
  */
 async function receiveFrame(
   connection: ChatConnection,
@@ -318,8 +265,7 @@ async function receiveFrame(
     return;
   }
   if (!withinSendAllowance(connection.sendTimes, connection.services.clock.nowMs())) {
-    // One frame over the allowance is refused in place: the socket stays open and nothing is stored,
-    // which tells a client to slow down rather than to reconnect (AAP 0.5.4).
+    // One frame over the allowance is refused in place: the socket stays open and nothing is stored.
     connection.send(errorFrame('rate_limited', undefined, frame.meetupId));
     return;
   }
@@ -354,10 +300,8 @@ async function serveSocket(
   request: FastifyRequest,
 ): Promise<void> {
   const auth: AuthContext | null | undefined = request.auth;
-  // `requireWebSocketBearer` admitted this upgrade, so a missing context is impossible; reading it
-  // rather than asserting it keeps a hook that were moved or shadowed from surfacing as a socket
-  // nobody answers (the same choice `modules/cities/routes.ts` makes on its own handler). The session
-  // travels with the socket, because every write is re-checked against it (AAP 0.5.3).
+  // `requireWebSocketBearer` admitted this upgrade, so a missing context is impossible; reading rather than asserting
+  // it keeps a moved or shadowed hook from surfacing as a socket nobody answers. The session travels with the socket.
   if (auth === null || auth === undefined) {
     socket.close(WS_CLOSE.unauthorized, 'token_invalid');
     return;
@@ -374,13 +318,9 @@ async function serveSocket(
     chain: Promise.resolve(),
   };
   /**
-   * Resolved once the socket carries its meetups, and never before.
-   *
-   * The listener below is attached before the first `await`, because `ws` emits `message` whether or not anything
-   * is listening: both clients send as soon as the socket is open, with no readiness step, so a frame written
-   * during the handshake would otherwise be dropped in the window the meetup set is read in. Every frame's work
-   * waits on this gate, so the frames still run in the order they were sent. An attach that fails closes the socket
-   * and leaves the gate unresolved: nothing queued behind it runs.
+   * Resolved once the socket carries its meetups, and never before: the listener below is attached before the first
+   * `await`, because `ws` emits `message` whether or not anything is listening and a frame written during the
+   * handshake would otherwise be dropped. An attach that fails closes the socket and leaves the gate unresolved.
    */
   let attached: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
@@ -432,11 +372,9 @@ async function serveSocket(
     if (socket.readyState !== socket.OPEN) return;
     const registered = services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
     if (!registered) {
-      // The account already holds its allowance of live sockets on this instance, so this socket is
-      // refused instead of registered and closed: the newest one goes, which leaves the socket the
-      // account is already chatting on working (AAP 0.3.2). One line, carrying the event and the
-      // allowance it was measured against and nothing of the account, the session or the socket
-      // (AAP 0.11.1).
+      // The account already holds its allowance of live sockets on this instance, so the newest one goes, leaving the
+      // socket it is already chatting on working. One line, carrying the event and the allowance and nothing of the
+      // account, the session or the socket.
       request.log.warn(
         { event: 'chat_socket_cap', allowance: services.env.CHAT_MAX_SOCKETS_PER_USER },
         'chat_socket_cap',
@@ -455,10 +393,8 @@ async function serveSocket(
 }
 
 /**
- * Registers `WS /v1/chat` on the messaging context `routes.ts` composes (AAP 0.5.1, 0.5.4).
- *
- * Synchronous registration with a resolved promise, the shape every route module uses: Fastify accepts the returned
- * thenable as the plugin's own completion, so `app.register(chatWsRoutes)` and a direct call both compose.
+ * Registers `WS /v1/chat` on the messaging context `routes.ts` composes: synchronous registration with a resolved
+ * promise, the shape every route module uses.
  */
 export function chatWsRoutes(app: App): Promise<void> {
   app.get(
@@ -468,9 +404,8 @@ export function chatWsRoutes(app: App): Promise<void> {
       // A frame protocol OpenAPI cannot describe: the route stays out of `docs/api/openapi.json`,
       // whose WebSocket frames are documented from `packages/shared/src/schemas/ws.ts` (AAP 0.5.4).
       schema: { hide: true },
-      // The token travels as the `bearer, <token>` subprotocol, because a browser cannot set an
-      // `Authorization` header on a WebSocket; a refusal is plain HTTP before the upgrade
-      // (AAP 0.3.3). The traveler guard is not used here for that reason.
+      // The token travels as the `bearer, <token>` subprotocol, because a browser cannot set an `Authorization`
+      // header on a WebSocket; a refusal is plain HTTP before the upgrade.
       onRequest: requireWebSocketBearer,
     },
     (socket, request) => serveSocket(app.services, socket, request),

@@ -38,35 +38,22 @@ import {
   writeFixtureSecrets,
 } from './secrets-out.ts';
 import type { FixtureSecretTarget, FixtureSecretsFile } from './secrets-out.ts';
-
 const SERVICE_NAME = 'seed';
-
 const FAILURE_LINE_APP_ENV: AppEnv = 'demo';
-
 const ID_PREFIX = 'fixture';
-
 const ID_BYTES = 16;
-
 const USAGE = 'usage: pnpm db:seed [--fixtures | --no-fixtures]';
-
 const FIXTURE_TRANSACTION_TIMEOUT_MS = 60_000;
 const FIXTURE_TRANSACTION_MAX_WAIT_MS = 10_000;
-
 const FIXTURE_HOST_REASON = 'fixture_host';
-
 const SEED_OVERRIDE = 'seed';
-
-/**
- * A stable fixture id (AAP 0.5.2): the first 128 bits of
- * `SHA-256("fixture:<kind>:<cityId>:<key>")`, as a version 8 UUID with the RFC 9562 variant.
- */
+/** A stable fixture id: the first 128 bits of `SHA-256("fixture:<kind>:<cityId>:<key>")`, as a version 8 UUID with the RFC 9562 variant. */
 export function fixtureUuid(kind: string, cityId: string, key: string): string {
   const digest = createHash('sha256')
     .update(`${ID_PREFIX}:${kind}:${cityId}:${key}`, 'utf8')
     .digest();
   const bytes = Buffer.from(digest.subarray(0, ID_BYTES));
-  // RFC 9562 §4.2 sets the version into the top nibble of byte 6, §4.1 the variant into the top two
-  // bits of byte 8. `readUInt8`/`writeUInt8` rather than indexing, so the byte offsets are checked.
+  // RFC 9562 §4.2 sets the version into the top nibble of byte 6, §4.1 the variant into the top two bits of byte 8. `readUInt8`/`writeUInt8` rather than indexing, so the byte offsets are checked.
   bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x80, 6);
   bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8);
   const hex = bytes.toString('hex');
@@ -78,53 +65,28 @@ export function fixtureUuid(kind: string, cityId: string, key: string): string {
     hex.slice(20),
   ].join('-');
 }
-
-/** What {@link runSeed} needs (AAP 0.5.2, 0.6.2). */
+/** What {@link runSeed} needs. */
 export interface SeedOptions {
-  /**
-   * The guarded client from `createPrismaClient`, which is the only way to build one. The call site
-   * owns its lifecycle and calls `$connect` and `$disconnect`.
-   */
+  /** The guarded client from `createPrismaClient`, which is the only way to build one. The call site owns its lifecycle and calls `$connect` and `$disconnect`. */
   db: DbClient;
-  /**
-   * The process's `APP_ENV`. It must be the value the client was built with: it decides whether the
-   * fixtures are permitted here and is the predicate `refreshNearestPartnerDistances` guards with.
-   */
+  /** The process's `APP_ENV`. It must be the value the client was built with: it decides whether the fixtures are permitted here and is the predicate `refreshNearestPartnerDistances` guards with. */
   appEnv: AppEnv;
   /** The keyring the console secrets are encrypted under, from `keyringFromEnv`. */
   keyring: FieldKeyring;
-  /**
-   * The run's time source for `capturedAt`, `fxDate`, `secretIssuedAt` and the secret file's
-   * `generatedAt`; defaults to `systemClock`, and tests pass a `TestClock` so records carry a fixed
-   * instant.
-   */
+  /** The run's time source for `capturedAt`, `fxDate`, `secretIssuedAt` and the secret file's `generatedAt`; defaults to `systemClock`, and tests pass a `TestClock` so records carry a fixed instant. */
   clock?: Clock;
-  /**
-   * Whether to load `config/fixtures/<cityId>.json`. Defaults to `fixturesAllowed(appEnv)`; passing
-   * `true` outside `test` and `demo` is refused before anything is written (AAP 0.5.2).
-   */
+  /** Whether to load `config/fixtures/<cityId>.json`. Defaults to `fixturesAllowed(appEnv)`; passing `true` outside `test` and `demo` is refused before anything is written. */
   fixtures?: boolean;
   /** The repository root the configuration is read from; defaults to `findRepoRoot()`. */
   repoRoot?: string;
-  /**
-   * Where the fixture console secrets are written, defaulting to
-   * `<repoRoot>/.local/fixture-secrets.json`, which the root `.gitignore` excludes; `null` writes
-   * no file (AAP 0.5.2).
-   */
+  /** Where the fixture console secrets are written, defaulting to `<repoRoot>/.local/fixture-secrets.json`, which the root `.gitignore` excludes; `null` writes no file. */
   secretsOutPath?: string | null;
-  /**
-   * Hosts to record as allowed besides the ones the fixture places' own URLs name — a worker test's
-   * local menu server, for instance. Each entry is a URL or a bare `host[:port]` (AAP 0.5.6).
-   */
+  /** Hosts to record as allowed besides the ones the fixture places' own URLs name — a worker test's local menu server, for instance. Each entry is a URL or a bare `host[:port]`. */
   allowedFixtureHosts?: readonly string[];
   /** Where the one completion line is written; omitted, the seed logs nothing. */
   logger?: Pick<Logger, 'info' | 'warn'>;
 }
-
-/**
- * What {@link runSeed} loaded, for the CLI's log line and for what a test asserts (AAP 0.5.2,
- * 0.12.1 criterion 9).
- */
+/** What {@link runSeed} loaded, for the CLI's log line and for what a test asserts. */
 export interface SeedSummary {
   /** Cities written, and so the length of `config/cities.json`. */
   cities: number;
@@ -138,15 +100,11 @@ export interface SeedSummary {
   priceRecords: number;
   /** Crawl-domain rows the seed recorded as allowed. */
   crawlDomains: number;
-  /**
-   * Every fixture console secret of this run, keyed by row, or `null` when fixtures were not
-   * loaded. A test opens each console with these; the file on disk holds the same values.
-   */
+  /** Every fixture console secret of this run, keyed by row, or `null` when fixtures were not loaded. A test opens each console with these; the file on disk holds the same values. */
   secrets: FixtureSecretsFile | null;
   /** The file {@link SeedSummary.secrets} was written to, or `null` when none was written. */
   secretsFile: string | null;
 }
-
 type CityFixtureCounts = {
   /** The rows written, for the run's totals. */
   readonly venues: number;
@@ -159,11 +117,7 @@ type CityFixtureCounts = {
   readonly venueTargets: readonly FixtureSecretTarget[];
   readonly lodgingTargets: readonly FixtureSecretTarget[];
 };
-
-/**
- * Seeds the cities and, when the environment permits it, each city's fixtures, crawl-domain
- * decisions and console secrets (AAP 0.5.2, 0.6.2).
- */
+/** Seeds the cities and, when the environment permits it, each city's fixtures, crawl-domain decisions and console secrets (AAP 0.5.2, 0.6.2). */
 export async function runSeed(options: SeedOptions): Promise<SeedSummary> {
   const clock = options.clock ?? systemClock;
   const repoRoot = options.repoRoot ?? findRepoRoot();
@@ -191,8 +145,7 @@ export async function runSeed(options: SeedOptions): Promise<SeedSummary> {
     if (file === undefined) {
       continue;
     }
-    // One capture instant per city, so a city's records share a `capturedAt` and a `fxDate` and the
-    // freshness windows of AAP 0.5.7 are measured from a time inside this run.
+    // One capture instant per city, so a city's records share a `capturedAt` and a `fxDate` and the freshness windows of AAP 0.5.7 are measured from a time inside this run.
     const capturedAt = clock.now();
     const counts = await options.db.$transaction(
       (tx) => seedCityFixtures(tx, city.id, file, capturedAt, options.appEnv),
@@ -258,7 +211,6 @@ export async function runSeed(options: SeedOptions): Promise<SeedSummary> {
     secretsFile,
   };
 }
-
 async function seedCities(db: DbClient, cities: readonly CityConfig[]): Promise<void> {
   for (const city of cities) {
     const fields = {
@@ -280,7 +232,6 @@ async function seedCities(db: DbClient, cities: readonly CityConfig[]): Promise<
     });
   }
 }
-
 async function seedCityFixtures(
   tx: DbTx,
   cityId: string,
@@ -377,8 +328,7 @@ async function seedCityFixtures(
       pricedIds.push(row.id);
       priceTuples.push(row.tuple);
     }
-    // Items removed from a fixture file go, unlike the places above: a price record is
-    // configuration, and a stale one would enter an estimate the file no longer asks for (AAP 0.5.7).
+    // Items removed from a fixture file go, unlike the places above: a price record is configuration, and a stale one would enter an estimate the file no longer asks for (AAP 0.5.7).
     await tx.priceRecord.deleteMany({
       where: { placeId, isFixture: true, id: { notIn: pricedIds } },
     });
@@ -418,7 +368,6 @@ async function seedCityFixtures(
     lodgingTargets,
   };
 }
-
 async function writeFixtureRows(
   tx: DbTx,
   rows: readonly Prisma.Sql[],
@@ -429,7 +378,6 @@ async function writeFixtureRows(
   }
   await tx.$executeRaw(statement(Prisma.join(rows, ', ')));
 }
-
 function priceRecordRow(
   placeId: string,
   args: {
@@ -458,8 +406,7 @@ function priceRecordRow(
     source,
     sourceUrl: sourceUrlOf(source, place, cityId),
     capturedAt,
-    // The UTC day of the capture instant, whatever the connection's TimeZone setting is: `fxDate` is
-    // midnight UTC, and reading it back through UTC alone keeps the FX date off a neighbouring day.
+    // The UTC day of the capture instant, whatever the connection's TimeZone setting is: `fxDate` is midnight UTC, and reading it back through UTC alone keeps the FX date off a neighbouring day.
     fxDate: utcDateOf(capturedAt),
     confidence: null,
     reviewStatus: 'approved',
@@ -475,7 +422,6 @@ function priceRecordRow(
   )`;
   return { id, tuple };
 }
-
 async function recordCrawlPolicies(
   db: DbClient,
   hosts: readonly string[],
@@ -506,7 +452,6 @@ async function recordCrawlPolicies(
   });
   return hosts.length;
 }
-
 type CrawlPolicyRow = {
   readonly domain: string;
   readonly decision: 'allowed';
@@ -514,7 +459,6 @@ type CrawlPolicyRow = {
   readonly overriddenBy: string;
   readonly checkedAt: Date;
 };
-
 function hostKeyOf(value: string): string {
   const trimmed = value.trim();
   const host = trimmed.includes('://') ? new URL(trimmed).hostname : trimmed.replace(/:\d+$/, '');
@@ -523,7 +467,6 @@ function hostKeyOf(value: string): string {
     ? key.slice('www.'.length)
     : key;
 }
-
 function sourceUrlOf(source: PriceSource, place: PlaceFixture, cityId: string): string {
   if (source === 'phone_quote' && place.phone !== undefined) {
     return `tel:${place.phone}`;
@@ -533,20 +476,16 @@ function sourceUrlOf(source: PriceSource, place: PlaceFixture, cityId: string): 
   }
   return place.menuUrl ?? place.website ?? `https://fixtures.invalid/${cityId}/${place.key}`;
 }
-
 function priceTextOf(usdCents: number): string {
   const cents = usdCents % 100;
   return `$${Math.floor(usdCents / 100)}.${String(cents).padStart(2, '0')}`;
 }
-
 function normalizeItemName(itemName: string): string {
   return itemName.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
-
 function utcDateOf(at: Date): Date {
   return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
 }
-
 async function runSeedCli(argv: readonly string[]): Promise<void> {
   let fixtures: boolean | undefined;
   for (const arg of argv) {
@@ -576,15 +515,10 @@ async function runSeedCli(argv: readonly string[]): Promise<void> {
     await db.$disconnect();
   }
 }
-
 function reportSeedFailure(error: unknown): void {
   const name = error instanceof Error ? error.name : 'Error';
   const message = error instanceof Error ? error.message : String(error);
-  /**
-   * `appEnvOrNull` reads `APP_ENV` through the env module's own normalization and schema rather
-   * than as a raw value, and it never throws: this line runs before `loadSeedEnv` has validated
-   * anything.
-   */
+  /** `appEnvOrNull` reads `APP_ENV` through the env module's own normalization and schema rather than as a raw value, and it never throws: this line runs before `loadSeedEnv` has validated anything. */
   const logger = createLogger({
     name: SERVICE_NAME,
     level: 'info',
@@ -593,7 +527,6 @@ function reportSeedFailure(error: unknown): void {
   logger.error({ err: { name, message: sanitizeLogMessage(message) } }, 'seed failed');
   process.exitCode = 1;
 }
-
 function isSeedEntryPoint(): boolean {
   const entry = process.argv[1];
   if (entry === undefined) {
@@ -612,9 +545,6 @@ if (isSeedEntryPoint()) {
     reportSeedFailure(error);
   });
 }
-
-// The secret file's locator and reader, re-exported with the seed, so a consumer of
-// `@tablemate/db/seed` — a demo script, a system test — opens a console without a second import path
-// (AAP 0.5.2).
+// The secret file's locator and reader, re-exported with the seed, so a consumer of `@tablemate/db/seed` — a demo script, a system test — opens a console without a second import path (AAP 0.5.2).
 export { FIXTURE_SECRETS_RELATIVE_PATH, readFixtureSecrets };
 export type { FixtureSecretsFile };

@@ -1,8 +1,7 @@
 /**
- * The Me routes end to end: `GET /me`, `POST /me/consents` and the age gate, `PUT /me/profile`
- * with its photo processing, and `POST /me/push-tokens`. Two rules the cases turn on: the 5 MiB
- * photo cap is `me/photo.ts`'s own `413 photo_too_large`, inside the route's larger body limit, and
- * a push token belongs to the account that registered it and is never reassigned.
+ * The Me routes end to end: `GET /me`, `POST /me/consents` and the age gate, `PUT /me/profile` with its photo processing, and
+ * `POST /me/push-tokens`. Two rules the cases turn on: the 5 MiB photo cap is `me/photo.ts`'s own `413 photo_too_large`, inside the
+ * route's larger body limit, and a push token belongs to the account that registered it and is never reassigned.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -104,9 +103,8 @@ const EXIF_MAKE = 'FixtureCam';
 const EXIF_COPYRIGHT = 'Fixture Copyright';
 
 /**
- * A 2400x1600 JPEG carrying IFD0 device tags and an IFD3 GPS position. The dimensions are past
- * `PHOTO_MAX_EDGE_PX` (1,024) on the long edge, so the stored image is proof that the resize ran,
- * and the tags are the metadata the API must strip.
+ * A 2400x1600 JPEG carrying IFD0 device tags and an IFD3 GPS position. The dimensions are past `PHOTO_MAX_EDGE_PX` (1,024) on the long edge,
+ * so the stored image is proof that the resize ran, and the tags are the metadata the API must strip.
  */
 function exifPhoto(): Promise<Buffer> {
   return sharp({

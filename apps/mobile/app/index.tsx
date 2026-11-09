@@ -1,7 +1,4 @@
-/**
- * The app's root route, `/`: the entry point a launch or a link that names no other path lands on,
- * and the route that decides which area the session belongs in (AAP 0.5.8).
- */
+/** The app's root route, `/`: the entry point a launch or a link that names no other path lands on. */
 import type { ReactElement } from 'react';
 import { Redirect, Stack } from 'expo-router';
 

@@ -1,10 +1,4 @@
-/**
- * Site-terms decisions for the menu crawler (AAP 0.5.6, 0.12.2): a blocklisted domain is
- * `prohibited`, a domain no operator has judged yet is recorded `uncertain` *before* its first fetch
- * and is not fetched while it stays so, a recorded decision stands until an operator or the
- * blocklist changes it, and both `prohibited` and `uncertain` leave the place to the phone fallback
- * rather than to a guessed price.
- */
+/** Site-terms decisions for the menu crawler (AAP 0.5.6, 0.12.2): a blocklisted domain is `prohibited`, a domain no operator has judged yet is recorded `uncertain` *before* its first fetch and is not fetched while it stays so, a recorded decision stands until an operator or the blocklist changes it, and both `prohibited` and `uncertain` leave the place to the phone fallback rather than to a guessed price. */
 
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -44,9 +38,7 @@ const blocklist = loadBlocklist(findRepoRoot());
 const BLOCKED = [...blocklist.domains][0] ?? '';
 const FIXTURES = fileURLToPath(new URL('../fixtures/sites/', import.meta.url));
 const USER_AGENT = crawlerUserAgent('https://example.test/contact');
-
 const UNREVIEWED_HOST = 'tasca.unreviewed.fixture.test';
-
 type Row = {
   decision: CrawlDecision;
   reason: string;
@@ -55,18 +47,10 @@ type Row = {
 };
 type Write = { op: 'upsertProhibited' | 'insertUncertain'; domain: string };
 type Store = { store: CrawlPolicyStore; rows: Map<string, Row>; writes: Write[] };
-
-/**
- * The `CrawlPolicyStore` of a suite that needs no database (AAP 0.5.6): `insertUncertain` behaves as
- * the `ON CONFLICT DO NOTHING` insert it stands for, so a domain that is already known is neither
- * overwritten nor counted as a write, and `upsertProhibited` clears `overriddenBy` as the SQL does.
- * @param seed Rows to pre-record, as `[domain, decision, overriddenBy?]`.
- * @returns The store, its rows and the writes it was asked for.
- */
+/** The `CrawlPolicyStore` of a suite that needs no database (AAP 0.5.6): `insertUncertain` behaves as the `ON CONFLICT DO NOTHING` insert it stands for, so a domain that is already known is neither overwritten nor counted as a write, and `upsertProhibited` clears `overriddenBy` as the SQL does. @param seed Rows to pre-record, as `[domain, decision, overriddenBy?]`. @returns The store, its rows and the writes it was asked for. */
 function createStore(seed: readonly (readonly [string, CrawlDecision, string?])[] = []): Store {
   const rows = new Map<string, Row>();
   const writes: Write[] = [];
-
   for (const [domain, decision, overriddenBy] of seed) {
     const reason = overriddenBy === undefined ? REASON_AWAITING_REVIEW : 'operator_review';
     rows.set(domain, { decision, reason, checkedAt: now, overriddenBy: overriddenBy ?? null });
@@ -98,7 +82,6 @@ function createStore(seed: readonly (readonly [string, CrawlDecision, string?])[
       return Promise.resolve();
     },
   };
-
   return { store, rows, writes };
 }
 
@@ -208,20 +191,16 @@ describe('domainDecision', () => {
     expect(target.rows.size).toBe(0);
   });
 });
-
 let server: Server | null = null;
 let port = 0;
 let hits = 0;
-
 const lookups: string[] = [];
 const logs: Record<string, unknown>[] = [];
-
 /** The recording resolver: the fixture host answers on the loopback literal. */
 const lookup: LookupFn = (host) => {
   lookups.push(host);
   return Promise.resolve([{ address: '127.0.0.1', family: 4 }]);
 };
-
 const logger = {
   debug: (line: Record<string, unknown>) => {
     logs.push(line);
@@ -230,13 +209,7 @@ const logger = {
     logs.push(line);
   },
 } as unknown as SafeFetchDeps['logger'];
-
-/**
- * The real request-safety chain over a fresh store (AAP 0.5.6): the fixture host is exempt from the
- * private-address check as `CRAWL_ALLOW_PRIVATE_HOSTS` exempts it in `APP_ENV=test`, and the
- * per-domain slot is an immediate no-op, because one request a second per domain is not this row's
- * subject.
- */
+/** The real request-safety chain over a fresh store (AAP 0.5.6): the fixture host is exempt from the private-address check as `CRAWL_ALLOW_PRIVATE_HOSTS` exempts it in `APP_ENV=test`, and the per-domain slot is an immediate no-op, because one request a second per domain is not this row's subject. */
 function buildFetch(target: Store): SafeFetch {
   return createSafeFetch({
     lookup,
@@ -292,7 +265,6 @@ beforeAll(async () => {
   server.on('error', () => undefined);
   port = await listen(server);
 });
-
 afterAll(async () => {
   await stop(server);
 });
@@ -305,8 +277,7 @@ describe('an unreviewed host is never fetched', () => {
     const refusal = await refusalOf(fetch, url);
     expect(refusal?.reason).toBe('policy_uncertain');
     expect(refusal?.host).toBe(UNREVIEWED_HOST);
-    // Not one request reached the fixture server — not even for its robots.txt — and the host was
-    // never resolved, because the decision precedes both (AAP 0.5.6).
+    // Not one request reached the fixture server — not even for its robots.txt — and the host was never resolved, because the decision precedes both (AAP 0.5.6).
     expect(hits).toBe(0);
     expect(lookups).toEqual([]);
     expect(logs).toEqual([

@@ -32,21 +32,14 @@ import {
   type LlmEnvValues,
   type TelephonyEnvValues,
 } from './modes.ts';
-
 const DEFAULT_OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
-
 const DEFAULT_FX_URL = 'https://open.er-api.com/v6/latest/USD';
-
 const EMAIL_FROM_REASON = 'must be an address or a display name followed by <address>';
-
 const CRAWLER_PRODUCT_TOKEN = 'TablemateBot';
-
 const DEFAULT_FINANCIAL_RETENTION_DAYS = '2557';
-
 function isEmailAddress(value: string): boolean {
   return value !== '' && z.email().safeParse(value).success;
 }
-
 function isMailbox(value: string): boolean {
   const bracketed = /<([^<>]*)>\s*$/.exec(value);
   if (bracketed !== null) {
@@ -54,11 +47,9 @@ function isMailbox(value: string): boolean {
   }
   return !value.includes('<') && !value.includes('>') && isEmailAddress(value.trim());
 }
-
 function userAgentFor(contactUrl: string): string {
   return `${CRAWLER_PRODUCT_TOKEN}/1.0 (+${contactUrl})`;
 }
-
 function allowlistIssues(env: NormalizedEnv): EnvIssue[] {
   try {
     parseAllowlist(env.CALL_ALLOWLIST);
@@ -70,7 +61,6 @@ function allowlistIssues(env: NormalizedEnv): EnvIssue[] {
     throw error;
   }
 }
-
 const WORKERS_ONLY_ENV_SHAPE = {
   SMTP_URL: envUrl({ protocols: ['smtp:', 'smtps:'] }),
   EMAIL_FROM: envString({ check: { test: isMailbox, reason: EMAIL_FROM_REASON } }),
@@ -87,11 +77,7 @@ const WORKERS_ONLY_ENV_SHAPE = {
   API_PUBLIC_URL: envUrl({ protocols: ['http:', 'https:'], optional: true }),
   WEB_ORIGIN: envOrigin({ optional: true }),
 } as const;
-
-/**
- * The whole `workers` schema: the common row, the test-only switches, the two mode groups this
- * process shares with `api`, and {@link WORKERS_ONLY_ENV_SHAPE} (AAP 0.6.2).
- */
+/** The whole `workers` schema: the common row, the test-only switches, the two mode groups this process shares with `api`, and {@link WORKERS_ONLY_ENV_SHAPE} (AAP 0.6.2). */
 export const WORKERS_ENV_SHAPE = {
   ...COMMON_ENV_SHAPE,
   ...TEST_ONLY_ENV_SHAPE,
@@ -99,7 +85,6 @@ export const WORKERS_ENV_SHAPE = {
   ...LLM_ENV_SHAPE,
   ...WORKERS_ONLY_ENV_SHAPE,
 } as const;
-
 interface WorkersOnlyEnvValues {
   readonly SMTP_URL: string;
   readonly EMAIL_FROM: string;
@@ -113,13 +98,11 @@ interface WorkersOnlyEnvValues {
   readonly API_PUBLIC_URL: string | undefined;
   readonly WEB_ORIGIN: string | undefined;
 }
-
 type WorkersEnvValues = CommonEnvValues &
   EnvTestOnlyValues &
   TelephonyEnvValues &
   LlmEnvValues &
   WorkersOnlyEnvValues;
-
 /** The configuration the `workers` process runs with (AAP 0.3.2, 0.6.2). */
 export type WorkersEnv = CommonEnv & {
   /** The SMTP endpoint `notify/email.ts` delivers through. May carry credentials: never logged. */
@@ -142,22 +125,15 @@ export type WorkersEnv = CommonEnv & {
   readonly CALLS_PRODUCTION_APPROVED: boolean;
   /** Days a meetup's financial records are kept after settlement (AAP 0.5.2). */
   readonly FINANCIAL_RETENTION_DAYS: number;
-  /**
-   * The public base URL of Twilio's TwiML fetch and status callbacks (AAP 0.3.3); `null` when the
-   * deployment does not provide it, which fails a call dispatch rather than this process's start.
-   */
+  /** The public base URL of Twilio's TwiML fetch and status callbacks (AAP 0.3.3); `null` when the deployment does not provide it, which fails a call dispatch rather than this process's start. */
   readonly API_PUBLIC_URL: string | null;
-  /**
-   * The web client's origin, the base of a magic link's URL (AAP 0.3.2); `null` when the deployment
-   * does not provide it, which fails the magic-link delivery rather than this process's start.
-   */
+  /** The web client's origin, the base of a magic link's URL (AAP 0.3.2); `null` when the deployment does not provide it, which fails the magic-link delivery rather than this process's start. */
   readonly WEB_ORIGIN: string | null;
   /** The telephony posture `TELEPHONY_MODE` names; `off` carries nothing and dials nothing. */
   readonly telephony: EnvTelephonyConfig;
   /** The language-model posture `LLM_PROVIDER` names; `fake` needs no credential (AAP 0.5.6). */
   readonly llm: EnvLlmConfig;
 };
-
 function buildWorkersEnv(values: WorkersEnvValues, env: NormalizedEnv): WorkersEnv {
   return {
     ...buildCommonEnv(values, env),
@@ -177,7 +153,6 @@ function buildWorkersEnv(values: WorkersEnvValues, env: NormalizedEnv): WorkersE
     llm: buildLlm(values),
   };
 }
-
 /** Validate and load the `workers` process's environment (AAP 0.6.2, 0.11.2). */
 export function loadWorkersEnv(raw: RawEnv = process.env): WorkersEnv {
   const telephonyGuard: EnvGuard = (env) => telephonyIssues(env, 'workers');

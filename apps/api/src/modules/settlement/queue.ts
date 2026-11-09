@@ -1,37 +1,23 @@
 /**
- * The in-process `settlement` worker (AAP 0.3.2, 0.5.6): the delayed `settle`, `lapse`, `remind` and
- * `dispute-escalate` jobs that `./timers.ts` schedules, consumed by `apps/api` itself.
+ * The in-process `settlement` worker: the delayed `settle`, `lapse`, `remind` and `dispute-escalate` jobs that
+ * `./timers.ts` schedules, consumed by `apps/api` itself, because the API is the one process holding the Stripe
+ * secret.
  *
- * Settlement stays in the API because the API is the one process holding the Stripe secret
- * (AAP 0.7.3), and because a meetup's timers are written by the transaction that schedules them — the
- * process that takes a transition is the process that consumes it. Three rules shape this file.
+ * - **A timer is latency, never a guarantee.** BullMQ fires by wall-clock time while the application's time comes
+ *   from `services.clock`, which a test run holds still, so each handler re-reads the row it names, re-checks the
+ *   instant its action is due and does nothing when it is early; the 60-second sweeper settles, lapses and
+ *   escalates by the app clock whether or not a single job ever arrives.
+ * - **A Redis outage never stops the API.** The connection is opened here, for this consumer alone, in the `worker`
+ *   role — the only one that waits out a reconnect instead of failing a command — and the `error` listener keeps a
+ *   connection failure from reaching the process as an unhandled event.
+ * - **Every handler is idempotent, and throws only to ask for a retry.** A throw is what the producer's job options
+ *   retry, so each handler either no-ops on a row another path already moved or delegates to a function that is
+ *   itself idempotent: `MeetupSettlement.meetupId`, the unique `WitnessEvent` and `TableCreditEntry` keys and the
+ *   payment operations' idempotency keys make a second run a no-op.
  *
- * - **A timer is latency, never a guarantee** (AAP 0.5.6). BullMQ fires by wall-clock time while the
- *   application's time comes from `services.clock` (AAP 0.11.1), which a test run holds still, so each
- *   handler re-reads the row it names, re-checks the instant its action is due and does nothing when
- *   it is early. The 60-second sweeper in `./sweeper.ts` settles, lapses and escalates by the app
- *   clock whether or not a single job ever arrives.
- * - **A Redis outage never stops the API** (AAP 0.3.2). The connection is opened here, for this
- *   consumer alone, in the `worker` role — the role whose options a blocking consumer requires and the
- *   only one that waits out a reconnect instead of failing a command. The `error` listener keeps a
- *   connection failure from reaching the process as an unhandled event, and the sweeper keeps settling
- *   while the queue is down.
- * - **Every handler is idempotent, and throws only to ask for a retry** (AAP 0.5.6, 0.11.1). A throw
- *   is what the producer's job options retry (five attempts, exponential backoff from 10 s), so each
- *   handler either no-ops on a row another path already moved or delegates to a function that is
- *   itself idempotent: `MeetupSettlement.meetupId`, the unique `WitnessEvent` and `TableCreditEntry`
- *   keys and the payment operations' idempotency keys make a second run a no-op.
- *
- * No Stripe call is made here. `settleMeetup` reads the two authorizations before its transaction and
- * only plans the provider calls; `runOperationsFor` executes them once that transaction has committed.
- *
- * The queue's names, its payload schemas and the guard that narrows a name all come from
- * `@tablemate/server-core`, so neither a name nor the payload error is written down twice in this
- * process, and a renamed job fails this file's typecheck instead of leaving a handler unreachable.
- *
- * @see AAP 0.3.2 for the queue's placement, the recovery rules and the sweeper; 0.5.1 for this module;
- *   0.5.3 for the four timers and the transitions they apply; 0.5.6 for the job table and the
- *   settlement queue's backoff; 0.8.1 for its inventory row.
+ * No Stripe call is made here: `settleMeetup` plans the provider calls and `runOperationsFor` executes them once its
+ * transaction has committed. The queue's names, payload schemas and the guard that narrows a name come from
+ * `@tablemate/server-core`, so a renamed job fails this file's typecheck instead of leaving a handler unreachable.
  */
 
 import { Worker } from 'bullmq';
@@ -61,10 +47,6 @@ import { escalateDisputeIfDue, lapseIfDue, settleMeetup } from './settle.ts';
 import { settleDueAt } from './timers.ts';
 
 import type { AppServices } from '../../app.ts';
-
-/*
- * Types (AAP 0.3.2, 0.5.3, 0.5.6)
- */
 
 /** The four job names the `settlement` queue accepts, as `names.ts` writes them. */
 type SettlementJobName = JobName<typeof QUEUE.settlement>;
@@ -108,10 +90,6 @@ type SettlementJob = Job<unknown, SettlementJobResult, string>;
 /** The worker this file starts, named for the two signatures it appears in. */
 type SettlementWorker = Worker<unknown, SettlementJobResult, string>;
 
-/*
- * Constants (AAP 0.5.3, 0.5.6)
- */
-
 /**
  * How many jobs this worker runs at once: four.
  *
@@ -133,10 +111,6 @@ const REMINDER_KIND: UserNotificationKind = NotificationKind.enum.meetup_reminde
 
 /** The safe shape a logged failure token may have: a short identifier and nothing else. */
 const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-
-/*
- * The worker (AAP 0.3.2, 0.5.6)
- */
 
 /**
  * Start the in-process `settlement` worker and return the function that stops it (AAP 0.3.2, 0.5.6).
@@ -212,10 +186,6 @@ export function startSettlementWorker(services: AppServices): () => Promise<void
   };
 }
 
-/*
- * The processor (AAP 0.5.3, 0.5.6)
- */
-
 /**
  * Process one `settlement` queue job (AAP 0.5.3, 0.5.6).
  *
@@ -251,10 +221,6 @@ export async function processSettlementJob(
 
   return result;
 }
-
-/*
- * Handlers (AAP 0.5.3)
- */
 
 /**
  * Run the settlement timer: settle a locked meetup whose window has closed (AAP 0.5.3, 0.5.7).
@@ -356,10 +322,6 @@ async function escalateJob(
   return escalated ? 'escalated' : 'not_due';
 }
 
-/*
- * Dispatch and shutdown
- */
-
 /**
  * The four handlers, keyed by the name each job arrives under.
  *
@@ -423,10 +385,6 @@ async function stopWorker(
     });
   }
 }
-
-/*
- * Logging (AAP 0.11.1)
- */
 
 /**
  * A failure's own short token, for a log line: its driver code (`P2028`) or its class name

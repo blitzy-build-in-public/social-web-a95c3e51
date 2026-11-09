@@ -1,18 +1,12 @@
 /**
- * The list row every list screen is built from: traveler discovery, meetups, the lodging directory and Profile
- * settings (AAP 0.5.8).
+ * The list row every list screen is built from: traveler discovery, meetups, the lodging directory and Profile settings
+ * (AAP 0.5.8).
  *
- * Given `onPress` the row is a control — a `link` for rows that navigate, a `button` otherwise — announced once,
- * under an accessible name that is the row's own visible text: label, then subtitle, then whatever `trailing` shows.
- * Enter and Space activate a `button` row, and Enter activates a `link` row; without `onPress` the row is plain
- * content with no role at all.
- *
- * The row deliberately sets no `aria-label`: a name written from the label and subtitle cannot contain the row's other
- * visible text (WCAG 2.5.3, Label in Name), and the platform's grouping of the row's own text already names it
- * completely, so every call site keeps `trailing` to text that belongs in the name and marks decoration `aria-hidden`.
- * The text pairs are `CONTRAST_PAIRS` records and the separator and focus ring are `NON_TEXT_CONTRAST_PAIRS` records,
- * so no pair is painted that has not been measured; on web the reserved band is the focus ring a keyboard user sees,
- * and a row without `onPress` is not focusable and carries no such reset.
+ * Given `onPress` the row is a control — a `link` for rows that navigate, a `button` otherwise — announced once, under an
+ * accessible name that is the row's own visible text. The row deliberately sets no `aria-label`, because a name written
+ * from the label and subtitle cannot contain the row's other visible text (WCAG 2.5.3), so every call site keeps
+ * `trailing` to text that belongs in the name and marks decoration `aria-hidden`. On web the reserved band is the ring,
+ * and a row without `onPress` is not focusable and carries no reset.
  */
 import { useState } from 'react';
 import type { ReactNode } from 'react';
@@ -27,47 +21,23 @@ import {
   typography,
 } from '@tablemate/shared';
 
-/**
- * Props of {@link ListItem}.
- */
 export interface ListItemProps {
-  /** Visible primary text, always part of the row's accessible name. */
   label: string;
-  /** Optional second line, announced after the label. */
   subtitle?: string;
   /** Node before the text column, such as an `Avatar`; never a second control. */
   leading?: ReactNode;
-  /** Node after the text column: a rank, a guest count, a status word. */
   trailing?: ReactNode;
-  /** Makes the row an activatable control; omitted, the row is plain content. */
   onPress?: () => void;
-  /** Role announced for a control: `link` when the row navigates, else `button`. */
   role?: 'button' | 'link';
-  /** Marks the control unavailable; a row without `onPress` ignores it. */
   disabled?: boolean;
-  /** Test handle, forwarded to the root element (`traveler-<id>`, `lodging-<id>`, ...). */
   testID?: string;
   /**
-   * Opt-in minimum width for the text column, in points / CSS px. Set, the row wraps and `trailing`
-   * moves to a line of its own once it can no longer sit beside a column this wide, so a narrow row
-   * stacks instead of squeezing `label` and `subtitle` into mid-token breaks. Omitted, the row is the
-   * single-line row every other call site renders.
+   * Opt-in minimum width for the text column. Set, the row wraps and `trailing` moves to a line of its own
+   * once it can no longer sit beside a column that wide.
    */
   textMinWidth?: number;
 }
 
-/**
- * One row of a list.
- *
- * The row is a flex row of `leading`, a text column (`label`, then `subtitle`) and
- * `trailing`, never a fixed height: it grows with the reader's font size and both text lines
- * wrap instead of truncating, so scaled text stays readable. A pressable row is one
- * accessible element — its children are grouped under the row's accessible name, so `leading`
- * and `trailing` carry decoration and status text, never a control of their own.
- *
- * A caller that passes `textMinWidth` gets the wrapping variant that prop describes; every other
- * caller gets the single-line row unchanged.
- */
 export function ListItem({
   label,
   subtitle,
@@ -81,10 +51,8 @@ export function ListItem({
 }: ListItemProps): JSX.Element {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
-  // The opt-in narrow-width rule: `flexWrap` on the row, a minimum width on the text column.
-  // `trailing` keeps its intrinsic width either way (React Native's default `flexShrink` is 0), so
-  // once the column can no longer hold `textMinWidth` beside it the trailing node takes a line of its
-  // own and the column takes the whole row instead of absorbing the shortfall.
+  // The opt-in narrow-width rule: `flexWrap` on the row, a minimum width on the text column. `trailing`
+  // keeps its intrinsic width (React Native's default `flexShrink` is 0).
   const rowBase: StyleProp<ViewStyle> =
     textMinWidth === undefined ? styles.row : [styles.row, styles.rowWrapping];
   const textColumn: StyleProp<ViewStyle> = [
@@ -111,12 +79,9 @@ export function ListItem({
     );
   }
   const activate: () => void = onPress;
-  // react-native-web withholds `onPress` from an element whose role is `link`, assuming the
-  // browser activates a link itself (PressResponder's key-up handler skips `role="link"`,
-  // `a`, `button`, `input`, `select` and `textarea`). A row is a `div` with no href, so Enter
-  // would do nothing at all: a link row therefore activates on Enter itself, on web only,
-  // because the platform's responder already covers a `button` row and React Native has no
-  // key events.
+  // react-native-web withholds `onPress` from an element whose role is `link`, assuming the browser
+  // activates a link itself, so a row that navigates handles Enter here. The row is a `div` with no href.
+  // A `button` row is left to the press responder.
   const linkKeys: { onKeyDown?: (event: { key?: string; repeat?: boolean }) => void } =
     Platform.OS === 'web' && role === 'link'
       ? {
@@ -141,8 +106,8 @@ export function ListItem({
       disabled={disabled}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
-      // Hover reaches this pair on web alone: React Native 0.76 declares it on `PressableProps`
-      // and react-native-web forwards it to its hover hook, and neither iOS nor Android fires it.
+      // Hover reaches this pair on web alone: React Native 0.76 declares it on `PressableProps` and
+      // react-native-web forwards it; neither iOS nor Android fires it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={activate}
@@ -155,35 +120,24 @@ export function ListItem({
   );
 }
 
-/**
- * Keeps the browser's own focus outline off a focused pressable row on web, where it would
- * otherwise be painted over the reserved 2 px band and the ring a keyboard user sees would be the
- * browser's default rather than `colors.focusRing` (WCAG 2.4.7). React Native 0.76 declares no
- * `outline` style, so the long form is asserted once here; react-native-web drops the `outline`
- * shorthand as an invalid short form. The value is empty off web, which never reads it, and a row
- * without `onPress` is not focusable so it never applies this.
- */
+// The browser's own focus outline is kept off the band this control reserves for its focus ring, so the ring a
+// keyboard user sees is the app's own; on web React Native declares no `outline` style, so the long form is asserted
+// here and the value is empty off web, which never reads it.
 const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 
-/**
- * The rule between stacked rows. A hairline separator is one device pixel, which is what a
- * platform's own `StyleSheet.hairlineWidth` resolves to (react-native-web sets it to 1), so web
- * takes the tokens' `separator` step and native keeps the platform constant: the line rendered is
- * unchanged on both platforms, and the value now has a name in the design source.
- */
+// The rule between stacked rows: a separator hairline is one device pixel, which is what a platform's own
+// `StyleSheet.hairlineWidth` resolves to (react-native-web sets it to 1).
 const separatorWidth = Platform.OS === 'web' ? borderWidths.separator : StyleSheet.hairlineWidth;
 
 const styles = StyleSheet.create({
   row: {
     alignItems: 'center',
-    // A list row spans its container. React Native stretches it in a column already;
-    // react-native-web would otherwise leave a row the platform renders as an inline-level
-    // `<button>` shrunk to its content.
+    // A list row spans its container: React Native stretches it in a column already, while
+    // react-native-web would otherwise leave it shrunk to its content.
     alignSelf: 'stretch',
     backgroundColor: colors.background,
-    // Reserved focus ring: 2px painted in the row's own background until the row takes
-    // keyboard focus, so revealing the ring never moves the row's contents. A pressable row keeps
-    // the browser's own outline off it on web, which leaves this band as the ring there.
+    // Reserved focus ring: 2px painted in the row's own background until the row takes keyboard focus, so
+    // revealing the ring never moves the row's contents.
     borderColor: colors.background,
     borderWidth: borderWidths.control,
     // Separator hairline in the non-text border token (3.7:1 on the row background).
@@ -192,25 +146,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.md,
     minHeight: MIN_TOUCH_TARGET,
-    // The row's reserved focus band takes 2px where a card's own edge takes 1px, so the padding
-    // drops by that one pixel and the row's content edge lands where the text of the cards beside it
-    // does: all of them sit in the same padded column, and the band a keyboard user sees must not
-    // push the row's content out of line with them.
+    // The reserved band takes 2px where a card's own edge takes 1px, so the padding drops by that pixel
+    // and every row's content edge lands in the same padded column.
     paddingHorizontal: spacing.lg - (borderWidths.control - borderWidths.edge),
     paddingVertical: spacing.sm,
   },
-  // The wrapping variant the `textMinWidth` opt-in turns on: the row breaks between the text column
-  // and `trailing` instead of squeezing the column below its own minimum.
+  // The wrapping variant the `textMinWidth` opt-in turns on: the row breaks between the text column and `trailing`.
   rowWrapping: {
     flexWrap: 'wrap',
   },
-  // Disabled rows dim to `textMuted`, a measured pair, rather than dropping opacity, which
-  // would put the text below every contrast record; the Pressable already refuses presses.
+  // Disabled rows dim to `textMuted`, a measured pair, rather than dropping opacity, which would put the text below every contrast record.
   textDisabled: {
     color: colors.textMuted,
   },
-  // A row's own fill is the lightest token, so the palette offers one pointer step for both
-  // states, and hover takes the same fill the press paints.
+  // A row's own fill is the lightest token, so one pointer step serves both states; hover takes the fill the press paints.
   rowHovered: {
     backgroundColor: colors.surface,
   },
@@ -222,8 +171,7 @@ const styles = StyleSheet.create({
     borderColor: colors.focusRing,
   },
   textColumn: {
-    // `minWidth: 0` lets the column shrink instead of pushing `trailing` off the row on web,
-    // where a flex item's automatic minimum size is its content.
+    // `minWidth: 0` lets the column shrink instead of pushing `trailing` off the row on web.
     flex: 1,
     gap: spacing.xs,
     minWidth: 0,

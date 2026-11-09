@@ -1,7 +1,6 @@
 /**
- * The scripted telephony simulator's Twilio REST client: the transport the twilio 6.2.0 SDK
- * dispatches through when `TELEPHONY_MODE=simulator`, so automated call traffic never leaves the
- * host (AAP 0.5.6, AAP 0.11.2).
+ * The scripted telephony simulator's Twilio REST client: the transport the twilio 6.2.0 SDK dispatches through when
+ * `TELEPHONY_MODE=simulator`, so automated call traffic never leaves the host (AAP 0.5.6, AAP 0.11.2).
  */
 
 import { Buffer } from 'node:buffer';
@@ -34,8 +33,8 @@ const E164 = /^\+[1-9]\d{1,14}$/;
 const NOT_FOUND_CODE = 20404;
 
 /**
- * The error bodies this router answers with, in Twilio's own words. `more_info` and `status` are
- * derived from the code and the HTTP status, so a message carries a parameter name and nothing else.
+ * The error bodies this router answers with, in Twilio's own words. `more_info` and `status` are derived from the code
+ * and the HTTP status, so a message carries a parameter name and nothing else.
  */
 const AUTHENTICATION_ERROR: SimError = { code: 20003, message: 'Authenticate' };
 const INVALID_TO_ERROR: SimError = { code: 21211, message: "Invalid 'To' Phone Number" };
@@ -47,8 +46,7 @@ const INVALID_STATUS_CALLBACK_ERROR: SimError = {
 };
 
 /**
- * One call-create request as the SDK sent it (AAP 0.5.6), the parameters the simulator plays the
- * call from.
+ * One call-create request as the SDK sent it (AAP 0.5.6), the parameters the simulator plays the call from.
  */
 export interface SimCallCreateParams {
   /** The number to call, in E.164. */
@@ -60,8 +58,8 @@ export interface SimCallCreateParams {
   /** The URL Twilio posts call-status callbacks to, exactly as sent. */
   statusCallbackUrl: string;
   /**
-   * The `CallAttempt` id the caller put in the query of either URL — the only evidence that adopts
-   * a `dispatch_unknown` attempt (AAP 0.3.2). `null` when neither URL carries one.
+   * The `CallAttempt` id the caller put in the query of either URL — the only evidence that adopts a `dispatch_unknown`
+   * attempt (AAP 0.3.2).
    */
   attemptId: string | null;
   /** The status events the call subscribed to, always as an array. */
@@ -76,11 +74,8 @@ export interface SimCallCreateParams {
 }
 
 /**
- * One call as the Calls resource reports it (AAP 0.5.6), in the field names twilio 6.2.0 reads.
- *
- * It carries no error field: the SDK reads no error code from the Calls resource, and an unroutable
- * number arrives on the status callback instead (AAP 0.3.3). The timestamps are RFC 2822 strings in
- * the form the SDK parses, and `start_time` is `null` until the call starts.
+ * One call as the Calls resource reports it (AAP 0.5.6), in the field names twilio 6.2.0 reads. It carries no error field:
+ * an unroutable number arrives on the status callback instead (AAP 0.3.3), and `start_time` is `null` until the call starts.
  */
 export interface SimCallResource {
   sid: string;
@@ -109,10 +104,8 @@ export interface SimCallListFilter {
 }
 
 /**
- * The call store {@link handleTwilioRequest} answers from; `simulator.ts` implements it (AAP 0.5.6).
- *
- * Declared here rather than in `simulator.ts` because that module value-imports this one, so the
- * reverse import would close an ESM cycle.
+ * The call store {@link handleTwilioRequest} answers from; `simulator.ts` implements it (AAP 0.5.6). Declared here rather
+ * than in `simulator.ts` because that module value-imports this one, so the reverse import would close an ESM cycle.
  */
 export interface SimCallTarget {
   /** Accept a call and start playing it. The SID it returns is the one an attempt adopts. */
@@ -122,19 +115,17 @@ export interface SimCallTarget {
   /** The calls matching a filter, newest first. */
   listCalls(filter: SimCallListFilter): SimCallResource[];
   /**
-   * Whether the vendor refuses calls. The answer `true` when the target's global switch is on, when
-   * `to` maps to a scenario whose `vendor` is `down`, or when the default scenario is `vendor-down`.
+   * Whether the vendor refuses calls: the target's global switch, a scenario whose `vendor` is `down`, or a
+   * `vendor-down` default.
    */
   isVendorDown(to?: string): boolean;
 }
 
 /**
- * The connection-refused error a vendor-down simulator answers a dispatch with (AAP 0.12.1
- * criterion 17). `ECONNREFUSED` is what server-core's `classifyCallError` reads as a *definite*
- * failure — the request provably never reached the provider — so the caller releases the cap slot,
- * leaves `attempts` untouched, marks the attempt `dispatch_failed` and requeues the task with
- * backoff, where an *ambiguous* failure would leave the attempt `dispatch_unknown` and never redial
- * (AAP 0.3.2, AAP 0.5.3).
+ * The connection-refused error a vendor-down simulator answers a dispatch with (AAP 0.12.1 criterion 17). `ECONNREFUSED` is
+ * what server-core's `classifyCallError` reads as a *definite* failure — the request provably never reached the provider — so
+ * the caller releases the cap slot, leaves `attempts` untouched and requeues the task with backoff, where an *ambiguous*
+ * failure would leave the attempt `dispatch_unknown` and never redial (AAP 0.3.2, AAP 0.5.3).
  */
 export function vendorDownError(): Error {
   return Object.assign(new Error('connect ECONNREFUSED (voice simulator: vendor down)'), {
@@ -146,8 +137,8 @@ export function vendorDownError(): Error {
 
 /**
  * Answer one Twilio REST request from `target` (AAP 0.5.6). Both the injected transport of
- * {@link createSimulatorHttpClient} and the simulator's HTTP server call this, so a request the SDK
- * sends directly and one it forwards to `VOICE_SIM_URL` are routed identically.
+ * {@link createSimulatorHttpClient} and the simulator's HTTP server call this, so a request the SDK sends directly and one
+ * it forwards to `VOICE_SIM_URL` are routed identically.
  */
 export async function handleTwilioRequest(
   target: SimCallTarget,
@@ -185,9 +176,8 @@ export async function handleTwilioRequest(
 }
 
 /**
- * Read a Twilio form body into its fields (AAP 0.5.6): an `application/x-www-form-urlencoded`
- * string, a `URLSearchParams`, or the object the SDK hands an injected transport, with a repeated
- * key collected into an array as the SDK encodes one. Absent and empty values are dropped.
+ * Read a Twilio form body into its fields (AAP 0.5.6): an `application/x-www-form-urlencoded` string, a `URLSearchParams`, or
+ * the object the SDK hands an injected transport. Absent and empty values are dropped.
  */
 export function parseTwilioForm(data: unknown): Record<string, string | string[]> {
   const form: Record<string, string | string[]> = {};
@@ -200,9 +190,8 @@ export function parseTwilioForm(data: unknown): Record<string, string | string[]
 }
 
 /**
- * The transport a simulator client is injected with (AAP 0.5.6, AAP 0.11.2): every REST request the
- * SDK builds is answered from `target`, with no network I/O. `TwilioHttpClient` declares `request`
- * alone, which is the whole of what the SDK calls on it.
+ * The transport a simulator client is injected with (AAP 0.5.6, AAP 0.11.2): every REST request the SDK builds is answered
+ * from `target`, with no network I/O.
  */
 export function createSimulatorHttpClient(target: SimCallTarget): TwilioHttpClient {
   return { request: (request) => handleTwilioRequest(target, request) };
@@ -215,9 +204,8 @@ type CallsRoute =
   | { kind: 'list'; accountSid: string };
 
 /**
- * Match a request to the one `Calls` form it may address, or `null` for anything else — another
- * resource, a method the product never sends such as an update, or another account — which the
- * caller answers with `404`.
+ * Match a request to the one `Calls` form it may address, or `null` for anything else — another resource, a method the product
+ * never sends such as an update, or another account — which the caller answers with `404`.
  */
 function matchCallsRoute(method: string, pathname: string): CallsRoute | null {
   const matched = CALLS_PATH.exec(pathname);
@@ -236,9 +224,8 @@ function matchCallsRoute(method: string, pathname: string): CallsRoute | null {
 }
 
 /**
- * Read a create request into {@link SimCallCreateParams}, or the error to answer with. The four
- * parameters the product always sends are required — a call is dispatched to an E.164 number, from
- * an E.164 caller id, with absolute URLs for the TwiML fetch and the status callbacks (AAP 0.5.6).
+ * Read a create request into {@link SimCallCreateParams}, or the error to answer with. The four parameters the product always
+ * sends are required: an E.164 number and caller id, and absolute URLs for the TwiML fetch and the status callbacks.
  */
 function readCallParams(
   form: Record<string, string | string[]>,
@@ -276,10 +263,8 @@ function readCallParams(
 }
 
 /**
- * A create response, as the SDK builds its call instance from it (AAP 0.5.6): the fields the product
- * reads, `status` as {@link SimCallTarget.startCall} reported it — never a value fixed here, so the
- * create answer reports the state the target started the call in — and no field the SDK would read
- * as an error.
+ * A create response, as the SDK builds its call instance from it (AAP 0.5.6): the fields the product reads, `status` as
+ * {@link SimCallTarget.startCall} reported it rather than a value fixed here, and no field the SDK would read as an error.
  */
 function callResource(
   sid: string,
@@ -307,9 +292,8 @@ function callResource(
 }
 
 /**
- * One page of calls, as the SDK's `CallPage` reads it: the records under `calls`, the metadata keys
- * it ignores, and a null `next_page_uri`, which is what stops it paging on to a next page this
- * simulator would answer with the same records again.
+ * One page of calls, as the SDK's `CallPage` reads it: the records under `calls`, the metadata keys it ignores, and a null
+ * `next_page_uri`, which stops it paging on to a next page this simulator would answer with the same records again.
  */
 function callsPage(
   target: SimCallTarget,
@@ -377,9 +361,8 @@ function isSimulatorAuthenticated(request: TwilioHttpRequest): boolean {
 }
 
 /**
- * The `username:password` an `Authorization: Basic …` header carries, or `null` when it is absent or
- * is not basic credentials. The SDK sets the header itself on a request it forwards rather than
- * passes to an injected transport, so both credential forms have to be read.
+ * The `username:password` an `Authorization: Basic …` header carries, or `null` when it is absent or not basic credentials.
+ * The SDK sets the header itself on a request it forwards rather than passes to an injected transport.
  */
 function decodeBasicHeader(header: string | undefined): string | null {
   if (header === undefined || !/^basic /i.test(header)) {
@@ -421,8 +404,8 @@ function notFoundResponse(pathname: string): TwilioHttpResponse {
 }
 
 /**
- * A JSON answer whose body is a string. The SDK parses a string body and passes an object one
- * through unchanged, and a string is what an HTTP transport hands it on the forwarded path too.
+ * A JSON answer whose body is a string. The SDK parses a string body and passes an object one through unchanged, and a string
+ * is what an HTTP transport hands it on the forwarded path too.
  */
 function jsonResponse(statusCode: number, body: unknown): TwilioHttpResponse {
   return {
@@ -543,9 +526,8 @@ function isHttpUrl(value: string | null): value is string {
 }
 
 /**
- * A date in the RFC 2822 form the SDK parses (`ddd, DD MMM YYYY HH:mm:ss [+0000]`).
- * `Date#toUTCString()` produces exactly that string with a named zone instead of the offset, and an
- * unparseable one would reach the SDK as a string rather than a `Date`.
+ * A date in the RFC 2822 form the SDK parses (`ddd, DD MMM YYYY HH:mm:ss [+0000]`). An unparseable one would reach the SDK
+ * as a string rather than a `Date`.
  */
 function toRfc2822(date: Date): string {
   return date.toUTCString().replace(/GMT$/, '+0000');

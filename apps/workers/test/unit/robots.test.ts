@@ -1,8 +1,4 @@
-/**
- * The robots.txt rule's unit suite (AAP 0.5.6, 0.12.2): the crawler's identity, the paths a served
- * file allows and disallows, the RFC 9309 answers for a file that is unavailable, unreachable or
- * unusable, and the 24-hour cache that keeps a fetched body from being fetched again.
- */
+/** The robots.txt rule's unit suite (AAP 0.5.6, 0.12.2): the crawler's identity, the paths a served file allows and disallows, the RFC 9309 answers for a file that is unavailable, unreachable or unusable, and the 24-hour cache that keeps a fetched body from being fetched again. */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -21,26 +17,17 @@ import {
 const CONTACT_URL = 'https://example.test/contact';
 const USER_AGENT = crawlerUserAgent(CONTACT_URL);
 const ORIGIN = 'http://menu.fixture.test';
-
 type RobotsAnswer = { status: number; body: string };
-
 const DISALLOW_PRIVATE = 'User-agent: *\nDisallow: /private\n';
 const DISALLOW_EVERYTHING = 'User-agent: *\nDisallow: /\n';
 const ALLOW_EVERYTHING = 'User-agent: *\nAllow: /\n';
-
 const answers = new Map<string, RobotsAnswer | null>();
 const fetches = new Map<string, number>();
-
 const fetchRobotsTxt: RobotsFetch = (origin) => {
   fetches.set(origin, (fetches.get(origin) ?? 0) + 1);
   return Promise.resolve(answers.get(origin) ?? null);
 };
-
-/**
- * The cache contract timed by the injected clock: a value lives until the TTL it was stored with
- * runs out. The production store gets that lifetime from Redis' `PX`, so a deadline here is the same
- * rule the checker is written against.
- */
+/** The cache contract timed by the injected clock: a value lives until the TTL it was stored with runs out. The production store gets that lifetime from Redis' `PX`, so a deadline here is the same rule the checker is written against. */
 function createTimedCache(clock: TestClock): RobotsCache {
   const entries = new Map<string, { value: string; expiresAtMs: number }>();
   return {
@@ -61,7 +48,6 @@ function createTimedCache(clock: TestClock): RobotsCache {
 
 let clock: TestClock;
 let checker: RobotsChecker;
-
 function allows(origin: string, path: string): Promise<boolean> {
   return checker.isAllowed(new URL(path, origin));
 }
@@ -113,12 +99,7 @@ describe('a served robots.txt', () => {
 });
 
 describe('robots.txt that cannot be used', () => {
-  /**
-   * RFC 9309 §2.3.1. Each row serves a body whose directives say the opposite of the verdict, so the
-   * row fails the moment the status stops deciding and the body is parsed instead. The second ask is
-   * the other half of the rule: the verdict is cached like a body, so a host that cannot answer is not
-   * asked again on every request.
-   */
+  /** RFC 9309 §2.3.1. Each row serves a body whose directives say the opposite of the verdict, so the row fails the moment the status stops deciding and the body is parsed instead. The second ask is the other half of the rule: the verdict is cached like a body, so a host that cannot answer is not asked again on every request. */
   it.each([
     ['a 404 whose body disallows everything', { status: 404, body: DISALLOW_EVERYTHING }, true],
     ['a 410 whose body disallows everything', { status: 410, body: DISALLOW_EVERYTHING }, true],

@@ -1,7 +1,6 @@
 /**
- * The two console routes: a partner venue's rotating check-in code and one lodging's leaderboard
- * standings. Every instant comes from the injected clock and every secret is minted by a fixture
- * or generated per request, so nothing credential-shaped is written here.
+ * The two console routes: a partner venue's rotating check-in code and one lodging's leaderboard standings. Every instant comes from the injected clock
+ * and every secret is minted by a fixture or generated per request.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -64,9 +63,8 @@ afterAll(async () => {
 });
 
 /**
- * One response header as a single lower-cased string (AAP 0.3.2): a header arrives as a string, an
- * array, a number or nothing, and an absent one reads `''` so a case that expects it fails on the
- * comparison rather than on a dereference.
+ * One response header as a single lower-cased string (AAP 0.3.2): a header arrives as a string, an array, a number or nothing, and an absent one reads
+ * `''` so a case that expects it fails on the comparison rather than on a dereference.
  */
 function header(headers: HeaderBag, name: string): string {
   const value = headers[name.toLowerCase()];

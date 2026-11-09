@@ -89,8 +89,7 @@ import { TEST_CARDS } from './stripe-proxy/state.ts';
 import type { TestCardId } from './stripe-proxy/state.ts';
 
 // Type-only, and taken from the modules that declare them: the harness module is loaded by Vitest's
-// `globalSetup`, so nothing of it is read here at run time, and `App`/`AppServices` are the app's own
-// declarations.
+// `globalSetup`, so nothing of it is read here at run time.
 import type { App, AppServices } from '../../src/app.ts';
 import type { StripeContext, TestApp } from './app.ts';
 
@@ -134,21 +133,18 @@ function randomHex(bytes: number): string {
 }
 
 /**
- * A PaymentIntent id no code retrieves (AAP 0.5.3), for a deposit that has already reached a final
- * status: the row needs the column filled, and a real authorization for it would be noise at the
- * provider — and, in `test` mode, a real object to clean up.
+ * A PaymentIntent id no code retrieves (AAP 0.5.3), for a deposit that has already reached a final status: the
+ * row needs the column filled, and a real authorization for it would be noise at the provider.
  */
 function syntheticPaymentIntentId(): string {
   return `pi_fixture_${randomHex(12)}`;
 }
 
 /**
- * A distinct decimal nullifier for a fixture proof (AAP 0.5.2, 0.5.5).
- *
- * Sixteen random bytes read as one unsigned big-endian integer, far below the BN254 order, scaled by a
- * million and offset by the process counter: unique within a process and, with 128 bits of entropy,
- * unique across the workers of one run — which matters because a suite that shares a database with a
- * sibling process still spends each nullifier exactly once.
+ * A distinct decimal nullifier for a fixture proof (AAP 0.5.2, 0.5.5): sixteen random bytes read as one unsigned
+ * big-endian integer, far below the BN254 order, scaled by a million and offset by the process counter — unique
+ * within a process and, with 128 bits of entropy, unique across the workers of one run, so a suite that shares a
+ * database with a sibling process still spends each nullifier exactly once.
  */
 function syntheticNullifier(): string {
   return (BigInt(`0x${randomHex(16)}`) * 1_000_000n + BigInt(nextFixtureNumber())).toString();
@@ -166,10 +162,9 @@ function fieldOf(value: unknown, name: string): unknown {
 }
 
 /**
- * The elements of a JSON response body's list field, as `unknown` each.
- *
- * `Array.isArray` narrows its argument to `any[]`, so the assertion is what keeps every element
- * `unknown` and the callers free of the `no-unsafe-*` lint rules.
+ * The elements of a JSON response body's list field, as `unknown` each. `Array.isArray` narrows its argument to
+ * `any[]`, so the assertion is what keeps every element `unknown` and the callers free of the `no-unsafe-*` lint
+ * rules.
  */
 function recordsOf(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? (value as readonly unknown[]) : [];
@@ -182,8 +177,8 @@ function stringField(value: unknown, name: string): string | null {
 }
 
 /**
- * The `capture_before` instant Stripe reports on an expanded `latest_charge` (AAP 0.2.4): the
- * deadline a deposit's `captureBefore` records, in unix seconds on the wire.
+ * The `capture_before` instant Stripe reports on an expanded `latest_charge` (AAP 0.2.4): the deadline a deposit's
+ * `captureBefore` records, in unix seconds on the wire.
  */
 function captureBeforeOf(intent: unknown): Date | null {
   const charge = fieldOf(intent, 'latest_charge');
@@ -194,8 +189,8 @@ function captureBeforeOf(intent: unknown): Date | null {
 }
 
 /**
- * The one Stripe origin the `test` and `live` topologies reach; `mock` reaches its proxy instead.
- * Spelled here rather than imported from the SDK, which only `payments/stripe-gateway.ts` may load.
+ * The one Stripe origin the `test` and `live` topologies reach; `mock` reaches its proxy instead. Spelled here
+ * rather than imported from the SDK, which only `payments/stripe-gateway.ts` may load.
  */
 const STRIPE_API_ORIGIN = 'https://api.stripe.com';
 
@@ -288,13 +283,10 @@ export function stripeApi(ctx: FactoryContext): StripeApi {
 export type CardFixture = 'visa' | '3ds' | 'declining' | 'none';
 
 /**
- * The card fixture that stands for each outcome (AAP 0.11.2), per topology.
- *
- * `visa` authorizes into a capturable hold, `3ds` waits on 3-D Secure, and `declining` is a card the
- * issuer refuses. The two topologies publish different ids for the last one: the proxy's own fixture
- * is `pm_card_chargeDeclined`, while Stripe's published test method that attaches successfully and
- * then declines the charge is `pm_card_chargeCustomerFail`, which is what a decline fixture needs —
- * an id that cannot be attached would fail at `makeUser` instead of at the charge a case is testing.
+ * The card fixture that stands for each outcome (AAP 0.11.2), per topology: `visa` authorizes into a capturable
+ * hold, `3ds` waits on 3-D Secure, and `declining` is a card the issuer refuses. The two topologies publish
+ * different ids for the last one: the proxy's own fixture is `pm_card_chargeDeclined`, while Stripe's test method
+ * that attaches successfully and then declines the charge is `pm_card_chargeCustomerFail`.
  */
 const CARD_FIXTURES: Readonly<
   Record<CardFixture, { readonly mock: TestCardId | null; readonly test: string | null }>
@@ -306,11 +298,9 @@ const CARD_FIXTURES: Readonly<
 };
 
 /**
- * The customer and saved card a fixture account is given (AAP 0.3.2).
- *
- * In `mock` the proxy's control route makes both in one call; in `test` the customer is created,
- * the card fixture attached and set as the customer's default, which is the card
- * `stripe-gateway.ts`'s `selectPaymentMethod` reads when a hold is placed.
+ * The customer and saved card a fixture account is given (AAP 0.3.2): in `mock` the proxy's control route makes
+ * both in one call; in `test` the customer is created, the card fixture attached and set as the customer's
+ * default, which is the card `stripe-gateway.ts`'s `selectPaymentMethod` reads when a hold is placed.
  */
 async function createStripeCustomer(
   ctx: FactoryContext,
@@ -368,11 +358,9 @@ export interface UserFixtureOptions {
 }
 
 /**
- * One fixture account, and the handles a case acts as it with (AAP 0.5.2, 0.11.2).
- *
- * `handle` is null only for a tombstone, which keeps no handle; `stripeCustomerId` is null for an
- * account created with `card: 'none'`, which is how a case reaches `402 hold_failed`'s
- * `no_saved_card`; `cardId` is the saved card a live hold is placed against.
+ * One fixture account, and the handles a case acts as it with (AAP 0.5.2, 0.11.2). `handle` is null only for a
+ * tombstone; `stripeCustomerId` is null for an account created with `card: 'none'`, which is how a case reaches
+ * `402 hold_failed`'s `no_saved_card`; `cardId` is the saved card a live hold is placed against.
  */
 export interface UserFixture {
   readonly id: string;
@@ -853,9 +841,9 @@ export interface SettlementFixtureOptions {
   /** The outcome to record. Default: the meetup status's own. */
   readonly outcome?: SettlementOutcome;
   /**
-   * Who was there. Default: `both` for a completed meetup, `neither` for an unattended one, and the
-   * initiator otherwise — which for `no_show` is the attendee and for `late_cancel` the counterparty
-   * the canceller's hold is captured for.
+   * Who was there. Default: `both` for a completed meetup, `neither` for an unattended one, and the initiator
+   * otherwise — which for `no_show` is the attendee and for `late_cancel` the counterparty the canceller's hold is
+   * captured for.
    */
   readonly present?: PartyPresence;
 }
@@ -1004,9 +992,8 @@ function settlementPlan(
 }
 
 /**
- * Each side's deposit status (AAP 0.5.3): an option's own value where one is given, the settlement's
- * implication otherwise — `completed` and `unattended` release both, a capture outcome captures the
- * side that was not there and releases the side that was — and the status table's row last.
+ * Each side's deposit status (AAP 0.5.3): an option's own value where one is given, the settlement's implication
+ * otherwise, and the status table's row last.
  */
 function depositStatuses(
   shape: StatusShape,
@@ -1088,10 +1075,10 @@ async function savedCardOf(ctx: FactoryContext, customerId: string): Promise<str
 }
 
 /**
- * Place one live hold at the provider (AAP 0.3.2): the create the gateway makes — manual capture,
- * confirmed on-session against the owner's saved card, the attempt's metadata and an expanded
- * `latest_charge` — under the attempt's own `hold:<depositId>:<attempt>` key, so the PaymentIntent a
- * fixture records is the one the app's own recovery and settlement rules expect to find.
+ * Place one live hold at the provider (AAP 0.3.2): the create the gateway makes — manual capture, confirmed
+ * on-session against the owner's saved card, the attempt's metadata and an expanded `latest_charge` — under the
+ * attempt's own `hold:<depositId>:<attempt>` key, so the PaymentIntent a fixture records is the one the app's own
+ * recovery and settlement rules expect to find.
  */
 async function createLiveHold(
   ctx: FactoryContext,
@@ -1739,11 +1726,10 @@ export async function makeBlock(
 }
 
 /**
- * A signed-in fixture account: the row's id, and the session a request is made as.
- *
- * {@link UserFixture} satisfies it. The flows sign a **fresh** token per request through
- * `TestApp.tokenFor` rather than reusing the one `makeUser` minted, so a case that advanced the test
- * clock past the access token's 15 minutes still acts as the same account.
+ * A signed-in fixture account: the row's id, and the session a request is made as. {@link UserFixture} satisfies
+ * it. The flows sign a **fresh** token per request through `TestApp.tokenFor` rather than reusing the one
+ * `makeUser` minted, so a case that advanced the test clock past the access token's 15 minutes still acts as the
+ * same account.
  */
 export interface ActorRef extends FixtureRef {
   readonly sessionId: string;
@@ -1762,9 +1748,8 @@ export interface ProposeAndLockOptions {
   /** The deposit each side holds. Default `DEFAULT_DEPOSIT_CENTS`. */
   readonly depositCents?: DepositCents;
   /**
-   * Whether to write a valid proof for both accounts first, for the venue's city. Default true:
-   * proposing requires one from each side (AAP 0.5.4), so the flow supplies it and writes nothing
-   * when the account already holds a valid one. A case about `403 no_valid_proof` passes `false`.
+   * Whether to write a valid proof for both accounts first, for the venue's city (AAP 0.5.4). Default true, because
+   * proposing requires one from each side; a case about `403 no_valid_proof` passes `false`.
    */
   readonly proofs?: boolean;
 }

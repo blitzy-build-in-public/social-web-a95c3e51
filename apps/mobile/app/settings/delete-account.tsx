@@ -1,7 +1,4 @@
-/**
- * Delete account (`/settings/delete-account`, AAP 0.5.8, AAP 0.8.1): the whole of the account
- * deletion a traveler performs, and the last screen of the safety basics (AAP 0.7.1 row 12).
- */
+/** Delete account (`/settings/delete-account`): the whole of the account deletion a traveler performs, and the last screen of the safety basics. */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Text, View, type TextProps } from 'react-native';
 import { Stack, router } from 'expo-router';
@@ -33,12 +30,7 @@ const CONSEQUENCES: readonly string[] = [
 ];
 const CARD_TITLE = 'What happens when you delete your account';
 type HeadingProps = TextProps & Readonly<{ 'aria-level': number }>;
-/**
- * The card's own section heading. `Card` paints a `title` as plain text, which leaves this section
- * out of the page's outline, so the headline is rendered here as a heading instead. Level 2,
- * because the navigation header already renders the page's single level-1 heading ("Delete
- * account"); a second `<h1>` would leave the page with two (WCAG 1.3.1, 2.4.6).
- */
+/** The card's own section heading, rendered as a heading so this section joins the page's outline. Level 2, because the navigation header already renders the page's single level-1 heading: a second `<h1>` would leave the page with two (WCAG 1.3.1, 2.4.6). */
 const CARD_TITLE_HEADING: HeadingProps = { role: 'heading', 'aria-level': 2 };
 const CLOSING_LINE = "You'll be signed out on every device. This can't be undone.";
 /** The refusal that proves only that the session ended (AAP 0.5.3, AAP 0.3.3). */
@@ -154,8 +146,6 @@ export default function DeleteAccountScreen(): ReactElement {
 }
 
 const styles = StyleSheet.create({
-  // The type scale and weight `Card` paints its own `title` with, so the headline this screen
-  // renders as a heading is the one the card would have drawn.
   cardTitle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   list: { gap: spacing.sm },
   item: { flexDirection: 'row', gap: spacing.sm },

@@ -1,15 +1,14 @@
 /**
- * Proof-flow pre-flight validation (AAP 0.5.5, AAP 0.5.8, criterion 3, QA finding qavf1-07): the
- * witness inputs are built from the picked bytes *before* any artefact is fetched, so a file that is
- * not a booking confirmation and an email from an issuer the published configuration does not support
- * are both refused without the ~1.6 GB download, and an email the configuration does support still
- * reaches proving and submission.
+ * Proof-flow pre-flight validation (AAP 0.5.5, AAP 0.5.8, criterion 3, QA finding qavf1-07): the witness inputs
+ * are built from the picked bytes *before* any artefact is fetched, so a file that is not a booking confirmation
+ * and an email from an issuer the published configuration does not support are both refused without the ~1.6 GB
+ * download, and an email the configuration does support still reaches proving and submission.
  *
- * Every case runs the real `prover.ts` and the real `state/proof-store.ts` against the real fixtures
- * with an injected engine, an injected artefact store whose `ensureArtifacts` is a spy, and the one
- * mock a Node run needs — the API client `prover.ts` imports, which no case may reach for real. The
- * store's snapshots are read on every change to check that they stay inside the four keys AAP 0.5.5
- * allows and carry no byte of the fixture email.
+ * Every case runs the real `prover.ts` and the real `state/proof-store.ts` against the real fixtures with an
+ * injected engine, an injected artefact store whose `ensureArtifacts` is a spy, and the one mock a Node run
+ * needs — the API client `prover.ts` imports, which no case may reach for real. The store's snapshots are read
+ * on every change to check that they stay inside the four keys AAP 0.5.5 allows and carry no byte of the
+ * fixture email.
  */
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -62,7 +61,6 @@ const h = vi.hoisted(() => {
     submitProof: vi.fn((_body: unknown): Promise<unknown> => Promise.resolve(state.accepted)),
   };
 });
-
 // Matched by resolved file id, so this also intercepts `prover.ts`'s extensionless `../api/client`.
 vi.mock('../src/api/client.ts', () => ({ apiClient: { submitProof: h.submitProof } }));
 
@@ -97,7 +95,6 @@ const store = {
     ): Promise<ResolvedArtifacts> => Promise.resolve(RESOLVED),
   ),
 };
-
 /** Reads a repository file as latin1, so a fixture's CRLF bytes and its text agree. */
 function read(relativePath: string): string {
   const path = new URL(`../../../${relativePath}`, import.meta.url);
@@ -105,7 +102,6 @@ function read(relativePath: string): string {
     throw new Error(`Missing ${relativePath}; run \`pnpm circuits:fixtures\`.`);
   return readFileSync(path, 'latin1');
 }
-
 /** Every 12-character window of the email that is not only digits, whitespace or `" , : [ ] { }`. */
 const contentWindows = (text: string): string[] =>
   Array.from({ length: Math.max(0, text.length - 11) }, (_value, at) =>
@@ -114,7 +110,6 @@ const contentWindows = (text: string): string[] =>
 
 const codeOf = (error: unknown): unknown =>
   typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
-
 /** The status of every snapshot the store published, in order. */
 const publishedStatuses = (): string[] =>
   state.snapshots.map((text) => (JSON.parse(text) as { status: string }).status);
@@ -123,7 +118,6 @@ interface Attempt {
   readonly error: unknown;
   readonly result: ImportAndProveResult | null;
 }
-
 /** One attempt through `importAndProve`, returning its failure rather than throwing it. */
 async function attempt(emlBytes: Uint8Array, config: ZkConfig): Promise<Attempt> {
   const handle: EmlHandle = { bytes: emlBytes, release: () => Promise.resolve() };
@@ -138,7 +132,6 @@ async function attempt(emlBytes: Uint8Array, config: ZkConfig): Promise<Attempt>
     return { error, result: null };
   }
 }
-
 /** Asserts that every snapshot stays inside the four keys AAP 0.5.5 allows, carrying no email text. */
 function assertSnapshotPrivacy(): void {
   const states = [...state.snapshots, JSON.stringify(proof.getProofSnapshot())];
@@ -157,7 +150,6 @@ interface Refusal {
   readonly config: () => ZkConfig;
   readonly code: ProofErrorCode;
 }
-
 /** The two inputs a pre-flight refuses, differing only in their inputs, so they are one table. */
 const REFUSALS: readonly Refusal[] = [
   {
@@ -228,7 +220,6 @@ afterAll(() => {
 describe('the proof flow pre-flight', () => {
   it.each(REFUSALS)('refuses $label before any artefact is fetched', async (refusal) => {
     const { error } = await attempt(refusal.bytes(), refusal.config());
-
     expect(codeOf(error)).toBe(refusal.code);
     expect(store.ensureArtifacts).not.toHaveBeenCalled();
     expect(generate).not.toHaveBeenCalled();
@@ -239,10 +230,8 @@ describe('the proof flow pre-flight', () => {
     expect(publishedStatuses()).not.toContain('downloading');
     assertSnapshotPrivacy();
   });
-
   it('downloads once and proves an email the configuration supports', async () => {
     const { error, result } = await attempt(bytes, zkConfig);
-
     expect(error).toBeNull();
     expect(store.ensureArtifacts).toHaveBeenCalledTimes(1);
     expect(store.ensureArtifacts.mock.calls[0]?.[0]).toEqual(zkConfig.artifacts);
@@ -260,7 +249,6 @@ describe('the proof flow pre-flight', () => {
     expect(proof.getProofSnapshot()).toEqual({ status: 'accepted', issuerId });
     assertSnapshotPrivacy();
   });
-
   it('keeps the proof state to the four keys AAP 0.5.5 allows', () => {
     expect([...proof.PROOF_STATE_KEYS].every((key) => STATE_KEYS.includes(key))).toBe(true);
   });

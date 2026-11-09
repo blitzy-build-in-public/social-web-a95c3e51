@@ -1,11 +1,7 @@
 /**
- * The integration harness of `apps/api` (AAP 0.8.1 "App factory", AAP 0.11.2): the globalSetup that
- * starts the containers every integration suite shares, and the factory that builds one app against
- * them.
- * The values are read lazily, inside the functions that need them, and only `setup` touches
- * infrastructure: importing this module has no side effect, which is what lets a test worker import
- * the factory without starting a container, and what lets `apps/api/scripts/*` reuse the environment
- * builders without a Vitest context at all.
+ * The integration harness of `apps/api` (AAP 0.8.1 "App factory", AAP 0.11.2): the globalSetup that starts the
+ * containers every integration suite shares, and the factory that builds one app against them. Values are read
+ * lazily, so importing this module has no side effect.
  */
 
 import { execFile } from 'node:child_process';
@@ -49,9 +45,8 @@ import type { VoiceSimulator } from './voice-simulator/simulator.ts';
 import type { TestProject } from 'vitest/node';
 
 /**
- * The five values {@link setup} hands to every worker through `project.provide`, and that a suite
- * reads with `inject`. Declared here rather than in a `.d.ts` of its own because the module that
- * provides a value is the module that should say what its type is.
+ * The five values {@link setup} hands to every worker through `project.provide`: declared here because the
+ * module that provides a value is the module that says what its type is.
  */
 declare module 'vitest' {
   export interface ProvidedContext {
@@ -69,21 +64,20 @@ declare module 'vitest' {
 }
 
 /**
- * The two Stripe topologies an integration run may use (AAP 0.11.2): `mock` reaches `stripe-mock`
- * through the stateful proxy started here, so the run needs no credential and its payment results are
- * mock evidence.
+ * The two Stripe topologies an integration run may use (AAP 0.11.2): `mock` reaches `stripe-mock` through the
+ * stateful proxy started here, so the run needs no credential and its results are mock evidence.
  */
 export type StripeMode = 'mock' | 'test';
 
 /**
- * The published nullifier salt the fixture proofs are taken with (AAP 0.5.5), re-exported so a suite
- * that builds an environment, a proof or a verification key needs one import for the harness.
+ * The published nullifier salt the fixture proofs are taken with (AAP 0.5.5), re-exported so a suite that
+ * builds an environment, a proof or a key needs one import for the harness.
  */
 export { TEST_NULLIFIER_SALT };
 
 /**
- * The image tags this harness starts (AAP 0.4.2). Spelled out rather than read from configuration: a
- * container that quietly changed version would invalidate the results the same run recorded.
+ * The image tags this harness starts (AAP 0.4.2), spelled out rather than read from configuration: a container
+ * that quietly changed version would invalidate the results the same run recorded.
  */
 const POSTGRES_IMAGE = 'postgis/postgis:16-3.4';
 const REDIS_IMAGE = 'redis:7.4.12-alpine';
@@ -98,8 +92,8 @@ const TEST_DATABASE = 'tablemate_test';
 const TEST_DATABASE_USER = 'tablemate';
 
 /**
- * How long a container has to answer a stop. A run that ends with a container still up would hold the
- * port and the disk the next run wants, so the teardown waits rather than detaching.
+ * How long a container has to answer a stop. A run that ends with a container still up would hold the port and
+ * the disk the next run wants, so the teardown waits rather than detaching.
  */
 const CONTAINER_STOP_TIMEOUT_S = 20;
 
@@ -116,10 +110,8 @@ const PASSWORD_BYTES = 16;
 const SECRET_BYTES = 32;
 
 /**
- * The tables `resetState` leaves in place: Prisma's own migration bookkeeping, and PostGIS's SRID
- * catalog. Truncating the catalog would break the `geography(Point,4326)` casts the spatial queries
- * and every fixture depend on, and the extension's other tables live in schemas of their own, which
- * the truncation does not read.
+ * The tables `resetState` leaves in place: Prisma's migration bookkeeping and PostGIS's SRID catalog, whose rows
+ * the `geography(Point,4326)` casts the spatial queries and every fixture depend on.
  */
 const TRUNCATION_EXCLUSIONS: ReadonlySet<string> = new Set([
   '_prisma_migrations',
@@ -127,44 +119,40 @@ const TRUNCATION_EXCLUSIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The shape a table name must have to be interpolated into `TRUNCATE`. The catalog of a database only
- * this harness created holds nothing else; the check is here so that a name that reached the statement
- * from anywhere else cannot.
+ * The shape a table name must have to be interpolated into `TRUNCATE`, so a name that reached the statement from
+ * anywhere outside this harness's own database cannot.
  */
 const TABLE_NAME = /^[a-z_][a-z0-9_]*$/;
 
 /**
- * How many times {@link truncatePublicTables} takes the tables again after losing a lock race, and
- * how long each retry waits, growing linearly (AAP 0.11.2).
+ * How many times {@link truncatePublicTables} takes the tables again after losing a lock race, and how long each
+ * retry waits, growing linearly (AAP 0.11.2).
  */
 const TRUNCATE_ATTEMPTS = 5;
 const TRUNCATE_RETRY_MS = 25;
 
 /**
- * The SQLSTATEs of a lock conflict a retry clears: a deadlock, and a serialization failure. Both mean
- * two transactions took each other's locks and PostgreSQL ended one of them; the other one finishes
- * within milliseconds and the statement succeeds on the next attempt.
+ * The SQLSTATEs of a lock conflict a retry clears: a deadlock, and a serialization failure. PostgreSQL ended one
+ * of two transactions for taking each other's locks; the other finishes within milliseconds and the statement
+ * succeeds on the next attempt.
  */
 const TRANSIENT_SQL_STATES: ReadonlySet<string> = new Set(['40P01', '40001']);
 
 /**
- * The instant a suite starts at (AAP 0.11.1): a Monday at midday UTC, so a suite that reasons about a
- * weekday, about a city's local day or about a date's month reads the same value wherever it runs.
+ * The instant a suite starts at (AAP 0.11.1): a Monday at midday UTC, so a suite that reasons about a weekday, a
+ * city's local day or a date's month reads the same value wherever it runs.
  */
 export const DEFAULT_TEST_NOW = '2026-11-16T12:00:00.000Z';
 
 /**
- * The `API_PORT` a test process declares. The app never binds it — `listen` asks the kernel for a free
- * port, so two apps in one file cannot collide — but the variable is required and must be a usable
- * port number, so it holds one instead of the 0 a caller might expect to be accepted.
+ * The `API_PORT` a test process declares. The app never binds it — `listen` asks the kernel for a free port — but
+ * the variable is required and must be a usable port number, so it holds one rather than 0.
  */
 const TEST_API_PORT = '3000';
 
 /**
- * The secrets one test process signs, hashes and encrypts with. Generated with `node:crypto` at run
- * time and memoized here, so no key ever appears in tracked source — which
- * `scripts/check-secrets.ts` fails the lint on — and so two apps built in one file share the same
- * values: a token one signs verifies on the other, and ciphertext one writes the other decrypts.
+ * The secrets one test process signs, hashes and encrypts with: generated with `node:crypto` at run time and
+ * memoized, so no key appears in tracked source and two apps built in one file share the same values.
  */
 interface TestSecrets {
   readonly JWT_SECRET: string;
@@ -177,9 +165,9 @@ interface TestSecrets {
 }
 
 /**
- * The values the environment schema accepts: the four salts and secrets as at least 32 characters
- * (base64url of {@link SECRET_BYTES} is 43), and the field key as standard base64 of exactly 32 bytes,
- * which is the one encoding `keyringFromEnv` takes.
+ * The values the environment schema accepts: the four salts and secrets as at least 32 characters (base64url of
+ * {@link SECRET_BYTES} is 43), and the field key as standard base64 of exactly 32 bytes, the one encoding
+ * `keyringFromEnv` takes.
  */
 const TEST_FIELD_KEY_ID = 'test1';
 
@@ -217,13 +205,9 @@ function testSecrets(): TestSecrets {
 }
 
 /**
- * Every number a test's `CALL_ALLOWLIST` may reach (AAP 0.5.2, 0.6.2): the three hundred reserved
- * fictional numbers the fixture venues, lodgings and places carry, and nothing else.
- *
- * The allowlist is what keeps an automated call on a host an operator owns when the environment is
- * not production, and it is the *only* place these numbers appear as a set: a fixture file holds the
- * one its row uses, so a number outside the reserved ranges cannot reach a dialler unnoticed.
- *
+ * Every number a test's `CALL_ALLOWLIST` may reach (AAP 0.5.2, 0.6.2): the three hundred reserved fictional
+ * numbers the fixtures carry, and nothing else. It is the *only* place these numbers appear as a set, so a number
+ * outside the reserved ranges cannot reach a dialler unnoticed.
  */
 export function testCallAllowlist(): string {
   const numbers: string[] = [];
@@ -236,10 +220,9 @@ export function testCallAllowlist(): string {
 }
 
 /**
- * The variables `api` and `workers` share in a test process (AAP 0.6.2, first scope row): the
- * endpoints `setup` started, the secrets above, and the three credential-free modes the automated
- * suite runs in — `LLM_PROVIDER=fake`, which reads no key, and the simulator posture, whose
- * credentials come from `TWILIO_SIMULATOR` rather than from the environment.
+ * The variables `api` and `workers` share in a test process (AAP 0.6.2): the endpoints `setup` started, the
+ * secrets above, and the credential-free modes the automated suite runs in — `LLM_PROVIDER=fake`, and the
+ * simulator posture.
  */
 function commonTestEnv(): Record<string, string> {
   return {
@@ -256,13 +239,10 @@ function commonTestEnv(): Record<string, string> {
 }
 
 /**
- * The raw environment of an `api` process (AAP 0.6.2, 0.11.2): every variable its own schema
- * declares, and no variable belonging to another process.
- *
- * `API_PUBLIC_URL` is the base the Twilio signature is computed over — the URL Twilio would have
- * called, not the ephemeral loopback address the app really listens on. In `STRIPE_MODE=mock` it is
- * the stateful proxy's address and no key is set at all; in `test` mode the three keys come from the
- * shell, which `setup` has already checked before a worker could be started.
+ * The raw environment of an `api` process (AAP 0.6.2, 0.11.2): every variable its own schema declares, and no
+ * variable belonging to another process. `API_PUBLIC_URL` is the base the Twilio signature is computed over — the
+ * URL Twilio would have called, not the loopback address the app listens on; in `STRIPE_MODE=mock` it is the
+ * proxy's address and no key is set at all.
  */
 export function testEnv(overrides: Record<string, string> = {}): Record<string, string> {
   const mode = inject('stripeMode');
@@ -301,12 +281,9 @@ export function testEnv(overrides: Record<string, string> = {}): Record<string, 
 }
 
 /**
- * The raw environment of a `workers` process (AAP 0.6.2, 0.11.2): the shared group, the delivery and
- * crawl settings, and no Stripe variable in any mode — that process's schema declares none, because
- * `workers` holds no Stripe secret. `VOICE_SIM_URL` is a name that is never dialled: a `workers` suite
- * injects the simulator's own transport, so the variable satisfies the mode's startup rule rather
- * than naming a network destination.
- *
+ * The raw environment of a `workers` process (AAP 0.6.2, 0.11.2): the shared group, the delivery and crawl
+ * settings, and no Stripe variable in any mode. `VOICE_SIM_URL` is a name that is never dialled: a `workers` suite
+ * injects the simulator's own transport, so the variable satisfies the mode's startup rule.
  */
 export function testWorkersEnv(overrides: Record<string, string> = {}): Record<string, string> {
   return applyOverrides(
@@ -333,8 +310,8 @@ function copyFromProcessEnv(env: Record<string, string>, name: string): void {
 }
 
 /**
- * Apply a suite's overrides: each value it names wins, and an empty string removes the variable so
- * the case that needs one absent runs against the loader's own refusal rather than a stand-in.
+ * Apply a suite's overrides: each value it names wins, and an empty string removes the variable so the case that
+ * needs one absent runs against the loader's own refusal.
  */
 function applyOverrides(
   env: Record<string, string>,
@@ -352,8 +329,8 @@ function applyOverrides(
 }
 
 /*
- * The handles `setup` keeps for `teardown`. Module-level state is limited to exactly this: what the
- * one globalSetup call created, and nothing a worker imports this module for ever reads.
+ * The handles `setup` keeps for `teardown`: what the one globalSetup call created, and nothing a worker imports
+ * this module for ever reads.
  */
 let startedPostgres: StartedPostgreSqlContainer | undefined;
 let startedRedis: StartedRedisContainer | undefined;
@@ -361,12 +338,10 @@ let startedStripeMock: StartedTestContainer | undefined;
 let runningProxy: StripeProxy | undefined;
 
 /**
- * Start the containers, apply the migrations and publish the five values every worker reads.
- *
- * Vitest runs this once per run, in its main process, before any worker starts, so the containers and
- * the proxy are created once and shared: `stripe-proxy` deliberately holds one state per server. The
- * password of the database role is generated here, hex so it needs no escaping in a connection URL,
- * and never logged — a connection string is a secret a log line must not carry (AAP 0.11.1).
+ * Start the containers, apply the migrations and publish the five values every worker reads. Vitest runs this once
+ * per run, in its main process, so the containers and the proxy are created once and shared. The database role's
+ * password is generated here and never logged — a connection string is a secret a log line must not carry
+ * (AAP 0.11.1).
  */
 export async function setup(project: TestProject): Promise<void> {
   const mode: StripeMode = process.env['STRIPE_MODE'] === 'test' ? 'test' : 'mock';
@@ -411,9 +386,8 @@ export async function setup(project: TestProject): Promise<void> {
 }
 
 /**
- * Close the proxy and stop the containers, tolerating one that is already gone. Idempotent on
- * purpose: Vitest calls it after a run that may have failed at any point, including before a container
- * had started, and a teardown that threw would leave the containers it did not reach running.
+ * Close the proxy and stop the containers, tolerating one that is already gone. Idempotent on purpose: Vitest calls
+ * it after a run that may have failed at any point, and a teardown that threw would leave containers running.
  */
 export async function teardown(): Promise<void> {
   const proxy = runningProxy;
@@ -433,15 +407,11 @@ export async function teardown(): Promise<void> {
 }
 
 /**
- * Freeze the Redis container, so every command issued against it stops being answered (AAP 0.11.2).
+ * Freeze the Redis container, so every command issued against it stops being answered (AAP 0.11.2). This is how
+ * `rate-limits.test.ts` produces the outage AAP 0.3.2 requires the API to answer `503 service_unavailable` for: the
+ * socket stays open and nothing answers, which a stopped container does not reproduce.
  *
- * This is how `rate-limits.test.ts` produces the outage AAP 0.3.2 requires the API to answer `503
- * service_unavailable` for rather than degrade silently: a paused container is the honest form of that
- * outage — the socket stays open and nothing answers, which a stopped container does not reproduce
- * because the connection would be refused outright.
- *
- * **Callers must unpause in a `finally`.** The container is shared by the whole run, so the file that
- * pauses it is the only one that may run while it is paused.
+ * **Callers must unpause in a `finally`.** The container is shared by the whole run.
  */
 export async function pauseRedis(): Promise<void> {
   const container = await redisDockerContainer();
@@ -449,9 +419,9 @@ export async function pauseRedis(): Promise<void> {
 }
 
 /**
- * Unfreeze the Redis container and wait until it answers `PING` (AAP 0.11.2). The wait is what makes
- * the call safe to sequence on: a paused container answers nothing, so a suite that resumed it and
- * immediately issued a command would race the runtime's own unpause.
+ * Unfreeze the Redis container and wait until it answers `PING` (AAP 0.11.2). The wait is what makes the call safe
+ * to sequence on: a paused container answers nothing, so a suite that resumed it and immediately issued a command
+ * would race the runtime's own unpause.
  */
 export async function unpauseRedis(): Promise<void> {
   const container = await redisDockerContainer();
@@ -476,9 +446,8 @@ async function redisDockerContainer() {
 }
 
 /**
- * Wait until Redis answers `PING` on a connection of its own. A command issued before a fail-fast
- * connection reached `ready` is refused rather than queued, which is that connection's documented
- * contract, so the readiness wait comes first and the ping after it.
+ * Wait until Redis answers `PING` on a connection of its own. A command issued before a fail-fast connection
+ * reached `ready` is refused rather than queued, so the readiness wait comes first and the ping after it.
  */
 async function awaitRedisPing(): Promise<void> {
   const connection = createRedisConnection(inject('redisUrl'), 'client', {
@@ -493,9 +462,8 @@ async function awaitRedisPing(): Promise<void> {
 }
 
 /**
- * Stop one container, ignoring a failure to stop what is already stopped. The failure cannot be told
- * from a real one by its message, and a teardown is the wrong place to decide it: the runtime's own
- * clean-up and the run's output are what report a container left behind.
+ * Stop one container, ignoring a failure to stop what is already stopped: the failure cannot be told from a real
+ * one by its message, and the runtime's own clean-up reports a container left behind.
  */
 async function stopContainer(container: StartedTestContainer): Promise<void> {
   try {
@@ -506,9 +474,8 @@ async function stopContainer(container: StartedTestContainer): Promise<void> {
 }
 
 /**
- * Apply the repository's migrations to the container database (AAP 0.6.2). The package script is what
- * runs, rather than a Prisma call issued from here: it is the one definition of "apply the
- * migrations", so a run applies exactly what a deployment does.
+ * Apply the repository's migrations to the container database (AAP 0.6.2). The package script is what runs, rather
+ * than a Prisma call issued from here: it is the one definition of "apply the migrations".
  */
 async function migrate(databaseUrl: string): Promise<void> {
   try {
@@ -526,9 +493,8 @@ async function migrate(databaseUrl: string): Promise<void> {
 const execFileAsync = promisify(execFile);
 
 /**
- * What a failed migration run said, with the one hint worth adding: a missing generated client is the
- * likeliest failure that is not about the database itself, and the message it produces does not name
- * the command that fixes it.
+ * What a failed migration run said, with the one hint worth adding: a missing generated client is the likeliest
+ * failure that is not about the database itself, and its message does not name the command that fixes it.
  */
 function migrationFailure(error: unknown): string {
   const output = errorOutput(error);
@@ -555,10 +521,9 @@ function errorOutput(error: unknown): string {
 }
 
 /**
- * Refuse to start a `STRIPE_MODE=test` run that could not reach Stripe, naming the variables only.
- * Failing here rather than at the first payment is what keeps a test-mode run honest: without the keys
- * the suite would reach nothing, and every payment assertion would pass vacuously. The values are read
- * by the child that runs the API and are never logged.
+ * Refuse to start a `STRIPE_MODE=test` run that could not reach Stripe, naming the variables only: without the keys
+ * every payment assertion would pass vacuously. The values are read by the child that runs the API and are never
+ * logged.
  */
 function assertStripeTestCredentials(): void {
   const missing = STRIPE_MODE_TEST_VARIABLES.filter((name) => {
@@ -588,13 +553,13 @@ function assertStripeTestCredentials(): void {
 const LISTEN_HOST = '127.0.0.1';
 
 /**
- * What a suite may replace when it builds an app (AAP 0.5.1, 0.11.2). Every member is optional: the
- * default is the real thing, which is what makes a suite that passes here exercise production's path.
+ * What a suite may replace when it builds an app (AAP 0.5.1, 0.11.2). Every member is optional: the default is the
+ * real thing, which is what makes a suite that passes here exercise production's path.
  */
 export interface CreateTestAppOptions {
   /**
-   * Raw environment overrides, applied over {@link testEnv}: each value wins, and an empty string
-   * removes the variable, so an `env-guard`-style case runs against the loader's own refusal.
+   * Raw environment overrides, applied over {@link testEnv}: each value wins, and an empty string removes the
+   * variable, so a case runs against the loader's own refusal.
    */
   readonly env?: Record<string, string>;
   /** The clock to inject; a frozen `TestClock` at {@link DEFAULT_TEST_NOW} unless given (AAP 0.11.1). */
@@ -604,19 +569,17 @@ export interface CreateTestAppOptions {
   /** The payments gateway to inject; the Stripe one, pointed at the proxy, unless given. */
   readonly payments?: PaymentsGateway;
   /**
-   * Whether to start the API's background work — the settlement worker, the sweeper, the outbox poller
-   * and the pub/sub subscriptions (AAP 0.3.2). Off by default, because a suite that drives its own
-   * timers through `./clock.ts` `settleNow` reads a deterministic result.
+   * Whether to start the API's background work — the settlement worker, the sweeper, the outbox poller and the
+   * pub/sub subscriptions (AAP 0.3.2). Off by default, because a suite that drives its own timers through
+   * `./clock.ts` `settleNow` reads a deterministic result.
    */
   readonly background?: boolean;
 }
 
 /**
- * The Stripe topology a suite drives (AAP 0.3.3, 0.11.2). `mode` and `apiBase` mirror the two values
- * `setup` provided, and `proxy` is the control client for the stateful proxy — present in `mock` mode
- * only, which is why a suite that needs a card fixture, a 3-D Secure step or an expired hold checks it
- * before using it. `webhookSecret` is the secret the signed webhook requests of that topology are
- * built with.
+ * The Stripe topology a suite drives (AAP 0.3.3, 0.11.2). `proxy` is the control client for the stateful proxy —
+ * present in `mock` mode only, which is why a suite that needs a card fixture, a 3-D Secure step or an expired
+ * hold checks it first. `webhookSecret` is the secret that topology's signed webhooks are built with.
  */
 export interface StripeContext {
   readonly mode: StripeMode;
@@ -628,8 +591,8 @@ export interface StripeContext {
 }
 
 /**
- * Who an access token is signed for. `id` and `sessionId` are row ids, which is what the token's `sub`
- * and `sid` claims carry; `role` defaults to a traveler, the role of every fixture account.
+ * Who an access token is signed for. `id` and `sessionId` are row ids, which is what the token's `sub` and `sid`
+ * claims carry; `role` defaults to a traveler, the role of every fixture account.
  */
 export interface TokenSubject {
   readonly id: string;
@@ -638,11 +601,9 @@ export interface TokenSubject {
 }
 
 /**
- * The app one suite drives (AAP 0.11.2). It is the app itself plus the handles a suite needs around it:
- * the container it reads state through, the clock it moves, the helpers that name a meetup's
- * boundaries, the fault injector it arms, the simulator it plays calls with and the adapter it
- * inspects. The members are the real objects, not copies, so a suite asserts against exactly what a
- * handler wrote.
+ * The app one suite drives (AAP 0.11.2): the app itself plus the handles around it — the container it reads state
+ * through, the clock it moves, the boundary helpers, the fault injector, the simulator and the adapter it inspects.
+ * The members are the real objects, not copies.
  */
 export interface TestApp {
   /** The Fastify instance, ready but not listening until {@link TestApp.listen} is called. */
@@ -666,54 +627,44 @@ export interface TestApp {
   /** The raw environment the loader was given, overrides applied — what a config assertion reads. */
   readonly rawEnv: Readonly<Record<string, string>>;
   /**
-   * Listen on an ephemeral loopback port, point the simulator at the address, and answer it.
-   * Idempotent: a second call answers the same address, which is what a suite that starts a WebSocket
-   * and then makes an HTTP request relies on.
+   * Listen on an ephemeral loopback port, point the simulator at the address, and answer it. Idempotent: a second
+   * call answers the same address, which a suite that starts a WebSocket and then makes an HTTP request relies on.
    */
   listen(): Promise<string>;
   /**
-   * Close the simulator and the app, once. The app's own close hook stops the background work when it
-   * was started, closes the queues and the pub/sub, and disconnects the Prisma client and the Redis
-   * connections this app built.
+   * Close the simulator and the app, once. The app's close hook stops the background work when it was started,
+   * closes the queues and the pub/sub, and disconnects the Prisma client and the Redis connections.
    */
   close(): Promise<void>;
   /**
-   * Return the run to the state a fresh database would have: every table empty, Redis flushed, the fake
-   * adapter's records cleared, the simulator idle and disarmed of scenarios, no fault armed, the clock
-   * back at {@link DEFAULT_TEST_NOW}, and the proxy's state cleared in mock mode.
+   * Return the run to the state a fresh database would have: every table empty, Redis flushed, the fake adapter's
+   * records cleared, the simulator idle, no fault armed, the clock back at {@link DEFAULT_TEST_NOW}, and the
+   * proxy's state cleared in mock mode.
    *
-   * The tables are read from the catalog rather than listed here, so a migration that adds one is
-   * covered without this file changing, and two of them are deliberately left in place: Prisma's
-   * migration bookkeeping, and PostGIS's SRID catalog, whose rows the `geography` casts need.
-   *
-   * It is a reset between cases, not a repair: call it before the app has done the work a case reads,
-   * and never while its background work is running.
+   * The tables come from the catalog, so a migration that adds one is covered without this file changing; it is a
+   * reset between cases, not a repair.
    */
   resetState(): Promise<void>;
   /** Seed the five launch cities, and nothing of the fixtures (AAP 0.5.2, 0.12.1 criterion 9). */
   seedCities(): Promise<SeedSummary>;
   /**
-   * Seed the launch cities and each city's fixtures: venues, lodgings, places and price records, all
-   * flagged `is_fixture`, with one console secret per venue and lodging in the summary. No secret file
-   * is written: the summary carries the secrets, which is what a test needs.
+   * Seed the launch cities and each city's fixtures: venues, lodgings, places and price records, all flagged
+   * `is_fixture`, with one console secret per venue and lodging in the summary rather than in a file.
    */
   seedFixtures(): Promise<SeedSummary>;
   /**
-   * Sign an access token for `user` as the current test clock reads it. The token lives 15 minutes of
-   * that clock, so a suite that advances past the boundary signs a new one — a call before it answers
-   * `401 token_invalid`, which is the API's own rule and not a harness failure. The token's role claim
-   * is a hint: the API reads the account's role from its row (AAP 0.3.3).
+   * Sign an access token for `user` as the current test clock reads it. The token lives 15 minutes of that clock, so
+   * a suite that advances past the boundary signs a new one — a call before it answers `401 token_invalid`, which is
+   * the API's own rule.
    */
   tokenFor(user: TokenSubject): Promise<string>;
 }
 
 /**
- * Build one app against the containers `setup` started (AAP 0.5.1, 0.11.2).
- *
- * The environment goes through `loadApiEnv` and the app through `buildApp`, so a configuration mistake
- * fails exactly as it fails in production, and everything but the clock, the language model, the
- * payments gateway and the Twilio transport is the real dependency. `app.ready()` resolves every route
- * and loads every plugin before the promise settles, and the app is left not listening.
+ * Build one app against the containers `setup` started (AAP 0.5.1, 0.11.2). The environment goes through
+ * `loadApiEnv` and the app through `buildApp`, so a configuration mistake fails as it fails in production, and
+ * everything but the clock, the language model, the payments gateway and the Twilio transport is the real
+ * dependency. `app.ready()` resolves every route before the promise settles.
  */
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestApp> {
   const rawEnv: Readonly<Record<string, string>> = testEnv(options.env ?? {});
@@ -826,9 +777,9 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
 }
 
 /**
- * The Stripe topology the loaded environment names (AAP 0.3.3). The mode is the environment's, not the
- * provided one: the gateway is built from `env.stripe`, so a suite that overrode `STRIPE_MODE` would
- * otherwise be told about a topology the app is not using.
+ * The Stripe topology the loaded environment names (AAP 0.3.3). The mode is the environment's, not the provided one:
+ * the gateway is built from `env.stripe`, so a suite that overrode `STRIPE_MODE` would be told about a topology the
+ * app is not using.
  */
 function stripeContext(env: ApiEnv): StripeContext {
   const mode: StripeMode = env.stripe.mode === 'mock' ? 'mock' : 'test';
@@ -842,17 +793,13 @@ function stripeContext(env: ApiEnv): StripeContext {
 }
 
 /**
- * Empty every table the migrations created, in one statement (AAP 0.11.2).
+ * Empty every table the migrations created, in one statement (AAP 0.11.2). The names come from the catalog, each
+ * checked against {@link TABLE_NAME} and quoted before it is interpolated (`name` above all is a reserved word);
+ * `CASCADE` covers the foreign keys and `RESTART IDENTITY` returns every sequence to its first value.
  *
- * The names come from the catalog, and each one is checked against {@link TABLE_NAME} and quoted before
- * it is interpolated: `name` above all is a reserved word, and a name that failed the shape check
- * could only have come from outside this database. `CASCADE` covers the foreign keys between the tables
- * and `RESTART IDENTITY` returns every sequence to its first value.
- *
- * It is retried while the conflict it lost is a transient one: a commit inside a case kicks the outbox
- * dispatcher without awaiting it (AAP 0.3.2), so a pass that writes `outbox_message` can still be in
- * flight when the next case truncates, and a reset that gave up there would fail a case for a race it
- * is not about.
+ * It is retried while the conflict it lost is a transient one: a commit inside a case kicks the outbox dispatcher
+ * without awaiting it (AAP 0.3.2), so a pass that writes `outbox_message` can be in flight when the next case
+ * truncates.
  */
 async function truncatePublicTables(db: DbClient): Promise<void> {
   const rows = await db.$queryRaw<{ tablename: string }[]>`
@@ -879,10 +826,9 @@ async function truncatePublicTables(db: DbClient): Promise<void> {
 }
 
 /**
- * Whether a failed statement lost a lock race rather than failing on its own (AAP 0.11.2). Prisma
- * reports a raw PostgreSQL failure as `P2010` with the database's own SQLSTATE in `meta.code`, which is
- * where {@link TRANSIENT_SQL_STATES} appear; the message is checked too, so a failure that arrives
- * without the meta object is not mistaken for a permanent one.
+ * Whether a failed statement lost a lock race rather than failing on its own (AAP 0.11.2). Prisma reports a raw
+ * PostgreSQL failure as `P2010` with the database's own SQLSTATE in `meta.code`; the message is checked too, so a
+ * failure that arrives without the meta object is not mistaken for a permanent one.
  */
 function isTransientLockFailure(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {

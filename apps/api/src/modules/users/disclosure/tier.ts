@@ -1,29 +1,24 @@
 /**
- * Disclosure layer 1 of 3: the tier a viewer has earned toward a target (AAP 0.5.1, 0.5.7).
+ * Disclosure layer 1 of 3: the tier a viewer has earned toward a target.
  *
- * `computeTier(viewerId, targetId)` is the one decision the other two layers obey: `select.ts` loads only
- * the columns behind that tier's fields and `serialize.ts` copies that tier's keys through its schema, so
- * a field above the viewer's tier is never loaded, let alone returned (AAP 0.5.4, 0.12.2, criterion 5).
+ * `computeTier(viewerId, targetId)` is the one decision the other two layers obey: `select.ts` loads only the columns behind that
+ * tier's fields and `serialize.ts` copies that tier's keys through its schema, so a field above the viewer's tier is never loaded, let
+ * alone returned.
  *
- * The rule in the order it applies (AAP 0.5.7): a block in either direction is `'blocked'`, which is the
- * minimum disclosure and not a tier; then `completedCount >= 2` is 3, `>= 1` is 2, a shared meetup in
- * status `locked` whose deposits are both `held` is 1, and otherwise 0.
- * `PairHistory.completedCount` counts every completed meetup, whatever the deposit and however closely the
- * two are spaced, because the anti-farming rule limits the reputation counters and the leaderboard only
- * (AAP 0.7.3), and a meetup with an open dispute stays `locked`, so its pair keeps tier 1 while the
- * dispute stands (AAP 0.5.3).
+ * The rule in the order it applies: a block in either direction is `'blocked'`, which is the minimum disclosure and not a tier; then
+ * `completedCount >= 2` is 3, `>= 1` is 2, a shared meetup in status `locked` whose deposits are both `held` is 1, and otherwise 0.
+ * `PairHistory.completedCount` counts every completed meetup, whatever the deposit and however closely the two are spaced, because the
+ * anti-farming rule limits the reputation counters and the leaderboard only.
  *
- * Everything here reads: no transaction, no lock, no clock (AAP 0.3.2, 0.11.1), and nothing is logged.
+ * Everything here reads: no transaction, no lock, no clock, and nothing is logged.
  */
 import { Prisma, type RawSqlClient } from '@tablemate/db';
 import type { TierResult } from '@tablemate/shared';
 
 import { pairOrder } from '../../reputation/pair-history.ts';
 
-/**
- * The four facts about a viewer-and-target pair that decide its tier: a snapshot of one {@link pairFacts}
- * call, never cached, because a stale tier is a disclosure decision taken on old facts (AAP 0.5.7).
- */
+/** The four facts about a viewer-and-target pair that decide its tier: a snapshot of one {@link pairFacts} call, never cached, because
+ * a stale tier is a disclosure decision taken on old facts. */
 export type PairFacts = {
   /** A block row in either direction between the two users (AAP 0.5.4). */
   blocked: boolean;
@@ -34,7 +29,6 @@ export type PairFacts = {
   messageable: boolean;
 };
 
-/** The single row {@link pairFacts} selects; column names are PostgreSQL's, so they stay snake_case. */
 interface PairFactsRow {
   blocked: boolean;
   completed_count: number | bigint;
@@ -44,14 +38,12 @@ interface PairFactsRow {
 
 /** One row of {@link pairFactsFor}'s page statement: the four facts, plus the id they belong to. */
 interface PagePairFactsRow extends PairFactsRow {
-  /** The target the row's facts are about, as PostgreSQL renders a uuid: lowercase and canonical. */
   target_id: string;
 }
 
 /**
- * Maps a pair's facts onto its disclosure tier (AAP 0.5.7): pure and total, so the whole rule lives in one
- * place. A block outranks a long history — two completed meetups plus a block still answer `'blocked'` —
- * because meeting a blocked person is unsafe and the pair's history is no reason to keep disclosing.
+ * Maps a pair's facts onto its disclosure tier: pure and total, so the whole rule lives in one place. A block outranks a long history —
+ * two completed meetups plus a block still answer `'blocked'` — because meeting a blocked person is unsafe.
  */
 export function tierFrom(facts: PairFacts): TierResult {
   if (facts.blocked) {
@@ -67,22 +59,20 @@ export function tierFrom(facts: PairFacts): TierResult {
 }
 
 /**
- * True when two ids name the same user, tolerating case: every key in these tables is a lowercase canon-
- * ical uuid while a user id can reach a route as caller-supplied path text in any case, and normalizing
- * both sides keeps "a user sees all of their own fields" true for a capitalized own id.
+ * True when two ids name the same user, tolerating case: every key in these tables is a lowercase canonical uuid while a user id can
+ * reach a route as caller-supplied path text in any case, and normalizing both sides keeps "a user sees all of their own fields" true
+ * for a capitalized own id.
  */
 function sameUser(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
 /**
- * Reads the four facts about a viewer-and-target pair in one round trip (AAP 0.5.7): a single `SELECT`
- * with no `FROM` — four scalar sub-expressions PostgreSQL evaluates once — so it is one parameterized
- * statement returning exactly one row. Only ids are parameters: the status words are written into the SQL
- * text because a bound `text` parameter compared against an enum column has no operator, and those
- * literals come from the shared status values and never vary. Read-only, so it is safe inside a caller's
- * transaction (AAP 0.3.2), and the meetups are matched with an explicit `OR` over `initiator_id` and
- * `recipient_id` so the ordinary indexes on those columns serve the lookup.
+ * Reads the four facts about a viewer-and-target pair in one round trip: a single `SELECT` with no `FROM` — four scalar sub-expressions
+ * PostgreSQL evaluates once — so it is one parameterized statement returning exactly one row. Only ids are parameters: the status words
+ * are written into the SQL text because a bound `text` parameter compared against an enum column has no operator, and they come from the
+ * shared status values. Read-only, so it is safe inside a caller's transaction, and the meetups are matched with an explicit `OR` over
+ * `initiator_id` and `recipient_id` so the ordinary indexes on those columns serve the lookup.
  */
 export async function pairFacts(
   db: RawSqlClient,
@@ -133,14 +123,12 @@ export async function pairFacts(
 }
 
 /**
- * Reads the four facts of a whole page of viewer-and-target pairs in one round trip (AAP 0.5.7): the same
- * `EXISTS` block subquery, `pair_history` count and two meetup tests as {@link pairFacts}, so a page costs
- * one statement instead of one per row.
+ * Reads the four facts of a whole page of viewer-and-target pairs in one round trip: the same `EXISTS` block subquery, `pair_history`
+ * count and two meetup tests as {@link pairFacts}, so a page costs one statement instead of one per row.
  *
- * The `pair_history` key is rebuilt with `LEAST`/`GREATEST` because one statement cannot call
- * {@link pairOrder}, and stored ids are lowercase canonical uuids, which `LEAST` orders the same way. A
- * self id must not be passed: a user against themselves has no row in either table, so their facts would
- * come back as "no block, no history" and `tierFrom` would answer 0 where their own view is 3.
+ * The `pair_history` key is rebuilt with `LEAST`/`GREATEST` because one statement cannot call {@link pairOrder}, and stored ids are
+ * lowercase canonical uuids, which `LEAST` orders the same way. A self id must not be passed: a user against themselves has no row in
+ * either table, so their facts would come back as "no block, no history" and `tierFrom` would answer 0 where their own view is 3.
  */
 export async function pairFactsFor(
   db: RawSqlClient,
@@ -198,9 +186,8 @@ export async function pairFactsFor(
 }
 
 /**
- * Decides the disclosure tier of a viewer toward a target: a user's own row is never gated and answers 3
- * without a query, because all four tiers' fields are the user's own; every other pair is measured by
- * {@link pairFacts} and mapped by {@link tierFrom}.
+ * Decides the disclosure tier of a viewer toward a target: a user's own row is never gated and answers 3 without a query, because all
+ * four tiers' fields are the user's own; every other pair is measured by {@link pairFacts} and mapped by {@link tierFrom}.
  */
 export async function computeTier(
   db: RawSqlClient,
@@ -210,10 +197,8 @@ export async function computeTier(
   return sameUser(viewerId, targetId) ? 3 : tierFrom(await pairFacts(db, viewerId, targetId));
 }
 
-/**
- * Whether the viewer may message the target: the gate is a property of the pair, not of the target — a
- * block closes it in either direction, and it stays closed for a user against themselves (AAP 0.5.4).
- */
+/** Whether the viewer may message the target: the gate is a property of the pair, not of the target — a block closes it in either
+ * direction, and it stays closed for a user against themselves. */
 export function canMessageFrom(facts: PairFacts, viewerId: string, targetId: string): boolean {
   return !facts.blocked && facts.messageable && !sameUser(viewerId, targetId);
 }

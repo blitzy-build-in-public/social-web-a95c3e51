@@ -1,20 +1,18 @@
 /**
  * The web client's per-route title and description table.
  *
- * Expo Router mounts its navigation container with `documentTitle: { enabled: false }`, so the `title` a screen passes to
- * `<Stack.Screen>` never reaches the document, and the web export is a single `index.html` whose only title is the app's
- * name — leaving a browser tab, a shared link's preview and a crawler nothing route-specific to read. The title and the
- * description therefore come from the current pathname, which is what this table maps.
- *
+ * Expo Router mounts its navigation container with `documentTitle: { enabled: false }`, so the `title` a screen passes
+ * to `<Stack.Screen>` never reaches the document, and the web export is a single `index.html` whose only title is the
+ * app's name — leaving a browser tab, a shared link's preview and a crawler nothing route-specific to read. The title
+ * and the description therefore come from the current pathname, which is what this table maps.
  * Every title below mirrors the wording the route's own header already shows, so the tab, the page header and a link
- * preview never disagree about what a screen is called; a dynamic route takes the wording its screen falls back to before
- * the record it names has loaded. Pure by design: no React, no platform module and no I/O.
+ * preview never disagree about what a screen is called; a dynamic route takes the wording its screen falls back to
+ * before the record it names has loaded. Pure by design: no React, no platform module and no I/O.
  */
 import { MAGIC_LINK_PATH } from '@tablemate/shared';
 
 /** The app's name: the title of a pathname the table does not match, and the brand it belongs to. */
 export const APP_NAME = 'Tablemate';
-
 /**
  * What the document head says about one route.
  */
@@ -25,13 +23,6 @@ export interface RouteMeta {
   readonly description: string;
 }
 
-/**
- * The routes whose pathname carries no parameter, keyed by that pathname.
- *
- * A plain record rather than a `Map`, so the table reads as one row per route; `Object.hasOwn`
- * guards the lookup, because a record answers for its prototype's keys too and `/constructor` is a
- * pathname any caller may pass.
- */
 const EXACT_ROUTES: Readonly<Record<string, RouteMeta>> = {
   '/': {
     title: APP_NAME,
@@ -142,18 +133,9 @@ const EXACT_ROUTES: Readonly<Record<string, RouteMeta>> = {
     description: 'Signs you in with a one-time email link, and no password.',
   },
 };
-
 /** One row of {@link PATTERN_ROUTES}: the pathname it matches and the metadata it returns. */
 type PatternRow = readonly [pattern: string, meta: RouteMeta];
 
-/**
- * The routes that name a record, most specific first.
- *
- * Order is the whole of the matching rule here: a pattern is tried against the pathname's segments
- * from the top, so `/meetups/42/chat` is answered by its own row rather than by `/meetups/:id`. The
- * rows a pathname could also reach literally (`/lodgings/claim`, `/meetups/propose`) are in
- * {@link EXACT_ROUTES}, which is searched before this table.
- */
 const PATTERN_ROUTES: readonly PatternRow[] = [
   [
     '/meetups/:id/suggestions',
@@ -200,7 +182,6 @@ const PATTERN_ROUTES: readonly PatternRow[] = [
     },
   ],
 ];
-
 /** What an unmatched pathname gets: the app's name, and one line on what the app is. */
 const FALLBACK: RouteMeta = {
   title: APP_NAME,
@@ -209,12 +190,6 @@ const FALLBACK: RouteMeta = {
     'partner venue, with a small refundable deposit holding the seat.',
 };
 
-/**
- * The pathname in the form both tables are keyed by: no query, no fragment, no trailing slash.
- *
- * `/meetups/42?tab=chat` and `/meetups/42/` both become `/meetups/42`, because a route's metadata
- * belongs to the route and not to what a link appended to it.
- */
 function withoutQueryOrTrailingSlash(pathname: string): string {
   const path = pathname.split(/[?#]/)[0] ?? '';
   const trimmed = path.replace(/\/+$/, '');
@@ -235,16 +210,6 @@ function matchesPattern(pattern: readonly string[], pathname: readonly string[])
   );
 }
 
-/**
- * The title and description of the route a pathname names.
- *
- * The pathname is normalised first, then matched most-specific-first: an exact pathname from
- * {@link EXACT_ROUTES}, then the parameterised patterns from {@link PATTERN_ROUTES} in their own
- * order. A pathname that matches neither -- a stale link, a path the app does not serve -- gets
- * {@link FALLBACK} rather than an empty title.
- *
- * a fragment or a trailing slash.
- */
 export function routeMeta(pathname: string): RouteMeta {
   const path = withoutQueryOrTrailingSlash(pathname);
   const exact = Object.hasOwn(EXACT_ROUTES, path) ? EXACT_ROUTES[path] : undefined;

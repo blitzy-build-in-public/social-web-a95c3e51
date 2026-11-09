@@ -13,9 +13,7 @@ import { transact } from '../outbox/write.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
-/**
- * A version mismatch's message: the client renders its own sentence for the code, so this is constant.
- */
+/** A version mismatch's message: the client renders its own sentence for the code, so this is constant. */
 const STALE_TERMS_MESSAGE = 'The terms have changed. Review and accept the current version.';
 
 /**

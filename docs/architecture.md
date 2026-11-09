@@ -368,8 +368,8 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
-substitutions below. The run added fifty-four tracked paths the table does not name, each required by an AAP
-requirement or by the toolchain and every one of them recorded here: the fifty-three in the list below, and
+substitutions below. The run added fifty-six tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the fifty-five in the list below, and
 `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -405,24 +405,15 @@ requirement or by the toolchain and every one of them recorded here: the fifty-t
 - **`apps/api/test/support/voice-simulator/scenarios/{drop-before-prompt,machine,wants-human}.json`** — three
   fixtures beyond the twelve the plan lists for that directory; `docs/voice-agent.md` records each one's play status.
 - **`tsconfig.json`, `apps/mobile/app/{index,+native-intent}.tsx`, `apps/mobile/src/api/server-clock.ts`,
-  `apps/mobile/test/{server-clock,prover-worker,chat-socket-credential}.test.ts`,
-  `apps/mobile/e2e/maestro/config.yaml`,
-  `apps/mobile/modules/tablemate-prover/rust/src/bin/{ios,android}.rs`** — ten further paths the plan's table
+  `apps/mobile/test/{server-clock,prover-worker}.test.ts`, `apps/mobile/e2e/maestro/config.yaml`,
+  `apps/mobile/modules/tablemate-prover/rust/src/bin/{ios,android}.rs`** — nine further paths the plan's table
   does not name: the root solution `tsconfig.json`, which the plan's root-files row omits and which the `build`
   and `typecheck` scripts build the six composite projects through (`tsc -b tsconfig.json`); the Expo Router
   entry route `app/index.tsx` and the `+native-intent.tsx` hook that answers a share-sheet file URL and the
-  Stripe return URL before the router navigates; the client server clock and the proving Worker's published-URL
-  artefact source with the two suites covering them, and the unit suite of `apps/mobile/src/api/ws.ts`, the chat
-  socket's credential lifecycle: an attempt opens only for a session the app already holds, the installed
-  `AuthHooks.ensureSession` being awaited first exactly as `./client` awaits it before its first authenticated
-  read; a write is never made on a socket whose admitted token a session rotation has replaced, the frame being
-  written again on the socket the reconnect opens, up to the module's `RESEND_LIMIT`, and cleared by the server's
-  echo of the stored message; and an upgrade the server refuses before the socket opens escalates to exactly one
-  rotation instead of retrying the same credential for ever, which the suite drives against fake auth hooks and a
-  stub `WebSocket`, because `src/auth/session.ts` cannot be imported from a Node test process — its extensionless
-  `./storage` import has a Metro-resolved per-platform half only; the Maestro workspace config that fixes the
-  order the native flows run in, which the magic-link budget requires; and the two mopro build wrappers the
-  prover crate's iOS and Android binding generation runs.
+  Stripe return URL before the router navigates; the client server clock and the two suites covering it and the
+  proving Worker's published-URL artefact source; the Maestro workspace config that fixes the order the native
+  flows run in, which the magic-link budget requires; and the two mopro build wrappers the prover crate's iOS
+  and Android binding generation runs.
 - **`apps/api/src/plugins/compression.ts`, `apps/api/test/unit/compression.test.ts`** — a ninth plugin beside the
   eight the plan's API-bootstrap row names, and a thirteenth suite beside the twelve its `apps/api/test/unit` row
   names: a root `onSend` stage on `node:zlib` that encodes a body of 1 KiB or more whose media type is text, JSON
@@ -539,6 +530,20 @@ requirement or by the toolchain and every one of them recorded here: the fifty-t
   one case per kind of cause, published while the snapshot stays `loading`, repeated without a second
   notification, and cleared by a later answer or by a sign-in or sign-out — which is what lets a screen act on a
   failure instead of holding its loading placeholder (AAP 0.5.4).
+- **`apps/mobile/public/favicon.ico`, `apps/mobile/test/chat-socket-credential.test.ts`,
+  `apps/mobile/test/meetup-deposit-framing.test.ts`** — three paths added after the plan was written, each of them
+  required by an AAP requirement the plan's rows leave unnamed. The icon is the asset the web export serves at the
+  export's root, which the plan's `apps/mobile` rows leave to Expo's own defaults and which `app.config.ts` records
+  as copied verbatim from this path: `infra/nginx/web.conf` answers the request from the entry document either way,
+  so its absence would not fail the request, only fill it with the wrong document. The second is the suite of the
+  chat socket's credential lifecycle — an attempt opening only for a session the app already holds, no write made
+  on a socket a rotation has replaced, one the server refuses for that reason written again on the socket the
+  reconnect opens and cleared by the server's echo of the stored message, and an upgrade refused before the socket
+  opens escalating to exactly one rotation rather than retrying a retired credential (AAP 0.3.3, 0.5.4, 0.11.2).
+  The third is the suite of the meetup screen's deposit-framing decision table, one table-driven case per
+  `MeetupStatus`, because the copy AAP 0.5.7 requires on every deposit screen and deposit notification and AAP
+  0.5.8 always shows by the viewer's variant hangs on that table: a verdict flipped by accident would drop it
+  silently, or frame a deposit that was never held (AAP 0.5.7, 0.5.8).
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

@@ -1,6 +1,6 @@
 /**
- * The one action-button primitive every Tablemate screen places (AAP 0.5.8): a screen's primary action, a secondary
- * action beside it, or a destructive one.
+ * The one action-button primitive every screen places (AAP 0.5.8). Its accessible name is always the visible label;
+ * `role`/`aria-label` reach `accessibility*` on native and ARIA in the DOM on web.
  *
  * Its accessible name is always the visible label: `role` and `aria-label` reach
  * `accessibilityRole`/`accessibilityLabel`/`accessibilityState` on iOS and Android and ARIA in the DOM on web, and a
@@ -31,11 +31,7 @@ import {
   typography,
 } from '@tablemate/shared';
 import type { ColorToken } from '@tablemate/shared';
-
-/**
- * The three button roles. `primary` is the screen's main action, `secondary` an alternative
- * offered beside it, `danger` an irreversible or data-destroying action.
- */
+/** The three roles: `primary` the screen's main action, `secondary` an alternative beside it, `danger` an irreversible one. */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger';
 
 /**
@@ -47,15 +43,10 @@ export type ButtonVariant = 'primary' | 'secondary' | 'danger';
  * variant.
  */
 export interface ButtonProps {
-  /** Visible text, and the accessible name of the control. */
   label: string;
-  /** Invoked on press. Never called while `disabled` or `busy`. */
   onPress: () => void;
-  /** Role of the action. Defaults to `primary`. */
   variant?: ButtonVariant;
-  /** Renders the disabled state, blocks the press and is announced as dimmed. */
   disabled?: boolean;
-  /** Shows a spinner beside the label and blocks the press while an action is in flight. */
   busy?: boolean;
   /**
    * Whether the region this button opens is open. It is reported as the open state of a disclosure
@@ -73,7 +64,6 @@ export interface ButtonProps {
   controls?: string;
   /** Native accessibility hint. Not used on web, which has no ARIA equivalent. */
   hint?: string;
-  /** Test id, forwarded to the pressable (`data-testid` in the DOM on web). */
   testID?: string;
   /** Layout only — margin, `alignSelf`, `flex`. Never a colour. */
   style?: StyleProp<ViewStyle>;
@@ -137,24 +127,16 @@ const styles = StyleSheet.create({
   dangerLabel: { color: colors.onDanger },
   disabled: { backgroundColor: colors.surface, borderColor: colors.border },
   disabledLabel: { color: colors.textMuted },
-  // The ring is this reserved band rather than an added one, which is what keeps the layout still:
-  // React Native 0.76 exposes no outline style of its own and `webFocusRingReset` keeps the
-  // browser's focus outline off the band on web, so the band is the ring a keyboard user sees.
+  // The ring is this reserved band rather than an added one, which is what keeps the layout still.
   focused: { borderColor: colors.focusRing },
   pressedFilled: { opacity: interactionOpacity.pressed },
   pressedOutlined: { backgroundColor: colors.surface },
-  // How each variant answers the pointer: a filled one dims by the token's `hover` opacity, which
-  // is the step above its press, and the outlined one — whose own fill is already the lightest
-  // token — takes the `surface` fill its press paints.
+  // A filled variant dims by the token's `hover` opacity, the step above its press; an outlined one takes the `surface` fill its press paints.
   hoveredFilled: { opacity: interactionOpacity.hover },
   hoveredOutlined: { backgroundColor: colors.surface },
 });
 
-/**
- * What a variant supplies. `labelToken` names the label colour, so the spinner can take the same
- * one without a second table; the pairs are `onPrimary`/`primary`, `text`/`background` and
- * `onDanger`/`danger`.
- */
+// `labelToken` names the label colour, so the spinner takes the same one without a second table.
 interface VariantSpec {
   readonly container: StyleProp<ViewStyle>;
   readonly label: StyleProp<TextStyle>;
@@ -187,10 +169,6 @@ const VARIANTS: Record<ButtonVariant, VariantSpec> = {
   },
 };
 
-/**
- * An accessible action button. See {@link ButtonProps} for the contract and the module doc for the
- * accessibility and contrast guarantees.
- */
 export function Button({
   label,
   onPress,
@@ -207,21 +185,15 @@ export function Button({
   const [hovered, setHovered] = useState(false);
   const handleFocus = useCallback(() => setFocused(true), []);
   const handleBlur = useCallback(() => setFocused(false), []);
-  // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-  // react-native-web forwards it to its hover hook, while iOS and Android never fire it, which is
-  // what a state only a pointer can reach should do.
+  // Hover is a web-only state: React Native 0.76 declares the pair and react-native-web forwards it to its hover hook; iOS and Android never fire it.
   const handleHoverIn = useCallback(() => setHovered(true), []);
   const handleHoverOut = useCallback(() => setHovered(false), []);
   const variantSpec = VARIANTS[variant];
-  // A busy button refuses presses exactly as a disabled one does, while keeping the variant's
-  // colours so the action still reads as running rather than as unavailable.
+  // A busy button refuses presses as a disabled one does, while keeping the variant's colours so the action still reads as running.
   const inactive = disabled || busy;
-  // An inactive control is unfocusable, and web takes focus off it without firing a blur event, so
-  // the flags above would otherwise stay set: a ring or a hover fill painted on a control nothing is
-  // pointing at, and painted again the moment an edit re-enables the button. The clear rides a 0 ms
-  // timer because `react-hooks/set-state-in-effect` refuses a synchronous state update in an effect
-  // body; the cancellable timer is this codebase's answer to that rule (`app/meetups/propose.tsx`),
-  // and a button that re-activates before the tick keeps the state it has.
+  // An inactive control is unfocusable, and web takes focus off it without firing a blur, so the flags above
+  // would stay set; the clear rides a 0 ms timer because `react-hooks/set-state-in-effect` refuses a
+  // synchronous state update in an effect body.
   useEffect(() => {
     if (!inactive) return undefined;
     const clear = setTimeout(() => {
@@ -250,8 +222,7 @@ export function Button({
       onBlur={handleBlur}
       onHoverIn={handleHoverIn}
       onHoverOut={handleHoverOut}
-      // `hint` has no ARIA equivalent and `testID` renders as `data-testid`, so each is attached
-      // only when a caller supplies one rather than as an explicit `undefined` prop.
+      // `hint` has no ARIA equivalent and `testID` renders as `data-testid`, so each is attached only when supplied.
       {...(hint === undefined ? {} : { accessibilityHint: hint })}
       {...(testID === undefined ? {} : { testID })}
       {...disclosureAria}

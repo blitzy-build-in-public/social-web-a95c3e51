@@ -190,11 +190,8 @@ async function expectNoMoneyMoved(meetupId: string) {
 }
 
 /**
- * The provider's own record of the meetup's holds, read in the mock topology alone (AAP 0.3.2).
- *
- * A release of ours is the one cancellation reason that leaves a deposit `released` rather than
- * `expired`, so the reason is asserted with the status (AAP 0.5.3). In `test` mode the provider's
- * objects are the operator's and this reads nothing; the rows above cover the same rule there.
+ * The provider's own record of the meetup's holds, read in the mock topology alone (AAP 0.3.2). A release of ours is the one cancellation reason that
+ * leaves a deposit `released` rather than `expired`, so the reason is asserted with the status (AAP 0.5.3); in `test` mode this reads nothing.
  */
 async function expectHoldsCancelledByUs(meetupId: string): Promise<void> {
   const proxy = t.stripe.proxy;

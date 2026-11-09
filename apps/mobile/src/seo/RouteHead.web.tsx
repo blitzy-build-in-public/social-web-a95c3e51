@@ -10,9 +10,7 @@
 import type { ReactElement } from 'react';
 import { usePathname } from 'expo-router';
 import Head from 'expo-router/head';
-
 import { routeMeta } from './route-meta';
-
 /**
  * The two Open Graph attributes a `meta` element carries.
  *
@@ -21,7 +19,6 @@ import { routeMeta } from './route-meta';
  * which is the spelling a link preview reads.
  */
 type OgMeta = Readonly<{ property: string; content: string }>;
-
 /**
  * One Open Graph pair.
  *
@@ -39,7 +36,6 @@ function ogMeta(property: string, content: string): OgMeta {
  * a navigation re-renders it, and `Head` writes the new values over the old ones. There is no
  * `document.title` write here and no effect to order against React's own rendering, because the
  * framework's head support is the mechanism.
- *
  */
 export function RouteHead(): ReactElement {
   const pathname = usePathname();

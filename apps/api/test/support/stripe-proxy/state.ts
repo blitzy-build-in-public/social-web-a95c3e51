@@ -1,39 +1,32 @@
 /**
  * The state of the stateful Stripe proxy, and the test-side helpers that drive it (AAP 0.3.3, 0.4.2).
  *
- * `stripe-mock` v0.206.0 validates a Stripe request but keeps nothing: it cannot answer with the
- * PaymentIntent a caller just created, replay an `Idempotency-Key`, or emit an event. Everything the
- * integration suites need on top of validation lives here, and `./server.ts` forwards each request to
- * `stripe-mock` for validation before answering from this state — so `STRIPE_MODE=mock` exercises the
- * real gateway over HTTP with no credential at all (AAP 0.6.2, AAP 0.11.2).
+ * `stripe-mock` v0.206.0 validates a Stripe request but keeps nothing: it cannot answer with the PaymentIntent a
+ * caller just created, replay an `Idempotency-Key`, or emit an event. Everything the integration suites need on top
+ * of validation lives here, so `STRIPE_MODE=mock` exercises the real gateway over HTTP with no credential (AAP 0.6.2).
  */
 
 import { createHmac, randomBytes } from 'node:crypto';
 
 import type { HandledStripeEventType } from '@tablemate/shared';
 
-// Type-only, and taken from the module that builds the instance: `App` is the plan's one declaration
-// of the app's type, it is erased under `verbatimModuleSyntax`, and nothing of `app.ts` is read here
-// at runtime (the same import the sibling test-support modules take).
+// Type-only, and taken from the module that builds the instance: `App` is the plan's one declaration of the app's
+// type, and nothing of `app.ts` is read here at runtime.
 import type { App } from '../../../src/app.ts';
 
-/*
- * Pins and fixtures (AAP 0.2.4, AAP 0.4.2)
- */
+// Pins and fixtures (AAP 0.2.4, AAP 0.4.2)
 
 /**
- * The Stripe API version every event reports, and the default `stripe-version` response header
- * `./server.ts` sends: the version `stripe` 23.1.0 is pinned to (AAP 0.2.4, AAP 0.3.1).
+ * The Stripe API version every event reports, and the default `stripe-version` response header `./server.ts` sends:
+ * the version `stripe` 23.1.0 is pinned to (AAP 0.2.4, AAP 0.3.1).
  */
 export const PROXY_API_VERSION = '2026-10-28.endive';
 
 /**
- * How long a hold stays capturable, in seconds: seven days (AAP 0.2.4).
- *
- * A hold is placed on-session and customer-initiated, which is the window Visa, Mastercard and
- * American Express give such an authorization; the merchant-initiated window (about five days for
- * Visa) is shorter than the five days a meetup may start after its proposal, so it is never used.
- * `capture_before` is `authorization + this`.
+ * How long a hold stays capturable, in seconds: seven days (AAP 0.2.4). A hold is placed on-session and
+ * customer-initiated, which is the window Visa, Mastercard and American Express give such an authorization; the
+ * merchant-initiated window (about five days for Visa) is shorter than the five days a meetup may start after its
+ * proposal, so it is never used. `capture_before` is `authorization + this`.
  */
 export const HOLD_VALIDITY_SEC = 7 * 24 * 3600;
 
@@ -41,8 +34,8 @@ export const HOLD_VALIDITY_SEC = 7 * 24 * 3600;
 export const CONTROL_PREFIX = '/__proxy';
 
 /**
- * Stripe's published test card ids, which `./server.ts` passes through to
- * `POST /v1/payment_methods/:id/attach` and a suite passes to a control.
+ * Stripe's published test card ids, which `./server.ts` passes through to `POST /v1/payment_methods/:id/attach` and a
+ * suite passes to a control.
  */
 export const TEST_CARDS = {
   visa: 'pm_card_visa',
@@ -54,9 +47,8 @@ export const TEST_CARDS = {
 export type TestCardId = (typeof TEST_CARDS)[keyof typeof TEST_CARDS];
 
 /**
- * How each card fixture answers a confirmation: the outcome and the last four digits the card and its
- * charge report (AAP 0.3.2). One table drives both, so a fixture cannot report one card's digits with
- * another card's outcome.
+ * How each card fixture answers a confirmation: the outcome and the last four digits the card and its charge report
+ * (AAP 0.3.2). One table drives both, so a fixture cannot report one card's digits with another card's outcome.
  */
 const CARD_SPECS: Readonly<
   Record<
@@ -84,9 +76,9 @@ const AUTHENTICATION_FAILED_CODE = 'payment_intent_authentication_failure';
 const AUTHENTICATION_FAILED_MESSAGE = 'Your card was not authenticated.';
 
 /**
- * The two reasons Stripe itself cancels an authorization with, as opposed to
- * `OUR_CANCELLATION_REASON`: an abandoned 3-D Secure step, and an authorization that ran past its
- * capture deadline. Either one means the hold was lost rather than released (AAP 0.2.4, AAP 0.3.2).
+ * The two reasons Stripe itself cancels an authorization with, as opposed to `OUR_CANCELLATION_REASON`: an
+ * abandoned 3-D Secure step, and an authorization that ran past its capture deadline. Either one means the hold was
+ * lost rather than released (AAP 0.2.4, AAP 0.3.2).
  */
 const CANCELLATION_ABANDONED = 'abandoned';
 const CANCELLATION_EXPIRED = 'expired';
@@ -106,10 +98,8 @@ const ID_LENGTH = 24;
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
 /*
- * Stripe object shapes (AAP 0.3.3, AAP 0.5.3)
- *
- * Each carries the fields the gateway, the webhook handler and the suites read, and `livemode` is
- * always false because no mode but a test ever reaches this state.
+ * Stripe object shapes (AAP 0.3.3, AAP 0.5.3), each carrying the fields the gateway, the webhook handler and the
+ * suites read; `livemode` is always false because no mode but a test ever reaches this state.
  */
 
 /** A Stripe customer, always created with no email, name or phone (AAP 0.1.1, AAP 0.3.2). */
@@ -122,9 +112,8 @@ export interface StripeCustomer {
   /** The card the gateway authorizes against when it is set, else the newest saved card. */
   invoice_settings: { default_payment_method: string | null };
   /**
-   * Set by `DELETE /v1/customers/:id`. A retrieve still answers a deleted customer as this stub
-   * rather than a `404`, which is what the gateway's `selectPaymentMethod` reads to report
-   * `no_saved_card` (AAP 0.3.2, AAP 0.5.3 `delete_customer`).
+   * Set by `DELETE /v1/customers/:id`. A retrieve still answers a deleted customer as this stub rather than a `404`,
+   * which is what the gateway's `selectPaymentMethod` reads to report `no_saved_card` (AAP 0.3.2).
    */
   deleted?: true;
 }
@@ -170,9 +159,8 @@ export interface StripeEphemeralKey {
 }
 
 /**
- * The charge behind a hold. Its `payment_method_details.card.capture_before` is the field
- * `Deposit.captureBefore` records, and it is only ever read from an expanded `latest_charge`
- * (AAP 0.2.4, AAP 0.5.2).
+ * The charge behind a hold. Its `payment_method_details.card.capture_before` is the field `Deposit.captureBefore`
+ * records, and it is only ever read from an expanded `latest_charge` (AAP 0.2.4, AAP 0.5.2).
  */
 export interface StripeCharge {
   readonly id: string;
@@ -201,10 +189,9 @@ export interface StripeCharge {
 }
 
 /**
- * A PaymentIntent: one hold attempt, one retry or one superseded attempt (AAP 0.3.2, AAP 0.5.3).
- *
- * `latest_charge` is stored as the charge's id and only a response expands it, so a stored snapshot
- * and an event payload always carry the id — which is the rule the webhook handler correlates by.
+ * A PaymentIntent: one hold attempt, one retry or one superseded attempt (AAP 0.3.2, AAP 0.5.3). `latest_charge` is
+ * stored as the charge's id and only a response expands it, so a stored snapshot and an event payload always carry the
+ * id — the rule the webhook handler correlates by.
  */
 export interface StripePaymentIntent {
   readonly id: string;
@@ -255,9 +242,8 @@ export interface StripeRefund {
 }
 
 /**
- * One recorded event, in the shape `stripe.webhooks.constructEvent` and the handler's own
- * normalization read (AAP 0.3.3). `type` is a {@link HandledStripeEventType}, so only a type the API
- * applies can be recorded at all.
+ * One recorded event, in the shape `stripe.webhooks.constructEvent` and the handler's own normalization read
+ * (AAP 0.3.3). `type` is a {@link HandledStripeEventType}, so only a type the API applies can be recorded at all.
  */
 export interface StripeEvent {
   readonly id: string;
@@ -294,10 +280,9 @@ export interface StateResponse {
 }
 
 /**
- * The parsed parameters of one Stripe request — form fields or query parameters, as `./server.ts`
- * produces them. Every Stripe scalar arrives as a string, so `'true'` is a boolean and an amount is a
- * decimal string; repeated keys (`expand[]=…`, `metadata[meetupId]=…`) arrive as an array or an
- * object.
+ * The parsed parameters of one Stripe request — form fields or query parameters, as `./server.ts` produces them.
+ * Every Stripe scalar arrives as a string, so `'true'` is a boolean and an amount is a decimal string; repeated keys
+ * (`expand[]=…`, `metadata[meetupId]=…`) arrive as an array or an object.
  */
 export type FormValue = string | FormValue[] | { [key: string]: FormValue };
 
@@ -312,17 +297,14 @@ export interface StripeRequest {
 }
 
 /**
- * One injected transport fault (AAP 0.11.2).
- *
- * `path` is exact or uses `*` for one path segment, and the query string is ignored; `method` is
- * compared upper-case. A rule is consumed by the first request it matches.
+ * One injected transport fault (AAP 0.11.2). `path` is exact or uses `*` for one path segment, and the query string
+ * is ignored; `method` is compared upper-case. A rule is consumed by the first request it matches.
  */
 export interface FaultRule {
   /**
-   * `drop` and `delay` are ambiguous failures: `./server.ts` performs the request and then destroys
-   * the socket, or answers after `ms`, so the effect is durable while the caller sees a timeout —
-   * which is what a reconciliation test needs. `fail` is a definite one: the request is never
-   * performed and `status` is answered instead.
+   * `drop` and `delay` are ambiguous failures: `./server.ts` performs the request and then destroys the socket, or
+   * answers after `ms`, so the effect is durable while the caller sees a timeout. `fail` is a definite one: the
+   * request is never performed and `status` is answered instead.
    */
   readonly kind: 'drop' | 'delay' | 'fail';
   readonly method: string;
@@ -366,8 +348,8 @@ function clientSecretFor(id: string): string {
 }
 
 /**
- * Whether `value` is one of {@link TEST_CARDS}' ids. Narrowing on it is what lets a stored card and a
- * card fixture be told apart without a second lookup.
+ * Whether `value` is one of {@link TEST_CARDS}' ids. Narrowing on it tells a stored card and a card fixture apart
+ * without a second lookup.
  */
 function isTestCard(value: string): value is TestCardId {
   return Object.values(TEST_CARDS).some((id) => id === value);
@@ -433,9 +415,8 @@ function ok(body: unknown): StateResponse {
 }
 
 /**
- * Stripe's `404` for an identifier it does not hold. `param` names the request parameter that
- * referenced it, which is what a suite asserts on: an unknown `payment_method` reports
- * `payment_method`, not `id`.
+ * Stripe's `404` for an identifier it does not hold. `param` names the request parameter that referenced it, which is
+ * what a suite asserts on: an unknown `payment_method` reports `payment_method`, not `id`.
  */
 function missing(kind: string, id: string, param = 'id'): StateResponse {
   return {
@@ -463,15 +444,13 @@ function refused(code: string, message: string): StateResponse {
   return { status: 400, body: errorBody('invalid_request_error', message, { code }) };
 }
 
-/*
- * The state (AAP 0.3.2, AAP 0.11.2)
- */
+// The state (AAP 0.3.2, AAP 0.11.2)
 
 /** What {@link createProxyState} may be handed. */
 export interface ProxyStateOptions {
   /**
-   * The wall clock in milliseconds, read only while `setNow` has pinned nothing. A suite that wants
-   * deterministic timestamps without pinning them replaces it (AAP 0.11.1).
+   * The wall clock in milliseconds, read only while `setNow` has pinned nothing. A suite that wants deterministic
+   * timestamps without pinning them replaces it (AAP 0.11.1).
    */
   readonly wallClock?: () => number;
 }
@@ -490,9 +469,8 @@ export type IdempotencyBegin =
   | { readonly kind: 'in_flight' };
 
 /**
- * A control the state refused: an identifier it does not hold (`404`) or an operation the object's
- * current status does not allow (`409`). `./server.ts` maps it to `{ error: { type: 'proxy_error',
- * message } }`, so a suite sees the refusal as a failed control rather than as a Stripe error.
+ * A control the state refused: an identifier it does not hold (`404`) or an operation the object's current status
+ * does not allow (`409`). `./server.ts` maps it to `{ error: { type: 'proxy_error', message } }`.
  */
 export class ProxyControlError extends Error {
   readonly status: 404 | 409;
@@ -504,24 +482,22 @@ export class ProxyControlError extends Error {
 }
 
 /**
- * One proxy's state: the Stripe resources it holds, the events it recorded, the idempotency keys it
- * remembers, the transport faults waiting for a request, and the clock a suite pins.
+ * One proxy's state: the Stripe resources it holds, the events it recorded, the idempotency keys it remembers, the
+ * transport faults waiting for a request, and the clock a suite pins.
  */
 export interface ProxyState {
   /** The proxy's current time in milliseconds: the pin when one is set, else the wall clock. */
   now(): number;
   /**
-   * Answer one Stripe request from this state, or `null` for a path it does not model — `./server.ts`
-   * then passes `stripe-mock`'s own answer through.
+   * Answer one Stripe request from this state, or `null` for a path it does not model — `./server.ts` then passes
+   * `stripe-mock`'s own answer through.
    */
   handleStripe(request: StripeRequest): StateResponse | null;
   /**
-   * Claim an idempotency key for a request (AAP 0.3.2).
-   *
-   * A key belongs to one `POST` and one canonical parameter set. `new` claims it and records it as in
-   * flight, so a concurrent duplicate is told `in_flight`; a later identical request `replay`s the
-   * answer {@link ProxyState.idempotencyComplete} stored, and different parameters are a `mismatch`.
-   * A `GET` or `DELETE` is always `new`, because Stripe ignores keys on them.
+   * Claim an idempotency key for a request (AAP 0.3.2). A key belongs to one `POST` and one canonical parameter set:
+   * `new` claims it and records it as in flight, so a concurrent duplicate is told `in_flight`; a later identical
+   * request `replay`s the stored answer, and different parameters are a `mismatch`. A `GET` or `DELETE` is always
+   * `new`, because Stripe ignores keys on them.
    */
   idempotencyBegin(
     key: string,
@@ -530,12 +506,10 @@ export interface ProxyState {
     params: StripeParams,
   ): IdempotencyBegin;
   /**
-   * Store the answer a claimed key now replays.
-   *
-   * Called for every answer a modelled endpoint produced, a decline and a refusal included — Stripe
-   * executed all of them, so a retry must see the same result. It is never called for an answer that
-   * came from validation or from a `fail` fault: those model a request Stripe never executed, so
-   * `./server.ts` aborts the claim instead and a retry performs the request.
+   * Store the answer a claimed key now replays. Called for every answer a modelled endpoint produced, a decline and a
+   * refusal included — Stripe executed all of them, so a retry must see the same result. It is never called for an
+   * answer that came from validation or from a `fail` fault: those model a request Stripe never executed, so
+   * `./server.ts` aborts the claim instead.
    */
   idempotencyComplete(key: string, response: StateResponse): void;
   /** Drop a claim, so the key is free and a retry performs the request. */
@@ -583,10 +557,8 @@ interface IdempotencyEntry {
 }
 
 /**
- * Build one proxy's state (AAP 0.3.3, AAP 0.11.2).
- *
- * State lives in this closure and nowhere else, so the module itself has no side effect and two
- * states in one process cannot see each other's customers, intents or events.
+ * Build one proxy's state (AAP 0.3.3, AAP 0.11.2). State lives in this closure and nowhere else, so the module has
+ * no side effect and two states in one process cannot see each other's customers, intents or events.
  */
 export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
   const wallClock = options.wallClock ?? ((): number => Date.now());
@@ -656,8 +628,8 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     return id === undefined ? undefined : charges.get(id);
   }
   /**
-   * One intent as a response body. `latest_charge` stays the stored id unless the request expanded
-   * it, and the expanded charge is cloned so a later capture cannot rewrite a body already returned.
+   * One intent as a response body. `latest_charge` stays the stored id unless the request expanded it, and the
+   * expanded charge is cloned so a later capture cannot rewrite a body already returned.
    */
   function serializeIntent(intent: StripePaymentIntent, expand: boolean): StripePaymentIntent {
     const copy = snapshot(intent);
@@ -680,10 +652,8 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     );
   }
   /**
-   * The card a confirmation uses when the request names none: the customer's default, else the
-   * newest saved card. Stripe reads a `confirm` against a customer's own card that way, so a hold
-   * placed by the gateway — which always names one — and one placed by a bare request agree
-   * (AAP 0.3.2).
+   * The card a confirmation uses when the request names none: the customer's default, else the newest saved card, which
+   * is how Stripe answers a `confirm` against a customer's own card (AAP 0.3.2).
    */
   function fallbackCard(customerId: string | null): string | null {
     if (customerId === null) return null;
@@ -698,9 +668,8 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     return cards[0]?.id ?? null;
   }
   /**
-   * Resolve the card a confirmation charges against: a stored card, or a test-card id cloned into a
-   * new `pm_…` attached to the customer, which is what Stripe's own test mode does with these ids. An
-   * id that is neither is `404 resource_missing`, the shape a stale `payment_method` has.
+   * Resolve the card a confirmation charges against: a stored card, or a test-card id cloned into a new `pm_…`
+   * attached to the customer, as Stripe's test mode does with these ids. An id that is neither is `404 resource_missing`.
    */
   function resolveCard(
     customerId: string | null,
@@ -767,9 +736,7 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     charges.set(charge.id, charge);
     return charge;
   }
-  /*
-   * The modelled endpoints (AAP 0.3.3, AAP 0.5.3)
-   */
+  // The modelled endpoints (AAP 0.3.3, AAP 0.5.3)
   function createCustomerResource(params: StripeParams): StateResponse {
     const customer = newCustomer(record(params, 'metadata'));
     customers.set(customer.id, customer);
@@ -976,11 +943,8 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
       : ok(serializeIntent(intent, expandHas(params, 'latest_charge')));
   }
   /**
-   * A customer's PaymentIntents, newest first.
-   *
-   * The gateway's own hold recovery lists them to find the intent of an attempt Stripe answered an
-   * idempotency conflict for (AAP 0.3.2), so the list has to hold what this state created rather than
-   * whatever `stripe-mock` would answer for a customer it never saw.
+   * A customer's PaymentIntents, newest first. The gateway's own hold recovery lists them to find the intent of an
+   * attempt Stripe answered an idempotency conflict for (AAP 0.3.2), so the list has to hold what this state created.
    */
   function listIntents(params: StripeParams): StateResponse {
     const customer = scalar(params, 'customer');
@@ -1050,9 +1014,7 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     recordEvent('charge.refunded', snapshot(charge));
     return ok(snapshot(refund));
   }
-  /*
-   * Routing (AAP 0.3.3)
-   */
+  // Routing (AAP 0.3.3)
 
   /** One modelled endpoint: the method, the path pattern and the handler that answers it. */
   interface Route {
@@ -1117,9 +1079,7 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     }
     return null;
   }
-  /*
-   * Idempotency (AAP 0.3.2)
-   */
+  // Idempotency (AAP 0.3.2)
   function idempotencyBegin(
     key: string,
     method: string,
@@ -1150,9 +1110,7 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
   function idempotencyAbort(key: string): void {
     idempotency.delete(key);
   }
-  /*
-   * Transport faults (AAP 0.11.2)
-   */
+  // Transport faults (AAP 0.11.2)
   function addFault(rule: FaultRule): void {
     faults.push(rule);
   }
@@ -1166,9 +1124,7 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     const [taken] = faults.splice(index, 1);
     return taken ?? null;
   }
-  /*
-   * Controls (AAP 0.11.2)
-   */
+  // Controls (AAP 0.11.2)
   function reset(): void {
     customers.clear();
     paymentMethods.clear();
@@ -1191,9 +1147,8 @@ export function createProxyState(options: ProxyStateOptions = {}): ProxyState {
     return intent;
   }
   /**
-   * Refuse a control the intent's status cannot apply to. Inventing the effect the test asked for
-   * would put a state in the proxy that Stripe could never report, and the suite would assert on it
-   * (AAP 0.11.2).
+   * Refuse a control the intent's status cannot apply to. Inventing the effect the test asked for would put a state
+   * in the proxy that Stripe could never report (AAP 0.11.2).
    */
   function requireStatus(
     intent: StripePaymentIntent,
@@ -1350,9 +1305,8 @@ export interface ControlRoute {
 }
 
 /**
- * The control routes, declared once for both sides: `./server.ts` routes by them and
- * {@link proxyControl} builds its requests from them, so a path renamed on one side can never leave
- * the other pointing at nothing.
+ * The control routes, declared once for both sides: `./server.ts` routes by them and {@link proxyControl} builds its
+ * requests from them, so a path renamed on one side can never leave the other pointing at nothing.
  */
 export const CONTROL_ROUTES: Readonly<Record<ControlName, ControlRoute>> = {
   health: { method: 'GET', path: `${CONTROL_PREFIX}/health` },
@@ -1395,11 +1349,9 @@ function matchesMetadata(
 }
 
 /**
- * The canonical form of a parameter tree: every object's keys sorted, recursively.
- *
- * Two requests that differ only in the order a client serialized their fields fingerprint the same,
- * which is what makes an idempotency comparison about the request rather than about its spelling
- * (AAP 0.3.2).
+ * The canonical form of a parameter tree: every object's keys sorted, recursively. Two requests that differ only in
+ * the order a client serialized their fields fingerprint the same, which is what makes an idempotency comparison
+ * about the request rather than about its spelling (AAP 0.3.2).
  */
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
@@ -1432,8 +1384,8 @@ function matchesPath(pattern: string, path: string): boolean {
  */
 
 /**
- * The typed client one Vitest worker drives the proxy with over HTTP, while the state itself lives in
- * the `globalSetup` process or in the compose service.
+ * The typed client one Vitest worker drives the proxy with over HTTP, while the state itself lives in the
+ * `globalSetup` process or in the compose service.
  */
 export interface ProxyControl {
   /** Stripe's published test card ids, re-exposed so a suite needs one import for both. */
@@ -1511,9 +1463,8 @@ async function failureDetail(response: Response): Promise<string> {
 }
 
 /**
- * Build the client one worker drives the proxy with.
- *
- * `baseUrl` is the control address `setup` published for this run's proxy.
+ * Build the client one worker drives the proxy with. `baseUrl` is the control address `setup` published for this
+ * run's proxy.
  */
 export function proxyControl(baseUrl: string): ProxyControl {
   const base = baseUrl.replace(/\/+$/, '');
@@ -1603,9 +1554,8 @@ export interface WebhookResponse {
  * Sign one webhook payload exactly as Stripe signs a delivery (AAP 0.3.2, AAP 0.3.3).
  *
  * `stripe.webhooks.constructEvent` inside `stripe-gateway.ts` checks this shape and nothing else: one
- * `t=<unix seconds>` and one `v1=<hex HMAC-SHA256 of "t.payload">`, with the timestamp inside its 300
- * second tolerance. The signature is over the bytes a caller sends, so a caller signs the exact
- * string it posts rather than a re-serialized object.
+ * `t=<unix seconds>` and one `v1=<hex HMAC-SHA256 of "t.payload">`, with the timestamp inside its 300 second
+ * tolerance. The signature is over the bytes a caller sends, so a caller signs the exact string it posts.
  */
 export function signStripePayload(payload: string, secret: string, tSec: number): string {
   const signature = createHmac('sha256', secret).update(`${tSec}.${payload}`).digest('hex');
@@ -1613,12 +1563,9 @@ export function signStripePayload(payload: string, secret: string, tSec: number)
 }
 
 /**
- * Deliver recorded events to the API's webhook endpoint, in the order given (AAP 0.3.2, AAP 0.11.2).
- *
- * The proxy never posts an event itself, because the order, the duplicates and the delay are what the
- * suite is testing: a replay of an already processed event, a historical `requires_capture` arriving
- * after a settlement, or the same event twice in one run are all cases here, and a provider-driven
- * delivery order would decide them instead of the test.
+ * Deliver recorded events to the API's webhook endpoint, in the order given (AAP 0.3.2, AAP 0.11.2). The proxy never
+ * posts an event itself, because the order, the duplicates and the delay are what the suite is testing: a replay of
+ * an already processed event, or a historical `requires_capture` arriving after a settlement, are cases here.
  */
 export async function deliverStripeEvents(
   app: Pick<App, 'inject' | 'services'>,

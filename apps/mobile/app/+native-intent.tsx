@@ -1,7 +1,4 @@
-/**
- * Expo Router's native-intent hook for the traveler app: where a URL the operating system delivers
- * is answered before the router navigates on it (AAP 0.3.4, AAP 0.5.1, AAP 0.5.5).
- */
+/** Expo Router's native-intent hook: where a URL the operating system delivers is answered before the router navigates on it. */
 import { getShareExtensionKey } from 'expo-share-intent';
 
 import { STRIPE_RETURN_URL } from '../src/payments/card-setup';

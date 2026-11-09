@@ -29,7 +29,6 @@ const SECOND_MS = 1_000;
 /** The instant a cancellation stops being free: `startsAt - LATE_CANCEL_WINDOW_HOURS` (AAP 0.5.3). */
 const BOUNDARY_MS = STARTS_AT.getTime() - LATE_CANCEL_WINDOW_HOURS * HOUR_MS;
 
-/** Epoch milliseconds `offsetMs` from that boundary. */
 function atBoundary(offsetMs: number): Date {
   return new Date(BOUNDARY_MS + offsetMs);
 }
@@ -47,7 +46,6 @@ const ACTOR_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
  */
 type TimedEvent = MeetupEvent & { readonly at: Date };
 
-/** A participant's own cancellation, judged at `at`. */
 function cancel(at: Date): TimedEvent {
   return { type: 'cancel', actorId: ACTOR_ID, reason: 'initiator', at };
 }
@@ -70,7 +68,6 @@ function settle(outcome: SettlementOutcome): TimedEvent {
 /** The three cancellation events of the table (AAP 0.5.3). */
 type CancellationKind = 'cancel' | 'block' | 'deletion';
 
-/** The event `kind` names, judged at `at`. */
 function eventFor(kind: CancellationKind, at: Date): TimedEvent {
   switch (kind) {
     case 'cancel':
@@ -125,8 +122,8 @@ type CancellationCase = readonly [
 
 /**
  * The cancellation rows of the table (AAP 0.5.3): before the lock a cancellation is always free, from
- * `locked` the free row is the one `transition` allows at or before `startsAt − 2 h`, and a block
- * cancels whenever it lands.
+ * `locked` the free row is the one `transition` allows at or before `startsAt − 2 h`, and a block cancels
+ * whenever it lands.
  */
 const CANCELLATION_CASES: readonly CancellationCase[] = [
   // Before the lock, `applyCancellationRules` answers `cancelled` with `lateCancel: false` whatever

@@ -3,25 +3,20 @@
  * Validates the on-device proving benchmark result and emits it for the host: the sample collection of
  * AAP 0.5.5, the native smoke check of AAP 0.2.4 and success criterion 4.
  *
- * The contract, agreed with `zk-bench.yaml`, `app/dev/zk-bench.tsx`, `docs/zk-performance.md` and the
- * host that reads this output:
- *   - GraalJS has no filesystem, so this script cannot write `OUTPUT` itself.
- *   - On success it prints exactly one line, `ZK_BENCH_RESULT <single-line JSON>`, and nothing else.
- *   - `packages/circuits/scripts/native-smoke.sh` takes that line from Maestro's console output, or
- *     from `maestro.log` under `--debug-output <dir>`, and writes the JSON to `OUTPUT` itself.
- *   - A failure throws, which fails the Maestro step; a bench error prints `ZK_BENCH_ERROR <platform>
- *     <code>` first, so the cause is visible, not only the verdict.
- *
- * Flow env inputs: `RUNS` (required; `zk-bench.yaml` defaults it to 30, `native-smoke.sh` passes 1),
- * `OUTPUT` (the host's target path, echoed back in the payload), `COLLECT_URL` (optional HTTP sink).
- *
- * Emitted shape: `{ platform, device, os, buildId, runs, runCount, warmups, p50, p95, max, proof,
- * publicSignals, output }`, built from the app's `BenchResult`: `runs` is the sample list, so the host
- * reads `runs[0].totalMs` and the component timings from it, and `runCount` is the sample count.
- *
- * Only structure and arithmetic are judged here; pass or fail against p95 ≤ 90 s belongs to
- * `docs/zk-performance.md`, and the smoke check's pass is the host's `snarkjs groth16 verify`. No
- * message below echoes a signal or proof value — only the name of the field that failed.
+ * The contract, agreed with `zk-bench.yaml`, `app/dev/zk-bench.tsx`, `docs/zk-performance.md` and the host
+ * that reads this output: GraalJS has no filesystem, so this script cannot write `OUTPUT` itself; on success
+ * it prints exactly one line, `ZK_BENCH_RESULT <single-line JSON>`, and nothing else; and a failure throws,
+ * which fails the Maestro step, a bench error printing `ZK_BENCH_ERROR <platform> <code>` first so the cause
+ * is visible. `packages/circuits/scripts/native-smoke.sh` takes that line from Maestro's console output, or
+ * from `maestro.log` under `--debug-output <dir>`, and writes the JSON to `OUTPUT` itself.
+ * Flow env inputs: `RUNS` (required; `zk-bench.yaml` defaults it to 30, `native-smoke.sh` passes 1), `OUTPUT`
+ * (the host's target path, echoed back in the payload) and `COLLECT_URL` (an optional HTTP sink). Emitted
+ * shape: `{ platform, device, os, buildId, runs, runCount, warmups, p50, p95, max, proof, publicSignals,
+ * output }`, built from the app's `BenchResult`: `runs` is the sample list, so the host reads
+ * `runs[0].totalMs` and the component timings from it, and `runCount` is the sample count. Only structure and
+ * arithmetic are judged here; pass or fail against p95 ≤ 90 s belongs to `docs/zk-performance.md`, and the
+ * smoke check's pass is the host's `snarkjs groth16 verify`. No message below echoes a signal or proof value
+ * — only the name of the field that failed.
  */
 (function () {
   'use strict';

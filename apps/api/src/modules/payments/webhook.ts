@@ -1,33 +1,30 @@
 /**
- * The Stripe webhook: `POST /v1/webhooks/stripe`, applied exactly once in one transaction (AAP 0.3.2, 0.3.3,
- * 0.5.1, 0.5.3, 0.6.2).
+ * The Stripe webhook: `POST /v1/webhooks/stripe`, applied exactly once in one transaction.
  *
- * A provider event is the only thing that moves an authorization no request of ours could observe — a 3-D Secure
- * step completed later, a hold Stripe expired, a capture we asked for — so the endpoint rests on one property:
- * **every database effect of an event, and the record that the event was applied, commit together or not at all.**
- * Five rules follow from it.
+ * A provider event is the only thing that moves an authorization no request of ours could observe, so the endpoint
+ * rests on one property: **every database effect of an event, and the record that the event was applied, commit
+ * together or not at all.** Five rules follow from it.
  *
- *  1. **Signature first.** `registerRawJsonBody` keeps the received bytes on `request.rawBody` and the gateway
- *     checks the `Stripe-Signature` header against them; a missing header or body, a timestamp outside tolerance or
- *     a signature made with another secret is `400 bad_signature` and applies nothing (AAP 0.3.2, 0.3.3). A signed
- *     body that is no Stripe event at all is acknowledged `200`, logged `stripe_webhook_not_an_event` and applied
- *     to nothing, since it carries no id to dedupe on and no effect to write.
- *  2. **One transaction per event.** The `stripe_event` row is inserted `ON CONFLICT DO NOTHING` and locked, every
- *     effect is applied, then the row is marked `processed`: a replay answers `200` with no effect, and a crash
- *     before the commit rolls the record back with the effects (AAP 0.3.2).
- *  3. **Correlation by PaymentIntent** — through the attempt's durable `hold` operation, then
- *     `Deposit.currentPaymentIntentId`, then the `attempt` metadata this application wrote — never by deposit alone
- *     and never by `created`, which has second precision (AAP 0.2.2, AAP 0.5.3).
- *  4. **Forward-only.** Every deposit write goes through `advanceDeposit`, so a late, historical or out-of-order
- *     event is acknowledged and ignored rather than applied (AAP 0.5.3).
- *  5. **No Stripe call inside the transaction.** An intent missing a field an effect needs is retrieved before it
- *     opens, and these writes only *plan* `PaymentOperation` rows, which the executor runs after the commit with
- *     the settlement sweeper as the backstop.
+ * 1. **Signature first.** `registerRawJsonBody` keeps the received bytes on `request.rawBody` and the gateway checks
+ *    the `Stripe-Signature` header against them; a missing header or body, a timestamp outside tolerance or a
+ *    signature made with another secret is `400 bad_signature` and applies nothing. A signed body that is no Stripe
+ *    event at all is acknowledged `200` and applied to nothing, since it carries no id to dedupe on.
+ * 2. **One transaction per event.** The `stripe_event` row is inserted `ON CONFLICT DO NOTHING` and locked, every
+ *    effect is applied, then the row is marked `processed`: a replay answers `200` with no effect, and a crash
+ *    before the commit rolls the record back with the effects.
+ * 3. **Correlation by PaymentIntent** — through the attempt's durable `hold` operation, then
+ *    `Deposit.currentPaymentIntentId`, then the `attempt` metadata this application wrote — never by deposit alone
+ *    and never by `created`, which has second precision.
+ * 4. **Forward-only.** Every deposit write goes through `advanceDeposit`, so a late, historical or out-of-order
+ *    event is acknowledged and ignored rather than applied.
+ * 5. **No Stripe call inside the transaction.** An intent missing a field an effect needs is retrieved before it
+ *    opens, and these writes only *plan* `PaymentOperation` rows, which the executor runs after the commit with the
+ *    settlement sweeper as the backstop.
  *
  * The meetup row is locked before any change to it or to a deposit, so this handler serializes with cancellation,
- * check-in, dispute filing, settlement and an operator resolution. The lines carry an event id, a type, a deposit
- * id, a status word and a failure's short token, and never a payload, a client secret, a customer id, a card detail,
- * an error message or a stack (AAP 0.11.1).
+ * check-in, dispute filing, settlement and an operator resolution. The lines carry an event id, a type, a deposit id,
+ * a status word and a failure's short token, and never a payload, a client secret, a customer id, a card detail, an
+ * error message or a stack.
  */
 
 import { z } from 'zod';
@@ -74,16 +71,12 @@ import type { App, AppServices } from '../../app.ts';
 /** The tag the route groups under: a member of the document's own vocabulary (AAP 0.11.2). */
 const WEBHOOKS_TAG = 'webhooks' satisfies OpenApiTag;
 
-/**
- * The event types this handler applies (AAP 0.3.3). Every other type is recorded `processed` and acknowledged
- * without effect, so a type Stripe adds later can never fail the endpoint.
- */
+/** The event types this handler applies. Every other type is recorded `processed` and acknowledged without effect, so a type Stripe adds later can never fail the endpoint. */
 const HANDLED_TYPES: ReadonlySet<string> = new Set(HANDLED_STRIPE_EVENT_TYPES);
 
 /**
- * The meetup statuses whose outcome a lost hold can still reverse (AAP 0.3.2): a forfeit has money
- * to give back, while a `completed` or `unattended` settlement releases both holds anyway.
- * `compensateLostHold` decides which of the two it is.
+ * The meetup statuses whose outcome a lost hold can still reverse: a forfeit has money to give back, while a
+ * `completed` or `unattended` settlement releases both holds anyway. `compensateLostHold` decides which it is.
  */
 const COMPENSABLE_STATUSES: ReadonlySet<MeetupStatus> = new Set([
   'forfeited',
@@ -92,10 +85,10 @@ const COMPENSABLE_STATUSES: ReadonlySet<MeetupStatus> = new Set([
 ]);
 
 /**
- * The fault points a test run may throw from (AAP 0.11.2). The first sits inside the transaction, so
- * a throw rolls the event row back with every effect it describes and Stripe's redelivery is applied
- * exactly once; the second sits after the commit, so a throw answers `500` while the committed
- * effects stand and the outbox poller and the sweeper deliver the rest.
+ * The fault points a test run may throw from. The first sits inside the transaction, so a throw rolls the event row
+ * back with every effect it describes and Stripe's redelivery is applied exactly once; the second sits after the
+ * commit, so a throw answers `500` while the committed effects stand and the outbox poller and the sweeper deliver
+ * the rest.
  */
 const FAULT_AFTER_EVENT_INSERT = 'stripe_webhook.after_event_insert';
 const FAULT_AFTER_COMMIT = 'stripe_webhook.after_commit';
@@ -109,10 +102,7 @@ const HOLD_LOST = 'stripe_webhook_hold_lost';
 const INTENT_UNEXPECTED = 'stripe_webhook_intent_state_unexpected';
 const OPERATIONS_FAILED = 'stripe_webhook_operations_failed';
 
-/**
- * The one log event name each delivery result writes, keyed by the result rather than written at each return, so
- * every path out of the transaction is logged once and in one shape (AAP 0.11.1).
- */
+/** The one log event name each delivery result writes, keyed by the result rather than written at each return, so every path out of the transaction is logged once and in one shape. */
 const OUTCOME_LOGS: Readonly<Record<WebhookOutcome['result'], string>> = {
   applied: 'stripe_webhook_applied',
   ignored: 'stripe_webhook_ignored',
@@ -128,8 +118,8 @@ const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
  * What one delivery decided. `applied` wrote an effect, `ignored` found nothing the event could move (a late
- * authorization, a backwards deposit move, a superseded attempt), `duplicate` replayed an event already
- * `processed`, and `unmatched` named no deposit this application created. All four answer `200`.
+ * authorization, a backwards deposit move, a superseded attempt), `duplicate` replayed an event already `processed`,
+ * and `unmatched` named no deposit this application created. All four answer `200`.
  */
 export interface WebhookOutcome {
   readonly result: 'applied' | 'ignored' | 'duplicate' | 'unmatched';
@@ -153,10 +143,9 @@ function unmatched(): WebhookOutcome {
 }
 
 /**
- * One event's PaymentIntent resolved to the deposit attempt it concerns (AAP 0.5.3 "Correlation"). The attempt
- * travels with the deposit because the money decision is made per attempt: a retried deposit has a superseded
- * attempt whose events are history, and the `hold` operation is the only durable record of which attempt a
- * PaymentIntent belongs to.
+ * One event's PaymentIntent resolved to the deposit attempt it concerns. The attempt travels with the deposit because
+ * the money decision is made per attempt: a retried deposit has a superseded attempt whose events are history, and
+ * the `hold` operation is the only durable record of which attempt a PaymentIntent belongs to.
  */
 interface Correlation {
   readonly deposit: Deposit;
@@ -165,17 +154,11 @@ interface Correlation {
   readonly holdOp: PaymentOperation | null;
 }
 
-/**
- * What every effect of this file is given: the transaction, the providers, the request's logger and the locked
- * rows.
- */
+/** What every effect of this file is given: the transaction, the providers, the request's logger and the locked rows. */
 interface EffectContext {
   readonly tx: DbTx;
   readonly services: AppServices;
-  /**
-   * The request's own logger, so every line written after the response still carries this delivery's request id
-   * (AAP 0.11.1).
-   */
+  /** The request's own logger, so every line written after the response still carries this delivery's request id. */
   readonly log: App['log'];
   readonly after: AfterCommit;
   readonly event: VerifiedWebhookEvent;
@@ -187,19 +170,13 @@ interface EffectContext {
   readonly now: Date;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The route (AAP 0.5.1, 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Registers `POST /webhooks/stripe` on the context `app.ts` mounts under `/v1` (AAP 0.5.1).
+ * Registers `POST /webhooks/stripe` on the context `app.ts` mounts under `/v1`.
  *
- * The plugin is encapsulated and is not a `fastify-plugin`, so the content-type parser `registerRawJsonBody`
- * replaces serves this route alone: Stripe signs the exact bytes it sent, and a re-serialized body would fail a
- * check on a genuine request (AAP 0.3.2, 0.3.3). The route carries no bearer guard, no age gate and no user, and it
- * takes only the webhook per-IP counter, because one provider's traffic arrives from a handful of addresses
- * (AAP 0.5.4). It declares no body schema: the shared event list with the gateway's own normalization decide what
- * may reach an effect.
+ * The plugin is encapsulated and is not a `fastify-plugin`, so the content-type parser `registerRawJsonBody` replaces
+ * serves this route alone: Stripe signs the exact bytes it sent, and a re-serialized body would fail a check on a
+ * genuine request. The route carries no bearer guard, no age gate and no user, and it takes only the webhook per-IP
+ * counter, because one provider's traffic arrives from a handful of addresses.
  */
 export function stripeWebhookRoutes(app: App): Promise<void> {
   registerRawJsonBody(app);
@@ -292,13 +269,12 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
 }
 
 /**
- * Verify the signature and normalize the event (AAP 0.3.2, 0.3.3), mapping `BadSignatureError` onto the contract's
- * `400 bad_signature` and letting anything else — a bug rather than a bad delivery — reach the error plugin as `500
- * internal_error`. The gateway's `null` answer passes straight through: signed bytes that are no event are the
- * route's to acknowledge.
+ * Verify the signature and normalize the event, mapping `BadSignatureError` onto the contract's `400 bad_signature`
+ * and letting anything else — a bug rather than a bad delivery — reach the error plugin as `500 internal_error`. The
+ * gateway's `null` answer passes straight through: signed bytes that are no event are the route's to acknowledge.
  *
  * @throws AppError `bad_signature` (400) when the header is malformed, the timestamp is outside tolerance or the
- *   signature was made with another secret.
+ * signature was made with another secret.
  */
 function verifySignature(
   services: AppServices,
@@ -318,13 +294,11 @@ function verifySignature(
 
 /**
  * The PaymentIntent state this event's effect decides on, retrieved only when the payload lacks a field the effect
- * needs (AAP 0.3.2): an event payload does not expand `latest_charge`, so the capture deadline arrives from the
- * intent itself; a payload may omit a field this build cannot normalize; and a `charge.*` event carries a charge
- * rather than an intent, whose metadata, cancellation instant and refund state are read from it.
- *
- * Every branch answers with a state or `null`, so nothing between the signature check and the receipt line can throw
- * for a delivery whose signature was valid; a read that cannot be observed is the one exception, answering `503
- * payment_unavailable` through {@link retrieveIntent} so the provider redelivers.
+ * needs: an event payload does not expand `latest_charge`, so the capture deadline arrives from the intent itself; a
+ * payload may omit a field this build cannot normalize; and a `charge.*` event carries a charge rather than an
+ * intent. Every branch answers with a state or `null`, so nothing between the signature check and the receipt line
+ * can throw for a delivery whose signature was valid; a read that cannot be observed answers `503` through
+ * {@link retrieveIntent} so the provider redelivers.
  */
 async function intentFor(
   services: AppServices,
@@ -351,11 +325,10 @@ async function intentFor(
 }
 
 /**
- * Read one PaymentIntent, mapping the gateway's failures onto what this endpoint must answer (AAP 0.3.2). A
- * retrieval that could not be observed answers `503 payment_unavailable`, so Stripe redelivers and nothing is
- * decided from a state nobody saw. A retrieval the provider refuses as missing answers `200` as an unmatched event
- * instead: there is nothing to correlate, no redelivery would ever change that, and retrying it forever would only
- * get the endpoint disabled.
+ * Read one PaymentIntent, mapping the gateway's failures onto what this endpoint must answer. A retrieval that could
+ * not be observed answers `503 payment_unavailable`, so Stripe redelivers and nothing is decided from a state nobody
+ * saw. A retrieval the provider refuses as missing answers `200` as an unmatched event instead: there is nothing to
+ * correlate, no redelivery would ever change that, and retrying it forever would only get the endpoint disabled.
  */
 async function retrieveIntent(
   services: AppServices,
@@ -380,11 +353,7 @@ async function retrieveIntent(
   }
 }
 
-/**
- * Record an event type this application does not apply, and answer it `200` (AAP 0.3.3). The row is written
- * `processed` in one statement, so the dedupe key still suppresses a second delivery and nothing is left that
- * looks unapplied.
- */
+/** Record an event type this application does not apply, and answer it `200`. The row is written `processed` in one statement, so the dedupe key still suppresses a second delivery and nothing is left that looks unapplied. */
 async function recordUnapplied(
   services: AppServices,
   event: VerifiedWebhookEvent,
@@ -399,21 +368,14 @@ async function recordUnapplied(
   });
 }
 
-// ---------------------------------------------------------------------------------------------
-// The transaction (AAP 0.3.2 "Stripe webhooks")
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Apply one verified delivery and report what it decided: the event-application step itself, at the name AAP 0.5.1
- * gives it — `handleStripeEvent(event)`, in a single transaction.
+ * Apply one verified delivery and report what it decided: the event-application step itself — `handleStripeEvent`,
+ * in a single transaction.
  *
- * It is the whole of this endpoint's transaction. The event's PaymentIntent is resolved first, read from the provider
- * when the payload lacks a field the effect needs (AAP 0.3.2), and everything the event means is then applied in one
- * transaction with the `stripe_event` row: a replay of a row already `processed` has no effect, and a crash before
- * the commit rolls the record back with every effect it describes. No provider call happens inside the transaction —
- * these writes only *plan* `PaymentOperation` rows, which the executor runs after the commit with the settlement
- * sweeper as the backstop. A caller of its own must have verified the signature already: `event` is a
- * {@link VerifiedWebhookEvent}, never a raw body.
+ * It is the whole of this endpoint's transaction. No provider call happens inside it: these writes only *plan*
+ * `PaymentOperation` rows, which the executor runs after the commit with the settlement sweeper as the backstop. A
+ * caller of its own must have verified the signature already: `event` is a {@link VerifiedWebhookEvent}, never a raw
+ * body.
  *
  * @throws AppError `payment_unavailable` (503) when an intent that must be read could not be.
  */
@@ -430,13 +392,11 @@ export async function handleStripeEvent(
 }
 
 /**
- * Apply one delivery in a single transaction (AAP 0.3.2).
- *
- * The order is the order the decisions have to be taken in, and it is the whole of this endpoint's idempotency:
- * claim the event row (a replay stops here), acknowledge a saved card on its own, record an event whose
- * PaymentIntent this application did not create, lock the meetup and re-read the deposit under that lock, apply the
- * effect, and only then mark the event `processed` — so a crash anywhere before the commit rolls the record back
- * with every effect it describes.
+ * Apply one delivery in a single transaction. The order is the order the decisions have to be taken in, and it is the
+ * whole of this endpoint's idempotency: claim the event row (a replay stops here), acknowledge a saved card on its
+ * own, record an event whose PaymentIntent this application did not create, lock the meetup and re-read the deposit
+ * under that lock, apply the effect, and only then mark the event `processed` — so a crash anywhere before the commit
+ * rolls the record back with every effect it describes.
  */
 async function applyDelivery(
   tx: DbTx,
@@ -488,10 +448,10 @@ async function applyDelivery(
 }
 
 /**
- * Insert and lock this event's row, and report whether it was already applied (AAP 0.3.2). The insert suppresses a
- * concurrent delivery of the same event; the `FOR UPDATE` select is what makes a duplicate that arrives while the
- * first one is still running wait for it and then skip it. The fault point sits between the two and the effects, so
- * a throw there leaves no event row and no effect at all.
+ * Insert and lock this event's row, and report whether it was already applied. The insert suppresses a concurrent
+ * delivery of the same event; the `FOR UPDATE` select is what makes a duplicate that arrives while the first one is
+ * still running wait for it and then skip it. The fault point sits between the two and the effects, so a throw there
+ * leaves no event row and no effect at all.
  *
  * @returns True when this delivery is the one that applies the event.
  */
@@ -522,18 +482,12 @@ async function markProcessed(tx: DbTx, event: VerifiedWebhookEvent, now: Date): 
   `);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Correlation (AAP 0.2.2, AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /**
- * Resolve a PaymentIntent to the deposit attempt it concerns (AAP 0.5.3 "Correlation").
- *
- * Three lookups, strongest evidence first: the durable `hold` operation recorded for that intent, then
- * `Deposit.currentPaymentIntentId`, then the attempt metadata this application wrote on it — which recovers an
- * ambiguous hold create whose answer was lost, adopting the id the provider reports and closing an operation still
- * open as the success it turned out to be. The executor's own recording is conditional on its claim, so a parallel
- * run stays harmless.
+ * Resolve a PaymentIntent to the deposit attempt it concerns. Three lookups, strongest evidence first: the durable
+ * `hold` operation recorded for that intent, then `Deposit.currentPaymentIntentId`, then the attempt metadata this
+ * application wrote on it — which recovers an ambiguous hold create whose answer was lost, adopting the id the
+ * provider reports and closing an operation still open as the success it turned out to be. The executor's own
+ * recording is conditional on its claim, so a parallel run stays harmless.
  */
 async function correlate(tx: DbTx, intent: IntentState, now: Date): Promise<Correlation | null> {
   const hold = await findOperationForIntent(tx, intent.id, ['hold']);
@@ -569,10 +523,10 @@ async function depositOf(tx: DbTx, depositId: string | null): Promise<Deposit | 
 }
 
 /**
- * Record the PaymentIntent an attempt's own create turned out to have made, and close the operation a lost answer
- * left open (AAP 0.3.2). `payment_intent_id` is filled only where it is still empty, and an operation still
- * `pending` or `failed_retryable` becomes the success it was: the create did reach the provider. An `executing` row
- * is left alone, because its call belongs to the executor that claimed it and that executor records its own result.
+ * Record the PaymentIntent an attempt's own create turned out to have made, and close the operation a lost answer left
+ * open. `payment_intent_id` is filled only where it is still empty, and an operation still `pending` or
+ * `failed_retryable` becomes the success it was: the create did reach the provider. An `executing` row is left alone,
+ * because its call belongs to the executor that claimed it and that executor records its own result.
  */
 async function adoptIntent(
   tx: DbTx,
@@ -595,20 +549,16 @@ async function adoptIntent(
   `);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The effects (AAP 0.3.2, AAP 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
 /** Whether the event concerns the attempt that is currently the deposit's (AAP 0.5.3). */
 function isCurrent(ctx: EffectContext): boolean {
   return ctx.correlation.attempt === ctx.correlation.deposit.currentAttempt;
 }
 
 /**
- * Apply the effect of one handled event type. Every branch writes only what its event means and leaves the
- * meetup's own side effects to the state machine: `applyHoldOutcome` owns the proposal becoming visible, the lock,
- * the status frame and the deposit-funnel events, and `transition` owns the releases, the notifications and the
- * automatic dispute resolution of an ended meetup.
+ * Apply the effect of one handled event type. Every branch writes only what its event means and leaves the meetup's
+ * own side effects to the state machine: `applyHoldOutcome` owns the proposal becoming visible, the lock, the status
+ * frame and the deposit-funnel events, and `transition` owns the releases, the notifications and the automatic
+ * dispute resolution of an ended meetup.
  */
 async function applyEffect(ctx: EffectContext): Promise<WebhookOutcome> {
   switch (ctx.event.type) {
@@ -634,20 +584,17 @@ async function applyEffect(ctx: EffectContext): Promise<WebhookOutcome> {
 }
 
 /**
- * Apply an authorization that is now `requires_capture` (AAP 0.5.3).
+ * Apply an authorization that is now `requires_capture`. The late-and-orphan rule, in the order that never leaves an
+ * authorization outstanding at the processor: a **late** authorization — a capture or a release is already planned
+ * for the attempt — is acknowledged, because the money decision is durable and the executor's own retrieval settles
+ * the actual state; an **orphan** — a superseded attempt's, or one that arrived after the meetup ended — gets an
+ * immediate release, marked `released` only on the current attempt, and a final meetup is never moved back to
+ * `locked`; otherwise the hold is the meetup's and `applyHoldOutcome` takes it.
  *
- * The late-and-orphan rule, in the order that never leaves an authorization outstanding at the processor. A
- * **late** authorization — a capture or a release is already planned for the attempt — is acknowledged, because the
- * money decision is durable and the executor's own retrieval settles the actual state. An **orphan** — a superseded
- * attempt's, or one that arrived after the meetup ended — gets an immediate release, marked `released` only on the
- * current attempt; a final meetup is never moved back to `locked`. Otherwise the hold is the meetup's and
- * `applyHoldOutcome` takes it.
- *
- * Both the release and the marking are conditioned on the state the handler retrieved, never on the payload: only a
- * `requires_capture` authorization is released. One the provider has taken away is the hold loss its cancellation
- * reported, so the deposit takes the state the lifecycle gives a loss — `expired` with the provider's own
- * `canceledAt` on a `held` attempt, `failed` on one that never became a hold — rather than a release that would hide
- * it from the no-forfeit compensation (AAP 0.3.2, AAP 0.5.3).
+ * Both the release and the marking are conditioned on the state the handler retrieved, never on the payload. One the
+ * provider has taken away is the hold loss its cancellation reported, so the deposit takes the state the lifecycle
+ * gives a loss — `expired` with the provider's own `canceledAt` on a `held` attempt, `failed` on one that never
+ * became a hold — rather than a release that would hide it from the no-forfeit compensation.
  */
 async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, services, log, after, event, intent, correlation, meetup, now } = ctx;
@@ -730,11 +677,7 @@ async function applyAuthorization(ctx: EffectContext): Promise<WebhookOutcome> {
   return result.effect === 'ignored' ? ignored(meetup.id) : applied(meetup.id);
 }
 
-/**
- * Apply a hold attempt that failed at authentication (AAP 0.5.3): `requires_action → failed`, which lets the
- * attempt's owner retry with a fresh attempt while the meetup is still `proposed`. A superseded attempt is history
- * and is ignored: only the deposit's current attempt decides its status.
- */
+/** Apply a hold attempt that failed at authentication: `requires_action → failed`, which lets the attempt's owner retry with a fresh attempt while the meetup is still `proposed`. A superseded attempt is history and is ignored. */
 async function applyHoldFailure(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, services, after, intent, correlation, meetup } = ctx;
   if (!isCurrent(ctx)) {
@@ -751,10 +694,10 @@ async function applyHoldFailure(ctx: EffectContext): Promise<WebhookOutcome> {
 }
 
 /**
- * Apply a `payment_intent.canceled` event (AAP 0.3.2, AAP 0.5.3). The cancellation reason is what separates the two
- * meanings of the same event: our own reason confirms the release we asked for, so the deposit ends `released`; any
- * other reason — `expired`, the value an expired authorization reads as under the pinned API version — is Stripe's
- * own cancellation, so the hold was lost rather than released and never becomes a forfeit.
+ * Apply a `payment_intent.canceled` event. The cancellation reason separates the two meanings of the same event: our
+ * own reason confirms the release we asked for, so the deposit ends `released`; any other reason — `expired` under
+ * the pinned API version — is Stripe's own cancellation, so the hold was lost rather than released and never becomes
+ * a forfeit.
  */
 async function applyProviderCancellation(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, intent, correlation, meetup, now } = ctx;
@@ -770,16 +713,14 @@ async function applyProviderCancellation(ctx: EffectContext): Promise<WebhookOut
 }
 
 /**
- * Apply a hold Stripe took away rather than released (AAP 0.3.2, AAP 0.5.3).
- *
- * The deposit's own status decides which situation this is. An attempt that never became a hold (`pending` or
- * `requires_action`) was an abandoned 3-D Secure step, so it `failed` and may be retried while the meetup is
- * `proposed`. A `held` current attempt is a lost hold: `locked` takes `lock_lost` through `applyHoldLossInTx` and
- * `proposed` through the state machine's own `hold_lost` transition, both of which mark the deposit `expired`,
- * release the counterpart's hold, notify both parties, emit `lock_lost` and resolve an open dispute with the note
- * `hold_expired`, forfeiting nothing. A meetup that already ended keeps its outcome: the deposit ends `expired`,
- * and only a forfeit can still be reversed, which `compensateLostHold` decides from Stripe's cancellation instant
- * against `MeetupSettlement.appliedAt`.
+ * Apply a hold Stripe took away rather than released. The deposit's own status decides which situation this is: an
+ * attempt that never became a hold (`pending` or `requires_action`) was an abandoned 3-D Secure step, so it `failed`
+ * and may be retried while the meetup is `proposed`; a `held` current attempt is a lost hold, which `locked` takes
+ * through `applyHoldLossInTx` and `proposed` through the state machine's own `hold_lost` transition — both mark the
+ * deposit `expired`, release the counterpart's hold, notify both parties, emit `lock_lost` and resolve an open dispute
+ * with the note `hold_expired`, forfeiting nothing; a meetup that already ended keeps its outcome, the deposit ends
+ * `expired`, and only a forfeit can still be reversed, which `compensateLostHold` decides from Stripe's cancellation
+ * instant against `MeetupSettlement.appliedAt`.
  */
 async function applyHoldLoss(ctx: EffectContext, canceledAt: Date): Promise<WebhookOutcome> {
   const { tx, services, after, intent, correlation, meetup } = ctx;
@@ -831,11 +772,7 @@ async function applyHoldLoss(ctx: EffectContext, canceledAt: Date): Promise<Webh
   return applied(meetup.id);
 }
 
-/**
- * Apply a capture this application asked for (AAP 0.5.3): `held → captured` on the attempt the capture belongs to.
- * A capture for a superseded attempt, or one that arrives after the deposit already moved, is refused by the
- * forward-only update.
- */
+/** Apply a capture this application asked for: `held → captured` on the attempt the capture belongs to. A capture for a superseded attempt, or one that arrives after the deposit already moved, is refused by the forward-only update. */
 async function applyCapture(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, correlation, meetup } = ctx;
   if (!isCurrent(ctx)) {
@@ -849,11 +786,7 @@ async function applyCapture(ctx: EffectContext): Promise<WebhookOutcome> {
   return moved ? applied(meetup.id) : ignored(meetup.id);
 }
 
-/**
- * Apply a reversal of a capture (AAP 0.3.2). Only a fully refunded charge moves the deposit, and only from
- * `captured`: a partial refund leaves the deposit as it stands, and the reversal the executor planned is what makes
- * it `refunded`, so this event and that operation agree rather than race.
- */
+/** Apply a reversal of a capture. Only a fully refunded charge moves the deposit, and only from `captured`: a partial refund leaves the deposit as it stands, and the reversal the executor planned is what makes it `refunded`, so this event and that operation agree rather than race. */
 async function applyRefund(ctx: EffectContext): Promise<WebhookOutcome> {
   const { tx, event, intent, correlation, meetup } = ctx;
   const refunded = intent.refunded || (event.object.kind === 'charge' && event.object.refunded);
@@ -882,16 +815,12 @@ function logHoldLost(ctx: EffectContext): void {
   );
 }
 
-// ---------------------------------------------------------------------------------------------
-// Failures on a log line (AAP 0.11.1)
-// ---------------------------------------------------------------------------------------------
-
 /**
  * A failure's own short token, for a log line: its string `code` (`payment_rejected`), else its class name
- * (`PaymentUnavailableError`), and never its message or its stack (AAP 0.11.1). pino writes a message and a stack as
- * strings, and a stack carries the whole cause chain, so key-based redaction cannot rewrite either: a provider
- * failure's message can quote the `Customer` id or the `PaymentIntent` id it concerns — exactly the values this
- * endpoint's log lines may not carry. Anything that is not a plain short identifier becomes `Error`.
+ * (`PaymentUnavailableError`), and never its message or its stack. pino writes a message and a stack as strings, and
+ * a stack carries the whole cause chain, so key-based redaction cannot rewrite either: a provider failure's message
+ * can quote the `Customer` id or the `PaymentIntent` id it concerns — exactly the values this endpoint's log lines
+ * may not carry. Anything that is not a plain short identifier becomes `Error`.
  */
 function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {

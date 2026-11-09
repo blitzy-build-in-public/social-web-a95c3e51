@@ -1,23 +1,6 @@
-/**
- * Deterministic price-string parsing for the menu pipeline (AAP 0.5.1, 0.5.6).
- *
- * The source gate keeps an extracted item only when its `priceText` occurs in the source text and
- * this module parses that substring to the same amount, so no price is ever guessed. The module is
- * pure — no imports, no I/O, no clock — and total: the same text always yields the same amount or
- * `null`. Money is assembled as a digit string and converted once, never through floating-point
- * arithmetic, so `45,5K` IDR is exactly 4,550,000 minor units.
- */
+/** Deterministic price-string parsing for the menu pipeline (AAP 0.5.1, 0.5.6). The source gate keeps an extracted item only when its `priceText` occurs in the source text and this module parses that substring to the same amount, so no price is ever guessed. The module is pure — no imports, no I/O, no clock — and total: the same text always yields the same amount or `null`. Money is assembled as a digit string and converted once, never through floating-point arithmetic, so `45,5K` IDR is exactly 4,550,000 minor units. */
 
-/**
- * ISO 4217 minor-unit exponents for USD and the five launch-city currencies (AAP 0.5.2: EUR, MXN,
- * COP, THB, IDR).
- *
- * ISO 4217 lists 2 for COP and IDR even though menus usually print them without decimals, so
- * `Rp 45.000` is 4,500,000 minor units and `COP 25.000` is 2,500,000.
- *
- * `apps/workers/src/fx/open-er-api.ts` imports this table — never redefining it — to scale those
- * minor units back to major units, so the two stay consistent.
- */
+/** ISO 4217 minor-unit exponents for USD and the five launch-city currencies (AAP 0.5.2: EUR, MXN, COP, THB, IDR). ISO 4217 lists 2 for COP and IDR even though menus usually print them without decimals, so `Rp 45.000` is 4,500,000 minor units and `COP 25.000` is 2,500,000. `apps/workers/src/fx/open-er-api.ts` imports this table — never redefining it — to scale those minor units back to major units, so the two stay consistent. */
 export const MINOR_UNIT_EXPONENT = {
   USD: 2,
   EUR: 2,
@@ -26,14 +9,9 @@ export const MINOR_UNIT_EXPONENT = {
   THB: 2,
   IDR: 2,
 } as const satisfies Record<string, number>;
-
 /** A currency this module parses: USD plus the five launch-city currencies (AAP 0.5.2). */
 export type PriceCurrency = keyof typeof MINOR_UNIT_EXPONENT;
-
-/**
- * Narrows a currency code to the ones {@link MINOR_UNIT_EXPONENT} covers (AAP 0.5.6); every other
- * code is refused, so no price is reported in a currency the pipeline cannot convert.
- */
+/** Narrows a currency code to the ones {@link MINOR_UNIT_EXPONENT} covers (AAP 0.5.6); every other code is refused, so no price is reported in a currency the pipeline cannot convert. */
 export function isPriceCurrency(code: string): code is PriceCurrency {
   return Object.hasOwn(MINOR_UNIT_EXPONENT, code);
 }
@@ -46,10 +24,7 @@ interface CurrencyMarker {
   readonly currencies: readonly PriceCurrency[];
 }
 
-/**
- * The marker table shared by {@link parsePrice} and {@link hasExplicitCurrencyMarker}, longest
- * marker first so that `COL$`, `MX$`, `US$` and `Rp.` win over the `$` or `Rp` they end with.
- */
+/** The marker table shared by {@link parsePrice} and {@link hasExplicitCurrencyMarker}, longest marker first so that `COL$`, `MX$`, `US$` and `Rp.` win over the `$` or `Rp` they end with. */
 const CURRENCY_MARKERS: readonly CurrencyMarker[] = [
   { text: 'COL$', currencies: ['COP'] },
   { text: 'MX$', currencies: ['MXN'] },
@@ -67,28 +42,20 @@ const CURRENCY_MARKERS: readonly CurrencyMarker[] = [
   { text: '฿', currencies: ['THB'] },
   { text: '$', currencies: ['USD', 'MXN', 'COP'] },
 ];
-
 /** The characters that may separate the digit groups of one number: space is thousands only. */
 const SEPARATOR_CHARS = ['.', ',', ' '] as const;
-
 /** One number and nothing else: a digit, digits with separators, then a closing digit. */
 const NUMBER_TOKEN = /^[0-9](?:[0-9., ]*[0-9])?$/u;
-
 /** `45K`, `45k`, `45 rb` and `45 ribu`: the IDR thousands suffix, which `parsePrice` restricts. */
 const THOUSANDS_SUFFIX = /^(.*?)\s?(?:K|k|rb|ribu)$/u;
-
 /** A trailing `,-` or `.-`, written after an Indonesian menu amount and adding no decimals. */
 const TRAILING_NO_DECIMALS = /[.,]-$/u;
-
 /** Collapses the whitespace a page renders between a marker, a number and a suffix. */
 function normalize(raw: string): string {
   return raw.normalize('NFKC').replace(/\s+/gu, ' ').trim();
 }
 
-/**
- * Finds one currency marker at the start or the end of the text, the longest marker winning. `null`
- * means no marker, which is not an error: an unmarked number is read in the caller's currency.
- */
+/** Finds one currency marker at the start or the end of the text, the longest marker winning. `null` means no marker, which is not an error: an unmarked number is read in the caller's currency. */
 function matchMarker(text: string): { rest: string; marker: CurrencyMarker } | null {
   for (const marker of CURRENCY_MARKERS) {
     const length = marker.text.length;
@@ -114,11 +81,7 @@ function countChar(text: string, char: string): number {
   return count;
 }
 
-/**
- * Validates one grouped integer part and returns its digits, or `null`. One separator character
- * groups it: a leading group of one to three digits, then groups of exactly three (`1.234` is 1234,
- * `25 000` is 25000; `1,23,456` and a mix such as `1.234 567` are refused). A digit run passes.
- */
+/** Validates one grouped integer part and returns its digits, or `null`. One separator character groups it: a leading group of one to three digits, then groups of exactly three (`1.234` is 1234, `25 000` is 25000; `1,23,456` and a mix such as `1.234 567` are refused). A digit run passes. */
 function groupedDigits(part: string): string | null {
   const separators = SEPARATOR_CHARS.filter((separator) => part.includes(separator));
   if (separators.length > 1) return null;
@@ -212,14 +175,7 @@ export function parsePrice(text: string, currency: string): number | null {
   return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
 }
 
-/**
- * Reports whether the text carries a marker that names `currency` (AAP 0.5.6), so the source gate
- * can refuse a number whose currency the page does not name.
- *
- * A bare `$` is ambiguous — it may mean USD, MXN or COP — and counts only for USD, as `$5` in
- * Canggu may be a dollar price. Text carrying two markers names no single currency and reports
- * `false`. Only the marker is inspected: it says nothing about whether the text parses.
- */
+/** Reports whether the text carries a marker that names `currency` (AAP 0.5.6), so the source gate can refuse a number whose currency the page does not name. A bare `$` is ambiguous — it may mean USD, MXN or COP — and counts only for USD, as `$5` in Canggu may be a dollar price. Text carrying two markers names no single currency and reports `false`. Only the marker is inspected: it says nothing about whether the text parses. */
 export function hasExplicitCurrencyMarker(text: string, currency: PriceCurrency): boolean {
   const found = matchMarker(normalize(text));
   if (found === null || matchMarker(found.rest) !== null) return false;

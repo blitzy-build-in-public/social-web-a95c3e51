@@ -1,5 +1,4 @@
-/** The operator dashboard, route `app/ops/index` (AAP 0.5.8, AAP 0.8.1, AAP 0.5.7): the pilot's
- * headline measure and every figure behind it, read from `GET /v1/admin/metrics`. */
+/** The operator dashboard, route `app/ops/index`: the pilot's headline measure and every figure behind it, read from `GET /v1/admin/metrics`. */
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
@@ -30,9 +29,7 @@ const REFERENCE_LABEL = 'Pilot reference';
 const REFERENCE_NOTE = 'A reference value for the pilot, not a target this build enforces.';
 const DATE_FORMAT_ERROR = 'Enter a date as YYYY-MM-DD.';
 const RANGE_ORDER_ERROR = 'The end date must not be before the start date.';
-/** What a date field takes, shown before Apply rather than only when Apply rejects it. */
 const DATE_HINT = 'Ten characters, as YYYY-MM-DD.';
-/** The dates' own guard: ten characters, typed on a keypad carrying the digits and the hyphen. */
 const DATE_INPUT = {
   inputMode: 'numeric',
   keyboardType: 'numbers-and-punctuation',
@@ -45,7 +42,6 @@ const LLM_MISMATCH_MESSAGE =
   'A token-count mismatch suspends language-model use in every city until an operator re-enables it';
 const LLM_SUSPENDED_STATE = 'Suspended in every city';
 const LLM_ACTIVE_STATE = 'Active in every city';
-/** The control that ends that suspension, and the news a screen reader hears when it lands. */
 const RE_ENABLE_LABEL = 'Re-enable language model';
 const RE_ENABLED_NOTICE = 'Language-model use is re-enabled.';
 const CALL_OUTCOMES: { key: keyof MetricsDto['calls']['byOutcome']; label: string }[] = [
@@ -66,7 +62,6 @@ const BLOCKED_REASON_LABELS: Record<BlockedReason, string> = {
   dispatch_unknown: 'Dispatch unconfirmed',
   no_final_status: 'No final call status',
 };
-/** The corner the rate bar's fill takes, from the bar geometry the layout tokens state once. */
 const BAR_FILL_RADIUS = (layout.barHeight - layout.barFillInset * 2) / 2;
 const SVG_HIDDEN = {
   accessibilityElementsHidden: true,
@@ -79,7 +74,6 @@ type Filters = { from: string; to: string; cityId: string | null; variant: Varia
 type RangeError = { field: DateField; message: string };
 type MetricRowProps = { label: string; value: string; bar?: ReactElement | undefined };
 type StatRowsProps = { items: readonly Stat[]; empty?: string | undefined };
-/** How the Calls panel reaches the re-enable the screen owns: its action, flight and refusal. */
 type ReEnableControl = {
   readonly onPress: () => void;
   readonly busy: boolean;
@@ -102,7 +96,6 @@ const percentText = (fraction: number | null): string =>
   fraction === null ? NOTHING : `${(fraction * 100).toFixed(1)}%`;
 const referenceLine = (value: number | null): string =>
   `${REFERENCE_LABEL}: ${percentText(value)}. ${REFERENCE_NOTE}`;
-/** What a mismatch warning reports, in the singular or the plural. */
 const mismatchCountLine = (count: number): string =>
   `${countText(count)} ${count === 1 ? 'mismatch' : 'mismatches'} recorded`;
 function defaultFilters(): Filters {
@@ -171,8 +164,7 @@ const lifecycleRows = ({ calls: { lifecycle } }: MetricsDto): readonly Stat[] =>
 ];
 const blockedRows = (blocked: readonly (readonly [string, number])[]): readonly Stat[] =>
   blocked.map(([reason, count]): Stat => [blockedReasonLabel(reason), countText(count)]);
-/** The spend section's state at all times (AAP 0.5.6): the mismatches recorded, and whether use is
- * stopped. The suspension is fleet-wide, so no filter narrows it and no state can hide it. */
+/** The spend section's state at all times: the mismatches recorded, and whether use is stopped. The suspension is fleet-wide, so no filter narrows it and no state can hide it. */
 const spendRows = ({ calls }: MetricsDto): readonly Stat[] => [
   ['Token-count mismatches recorded', countText(calls.llmCountMismatches)],
   ['Language-model use', calls.llmSuspended ? LLM_SUSPENDED_STATE : LLM_ACTIVE_STATE],
@@ -317,9 +309,7 @@ function Dashboard({ metrics, cities, reEnable }: DashboardProps): ReactElement 
           ))}
           {calls.perDay.length === 0 ? <Text style={styles.caption}>{NO_ROWS}</Text> : null}
           <Text style={styles.subheading}>Language-model spend against the cap</Text>
-          {/* The mismatch warning belongs with the two facts it qualifies (AAP 0.5.6): a counted
-              mismatch suspends language-model use in every city until an operator re-enables it,
-              so the stop is stated in the spend section itself rather than at the card's head. */}
+          {/* The mismatch warning belongs with the two facts it qualifies: a counted mismatch suspends language-model use in every city until an operator re-enables it, so the stop is stated in the spend section itself. */}
           {calls.llmSuspended || calls.llmCountMismatches > 0 ? (
             <Banner tone="warning" message={llmWarningMessage(calls)}>
               {mismatchCountLine(calls.llmCountMismatches)}
@@ -327,8 +317,7 @@ function Dashboard({ metrics, cities, reEnable }: DashboardProps): ReactElement 
           ) : null}
           {calls.llmSuspended ? (
             <View style={styles.suspension}>
-              {/* AAP 0.5.6 suspends use in every city until an operator re-enables it, so the one
-                  control that ends the suspension sits with the banner that reports it. */}
+              {/* AAP 0.5.6 suspends use in every city until an operator re-enables it, so the one control that ends the suspension sits with the banner that reports it. */}
               <Button
                 label={RE_ENABLE_LABEL}
                 busy={reEnable.busy}
@@ -482,8 +471,7 @@ export default function OpsDashboardScreen(): ReactElement {
     </>
   );
 }
-/** The wrapping rows take their responsive widths from the `layout` tokens' `*Basis` and
- * `*MinWidth` pairs, named once there rather than per row (AAP 0.5.8). */
+/** The wrapping rows take their responsive widths from the `layout` tokens' `*Basis` and `*MinWidth` pairs, named once there rather than per row. */
 const WRAP = { flexDirection: 'row', flexWrap: 'wrap' } as const;
 
 const styles = StyleSheet.create({
@@ -494,8 +482,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     minWidth: layout.dateFieldMinWidth,
   },
-  // The field's own label line plus the gap under it, so Apply sits on the input line and stays
-  // there however many caption lines an error adds to a column beside it (AAP 0.5.8).
   apply: { paddingTop: typography.label.lineHeight + spacing.xs },
   filterGroup: { gap: spacing.xs },
   filterLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
@@ -510,7 +496,6 @@ const styles = StyleSheet.create({
   body: { ...typography.body, color: colors.text },
   caption: { ...typography.caption, color: colors.textMuted },
   subheading: { ...typography.label, color: colors.text, fontWeight: fontWeights.bold },
-  // The suspension notice and the control that ends it, stacked with the panel's own spacing.
   suspension: { gap: spacing.sm },
   row: { gap: spacing.xs },
   rowHead: { ...WRAP, alignItems: 'baseline', gap: spacing.sm, justifyContent: 'space-between' },

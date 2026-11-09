@@ -21,8 +21,8 @@ import {
 import type { ApiEnv, WorkersEnv } from '@tablemate/server-core';
 
 /*
- * Each is a fragment list joined here, so no complete credential shape is written into this file, and
- * each is random, so a value that reached an error stays distinguishable from a fixed reason.
+ * Each is a fragment list joined here, so no complete credential shape is written into this file, and each
+ * is random, so a value that reached an error stays distinguishable from a fixed reason.
  */
 const stripeTestKey = ['sk', 'test', randomBytes(16).toString('hex')].join('_');
 const stripeLiveKey = ['sk', 'live', randomBytes(16).toString('hex')].join('_');
@@ -48,8 +48,8 @@ function fieldKey(): string {
 }
 
 /**
- * `base` with `overrides` applied. An override of `undefined` removes the variable, so a row can
- * state an absent variable rather than a stand-in value.
+ * `base` with `overrides` applied. An override of `undefined` removes the variable, so a row can state an
+ * absent variable rather than a stand-in value.
  */
 function withOverrides(base: RawMap, overrides: RawMap): RawMap {
   const merged: RawMap = { ...base };
@@ -128,8 +128,8 @@ function workersRaw(appEnv: string, overrides: RawMap = {}): RawMap {
 }
 
 /**
- * The fixed vocabulary a reason may name — every mode, and both booleans — so {@link expectEnvError}
- * does not mistake a word like `simulator` for a leaked value: the reasons legitimately read
+ * The fixed vocabulary a reason may name — every mode, and both booleans — so {@link expectEnvError} does
+ * not mistake a word like `simulator` for a leaked value: the reasons legitimately read
  * `is required when TELEPHONY_MODE=simulator`. The mode lists come from the modules that own them.
  */
 const REASON_VOCABULARY: ReadonlySet<string> = new Set([
@@ -145,10 +145,9 @@ const REASON_VOCABULARY: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Run `load` and assert it was refused: the error is an {@link EnvValidationError} naming every
- * variable of `variables`, and no value of `raw` outside {@link REASON_VOCABULARY} and long enough
- * to carry a credential appears in its message, in `String(error)` or in the serialized issues
- * (AAP 0.11.1, 0.12.2).
+ * Run `load` and assert it was refused: the error is an {@link EnvValidationError} naming every variable of
+ * `variables`, and no value of `raw` outside {@link REASON_VOCABULARY} and long enough to carry a credential
+ * appears in its message, in `String(error)` or in the serialized issues (AAP 0.11.1, 0.12.2).
  */
 function expectEnvError(
   load: () => unknown,
@@ -180,8 +179,8 @@ function expectEnvError(
 }
 
 /**
- * Every own property name reachable in `value`, at any depth, so a Stripe-shaped key cannot hide in
- * a nested object from the `workers` rows.
+ * Every own property name reachable in `value`, at any depth, so a Stripe-shaped key cannot hide in a nested
+ * object from the `workers` rows.
  */
 function propertyNames(value: unknown, seen: Set<object> = new Set()): string[] {
   if (value === null || typeof value !== 'object' || seen.has(value)) {
@@ -378,13 +377,12 @@ const TEST_ONLY_VALUES: readonly (readonly [variable: string, value: string])[] 
   ['CRAWL_ALLOW_PRIVATE_HOSTS', 'fixtures.local'],
 ];
 
-/** The environments that may not carry a test-only variable. */
 const NON_TEST_ENVS = ['demo', 'staging', 'production'] as const;
 
 /**
- * Every test-only variable in every environment that refuses it (AAP 0.6.2). The `api` rows of this
- * table start from {@link apiRaw}, whose production environment carries the live Stripe triple, so
- * the test-only variable is the only finding of that start attempt.
+ * Every test-only variable in every environment that refuses it (AAP 0.6.2). The `api` rows start from
+ * {@link apiRaw}, whose production environment carries the live Stripe triple, so the test-only variable is
+ * the only finding of that start attempt.
  */
 const TEST_ONLY_VIOLATIONS: readonly (readonly [
   appEnv: string,

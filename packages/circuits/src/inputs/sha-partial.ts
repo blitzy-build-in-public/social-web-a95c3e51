@@ -1,27 +1,19 @@
 /*
- * SHA-256 padding and the partial-SHA precompute state the circuit's in-circuit `EmailVerifier`
- * starts the body window from (AAP 0.5.5).
- *
- * Ported from @zk-email/helpers 6.4.2 — `src/sha-utils.ts` (`sha256Pad`, `partialSha`,
- * `generatePartialSHA`) and `src/lib/fast-sha256.ts` (the compression function, its round constants
- * and `cacheState()`) of the zkemail/zk-email-verify repository — so that the state produced here is
- * byte for byte the state `EmailVerifier` consumes as `precomputedSHA[32]`, and equal to what the
- * helpers produce for the same input. Both upstream notices follow.
+ * SHA-256 padding and the partial-SHA precompute state the circuit's in-circuit `EmailVerifier` starts the body
+ * window from (AAP 0.5.5). Ported from @zk-email/helpers 6.4.2 — `src/sha-utils.ts` and `src/lib/fast-sha256.ts`
+ * of zkemail/zk-email-verify — so the state produced here is byte for byte the state `EmailVerifier` consumes as
+ * `precomputedSHA[32]` and equal to what the helpers produce. Both upstream notices follow.
  *
  * MIT License
- *
  * Copyright (c) 2023 zk-email
- *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -29,21 +21,14 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * ---------------------------------------------------------------------------------------------
  * SHA-256 (+ HMAC and PBKDF2) for JavaScript.
- *
  * Written in 2014-2016 by Dmitry Chestnykh.
  * Public domain, no warranty.
- * ---------------------------------------------------------------------------------------------
- *
- * Client-safe: it imports nothing and uses no Node built-in, no global `Buffer`, no `TextEncoder`, no DOM
- * API and no I/O; its only module-load work is the constant tables and one scratch buffer.
+ * Client-safe: it imports nothing and uses no Node built-in, no global `Buffer`, no `TextEncoder`, no DOM API and
+ * no I/O.
  */
 
-/**
- * The 64 round constants of FIPS 180-4 §4.2.2, as the helpers' `fast-sha256.ts` declares them.
- */
+/** The 64 round constants of FIPS 180-4 §4.2.2, as the helpers' `fast-sha256.ts` declares them. */
 const K = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
   0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -61,23 +46,16 @@ const IV = new Uint32Array([
 ]);
 
 /**
- * The 64-word message schedule, reused across every block and every call. Safe as module state
- * because JavaScript is single-threaded and {@link compress} is synchronous and never re-enters
- * itself; it keeps the compression loop allocation-free, which is what the Hermes path needs.
+ * The 64-word message schedule, reused across every block and every call. Safe as module state because JavaScript is
+ * single-threaded and {@link compress} never re-enters itself; it keeps the compression loop allocation-free, which is
+ * what the Hermes path needs.
  */
 const W = new Uint32Array(64);
 
 /**
- * Compresses `blocks` 64-byte blocks of `data` from `offset` into `state` in place: the schedule
- * expansion and the 64 rounds of FIPS 180-4 §6.2.2, ported from the helpers' `hashBlocks`.
- *
- * Every sum here is exact in a double — at most five 32-bit terms — and is truncated to 32 bits by
- * `| 0` or `>>> 0`, which is why no `BigInt` appears on the hashing path.
- *
- * @param state - The eight working words, updated in place.
- * @param data - The bytes holding the blocks.
- * @param offset - The index of the first block's first byte.
- * @param blocks - How many 64-byte blocks to compress.
+ * Compresses `blocks` 64-byte blocks of `data` from `offset` into `state` in place: the schedule expansion and the 64
+ * rounds of FIPS 180-4 §6.2.2, ported from the helpers' `hashBlocks`. Every sum is exact in a double — at most five
+ * 32-bit terms — and is truncated to 32 bits by `| 0` or `>>> 0`, which is why no `BigInt` appears on the hashing path.
  */
 function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: number): void {
   for (let block = 0; block < blocks; block += 1) {
@@ -134,12 +112,9 @@ function compress(state: Uint32Array, data: Uint8Array, offset: number, blocks: 
 }
 
 /**
- * Packs the eight state words into 32 big-endian bytes. This is the layout the helpers'
- * `cacheState()` emits and the circuit consumes as `precomputedSHA[32]`, and it is the digest
- * layout too, so the state left after the final padded block re-encoded here is the SHA-256 digest.
- *
- * @param state - The eight working words.
- * @returns A fresh 32-byte array.
+ * Packs the eight state words into 32 big-endian bytes: the layout the helpers' `cacheState()` emits and the circuit
+ * consumes as `precomputedSHA[32]`, and the digest layout too, so the state left after the final padded block
+ * re-encoded here is the SHA-256 digest.
  */
 function stateToBytes(state: Uint32Array): Uint8Array {
   const out = new Uint8Array(32);
@@ -155,24 +130,17 @@ function stateToBytes(state: Uint32Array): Uint8Array {
 }
 
 /**
- * The initial state as the 32 big-endian bytes `circuits/lib/body_window.circom` requires
- * `precomputedSHA` to equal when the precompute prefix is empty. Derived from {@link IV} above so the
- * two spellings cannot drift apart; the circuit declares the same 32 bytes.
+ * The initial state as the 32 big-endian bytes `circuits/lib/body_window.circom` requires `precomputedSHA` to equal
+ * when the precompute prefix is empty. Derived from {@link IV} above so the two spellings cannot drift apart.
  */
 export const SHA256_IV: Uint8Array = stateToBytes(IV);
 
 /**
- * Pads `message` to a whole number of SHA-256 blocks: a `0x80` byte, zeros up to 56 mod 64 bytes, then the
- * message's bit length over eight big-endian bytes (FIPS 180-4 §5.1.1). Mirrors the helpers'
- * `sha256Pad(message, maxShaBytes)`, which returns the same two values as a tuple.
+ * Pads `message` to a whole number of SHA-256 blocks: a `0x80` byte, zeros up to 56 mod 64 bytes, then the message's
+ * bit length over eight big-endian bytes (FIPS 180-4 §5.1.1). Mirrors the helpers' `sha256Pad(message, maxShaBytes)`.
  *
- * @param message - The bytes to pad.
- * @param maxLength - The padded buffer's size in bytes: a non-negative multiple of 64, normally the circuit's
- *   header or body bound.
- * @returns The `maxLength`-byte padded buffer, zero-filled beyond `paddedLength`, and the padded length in
- *   bytes.
- * @throws {RangeError} When `maxLength` is not a non-negative multiple of 64, or when the padded message does
- *   not fit in it — the latter is what `build-inputs.ts` maps to `header_too_long` for the header.
+ * @throws {RangeError} When `maxLength` is not a non-negative multiple of 64, or when the padded message does not fit
+ *   in it — the latter is what `build-inputs.ts` maps to `header_too_long` for the header.
  */
 export function sha256Pad(
   message: Uint8Array,
@@ -188,9 +156,8 @@ export function sha256Pad(
   const padded = new Uint8Array(maxLength);
   padded.set(message, 0);
   padded[message.length] = 0x80;
-  // The bit length as two big-endian words: len * 8 = hi * 2^32 + lo, exact because every length
-  // here is far below 2^53, for which the split below is the same arithmetic the helpers' int64
-  // writer performs.
+  // The bit length as two big-endian words: len * 8 = hi * 2^32 + lo, exact because every length here is far below
+  // 2^53.
   const hi = Math.floor(message.length / 2 ** 29);
   const lo = (message.length * 8) >>> 0;
   const at = paddedLength - 8;
@@ -206,14 +173,12 @@ export function sha256Pad(
 }
 
 /**
- * The SHA-256 state after compressing `prefix` to its last block boundary: the helpers'
- * `partialSha(msg, msgLen)`, which is `new Hash().update(msg, msgLen).cacheState()`. Nothing is finalized,
- * so the result is the state the remaining blocks continue from.
+ * The SHA-256 state after compressing `prefix` to its last block boundary: the helpers' `partialSha(msg, msgLen)`,
+ * which is `new Hash().update(msg, msgLen).cacheState()`. Nothing is finalized, so the result is the state the
+ * remaining blocks continue from.
  *
- * @param prefix - The whole blocks already hashed; an empty prefix yields {@link SHA256_IV}.
- * @returns A fresh 32-byte state.
- * @throws {RangeError} When `prefix.length` is not a multiple of 64, because a partial block would leave the
- *   state the rest of the message could not continue from.
+ * @throws {RangeError} When `prefix.length` is not a multiple of 64, because a partial block would leave the state the
+ *   rest of the message could not continue from.
  */
 export function partialSha(prefix: Uint8Array): Uint8Array {
   if (prefix.length % 64 !== 0) {
@@ -225,23 +190,17 @@ export function partialSha(prefix: Uint8Array): Uint8Array {
 }
 
 /**
- * Splits a padded message into the state up to `cut` and the remaining bytes the in-circuit verifier hashes:
- * the helpers' `generatePartialSHA`, which derives the cut from a selector string, with the cut passed in
- * instead. `build-inputs.ts` supplies `cut = max(0, paddedLength - 960)`, so the window the circuit proves
- * over is the whole padded body when it fits and the trailing 960 bytes otherwise, exactly as
- * `circuits/lib/body_window.circom` constrains it.
+ * Splits a padded message into the state up to `cut` and the remaining bytes the in-circuit verifier hashes: the
+ * helpers' `generatePartialSHA`, with the cut passed in instead of derived from a selector string. `build-inputs.ts`
+ * supplies `cut = max(0, paddedLength - 960)`, so the window the circuit proves over is the whole padded body when it
+ * fits and the trailing 960 bytes otherwise, exactly as `circuits/lib/body_window.circom` constrains it.
  *
- * @param padded - The padded message from {@link sha256Pad}.
- * @param paddedLength - Its block-aligned padded length; bytes beyond it are padding and are not read.
- * @param cut - Where to split, on a 64-byte boundary of the padded message.
- * @param maxRemaining - The window bound: a non-negative multiple of 64, 960 for the 1,024-byte
- *   `EmailVerifier` body bound.
- * @returns The state after the prefix, the window of `maxRemaining` bytes, and the window's real length. The
- *   helpers copy the whole `padded.slice(cut)` and zero-pad it to the bound; the first `maxRemaining` bytes of
- *   that copy are the ones returned here, which is what the oracle comparison in `test/inputs.test.ts` reads.
- * @throws {RangeError} When `maxRemaining` is not a non-negative multiple of 64, when `paddedLength` is not a
- *   64-byte multiple inside `padded`, when `cut` is not a 64-byte boundary of the padded message, or when the
- *   remaining bytes do not fit in `maxRemaining`.
+ * @returns The state after the prefix, the window of `maxRemaining` bytes, and the window's real length. The helpers
+ *   copy the whole `padded.slice(cut)` and zero-pad it to the bound; the first `maxRemaining` bytes of that copy are
+ *   the ones returned here, which is what the oracle comparison in `test/inputs.test.ts` reads.
+ * @throws {RangeError} When `maxRemaining` is not a non-negative multiple of 64, when `paddedLength` is not a 64-byte
+ *   multiple inside `padded`, when `cut` is not a 64-byte boundary of the padded message, or when the remaining bytes
+ *   do not fit in `maxRemaining`.
  */
 export function generatePartialSha(
   padded: Uint8Array,

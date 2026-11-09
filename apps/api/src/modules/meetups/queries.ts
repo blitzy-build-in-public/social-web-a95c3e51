@@ -1,22 +1,20 @@
 /**
- * The meetup reads: the row loaders, the `MeetupDto` builder and the own-meetups list (AAP 0.5.1, 0.5.3,
- * 0.5.4).
+ * The meetup reads: the row loaders, the `MeetupDto` builder and the own-meetups list.
  *
- * {@link loadMeetup} and {@link loadForParticipant} answer "which meetup is this, and what may this caller see of
- * it": a proposal is invisible to its recipient until the initiator's hold is held, so {@link isVisibleTo} answers
- * a not-yet-visible proposal exactly like a meetup that does not exist. {@link toMeetupDtos} turns rows into
- * `MeetupDto`s a page at a time over a fixed set of queries, each field copied from an allowlist and the
- * counterpart serialized at the caller's disclosure tier and never above it (AAP 0.5.4, criterion 5).
- * {@link listMeetups} is the additive `GET /meetups?role=&status=&cursor=` read, newest first over an opaque
- * keyset cursor.
+ * {@link loadMeetup} and {@link loadForParticipant} answer which meetup this is and what this caller may see of it:
+ * a proposal is invisible to its recipient until the initiator's hold is held, so {@link isVisibleTo} answers a
+ * not-yet-visible proposal exactly like a meetup that does not exist. {@link toMeetupDtos} turns rows into
+ * `MeetupDto`s a page at a time over a fixed set of queries, each field copied from an allowlist and the counterpart
+ * serialized at the caller's disclosure tier and never above it. {@link listMeetups} is the additive
+ * `GET /meetups?role=&status=&cursor=` read, newest first over an opaque keyset cursor.
  *
  * The pure helpers are shared with the handlers — `check-in.ts` asks {@link isWithinCheckInWindow} for its `410
  * outside_window` and `cancel.ts` asks {@link lateCancelFrom} for the free-cancellation boundary — so the
  * `nextAction` a screen renders and the route that acts on it turn over at the same instant.
  *
- * A leaf of the module graph: those that import this file are never imported back (AAP 0.5.1). Nothing here locks
- * or mutates, and nothing reads the clock: the instant every rule is judged at arrives as the `now` argument, and
- * a handler about to change a meetup re-reads it under the row lock `meetups/state-machine.ts` takes (AAP 0.11.1).
+ * A leaf of the module graph: those that import this file are never imported back. Nothing here locks or mutates, and
+ * nothing reads the clock: the instant every rule is judged at arrives as the `now` argument, and a handler about to
+ * change a meetup re-reads it under the row lock `meetups/state-machine.ts` takes.
  */
 
 import {
@@ -51,10 +49,6 @@ import { loadProfiles } from '../users/disclosure/serialize.ts';
 import type { LoadedProfile } from '../users/disclosure/serialize.ts';
 
 import type { AppServices } from '../../app.ts';
-
-/*
- * Types (AAP 0.5.2, 0.5.4)
- */
 
 /** The Prisma `Meetup` row every read here loads. */
 export type MeetupRow = Meetup;
@@ -107,10 +101,6 @@ export interface MeetupCursorPosition {
   /** The boundary row's id, the tie-break for rows sharing that timestamp. */
   readonly id: string;
 }
-
-/*
- * Pure helpers (AAP 0.5.3, 0.5.4, 0.5.7)
- */
 
 /**
  * Which side of `meetup` `userId` holds, or null when the caller is not a participant (AAP 0.5.4). Both ids are
@@ -216,10 +206,6 @@ export function computeNextAction(input: NextActionInput): NextAction {
   return 'none';
 }
 
-/*
- * Loaders (AAP 0.5.4)
- */
-
 /**
  * One meetup by id, or null when no such row exists. This read takes no lock and applies no participant check:
  * it is for building a response. A handler about to change the meetup re-reads it under `lockMeetup` in
@@ -257,10 +243,6 @@ export async function loadForParticipant(
   }
   return { meetup, role };
 }
-
-/*
- * The `MeetupDto` builder (AAP 0.5.4)
- */
 
 /** The handle an erased counterpart is shown under. */
 const DELETED_HANDLE = 'deleted-traveler';
@@ -515,10 +497,6 @@ export async function toMeetupDto(
   return dto;
 }
 
-/*
- * Keyset cursor (AAP 0.5.4)
- */
-
 /**
  * The exact stored `createdAt` of one meetup, as ISO 8601 in UTC.
  *
@@ -568,10 +546,6 @@ export function decodeMeetupCursor(value: string): MeetupCursorPosition {
   }
   return position;
 }
-
-/*
- * The own-meetups list (AAP 0.5.4)
- */
 
 /**
  * The visibility half of the list's filter (AAP 0.5.3, 0.5.4). `role` selects the caller's own side of the

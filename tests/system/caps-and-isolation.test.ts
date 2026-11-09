@@ -1,11 +1,8 @@
 /**
- * Criterion 17 (AAP 0.12.1): the per-city call cap, the dialogue-budget refusal and the failure
- * isolation of the meetup flow, end to end across `api`, `workers` and the scripted telephony
- * simulator.
+ * Criterion 17 (AAP 0.12.1): the per-city call cap, the dialogue-budget refusal and the failure isolation of the
+ * meetup flow, end to end across `api`, `workers` and the scripted telephony simulator.
  */
-
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
-
 import {
   createTestApp,
   testCallAllowlist,
@@ -54,12 +51,9 @@ import {
   createWorkerContext,
   type WorkerContext,
 } from '@tablemate/workers/queues';
-
 const CITY = 'lisbon';
 const CITY_ZONE = 'Europe/Lisbon';
-
 const DAY = '2026-11-17';
-
 const START_LOCAL_TIME = '10:00';
 
 /** 12:00 local, the start of the criterion 1 meetup the third case walks while dispatch fails. */
@@ -72,20 +66,16 @@ const CALL_CAP = 40;
 const TASK_COUNT = CALL_CAP + 1;
 
 /**
- * The number every task is given: the reserved fictional `+1 415 555 01xx` block of AAP 0.5.2, whose
- * one hundred numbers the harness's own `CALL_ALLOWLIST` holds. Each row passes a distinct one
- * explicitly, because the factory's per-process counter cannot cover forty-one of them.
+ * The number every task is given: the reserved fictional `+1 415 555 01xx` block of AAP 0.5.2, whose one hundred
+ * numbers the harness's own `CALL_ALLOWLIST` holds. Each row passes a distinct one explicitly, because the factory's
+ * per-process counter cannot cover forty-one of them.
  */
 function phoneAt(index: number): string {
   return `+141555501${String(index).padStart(2, '0')}`;
 }
-
 const MAX_DISPATCH_PASSES = 12;
-
 const DRAIN_ROUNDS = 60;
-
 const DRAIN_PAUSE_MS = 100;
-
 const CASE_TIMEOUT_MS = 180_000;
 
 /** The label the third case's title carries, so a run's output names its Stripe topology. */
@@ -93,7 +83,6 @@ const MODE = stripeModeLabel();
 
 /** Whether this run holds the stateful proxy, which is the only topology that can show an intent. */
 const MOCK = inject('stripeMode') === 'mock';
-
 let t: TestApp;
 let ctx: WorkerContext;
 
@@ -110,7 +99,6 @@ const mailer: WorkerContext['mailer'] = {
     return Promise.resolve();
   },
 };
-
 beforeAll(async () => {
   t = await createTestApp();
   url = await t.listen();
@@ -127,34 +115,29 @@ beforeAll(async () => {
   // The cap the first case is about is the configured default, not a value this suite arranged.
   expect(ctx.env.CAP_CALLS_PER_CITY_DAY).toBe(CALL_CAP);
 });
-
 afterAll(async () => {
   await t.simulator.waitIdle();
   await closeWorkerContext(ctx);
   await t.close();
 });
-
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
   t.time.at(localTimeOn(CITY_ZONE, DAY, START_LOCAL_TIME));
-
   t.simulator.setTarget(url);
   t.simulator.vendorDown(false);
 });
-
 function dispatch(cityId: string = CITY): Promise<unknown> {
   return runCallDispatch({ name: JOB[QUEUE.callDispatch].dispatchCity, data: { cityId } }, ctx);
 }
 
 /**
- * Run passes until one adds no call, which is the pass that decided every task it could: a batch is
- * at most `DISPATCH_BATCH_SIZE` (10) tasks, so forty-one of them are five passes. The count is
- * asserted on its own rather than compared to a table, so a failure's diff carries no number.
+ * Run passes until one adds no call, which is the pass that decided every task it could: a batch is at most
+ * `DISPATCH_BATCH_SIZE` (10) tasks, so forty-one of them are five passes. The count is asserted on its own rather
+ * than compared to a table, so a failure's diff carries no number.
  */
 async function dispatchUntilIdle(cityId: string = CITY): Promise<number> {
   let previous = t.simulator.calls.length;
-
   for (let pass = 0; pass < MAX_DISPATCH_PASSES; pass += 1) {
     await dispatch(cityId);
     await t.simulator.waitIdle();
@@ -164,15 +147,13 @@ async function dispatchUntilIdle(cityId: string = CITY): Promise<number> {
     }
     previous = current;
   }
-
   throw new Error(`dispatch-city added a call in each of ${MAX_DISPATCH_PASSES} passes`);
 }
-
 type Processor = (job: CallResultsJob, ctx: WorkerContext) => Promise<unknown>;
 
 /**
- * Deliver the outbox and run `queueName`'s waiting jobs as a runner would (AAP 0.3.2), until
- * `expected` have been applied.
+ * Deliver the outbox and run `queueName`'s waiting jobs as a runner would (AAP 0.3.2), until `expected` have been
+ * applied.
  * @returns How many jobs were applied.
  * @throws Error when fewer than `expected` arrived within {@link DRAIN_ROUNDS} rounds.
  */
@@ -183,7 +164,6 @@ async function drain(
 ): Promise<number> {
   const queue = t.services.queues.get(queueName);
   let applied = 0;
-
   for (let round = 0; round < DRAIN_ROUNDS && applied < expected; round += 1) {
     await t.services.outbox.runOnce();
     const jobs = await queue.getJobs(['waiting', 'delayed', 'prioritized']);
@@ -198,14 +178,11 @@ async function drain(
       });
     }
   }
-
   if (applied < expected) {
     throw new Error(`only ${applied} of the ${expected} expected jobs were delivered`);
   }
-
   return applied;
 }
-
 interface TaskRow {
   readonly id: string;
   readonly placeId: string | null;
@@ -239,9 +216,7 @@ function attemptRows(taskIds: readonly string[]) {
   });
 }
 
-/**
- * One city-local day's call counter (AAP 0.5.6), or `0` for a day nothing reserved against.
- */
+/** One city-local day's call counter (AAP 0.5.6), or `0` for a day nothing reserved against. */
 async function callsOn(localDate: string): Promise<number> {
   const day = await t.services.db.callBudgetDay.findUnique({
     where: {
@@ -249,40 +224,35 @@ async function callsOn(localDate: string): Promise<number> {
     },
     select: { calls: true },
   });
-
   return day?.calls ?? 0;
 }
 
 /** The one element a case expects, so an assertion never reads through a possibly-absent element. */
 function only<T>(items: readonly T[]): T {
   const [first] = items;
-
   if (first === undefined) {
     throw new Error('the case expected one row and found none');
   }
-
   return first;
 }
 
 /**
- * The instant a task's next attempt is due after `failures` definite vendor rejections (AAP 0.5.3):
- * `failure instant + 60 s x 2^(failures - 1)`, measured from the attempt the failure was recorded on
- * rather than from the clock as the case reads it later.
+ * The instant a task's next attempt is due after `failures` definite vendor rejections (AAP 0.5.3): `failure instant
+ * + 60 s x 2^(failures - 1)`, measured from the attempt the failure was recorded on rather than from the clock as the
+ * case reads it later.
  */
 function vendorBackoffAt(startedAt: Date, failures: number): Date {
   const base = CALL_VENDOR_BACKOFF_BASE_SECONDS * 1_000;
   return new Date(startedAt.getTime() + base * CALL_VENDOR_BACKOFF_FACTOR ** (failures - 1));
 }
-
 const OUTAGE_TASKS = 3;
 const OUTAGE_PASSES = 4;
 
 /**
- * The criterion 1 walk on the server (AAP 0.5.4, 0.5.7): propose and lock real holds at `venue`, both
- * attendees check in with the code `GET /v1/venue/check-in-code` derives, and the settlement due at
- * `startsAt + 45 min` runs one pass.
+ * The criterion 1 walk on the server (AAP 0.5.4, 0.5.7): propose and lock real holds at `venue`, both attendees check in
+ * with the code `GET /v1/venue/check-in-code` derives, and the settlement due at `startsAt + 45 min` runs one pass.
  * @returns The meetup's id.
- * @throws Error when the venue carries no console secret, which only a fixture built with one does not.
+ * @throws Error when the venue carries no console secret, which only a fixture built with one does.
  */
 async function walkMeetup(
   initiator: UserFixture,
@@ -297,20 +267,16 @@ async function walkMeetup(
     startsAt,
     depositCents: DEFAULT_DEPOSIT_CENTS,
   });
-
   const secret = venue.secret;
   if (secret === null) {
     throw new Error('the venue has no console secret to derive a check-in code from');
   }
-
   t.time.toMeetupPoint({ startsAt }, 'startsAt');
   const at = { id: meetupId, venueId: venue.id };
   expect((await checkIn(t, initiator, at, { venueSecret: secret })).bothCheckedIn).toBe(false);
   expect((await checkIn(t, recipient, at, { venueSecret: secret })).bothCheckedIn).toBe(true);
-
   t.time.toMeetupPoint({ startsAt }, 'startsAt+45m');
   await settleNow(t.services);
-
   return meetupId;
 }
 
@@ -323,7 +289,6 @@ async function failingDispatches(): Promise<void> {
     });
   }
 }
-
 async function metricsAround(at: Date): Promise<MetricsDto> {
   const operator = await makeUser(t, { role: 'operator', card: 'none' });
   const response = await callRoute(t.app, {
@@ -336,7 +301,6 @@ async function metricsAround(at: Date): Promise<MetricsDto> {
       cityId: CITY,
     },
   });
-
   expect(
     response.status,
     `GET /v1/admin/metrics answered ${response.status}: ${response.body}`,
@@ -351,10 +315,8 @@ async function completedCountOf(a: string, b: string): Promise<number> {
     where: { userLowId_userHighId: { userLowId: pair.low, userHighId: pair.high } },
     select: { completedCount: true },
   });
-
   return row?.completedCount ?? 0;
 }
-
 describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => {
   it("holds one city's local day at its cap and defers the next task to the next morning", async () => {
     t.simulator.setDefaultScenario('busy');
@@ -407,7 +369,6 @@ describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => 
     expect(t.simulator.calls.at(-1)?.to === waitingPhone).toBe(true);
     expect(await callsOn(localDateKey(CITY_ZONE, deferredUntil))).toBe(1);
   });
-
   it('never dials a task whose dialogue budget cannot be reserved, and defers it', async () => {
     const place = await makePlace(t, { cityId: CITY, category: 'restaurant', phone: phoneAt(0) });
     const task = await makeCallTask(t, {
@@ -415,9 +376,8 @@ describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => 
       placeId: place.id,
       nextAttemptAt: t.time.now(),
     });
-    // The city's language-model spend for the local day is already at the cap, so one call's worst
-    // case cannot fit under it. Prefilling the column is what keeps the refusal the meter's own
-    // rather than a fractional cap the environment schema would refuse (AAP 0.5.6).
+    // The city's language-model spend for the local day is already at the cap, so one call's worst case cannot fit
+    // under it; prefilling the column keeps the refusal the meter's own rather than a fractional cap (AAP 0.5.6).
     const day = localDateKey(CITY_ZONE, t.time.now());
     await t.services.db.$executeRaw(Prisma.sql`
       INSERT INTO "call_budget_day" ("city_id", "local_date", "llm_spend_micros")
@@ -435,7 +395,6 @@ describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => 
     expect(row.attempts).toBe(0);
     expect(row.nextAttemptAt.getTime()).toBe(deferredUntil.getTime());
   });
-
   it(`${MODE} completes the meetup and releases both holds while every dispatch is refused`, async () => {
     const initiator = await makeUser(t, { card: 'visa' });
     const recipient = await makeUser(t, { card: 'visa' });
@@ -454,8 +413,6 @@ describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => 
       });
       taskIds.push(task.id);
     }
-    // Every Twilio create is refused from here on: a connection refused before anything is sent, which
-    // is the definite kind, so no call ever exists (AAP 0.3.2, 0.12.1 criterion 17).
     t.simulator.vendorDown(true);
     const startsAt = localTimeOn(CITY_ZONE, DAY, MEETUP_LOCAL_TIME);
     const [meetupId] = await Promise.all([
@@ -508,8 +465,6 @@ describe('call caps and failure isolation', { timeout: CASE_TIMEOUT_MS }, () => 
     expect(attempts.length).toBeGreaterThanOrEqual(OUTAGE_TASKS);
     const states: CallAttemptState[] = attempts.map((attempt) => attempt.state);
     expect(states.every((state) => state === 'dispatch_failed')).toBe(true);
-    // Each task waits on the vendor backoff its own last failure set, measured from that attempt, so a
-    // definite rejection never spends one of the two calls the task is allowed (AAP 0.5.3).
     const latest = new Map<string, Date>();
     for (const attempt of attempts) {
       latest.set(attempt.callTaskId, attempt.startedAt);

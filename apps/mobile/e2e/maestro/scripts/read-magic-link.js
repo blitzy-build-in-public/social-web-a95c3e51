@@ -1,15 +1,14 @@
 /* global http, json, output, EMAIL, ROLE, API_URL, MAILPIT_URL */
 /*
  * Reads the Tablemate magic-link email for one actor out of Mailpit (AAP 0.3.3) and puts its token in
- * `output.token` — the value a native flow embeds unchanged in `tablemate://auth/verify?token=…`, the
- * deep link `app/auth/verify.tsx` parses. Criteria 1 and 8 sign in through it.
+ * `output.token` — the value a native flow embeds unchanged in `tablemate://auth/verify?token=…`, the deep
+ * link `app/auth/verify.tsx` parses. Criteria 1 and 8 sign in through it.
  *
- * Flow env: `EMAIL`, `API_URL` (the API origin) and `MAILPIT_URL` (Mailpit's origin) are required;
- * `ROLE` is an optional label used in failure messages alone and defaults to `account`.
- *
- * `POST /auth/magic-link` is sent exactly once and never retried: the route allows 5 links an hour per
- * address, and the web suite and the sibling native flows spend the same budget. No message raised here
- * carries the address, the link, the token or the mail text.
+ * Flow env: `EMAIL`, `API_URL` (the API origin) and `MAILPIT_URL` (Mailpit's origin) are required; `ROLE` is
+ * an optional label used in failure messages alone and defaults to `account`. `POST /auth/magic-link` is sent
+ * exactly once and never retried: the route allows 5 links an hour per address, and the web suite and the
+ * sibling native flows spend the same budget. No message raised here carries the address, the link, the token
+ * or the mail text.
  */
 (function () {
   'use strict';

@@ -1,9 +1,4 @@
-/** Check in at the venue (AAP 0.5.8): the console's six digits and the device's coordinates go to
- * `POST /meetups/:id/check-in` (AAP 0.5.4, 0.5.7), where the server's own window decides. The code
- * is typed, or read off the venue's QR form by `src/checkin/venue-scanner`, which is the camera on
- * iOS and Android and nothing at all in the browser: manual entry is the guaranteed path on every
- * browser, so this screen renders the scanner unconditionally and never asks which platform it is
- * on (AAP 0.3.4). */
+/** Check in at the venue: the console's six digits and the device's coordinates go to `POST /meetups/:id/check-in`, where the server's own window decides. The code is typed, or read off the venue's QR form by `src/checkin/venue-scanner` — the camera on iOS and Android and nothing at all in the browser, so manual entry is the guaranteed path on every browser. */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
@@ -58,7 +53,6 @@ const LOCATION_DENIED_NOTICE = 'Location permission is needed to check in at the
 const LOCATION_UNAVAILABLE_NOTICE = "We couldn't get your location. Try again at the venue.";
 const SUBMIT_PROPS = { label: 'Check in', hint: SUBMIT_HINT, testID: 'checkin-submit' } as const;
 const RETRY_PROPS = { label: 'Try again', testID: 'checkin-retry' } as const;
-/** The outcome card's container: the element focus moves to when the card replaces the form. */
 const RESULT_FOCUS_TEST_ID = 'checkin-result-focus';
 const FIELD_MODES = { inputMode: 'numeric', keyboardType: 'number-pad' } as const;
 const FIELD_AUTO = { autoComplete: 'one-time-code', textContentType: 'oneTimeCode' } as const;
@@ -108,19 +102,7 @@ function messageFor(error: unknown): string {
     return isApiError(error) ? userMessageFor(error.code) : userMessageFor('invalid_response');
   return error.code === 'location_denied' ? LOCATION_DENIED_NOTICE : LOCATION_UNAVAILABLE_NOTICE;
 }
-/**
- * Moves focus to the outcome card on the web (AAP 0.5.8).
- *
- * Submitting destroys the button that had focus, and the browser then falls back to the document
- * body: a keyboard user lands at the top of the page, and react-native-web logs that it blocked
- * `aria-hidden` on a container whose descendant — the destroyed control — still held focus. The
- * card's container carries the result sentence as its accessible name, so this is where the reading
- * and tab order both continue. Native needs nothing here: the platform keeps focus on the screen
- * and the result is announced by `announce()`.
- *
- * `apps/mobile/app/settings/delete-account.tsx` moves focus the same way when its own step replaces
- * a control.
- */
+/** Moves focus to the outcome card on the web: submitting destroys the button that had focus and the browser falls back to the document body, leaving a keyboard user at the top of the page. The card's container carries the result sentence as its accessible name, so the reading and tab order continue there. Native needs nothing: the platform keeps focus and `announce()` reports the result. */
 function focusOutcome(): void {
   if (Platform.OS !== 'web') return;
   try {
@@ -130,16 +112,7 @@ function focusOutcome(): void {
   }
 }
 type OutcomeProps = { title: string; testID: string; note?: string | null; onBack: () => void };
-/**
- * The outcome card, and the container that receives focus when it replaces the form (AAP 0.5.8).
- *
- * The card is wrapped rather than made focusable itself, because `Card` renders its own surface and
- * a control nested in a control cannot be reached by keyboard. This `View` is the programmatically
- * focusable group: `tabIndex={-1}` puts it in the DOM without adding it to the tab order (React
- * Native 0.76 declares the prop on `View`, and react-native-web writes the DOM attribute), and
- * `accessibilityLabel` gives it the result sentence as its accessible name, so a screen reader
- * announces where focus went. Its children keep their own names and positions underneath.
- */
+/** The outcome card's wrapper, the programmatically focusable group: `tabIndex={-1}` puts it in the DOM without adding it to the tab order and `accessibilityLabel` names it. The card is wrapped rather than made focusable itself, because a control nested in a control cannot be reached by keyboard. */
 const OutcomeCard = ({ title, testID, note, onBack }: OutcomeProps): ReactElement => (
   <View testID={RESULT_FOCUS_TEST_ID} tabIndex={-1} role="group" accessibilityLabel={title}>
     <Card title={title} testID={testID}>
@@ -165,9 +138,7 @@ export default function CheckInScreen(): ReactElement {
   const [holding, setHolding] = useState(false);
   const inFlight = useRef(false);
   const held = useRef<HeldCode | null>(null);
-  // The tick only re-renders this screen; the reading itself comes from `serverNow()` at every
-  // render, so the window line follows the server clock and an offset recorded by a response that
-  // lands after this screen mounted takes effect without waiting for the next tick (AAP 0.5.1).
+  // The tick only re-renders this screen; the reading comes from `serverNow()` at every render, so an offset recorded after this screen mounted takes effect at once.
   const [, setTick] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setTick(Date.now()), 15_000);
@@ -184,9 +155,7 @@ export default function CheckInScreen(): ReactElement {
   const errorMessage = failure ?? loadMessage;
   const canSubmit = code.length === CODE_DIGITS && !holding;
   const both = result !== null && result.bothCheckedIn ? BOTH_CHECKED_IN_NOTICE : null;
-  // The three states whose card stands in place of the form, and so the ones focus moves for
-  // (AAP 0.5.8). Derived here rather than read from the render, so the effect below runs exactly
-  // when the form is replaced — and once for a screen that opens straight onto an outcome.
+  // The three states whose card stands in place of the form, derived here so the effect runs exactly when the form is replaced — and once for a screen that opens straight onto an outcome.
   const outcomeShown =
     detail !== null && (result !== null || detail.checkedIn || detail.status !== 'locked');
   useEffect(() => {
@@ -209,17 +178,7 @@ export default function CheckInScreen(): ReactElement {
       queryClient.invalidateQueries({ queryKey: queryKeys.meetupsAll }),
     ]);
   };
-  /**
-   * Takes a `409 not_locked` refusal back to the meetup's own state (AAP 0.5.3, 0.5.4).
-   *
-   * The route answers `not_locked` for every status other than `locked`, so a meetup that has
-   * already reached a final status arrives looking exactly like one that has not been locked yet —
-   * and the copy this screen holds may be the `locked` one the refusal just contradicted. Only a
-   * fresh read of the meetup tells them apart, which is why it is forced past the cache with
-   * `staleTime: 0`. If that read fails, nothing has established a final status and the refusal keeps
-   * the sentence the error map gives it. If it reports one, the terminal card below carries
-   * `CHECK_IN_CLOSED_NOTICE` and the banner steps aside rather than repeating that sentence.
-   */
+  /** Takes a `409 not_locked` refusal back to the meetup's own state: the route answers it for every status other than `locked`, so only a fresh read of the meetup, forced past the cache with `staleTime: 0`, tells an unlocked meetup from one that has already reached a final status. */
   const resolveNotLocked = async (): Promise<void> => {
     const fresh = await queryClient
       .fetchQuery({
@@ -361,8 +320,6 @@ const styles = StyleSheet.create({
   notice: { ...typography.body, color: colors.textMuted },
   timeLeft: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   caption: { ...typography.caption, color: colors.textMuted },
-  // The venue pair the meetup detail screen's terms card paints: its name in the label style at
-  // medium weight, its address in the muted body style (AAP 0.5.8).
   venueBlock: { gap: spacing.xs },
   venue: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
   venueAddress: { ...typography.body, color: colors.textMuted },

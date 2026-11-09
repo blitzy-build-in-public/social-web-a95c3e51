@@ -1,6 +1,4 @@
-/**
- * The Table Credit balance (`/profile/credit`, AAP 0.5.8, AAP 0.8.1).
- */
+/** The Table Credit balance (`/profile/credit`). */
 import { useEffect, useRef } from 'react';
 import { StyleSheet, Text } from 'react-native';
 import { router, Stack } from 'expo-router';

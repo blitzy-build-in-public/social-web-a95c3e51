@@ -25,10 +25,9 @@ import type { CircuitInputs, SupportedIssuer } from '@tablemate/circuits';
 import type { PublicSignalName } from '@tablemate/shared';
 
 /**
- * The fixed public nullifier salt the fixture proofs are taken with: a short decimal field element,
- * so a proof stays verifiable across runs and its cache stays warm. `apps/api/test/support/app.ts`
- * passes it as the app's `NULLIFIER_SALT`, and the verifier's salt check (AAP 0.5.5 step 2) then
- * accepts a fixture proof.
+ * The fixed public nullifier salt the fixture proofs are taken with: a short decimal field element, so a proof
+ * stays verifiable across runs and its cache stays warm. `apps/api/test/support/app.ts` passes it as the app's
+ * `NULLIFIER_SALT`, and the verifier's salt check (AAP 0.5.5 step 2) then accepts a fixture proof.
  */
 export const TEST_NULLIFIER_SALT = '20261104';
 
@@ -36,9 +35,8 @@ export const TEST_NULLIFIER_SALT = '20261104';
 export type FixtureName = 'valid' | 'valid-second' | 'other-issuer' | 'tampered';
 
 /**
- * How long one proving command may run: the snarkjs CLI reading a 1.6 GB proving key and a witness of
- * this circuit costs minutes on first use. A suite that proves in `beforeAll` passes it to its own
- * timeout (AAP 0.11.2).
+ * How long one proving command may run: the snarkjs CLI reading a 1.6 GB proving key and a witness of this circuit
+ * costs minutes on first use (AAP 0.11.2).
  */
 export const PROOF_TIMEOUT_MS = 20 * 60 * 1000;
 
@@ -47,8 +45,8 @@ export interface FixtureProofOptions {
   /** The nullifier salt to prove against; the published `TEST_NULLIFIER_SALT` unless given. */
   readonly salt?: string;
   /**
-   * Prove anew instead of reading and writing the cache, because a re-randomised proof is wanted and
-   * the result must not be reused.
+   * Prove anew instead of reading and writing the cache, because a re-randomised proof is wanted and the result
+   * must not be reused.
    */
   readonly fresh?: boolean;
 }
@@ -107,15 +105,15 @@ const MISSING_ARTEFACTS =
   'circuit artefacts missing at packages/circuits/build — run pnpm circuits:build';
 
 /**
- * The file name {@link resolveProverBinary} looks for on `PATH` (AAP 0.4.2). The binary that runs is
- * the absolute path that resolution returns, never this bare name.
+ * The file name {@link resolveProverBinary} looks for on `PATH` (AAP 0.4.2). The binary that runs is the absolute
+ * path that resolution returns, never this bare name.
  */
 const PROVER_BINARY = 'prover';
 
 /**
- * The variable that pins the native prover's absolute path (AAP 0.4.2, CWE-426): the harness runs a
- * `prover` only from the path it names, so a stray binary of that name earlier on `PATH` is never
- * handed the proving key and the witness.
+ * The variable that pins the native prover's absolute path (AAP 0.4.2, CWE-426): the harness runs a `prover` only
+ * from the path it names, so a stray binary of that name earlier on `PATH` is never handed the proving key and the
+ * witness.
  */
 const PROVER_PATH_ENV = 'RAPIDSNARK_PROVER';
 
@@ -123,8 +121,8 @@ const PROVER_PATH_ENV = 'RAPIDSNARK_PROVER';
 const SNARKJS_CLI_FILE = 'cli.cjs';
 
 /**
- * The heap the snarkjs CLI child process is given: the proving key of a multi-million-constraint
- * circuit is gigabytes, which a test worker's own heap cannot hold.
+ * The heap the snarkjs CLI child process is given: the proving key of a multi-million-constraint circuit is
+ * gigabytes, which a test worker's own heap cannot hold.
  */
 const SNARKJS_CLI_HEAP_MB = 16384;
 
@@ -263,9 +261,8 @@ export async function fixtureProof(
 }
 
 /**
- * The issuer and registry one fixture is proved against: the committed test registry, or — for
- * `other-issuer` — the test issuer's identity carrying the key that signed that fixture, in a
- * registry rebuilt around it.
+ * The issuer and registry one fixture is proved against: the committed test registry, or — for `other-issuer` — the
+ * test issuer's identity carrying the key that signed that fixture, in a registry rebuilt around it.
  */
 async function fixtureProver(
   name: FixtureName,
@@ -396,10 +393,10 @@ interface CacheKeyParts {
 }
 
 /**
- * The cache file one proof belongs in (AAP 0.11.2): the SHA-256 of the email bytes, the verification
- * key, the salt and the registry root, so a changed fixture, a re-run setup, a different salt or a
- * rebuilt registry proves again rather than reusing a stale proof. The proving key is deliberately not
- * hashed — it is gigabytes, and the verification key identifies the setup it belongs to.
+ * The cache file one proof belongs in (AAP 0.11.2): the SHA-256 of the email bytes, the verification key, the salt
+ * and the registry root, so a changed fixture, a re-run setup, a different salt or a rebuilt registry proves again
+ * rather than reusing a stale proof. The proving key is deliberately not hashed — it is gigabytes, and the
+ * verification key identifies the setup it belongs to.
  */
 function cacheFilePath(root: string, parts: CacheKeyParts): string {
   const digest = createHash('sha256')
@@ -412,11 +409,9 @@ function cacheFilePath(root: string, parts: CacheKeyParts): string {
 }
 
 /**
- * The cached proof at `file`, or `undefined` when there is none (AAP 0.11.2).
- *
- * A cache file that cannot be read, or holds something other than a `ProofSubmission`, is treated as
- * absent: it is git-ignored scratch state that a schema change can invalidate, and proving again is
- * always correct.
+ * The cached proof at `file`, or `undefined` when there is none (AAP 0.11.2). A cache file that cannot be read, or
+ * holds something other than a `ProofSubmission`, is treated as absent: it is git-ignored scratch state that a
+ * schema change can invalidate, and proving again is always correct.
  */
 async function readCachedProof(file: string): Promise<ProofSubmission | undefined> {
   try {
@@ -427,8 +422,8 @@ async function readCachedProof(file: string): Promise<ProofSubmission | undefine
 }
 
 /**
- * Writes a proof to the cache atomically (AAP 0.11.2): a temporary file beside it and a rename, so a
- * run killed mid-write leaves no half-written proof for the next one to trust.
+ * Writes a proof to the cache atomically (AAP 0.11.2): a temporary file beside it and a rename, so a run killed
+ * mid-write leaves no half-written proof for the next one to trust.
  */
 async function writeCachedProof(file: string, submission: ProofSubmission): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
@@ -443,10 +438,10 @@ async function writeCachedProof(file: string, submission: ProofSubmission): Prom
 }
 
 /**
- * snarkjs 0.7.6's two calls, narrowed here because the package ships no declarations (AAP 0.5.5):
- * `wtns.calculate` builds the witness from the wasm witness generator, and `groth16.prove` proves it
- * with a proving key. Neither is a proving entrypoint the API package may hold; this file is the only
- * one in `apps/api` that calls them (AAP 0.12.2).
+ * snarkjs 0.7.6's two calls, narrowed here because the package ships no declarations (AAP 0.5.5): `wtns.calculate`
+ * builds the witness from the wasm witness generator, and `groth16.prove` proves it with a proving key. Neither is
+ * a proving entrypoint the API package may hold; this file is the only one in `apps/api` that calls them
+ * (AAP 0.12.2).
  */
 interface Snarkjs {
   readonly wtns: {

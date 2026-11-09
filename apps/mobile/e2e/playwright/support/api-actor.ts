@@ -56,7 +56,6 @@ export interface E2eEnv {
 interface ResponseSchema<T> {
   parse(value: unknown): T;
 }
-
 /** The parsed shape of a shared schema, so no contract shape is restated here (AAP 0.11.1). */
 type Me = ReturnType<typeof MeDto.parse>;
 type Zk = ReturnType<typeof ZkConfig.parse>;
@@ -78,7 +77,6 @@ interface ActorRecord {
   departureDate: string | null;
   hasCard: boolean;
 }
-
 /** The venue criterion 1 meets at, with the console secret the rotation code is validated by. */
 interface VenueRecord {
   id: string;
@@ -87,15 +85,12 @@ interface VenueRecord {
   lng: number;
   secret: string;
 }
-
-/** The city days the suite has consumed, and the window both proofs cover. */
 interface CursorRecord {
   overlapStart: string;
   overlapEnd: string;
   lastLocalDate: string;
   timezone: string;
 }
-
 /** `.local/e2e/actors-<sha>.json`: everything that must survive between spec files (AAP 0.11.2). */
 interface Registry {
   refreshKey: string | null;
@@ -122,45 +117,34 @@ export interface ActorInfo {
   arrivalDate: string | null;
   departureDate: string | null;
 }
-
 /** What `scripts/e2e.ts` writes for every flow it can only run with Stripe test-mode keys. */
 export const BLOCKED_REASON = 'Blocked — Stripe test-mode keys not supplied';
-
 /** The workspace marker that locates the repository root, as every other harness does. */
 const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
 
 const LOCAL_DIR = '.local';
 
 const E2E_DIR = 'e2e';
-
 /** The cached harness proofs, shared in name with the API's own fixture-proof cache. */
 const PROOF_CACHE_DIR = 'test-proofs';
-
 /** Where `POST /itinerary-proofs` bodies are recorded, for criterion 3's assertion. */
 const PROOF_REQUEST_KIND = 'criterion3';
 const PROOF_REQUEST_NAME = 'actor-a-proof-request.json';
-
 /** The committed fixture emails, by stem (AAP 0.8.1). */
 const FIXTURE_DIR = 'packages/circuits/fixtures/test-issuer';
 
 const BUILD_DIR = 'packages/circuits/build';
-
 /** The seed's console secrets, written once and reused by every reader (AAP 0.5.2). */
 const FIXTURE_SECRETS_FILE = 'fixture-secrets.json';
-
 /** A magic link may be requested 5 times an hour per address, and the 6th is `429` (AAP 0.5.4). */
 const MAGIC_LINK_BUDGET = 5;
 const MAGIC_LINK_WINDOW_MS = 3_600_000;
-
 /** The access-token lifetime is 15 minutes, so a cached one is trusted for 10 (AAP 0.3.3). */
 const ACCESS_TOKEN_TRUST_MS = 600_000;
-
 /** One step of the rotating venue code, which is the resolution of `apiNow()` (AAP 0.5.7). */
 const CODE_STEP_MS = 60_000;
-
 /** How long a proof may take in the browser Worker: minutes, on a device with the key cached. */
 const UI_STEP_TIMEOUT_MS = 15 * 60_000;
-
 /** The Payment Element's own controls, filled with Stripe's public test card (AAP 0.11.2). */
 const TEST_CARD = {
   number: '4242 4242 4242 4242',
@@ -168,14 +152,10 @@ const TEST_CARD = {
   cvc: '123',
   postalCode: '10001',
 };
-
 /** A missing circuit build is one failure, naming the command that fixes it. */
 const MISSING_ARTEFACTS = `circuit artefacts missing at ${BUILD_DIR} — run pnpm circuits:build`;
-
 /* Environment: the suite's only reader, memoized so the defaults cannot drift between callers. */
-
 let envCache: E2eEnv | undefined;
-
 /** The stack this suite runs against (AAP 0.11.2), read once.
  *
  * @throws Error naming `TEST_CONTROL_TOKEN` when it is unset.
@@ -210,7 +190,6 @@ function originOf(name: string, fallback: string): string {
   const configured = envVar(name);
   return (configured === '' ? fallback : configured).replace(/\/+$/, '');
 }
-
 /**
  * A locator for the visible element carrying one test id.
  *
@@ -221,16 +200,14 @@ function originOf(name: string, fallback: string): string {
 function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`);
 }
-
 /**
  * Waits until one of `testIDs` is on screen and answers it.
  *
- * A screen is reached with `page.goto` or a tab press, and between the two the app re-renders: a click issued
- * in that window lands on a node React has already replaced and changes nothing, so every step waits for the
- * screen it moved to before touching anything on it. Every node carrying an id is examined rather than the
- * first in document order, for the reason {@link visible} gives, and an id counts as arrived when any of its
- * nodes is laid out and not `visibility: hidden`.
- *
+ * A screen is reached with `page.goto` or a tab press, and between the two the app re-renders: a click issued in
+ * that window lands on a node React has already replaced and changes nothing, so every step waits for the screen
+ * it moved to before touching anything on it. Every node carrying an id is examined rather than the first in
+ * document order, for the reason {@link visible} gives, and an id counts as arrived when any of its nodes is
+ * laid out and not `visibility: hidden`.
  * @throws Error when none of the ids appears inside the deadline.
  */
 async function awaited(
@@ -255,11 +232,8 @@ async function awaited(
   if (typeof found === 'string') return found;
   throw new Error(`none of ${testIDs.join(', ')} appeared within ${String(timeoutMs)} ms`);
 }
-
 /* Paths. Everything this harness writes lives under the git-ignored `.local/`. */
-
 let rootCache: string | undefined;
-
 /**
  * The repository root: the nearest ancestor of the working directory holding the workspace marker.
  *
@@ -283,7 +257,6 @@ export function repoRoot(): string {
 export function localPath(...segments: readonly string[]): string {
   return join(repoRoot(), LOCAL_DIR, E2E_DIR, ...segments);
 }
-
 /** Writes one JSON result under `.local/e2e/<kind>/<name>.json`, creating the directory. */
 export function writeResult(kind: string, name: string, data: unknown): string {
   const file = localPath(kind, name);
@@ -301,19 +274,15 @@ function randomHex(chars: number): string {
     .toString('hex')
     .slice(0, chars);
 }
-
 /** The first `chars` hex characters of the SHA-256 of `text`, for a stable per-stack name. */
 function digestOf(text: string, chars: number): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, chars);
 }
-
 /*
  * The registry: the stack's own scratch state, keyed by the test-control token so a fresh stack starts
  * from a fresh registry and a rerun against the same one reuses its accounts.
  */
-
 let registryCache: Registry | null = null;
-
 /** Where this stack's registry lives, mode 0600 because it holds refresh tokens. */
 function registryFile(): string {
   return localPath(`actors-${digestOf(e2eEnv().testControlToken, 12)}.json`);
@@ -348,7 +317,6 @@ function registry(): Registry {
   registryCache = asRegistry(raw);
   return registryCache;
 }
-
 /** Writes the registry atomically, mode 0600, after every rotation and every change (AAP 0.11.2). */
 function saveRegistry(): void {
   const file = registryFile();
@@ -358,7 +326,6 @@ function saveRegistry(): void {
   chmodSync(temporary, 0o600);
   renameSync(temporary, file);
 }
-
 /** Reads the registry's shape, defaulting each field a previous run's schema did not carry. */
 function asRegistry(raw: unknown): Registry {
   if (!isRecord(raw)) {
@@ -457,11 +424,8 @@ function asTimestamps(value: unknown): Record<string, number[]> {
   }
   return out;
 }
-
 /* The HTTP client: one request shape for every call, and refusals that carry no body. */
-
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-
 /** An API refusal: the status and the error code, never the body, a token or a header. */
 export class ApiCallError extends Error {
   readonly status: number;
@@ -483,7 +447,6 @@ export interface ApiRequestOptions<T> {
   headers?: Record<string, string>;
   schema?: ResponseSchema<T>;
 }
-
 /** One authenticated-or-public API call (AAP 0.5.4).
  *
  * @throws {ApiCallError} For every non-2xx answer.
@@ -496,7 +459,6 @@ export async function apiRequest(options: ApiRequestOptions<never>): Promise<voi
 export async function apiRequest<T>(options: ApiRequestOptions<T>): Promise<T | undefined> {
   return await send(options);
 }
-
 /** The one implementation both overloads reach, so no call site duplicates request handling. */
 async function send<T>(options: ApiRequestOptions<T>): Promise<T | undefined> {
   const headers: Record<string, string> = { ...options.headers };
@@ -539,12 +501,10 @@ async function errorCodeOf(response: Response): Promise<string> {
     return 'unreadable_error';
   }
 }
-
 /*
  * Sessions. Each role has exactly one refresh chain, and the chain rotates only when no page holds that
  * role's bearer, because a second rotation of the same token is read as reuse and revokes the session.
  */
-
 interface Chain {
   accessToken: string;
   obtainedAt: number;
@@ -556,7 +516,6 @@ function sessionOf(role: Role): { email: string; refreshToken: string } | null {
   const reg = registry();
   return role === 'operator' ? reg.operator : reg.actors[role];
 }
-
 /** Stores a rotated refresh token at once: a rotation the file does not carry is a lost session. */
 function setRefreshToken(role: Role, refreshToken: string): void {
   const reg = registry();
@@ -645,14 +604,12 @@ export function api(role: Role): ActorApi {
     },
   };
 }
-
 /**
- * Runs one authenticated call, retrying it once with a live token after a `401 token_invalid`.
- *
- * The access token lasts 15 minutes of the API's own clock, and a suite moves that clock days forward, so the
- * token it held a moment ago can be expired without a second passing for the caller. A page that is open
- * rotates the chain itself, so its next bearer is waited for; otherwise the chain is rotated here, which is the
- * only place outside a page that may do so.
+ * Runs one authenticated call, retrying it once with a live token after a `401 token_invalid`: the access token
+ * lasts 15 minutes of the API's own clock and a suite moves that clock days forward, so the token it held a
+ * moment ago can be expired without a second passing for the caller. A page that is open rotates the chain
+ * itself, so its next bearer is waited for; otherwise the chain is rotated here, the only place outside a page
+ * that may do so.
  */
 async function attempt<T>(role: Role, run: (token: string) => Promise<T>): Promise<T> {
   try {
@@ -673,12 +630,10 @@ async function attempt<T>(role: Role, run: (token: string) => Promise<T>): Promi
 export function operatorApi(): ActorApi {
   return api('operator');
 }
-
 /*
  * Sign-in. The API allows 5 links an hour per address, so every request is recorded and a sixth is a
  * refusal rather than a loop (AAP 0.5.4).
  */
-
 export interface SignIn {
   email: string;
   userId: string;
@@ -686,7 +641,6 @@ export interface SignIn {
   refreshToken: string;
   me: Me;
 }
-
 /** Records one magic-link request, refusing a sixth inside the rolling hour. */
 function noteMagicLinkRequest(email: string, purpose: string): void {
   const reg = registry();
@@ -700,7 +654,6 @@ function noteMagicLinkRequest(email: string, purpose: string): void {
   reg.magicLinks[email] = [...recent, now];
   saveRegistry();
 }
-
 /** Signs an account in through the API and records its consent when the account is new (AAP 0.11.2).
  *
  * @throws Error when the magic-link budget is spent, the link is refused, or Mailpit never carries it.
@@ -755,7 +708,6 @@ export async function signInViaApi(email: string, purpose: string): Promise<Sign
   }
   return session;
 }
-
 /** Signs an account in through the real sign-in screen, which is how the web and native walks reach the
  * app (AAP 0.11.2).
  *
@@ -770,7 +722,6 @@ export async function signInViaUi(
   await driveSignIn(page, context, email, purpose);
   return page;
 }
-
 /** The sign-in itself, shared by {@link signInViaUi} and the actor flow that owns its own page. */
 async function driveSignIn(
   page: Page,
@@ -797,13 +748,10 @@ async function driveSignIn(
   await visible(page, 'tab-discover').waitFor({ timeout: PAGE_READY_TIMEOUT_MS });
   await discoverRefreshKey(context);
 }
-
 /**
- * Confirms the age gate, retrying the switch until the submit control accepts the press.
- *
- * The press is retried because the screen re-renders while the app settles, and a click issued
- * across that re-render lands on a node React has already replaced: the switch stays off and the
- * continue button stays disabled, which reads as a hung form rather than as a miss.
+ * Confirms the age gate, retrying the switch until the submit control accepts the press: the screen re-renders
+ * while the app settles, and a click issued across that re-render lands on a node React has already replaced,
+ * which leaves the switch off and the continue button disabled — a hung form rather than a miss.
  */
 async function passAgeGate(page: Page): Promise<void> {
   const submit = visible(page, 'age-gate-submit');
@@ -823,7 +771,6 @@ async function passAgeGate(page: Page): Promise<void> {
   }
   await submit.click();
 }
-
 /** Records the `localStorage` key the refresh token is stored under, once per stack. */
 function discoverRefreshKey(context: BrowserContext): Promise<void> {
   const reg = registry();
@@ -844,9 +791,7 @@ function discoverRefreshKey(context: BrowserContext): Promise<void> {
     saveRegistry();
   });
 }
-
 /* Hand-off contexts: a role's page, the bearer it sends, and the one chain rule that keeps the session alive. */
-
 /** One open page, and the last bearer it sent to the API. */
 interface OpenContext {
   readonly context: BrowserContext;
@@ -855,10 +800,8 @@ interface OpenContext {
 }
 
 const openContexts = new Map<Role, OpenContext>();
-
 /** How long a spec waits for the page it opened to reach the tabs. */
 const PAGE_READY_TIMEOUT_MS = 30_000;
-
 /** Opens a page for a role, holding that role's session in the storage key the web client reads.
  *
  * @throws Error when the role already has an open context, or has not signed in yet.
@@ -899,7 +842,6 @@ export async function contextFor(
   await visible(page, 'tab-discover').waitFor({ timeout: PAGE_READY_TIMEOUT_MS });
   return { context, page };
 }
-
 /** Records the bearer of every API request the page makes, which is the token the chain must use. */
 function captureBearers(entry: OpenContext): void {
   entry.page.on('request', (request) => {
@@ -910,7 +852,6 @@ function captureBearers(entry: OpenContext): void {
     }
   });
 }
-
 /** Adopts the page's rotated refresh token and closes it (AAP 0.11.2).
  *
  * @throws Error when the role has no open context, or the page holds no refresh token.
@@ -935,14 +876,11 @@ export async function releaseContext(role: Role, context: BrowserContext): Promi
   openContexts.delete(role);
   await context.close();
 }
-
 /*
  * Proofs: the harness proves exactly as a device does — inputs from the email, snarkjs over the artefacts
  * `pnpm circuits:build` wrote — and sends `{ proof, publicSignals }` alone (AAP 0.5.5).
  */
-
 type FixtureName = 'valid' | 'valid-second';
-
 /** snarkjs 0.7.6's proving entrypoint, narrowed here because the package ships no declarations. */
 interface Groth16Prover {
   readonly groth16: {
@@ -959,7 +897,6 @@ interface Artefacts {
   zkey: string;
   manifest: Manifest;
 }
-
 /** A committed fixture email's path, refusing a checkout whose fixtures were never built. */
 function fixturePath(name: FixtureName): string {
   const file = join(repoRoot(), FIXTURE_DIR, `${name}.eml`);
@@ -981,7 +918,6 @@ function artefacts(): Artefacts {
     manifest: ArtifactsManifest.parse(JSON.parse(readFileSync(manifestFile, 'utf8')) as unknown),
   };
 }
-
 /** The cache entry one proof belongs in: the email, the proving key and the salt (AAP 0.11.2). */
 function proofCacheFile(eml: Uint8Array, zkeySha256: string, salt: string): string {
   const digest = createHash('sha256')
@@ -1000,7 +936,6 @@ function readCachedProof(file: string): Submission | null {
     return null;
   }
 }
-
 /** Writes a proof atomically, so a killed run leaves no half-written proof to trust. */
 function writeCachedProof(file: string, submission: Submission): void {
   mkdirSync(dirname(file), { recursive: true });
@@ -1008,18 +943,15 @@ function writeCachedProof(file: string, submission: Submission): void {
   writeFileSync(temporary, JSON.stringify(submission));
   renameSync(temporary, file);
 }
-
 /** snarkjs as `apps/mobile` resolves it, which is the version this app proves with. */
 function loadSnarkjs(): Groth16Prover {
   return createRequire(join(repoRoot(), 'apps/mobile/package.json'))('snarkjs') as Groth16Prover;
 }
-
 /** Ends the curve worker snarkjs keeps alive, without which a CLI run would never exit. */
 function terminateCurve(): void {
   const holder = globalThis as { curve_bn128?: { terminate?: () => unknown } };
   holder.curve_bn128?.terminate?.();
 }
-
 /** A proof of one committed fixture booking, in the client's role (AAP 0.11.2).
  *
  * @throws Error when the artefacts are missing, the email cannot be proved, or the prover answers
@@ -1048,7 +980,6 @@ export async function harnessProof(name: FixtureName): Promise<Submission> {
   writeCachedProof(cache, submission);
   return submission;
 }
-
 /**
  * The raw `POST /itinerary-proofs` body actor A's browser sent, which criterion 3 asserts on.
  *
@@ -1066,17 +997,14 @@ export function recordedProofBody(): string {
   if (body === null) throw new Error(`${file} carries no recorded request body`);
   return body;
 }
-
 /*
  * The actors. Criterion 1 needs two accounts with a proof in one city, and only `valid.eml` and
  * `valid-second.eml` are signed bookings whose nullifiers the stack has not spent, so every web and native
  * suite shares these two and reuses them from the registry (AAP 0.5.2, 0.11.2).
  */
-
 type ActorRole = 'a' | 'b';
 
 let actorsPromise: Promise<void> | null = null;
-
 /** One actor's address, stable for a stack because the test-control token keys it. */
 function actorEmail(role: ActorRole): string {
   return `e2e-actor-${role}-${digestOf(e2eEnv().testControlToken, 8)}@example.com`;
@@ -1085,7 +1013,6 @@ function actorEmail(role: ActorRole): string {
 function operatorEmail(): string {
   return `e2e-operator-${digestOf(e2eEnv().testControlToken, 8)}@example.com`;
 }
-
 /** Ensures both actors of criterion 1 exist, with a valid proof each, and that their stays overlap.
  *
  * @throws Error when the stack's fixtures, artefacts or stay window cannot support a walk.
@@ -1121,7 +1048,6 @@ async function createActors(): Promise<void> {
   }
   await requireStayWindow();
 }
-
 /** Signs actor A in and imports `valid.eml` through the real proof screen, so the browser Worker proves it (AAP 0.11.2, criterion 3). */
 async function createActorA(browser: Browser): Promise<void> {
   const email = actorEmail('a');
@@ -1137,7 +1063,6 @@ async function createActorA(browser: Browser): Promise<void> {
   }
   await releaseContext('a', opened.context);
 }
-
 /**
  * Signs actor B in through the UI once, then submits its own booking as a harness proof
  * (AAP 0.11.2): only the initiator of criterion 1 walks the proof screen.
@@ -1208,7 +1133,6 @@ async function recordActorSession(
   };
   saveRegistry();
 }
-
 /** Refreshes one actor's own account into the registry, which is also a liveness check on its chain. */
 async function hydrateActor(role: ActorRole): Promise<Me> {
   const me = await api(role).get('/me', MeDto);
@@ -1275,7 +1199,6 @@ async function importFixtureProof(page: Page): Promise<void> {
   }
   await visible(page, 'proof-accepted').waitFor({ timeout: UI_STEP_TIMEOUT_MS });
 }
-
 /** Checks what every walk needs and that no other check can supply: */
 async function requireStayWindow(): Promise<void> {
   const reg = registry();
@@ -1352,7 +1275,6 @@ export function actorInfo(role: ActorRole): ActorInfo {
     departureDate: actor.departureDate,
   };
 }
-
 /** The city both actors' proofs name, which every meetup day and venue is chosen by. */
 function provedCityId(): string {
   const actor = registry().actors.a;
@@ -1361,12 +1283,10 @@ function provedCityId(): string {
   }
   return actor.cityId;
 }
-
 /*
  * The operator, which the queues, the registry and the secret issue routes are driven as. The role is
  * granted by a CLI inside the container, which Maestro cannot run (AAP 0.3.3).
  */
-
 let operatorPromise: Promise<void> | null = null;
 
 export function ensureOperator(): Promise<void> {
@@ -1374,7 +1294,6 @@ export function ensureOperator(): Promise<void> {
   operatorPromise = running;
   return running;
 }
-
 /** Resumes the operator when its role still holds, and re-grants and re-signs in when it does not. */
 async function createOperator(): Promise<void> {
   const existing = registry().operator;
@@ -1398,7 +1317,6 @@ async function createOperator(): Promise<void> {
   saveRegistry();
   chains.set('operator', { accessToken: session.accessToken, obtainedAt: Date.now() });
 }
-
 /**
  * Grants the operator role by running the API image's own CLI (AAP 0.3.3).
  *
@@ -1420,7 +1338,6 @@ export function grantOperator(email: string): void {
     throw new Error(`grant-operator exited ${status}: is the compose api service running?`);
   }
 }
-
 /** The first active partner venue of a city, by ascending id, kept in the registry (AAP 0.5.2). */
 export async function partnerVenue(cityId: string): Promise<VenueRecord> {
   const known = registry().venue;
@@ -1445,7 +1362,6 @@ export async function partnerVenue(cityId: string): Promise<VenueRecord> {
   saveRegistry();
   return venue;
 }
-
 /** The venue's console secret, which is never logged.
  *
  * @throws Error when no source yields a usable secret.
@@ -1475,7 +1391,6 @@ function storeVenueSecret(venueId: string, secret: string): string {
   saveRegistry();
   return secret;
 }
-
 /** One venue's secret out of the seed's local file, read with a local guard: no `@tablemate/db`. */
 function seedVenueSecret(venueId: string): string | null {
   const file = join(repoRoot(), LOCAL_DIR, FIXTURE_SECRETS_FILE);
@@ -1492,7 +1407,6 @@ function seedVenueSecret(venueId: string): string | null {
   }
   return null;
 }
-
 /** One `GET /venue/check-in-code`, which is also what tells whether a secret is still current. */
 async function fetchCode(secret: string): Promise<Code> {
   return await apiRequest({
@@ -1512,7 +1426,6 @@ async function isValidSecret(secret: string): Promise<boolean> {
     throw error;
   }
 }
-
 /**
  * Saves a card for one actor, which every hold needs (AAP 0.3.4).
  *
@@ -1550,7 +1463,6 @@ export async function ensureCard(role: ActorRole): Promise<void> {
     await browser.close();
   }
 }
-
 /** Fills Stripe's Payment Element with its public test card (AAP 0.11.2).
  *
  * @throws Error when no card field renders inside the deadline.
@@ -1582,7 +1494,6 @@ async function cardFrame(page: Page): Promise<Frame> {
   }
   throw new Error('the Payment Element never rendered a card field');
 }
-
 /** Deletes the actor's open lodging claim, so a claim suite starts from no claim (AAP 0.5.3).
  *
  * @throws Error when the claim is still being called after two minutes.
@@ -1607,12 +1518,10 @@ export async function ensureNoActiveClaim(role: ActorRole): Promise<void> {
     }
   }
 }
-
 /*
  * Test control. Both routes exist only in `APP_ENV=test` with `TEST_CONTROL_TOKEN` set, and both answer
  * `204`.
  */
-
 /** Moves the clock the API was built with, refusing to move it backwards (AAP 0.5.4). */
 export async function setClock(request: TestClockRequest): Promise<void> {
   const body = TestClockRequest.parse(request);
@@ -1628,7 +1537,6 @@ export async function setClock(request: TestClockRequest): Promise<void> {
   }
   await testControl('/test/clock', body);
 }
-
 /**
  * Settles one meetup, or sweeps, and carries out what the settlement planned (AAP 0.5.1).
  *
@@ -1636,7 +1544,6 @@ export async function setClock(request: TestClockRequest): Promise<void> {
 export async function runSettlement(meetupId?: string): Promise<void> {
   await testControl('/test/run-settlement', meetupId === undefined ? {} : { meetupId });
 }
-
 /** One test-control call, with the token in its own header and `404` explained. */
 async function testControl(path: string, body: unknown): Promise<void> {
   try {
@@ -1655,7 +1562,6 @@ async function testControl(path: string, body: unknown): Promise<void> {
     throw error;
   }
 }
-
 /** The API's own time, to one 60-second step:
  *
  * @throws Error when no venue secret is available, which is also what `ensureActors` resolves.
@@ -1668,7 +1574,6 @@ async function clockUpperBound(): Promise<number> {
   const venue = await partnerVenue(provedCityId());
   return Date.parse((await fetchCode(await venueSecret(venue.id))).expiresAt);
 }
-
 /** The next city day a criterion walk may take, moving the clock to 09:00 of it (AAP 0.11.2).
  *
  * @throws Error when the two proofs no longer overlap, or the move would go backwards.
@@ -1692,12 +1597,10 @@ export async function nextMeetupDay(): Promise<MeetupDay> {
     timezone: cursor.timezone,
   };
 }
-
 /*
  * Pair hygiene: the one open meetup per pair is what lets a second walk propose at all, so every suite
  * clears it before and after its own (AAP 0.5.3).
  */
-
 /** Removes every open meetup between the two actors, in the way that costs nothing (AAP 0.5.3).
  */
 export async function clearPairMeetups(): Promise<void> {
@@ -1721,7 +1624,6 @@ async function meetupsWith(query: string): Promise<Meetup[]> {
     if (cursor === null) return found;
   }
 }
-
 /** One open meetup, cancelled or settled, which are the only two ways it leaves the pair's way. */
 async function clearMeetup(meetup: Meetup): Promise<void> {
   if (meetup.status === 'proposed') {
@@ -1743,7 +1645,6 @@ async function clearMeetup(meetup: Meetup): Promise<void> {
   if (settledAt > upper) await setClock({ now: new Date(settledAt).toISOString() });
   await runSettlement(meetup.id);
 }
-
 /** Cancels one meetup, tolerating a transition that already took it out of `proposed` or `locked`. */
 async function cancelMeetup(meetupId: string): Promise<void> {
   try {
@@ -1755,7 +1656,6 @@ async function cancelMeetup(meetupId: string): Promise<void> {
     if (!settled) throw error;
   }
 }
-
 /** Resolves the open dispute on one meetup `no_fault`, which releases both holds and credits nobody. */
 async function resolveOpenDispute(meetupId: string): Promise<void> {
   const queue = await operatorApi().get('/admin/disputes', AdminDisputesResponse);
@@ -1771,9 +1671,7 @@ async function resolveOpenDispute(meetupId: string): Promise<void> {
     ResolveDispute.parse({ outcome: 'no_fault' }),
   );
 }
-
 /* Dates: `Intl` with an IANA zone is enough; no date library is a dependency of this workspace. */
-
 /** The zone's offset from UTC at one instant: the wall clock read there, as UTC, less the instant. */
 function zoneOffsetMs(at: number, timezone: string): number {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -1801,7 +1699,6 @@ function zoneOffsetMs(at: number, timezone: string): number {
     ) - at
   );
 }
-
 /** `HH:MM` on a `YYYY-MM-DD` in one zone, as the UTC instant it names. */
 function zonedTimeToUtc(dateOnly: string, timeOfDay: string, timezone: string): Date {
   const naive = Date.parse(`${dateOnly}T${timeOfDay}:00Z`);
@@ -1831,13 +1728,10 @@ function addDays(dateOnly: string, days: number): string {
 function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
-
 /* `prepare-maestro`: what the native flows need and cannot do for themselves (AAP 0.11.2). */
-
 const MAESTRO_FLOWS = ['criterion1-initiator', 'criterion1-recipient'];
 
 const MAESTRO_PLATFORMS = ['ios', 'android'];
-
 /** Whether this process was started to prepare Maestro rather than imported by a spec. */
 function cliRequested(): boolean {
   if (process.argv[2] !== 'prepare-maestro') return false;
@@ -1847,7 +1741,6 @@ function cliRequested(): boolean {
     script.endsWith(join('support', 'api-actor.js'))
   );
 }
-
 /** Runs the preparation and ends the process with its outcome. */
 async function runCli(): Promise<void> {
   try {
@@ -1858,7 +1751,6 @@ async function runCli(): Promise<void> {
     process.exit(1);
   }
 }
-
 /** Creates everything the native flows need, then writes the two fixture files Maestro reads. */
 async function prepareMaestro(): Promise<void> {
   await ensureActors();
@@ -1893,7 +1785,6 @@ async function prepareMaestro(): Promise<void> {
   };
   writeFixtureProofs(fixture);
 }
-
 /** Creates one Maestro operator, whose role only this host can grant. */
 async function ensureMaestroOperator(key: string): Promise<void> {
   const reg = registry();
@@ -1906,12 +1797,10 @@ async function ensureMaestroOperator(key: string): Promise<void> {
   reg.maestroOperators[key] = email;
   saveRegistry();
 }
-
 /** The published nullifier salt, which the fixture files carry so the device proves the same one. */
 async function nullifierSalt(): Promise<string> {
   return (await apiRequest({ method: 'GET', path: '/zk/config', schema: ZkConfig })).nullifierSalt;
 }
-
 /** Writes `.local/e2e/fixture-proofs.json` and its `output.e2e` JavaScript twin (AAP 0.11.2). */
 function writeFixtureProofs(data: unknown): void {
   const dir = localPath();

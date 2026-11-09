@@ -1,10 +1,8 @@
 /**
- * Criterion 14 and the lodging-transcript constraint (AAP 0.12.1, AAP 0.12.2): the stay-verification
- * call a lodging claim asks for, and everything the database keeps of it afterwards.
+ * Criterion 14 and the lodging-transcript constraint (AAP 0.12.1, AAP 0.12.2): the stay-verification call a lodging
+ * claim asks for, and everything the database keeps of it afterwards.
  */
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
 import { createTestApp, testWorkersEnv, type TestApp } from '@tablemate/api/test-support/app';
 import {
   callRoute,
@@ -46,12 +44,10 @@ import {
   type ProcessorJob,
   type WorkerContext,
 } from '@tablemate/workers/queues';
-
 const CITY_ID = 'lisbon';
 
 /** Lisbon's own call language, which the scripted stay answers are spoken in (AAP 0.5.2, 0.5.6). */
 const LANGUAGE = 'pt-PT';
-
 const SUITE_DAY = '2026-11-17';
 const SUITE_HOUR = '10:00';
 
@@ -61,23 +57,21 @@ const CAP_CALL_SECONDS = 300;
 /** The booking under verification: a fictional guest and reference, never a real person's. */
 const BOOKING_NAME = 'Fixture Guest Ana Lima';
 const BOOKING_REFERENCE = 'FIXTURE-REF-0001';
-
 const CLAIMS_PATH = '/v1/me/lodging-claims';
 const ADMIN_CLAIMS_PATH = '/v1/admin/lodging-claims';
 
 /**
- * The whole life of an unanswered claim: the 72 hours AAP 0.5.3 gives it from its creation. The
- * figure is written here rather than read from `CLAIM_EXPIRY_HOURS`, because it is the rule the
- * criterion names: a build whose expiry moved would have to fail this suite, not move with it.
+ * The whole life of an unanswered claim: the 72 hours AAP 0.5.3 gives it from its creation. The figure is written here
+ * rather than read from `CLAIM_EXPIRY_HOURS`, because it is the rule the criterion names: a build whose expiry moved
+ * must fail this suite rather than move with it.
  */
 const CLAIM_EXPIRY_MS = 72 * HOUR_MS;
-
 const CASE_TIMEOUT_MS = 120_000;
 
 /**
- * The task fields AAP 0.5.2 keeps on a stripped verification task: `id`, `kind` and `lodging_id` (so
- * the one-target check still holds), `status`, `attempts`, `outcome_at`, `blocked_reason`, and
- * `resolved_by`; the attempt fields it keeps (identity and outcome) and those it empties.
+ * The task fields AAP 0.5.2 keeps on a stripped verification task: `id`, `kind` and `lodging_id` (so the one-target
+ * check still holds), `status`, `attempts`, `outcome_at`, `blocked_reason` and `resolved_by`; the attempt fields it
+ * keeps (identity and outcome) and those it empties.
  */
 const RETAINED_TASK_FIELDS = [
   'id',
@@ -106,31 +100,25 @@ const NULLED_ATTEMPT_FIELDS = [
   'durationSec',
   'transcript',
 ] as const;
-
 let t: TestApp;
 let ctx: WorkerContext;
-
 let guest: UserFixture;
 let stayFrom: string;
 let stayTo: string;
 let lodging: LodgingFixture;
 let operator: UserFixture;
 
-/**
- * The worker context's mailer: a capture that sends nothing, so no case opens an SMTP connection.
- */
+/** The worker context's mailer: a capture that sends nothing, so no case opens an SMTP connection. */
 const mailer: WorkerContext['mailer'] = {
   send(): Promise<void> {
     return Promise.resolve();
   },
 };
-
 beforeAll(async () => {
   t = await createTestApp();
   // Listening is what gives the simulator an address for the signed callbacks and the relay socket it
   // opens, and `listen` points it there (AAP 0.11.2).
   t.simulator.setTarget(await t.listen());
-
   ctx = await createWorkerContext(loadWorkersEnv(testWorkersEnv()), {
     clock: t.clock,
     llm: t.llm,
@@ -138,20 +126,16 @@ beforeAll(async () => {
     mailer,
   });
 });
-
 afterAll(async () => {
   await closeWorkerContext(ctx);
   await t.close();
 });
-
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
   t.simulator.reset();
   t.simulator.setTarget(await t.listen());
-
   t.time.at(localTimeOn('Europe/Lisbon', SUITE_DAY, SUITE_HOUR));
-
   guest = await makeUser(t);
   // The proof's own window is what the claim's stay dates have to sit inside (AAP 0.5.7).
   const proof = await makeProof(t, guest, { cityId: CITY_ID });
@@ -160,11 +144,8 @@ beforeEach(async () => {
   lodging = await makeLodging(t, { cityId: CITY_ID });
   operator = await makeUser(t, { role: 'operator' });
 });
-
 type WorkerQueue = ReturnType<WorkerContext['queues']['get']>;
-
 const PENDING_JOB_STATES = ['waiting', 'delayed', 'prioritized'] as const;
-
 function processorJob(job: { id?: string; name: string; data: unknown }): ProcessorJob {
   return { name: job.name, data: job.data, ...(job.id === undefined ? {} : { id: job.id }) };
 }
@@ -172,21 +153,18 @@ function processorJob(job: { id?: string; name: string; data: unknown }): Proces
 /**
  * Deliver every pending outbox row, then run every job waiting on `queue` through `processor`.
  * @param queue - the queue to take the pending jobs from.
- * @param processor - the file's `process`, which is the only thing a job is run by.
+ * @param processor - the file's `process`, the only thing a job is run by.
  * @returns how many jobs this pass ran.
  */
 async function drain(queue: WorkerQueue, processor: Processor): Promise<number> {
   await t.services.outbox.runOnce();
-
   const jobs = await queue.getJobs([...PENDING_JOB_STATES], 0, -1, true);
   for (const job of jobs) {
     await processor(processorJob(job), ctx);
     await job.remove();
   }
-
   return jobs.length;
 }
-
 function pick<T extends object, K extends keyof T>(row: T, fields: readonly K[]): Record<K, T[K]> {
   const picked = {} as Record<K, T[K]>;
   for (const field of fields) {
@@ -196,8 +174,8 @@ function pick<T extends object, K extends keyof T>(row: T, fields: readonly K[])
 }
 
 /**
- * Assert that every named field holds exactly `null`, one boolean per field: the field still set
- * would be the call's own `CallSid`, which no failure may print (AAP 0.11.1).
+ * Assert that every named field holds exactly `null`, one boolean per field: the field still set would be the call's
+ * own `CallSid`, which no failure may print (AAP 0.11.1).
  */
 function expectNullFields<T extends object>(
   row: T,
@@ -210,9 +188,9 @@ function expectNullFields<T extends object>(
 }
 
 /**
- * One stay date as the stay script's template renders it (AAP 0.5.6): the `@db.Date` value in UTC,
- * with Luxon's `DATE_FULL` options — year, full month name and day — in the call's language, so the
- * question a case looks for is the one the dialogue really spoke.
+ * One stay date as the stay script's template renders it (AAP 0.5.6): the `@db.Date` value in UTC, with Luxon's
+ * `DATE_FULL` options — year, full month name and day — in the call's language, so the question a case looks for is
+ * the one the dialogue really spoke.
  */
 function renderedStayDate(date: string, language: string): string {
   return new Intl.DateTimeFormat(language, {
@@ -222,7 +200,6 @@ function renderedStayDate(date: string, language: string): string {
     timeZone: 'UTC',
   }).format(new Date(`${date}T00:00:00.000Z`));
 }
-
 function claimRow(claimId: string): Promise<LodgingClaim> {
   return t.services.db.lodgingClaim.findUniqueOrThrow({ where: { id: claimId } });
 }
@@ -231,51 +208,41 @@ function claimRow(claimId: string): Promise<LodgingClaim> {
 function taskById(taskId: string): Promise<CallTask> {
   return t.services.db.callTask.findUniqueOrThrow({ where: { id: taskId } });
 }
-
 async function taskOfClaim(claimId: string): Promise<CallTask> {
   const tasks = await t.services.db.callTask.findMany({ where: { lodgingClaimId: claimId } });
   expect(tasks.length, 'the claim opened exactly one verification task').toBe(1);
-
   const [task] = tasks;
   if (task === undefined) {
     throw new Error('the claim opened no verification task');
   }
   return task;
 }
-
 function attemptOfTask(taskId: string): Promise<CallAttempt> {
   return t.services.db.callAttempt.findFirstOrThrow({ where: { callTaskId: taskId } });
 }
-
 function callbackCount(callSid: string): Promise<number> {
   return t.services.db.voiceCallbackEvent.count({ where: { callSid } });
 }
-
 function theOnlyCall(phone: string): SimCall {
   const calls = t.simulator.callsTo(phone);
   expect(calls.length, 'the dispatch dialed the lodging once').toBe(1);
-
   const [call] = calls;
   if (call === undefined) {
     throw new Error('the dispatch dialed no call');
   }
   return call;
 }
-
 function runHourlyExpiry(): Promise<ExpiryCounts> {
   return dataExpiry({ name: JOB[QUEUE.dataExpiry].hourly, data: { step: 'hourly' } }, ctx);
 }
-
 async function scheduledClaimExpiry(claimId: string) {
   const jobs = await ctx.queues.get(QUEUE.lodgingClaims).getJobs(['delayed'], 0, -1, true);
   return jobs.find((job) => job.id === claimExpireJobId(claimId));
 }
-
 interface ClaimDraft {
   /** The consent as the client sends it; absent means the field is left out of the body entirely. */
   readonly callConsent?: boolean;
 }
-
 function submitClaim(draft: ClaimDraft, as: string | UserFixture = guest): Promise<RouteResponse> {
   return callRoute(t.app, {
     method: 'POST',
@@ -294,27 +261,23 @@ function submitClaim(draft: ClaimDraft, as: string | UserFixture = guest): Promi
 
 /**
  * Submit a consented claim through the route the app uses, and answer its `201` body.
- * @param as - the bearer token to send, so a case that jumped the clock by days can sign a fresh one
+ * @param as - the bearer token to send, so a case that jumped the clock by days can sign a fresh one.
  * @returns the created claim's id and status.
  */
 async function createClaim(as: string | UserFixture = guest): Promise<LodgingClaimCreated> {
   const answer = await submitClaim({ callConsent: true }, as);
   expect(answer.status, 'a consented claim is created').toBe(201);
-
   const created = LodgingClaimCreated.parse(answer.json());
   await t.services.db.lodgingClaim.update({
     where: { id: created.claimId },
     data: { createdAt: t.time.now() },
   });
-
   const stamped = await claimRow(created.claimId);
   expect(stamped.createdAt.getTime(), 'the claim is stamped by the injected clock').toBe(
     t.time.now().getTime(),
   );
-
   return created;
 }
-
 interface StayCall {
   readonly claimId: string;
   readonly claim: LodgingClaim;
@@ -324,31 +287,25 @@ interface StayCall {
 }
 
 /**
- * Take one claim from the route to a settled stay call: the create-task job opens the verification
- * task, the city's dispatch run dials it, the scripted answer plays, and the result the relay
- * recorded is applied by `call-results`.
+ * Take one claim from the route to a settled stay call: the create-task job opens the verification task, the city's
+ * dispatch run dials it, the scripted answer plays, and the result the relay recorded is applied by `call-results`.
  * @param scenario - which scripted answer the lodging gives.
  * @returns the claim, its resolved task and attempt, and the call the simulator played.
  */
 async function runStayCall(scenario: OutcomeRow['scenario']): Promise<StayCall> {
   const { claimId } = await createClaim();
-
   const created = await drain(ctx.queues.get(QUEUE.callDispatch), callDispatch);
   expect(created, 'the create_call_task row opened one dispatch job').toBe(1);
-
   const task = await taskOfClaim(claimId);
   expect(task.status, 'a callable lodging leaves its task queued').toBe('queued');
-
   t.simulator.setScenarioFor(lodging.phone, scenario);
   await callDispatch(
     { name: JOB[QUEUE.callDispatch].dispatchCity, data: { cityId: CITY_ID } },
     ctx,
   );
   await t.simulator.waitIdle();
-
   const applied = await drain(ctx.queues.get(QUEUE.callResults), callResults);
   expect(applied, 'the relay queued one call result to apply').toBe(1);
-
   return {
     claimId,
     claim: await claimRow(claimId),
@@ -357,22 +314,18 @@ async function runStayCall(scenario: OutcomeRow['scenario']): Promise<StayCall> 
     call: theOnlyCall(lodging.phone),
   };
 }
-
 interface OutcomeRow {
   readonly scenario: 'yes' | 'no';
   readonly status: LodgingClaimStatus;
 }
-
 const OUTCOMES: readonly OutcomeRow[] = rows([
   { scenario: 'yes', status: 'verified' },
   { scenario: 'no', status: 'rejected' },
 ]);
-
 const MISSING_CONSENT: readonly { readonly label: string; readonly draft: ClaimDraft }[] = rows([
   { label: 'refused', draft: { callConsent: false } },
   { label: 'omitted', draft: {} },
 ]);
-
 describe(
   'lodging stay verification (AAP 0.12.1 criterion 14, AAP 0.12.2)',
   { timeout: CASE_TIMEOUT_MS },
@@ -387,7 +340,6 @@ describe(
         ).toBe(0);
       },
     );
-
     it.each(OUTCOMES)(
       'a $scenario answer resolves the claim $status and keeps no transcript',
       async ({ scenario, status }) => {
@@ -447,7 +399,6 @@ describe(
         expect(attempt.transcriptDeleteAt === null, 'no transcript deadline is set').toBe(true);
       },
     );
-
     it.each(OUTCOMES)(
       'erases the booking details of a $scenario claim and strips its call rows',
       async ({ scenario }) => {
@@ -508,7 +459,6 @@ describe(
         expect(again['lodgingCallCallbacksDeleted']).toBe(0);
       },
     );
-
     it('hands a claim no call can resolve to the operator and expires it at 72 hours', async () => {
       await t.services.db.lodging.update({ where: { id: lodging.id }, data: { phone: null } });
       const { claimId } = await createClaim();

@@ -1,6 +1,4 @@
-/**
- * Integration tests for the `notifications` queue (AAP 0.3.2, 0.3.4, 0.5.7).
- */
+/** Integration tests for the `notifications` queue (AAP 0.3.2, 0.3.4, 0.5.7). */
 
 import { randomUUID } from 'node:crypto';
 
@@ -37,11 +35,8 @@ import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../
 import type { Mailer } from '../../src/notify/email.ts';
 
 const CITY = 'lisbon';
-
 const EXPIRED_AFTER_MS = MAGIC_LINK_TTL_MINUTES * MINUTE_MS + 1_000;
-
 const PHONE_NUMBER = /\+[1-9]\d{6,}/;
-
 interface SentMessage {
   readonly to: string;
   readonly subject: string;
@@ -49,21 +44,15 @@ interface SentMessage {
 }
 
 const sent: SentMessage[] = [];
-
-/**
- * The capturing mailer the worker context gets, so no send reaches SMTP. `send` returns a settled
- * promise rather than being `async`, which the workspace's `require-await` rule rejects.
- */
+/** The capturing mailer the worker context gets, so no send reaches SMTP. `send` returns a settled promise rather than being `async`, which the workspace's `require-await` rule rejects. */
 const mailer: Mailer = {
   send(message): Promise<void> {
     sent.push({ to: message.to, subject: message.subject, text: message.text });
     return Promise.resolve();
   },
 };
-
 let testApp: TestApp;
 let ctx: WorkerContext;
-
 /** One `notification` outbox row, with the job the API's dispatcher would publish for it. */
 interface PendingNotification {
   readonly id: string;
@@ -76,7 +65,6 @@ async function pendingNotifications(): Promise<PendingNotification[]> {
     orderBy: { createdAt: 'asc' },
     select: { id: true, kind: true, payload: true },
   });
-
   return rows.map((row) => ({
     id: row.id,
     job: toOutboxJob({ id: row.id, kind: row.kind, payload: row.payload }),
@@ -98,11 +86,8 @@ async function deliver(pending: PendingNotification): Promise<NotificationDelive
   const { job } = pending;
   expect(job.queue).toBe(QUEUE.notifications);
   expect(job.name).toBe(JOB[QUEUE.notifications].deliver);
-
-  // Parsed against the deliver name the assertions above just matched, so the job data is validated
-  // as the queue's own schema describes it rather than trusted from the row.
+  // Parsed against the deliver name the assertions above just matched, so the job data is validated as the queue's own schema describes it rather than trusted from the row.
   const data = parseJobData(QUEUE.notifications, JOB[QUEUE.notifications].deliver, job.data);
-
   return runNotifications({ id: job.jobId, name: job.name, data }, ctx);
 }
 
@@ -186,19 +171,16 @@ function expectNoPrivateContent(participants: readonly UserFixture[], venue: Ven
 
 beforeAll(async () => {
   testApp = await createTestApp();
-  // The app's own clock, so a case that advances it moves the token's expiry too, and the app's own
-  // origin, so the link the mailer carries is the one the client opens (AAP 0.3.2).
+  // The app's own clock, so a case that advances it moves the token's expiry too, and the app's own origin, so the link the mailer carries is the one the client opens (AAP 0.3.2).
   ctx = await createWorkerContext(
     loadWorkersEnv(testWorkersEnv({ WEB_ORIGIN: testApp.env.WEB_ORIGIN })),
     { clock: testApp.clock, mailer },
   );
 });
-
 afterAll(async () => {
   await closeWorkerContext(ctx);
   await testApp.close();
 });
-
 beforeEach(async () => {
   await testApp.resetState();
   await testApp.seedCities();

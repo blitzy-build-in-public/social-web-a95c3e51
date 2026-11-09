@@ -1,38 +1,23 @@
 /**
- * `.eml` intake on iOS and Android: the picked or shared booking confirmation as in-memory bytes, and the app's own
- * copy of it deleted again (AAP 0.5.5, AAP 0.3.4).
+ * The native half of the `.eml` intake: the document picker and the share sheet, the app-owned copy both paths leave on
+ * disk, and the deletion that removes it (AAP 0.3.4, AAP 0.5.5).
  *
- * The URI and the file name are as confidential as the bytes — a confirmation email is commonly named after its
- * booking reference, and a share-sheet path carries the sender's details — so nothing here is logged, stored or put
- * into an error. An app-owned copy lives for exactly one attempt: `release` deletes it on success, on failure and on
- * cancellation alike, and a failed read deletes it before throwing; a URI this app does not own is never deleted or
- * written, because it is the traveller's original. Platform modules are the only imports.
+ * The app owns what it writes: a picked file is copied into the app's own cache and a shared one moved there, so the
+ * traveller's original is never touched, and the copy is deleted — overwritten first — on every path that ends an attempt.
+ * Nothing here logs a path, a name or a byte of a booking confirmation.
  */
 import { base64ToBytes } from '@tablemate/circuits';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
-
 import type { EmlHandle, EmlIntake, ZkClientErrorCode } from './prover.ts';
-
 /** The only scheme whose files the app can own; anything else is the traveller's or a provider's. */
 const FILE_SCHEME = 'file://';
-
 const DOCUMENTS_SEGMENT = 'Documents/';
-
 const TEMP_SEGMENT = 'tmp/';
-
 const INBOX_SEGMENT = 'Inbox/';
-
 const APP_GROUP_SEGMENT = '/Shared/AppGroup/';
-
 const PARENT_SEGMENT = '..';
-
-/**
- * Base64 is what reaches a `file://` URI and an Android `content://` one alike, and the literal is the value
- * `FileSystem.EncodingType.Base64` carries, so the read never depends on the module object exposing the enum.
- */
 const BASE64 = 'base64';
-
 /**
  * `name` is what `errorCodeOf` reads, and `message` is the code alone, so no path or file name can travel out of an
  * attempt.
@@ -47,16 +32,6 @@ function asRoot(directory: string | null | undefined): string | null {
   return directory.endsWith('/') ? directory : `${directory}/`;
 }
 
-/**
- * Read from `expo-file-system` on each call rather than at module load, so the value a running app reports is the one
- * used and a test's mock applies (AAP 0.5.5).
- *
- * Android has no separate temporary directory, so its cache directory covers that case; the temporary and inbox roots
- * appear only where `documentDirectory` has the `Documents/` form they are derived from. The three roots come from how
- * a file reaches the app: the picker and the share extension stage copies under the cache directory on Android and
- * under the shared App Group container on iOS, an "Open in" file is copied into `Inbox/`, and a pick made "as a copy"
- * lands in the container's `tmp/`.
- */
 export function appOwnedRoots(): string[] {
   const roots: string[] = [];
   const cache = asRoot(FileSystem.cacheDirectory);
@@ -71,11 +46,6 @@ export function appOwnedRoots(): string[] {
   return roots;
 }
 
-/**
- * Only a `file://` URI can be app-owned: a `content://` or `ph://` URI names the traveller's own document or an
- * asset-library entry, which is never deleted or written, and a decoded path that leaves its directory is refused
- * (AAP 0.5.5).
- */
 export function isAppOwnedUri(uri: string): boolean {
   if (!uri.startsWith(FILE_SCHEME)) return false;
   let path: string;
@@ -99,11 +69,6 @@ async function deleteQuietly(uri: string): Promise<void> {
   }
 }
 
-/**
- * The read is the one step that can leave a copy behind, so a failure deletes an app-owned copy before reporting
- * `eml_read_failed`: a file the app made but could not read must not stay on disk. The bytes are base64 in transit
- * only and are decoded here, so no platform codec is needed under Hermes.
- */
 async function readHandle(uri: string): Promise<EmlHandle> {
   const owned = isAppOwnedUri(uri);
   let encoded: string;
@@ -133,12 +98,6 @@ async function readHandle(uri: string): Promise<EmlHandle> {
   };
 }
 
-/**
- * `copyToCacheDirectory` is false on purpose: copying is the one thing that would create an app-owned `.eml` for this
- * flow to delete, and the picked file is read where it lies instead. The wildcard type is accepted beside
- * `message/rfc822`, because some document providers label an `.eml` as `application/octet-stream`. A cancelled pick,
- * or a success carrying no asset, is `null` rather than a failure (AAP 0.3.4).
- */
 export async function pickEml(): Promise<EmlHandle | null> {
   let result: DocumentPicker.DocumentPickerResult;
   try {
@@ -169,7 +128,4 @@ export async function fromShareIntent(uri: string): Promise<EmlHandle> {
   return readHandle(trimmed.startsWith('/') ? `${FILE_SCHEME}${trimmed}` : trimmed);
 }
 
-/**
- * The document picker plus share-sheet and "Open in" intake, which the web build has no equivalent of (AAP 0.3.4).
- */
 export const emlIntake = { pickEml, fromShareIntent } satisfies EmlIntake;

@@ -1,26 +1,21 @@
 /**
- * The automated-call queue and one operator's resolution of a task in it (AAP 0.5.1
- * `admin/call-tasks.ts`, 0.5.4 `GET /admin/call-tasks` and `POST /admin/call-tasks/:id/resolve`,
- * 0.5.3 "Call-task lifecycle").
+ * The automated-call queue and one operator's resolution of a task in it.
  *
- * {@link listCallTasks} reads one page of what an operator still has to act on — the `needs_review`
- * and `unreachable` tasks no operator has resolved yet — and {@link resolveCallTask} records one
- * outcome on a `menu_prices` task: `completed` stores the prices the operator was told on the phone
- * or approves the `phone_quote` records a call left for review, `refused` closes the task,
- * `do_not_call` flags the place and stops every other task of it, and `unreachable` records that the
- * operator could not obtain prices either.
+ * {@link listCallTasks} reads one page of what an operator still has to act on — the `needs_review` and
+ * `unreachable` tasks no operator has resolved yet — and {@link resolveCallTask} records one outcome on a
+ * `menu_prices` task: `completed` stores the prices the operator was told on the phone or approves the `phone_quote`
+ * records a call left for review, `refused` closes the task, `do_not_call` flags the place and stops every other task
+ * of it, and `unreachable` records that the operator could not obtain prices either.
  *
- * Whichever outcome a resolution records, the task leaves the dialing path with no `blockedReason`,
- * and the tasks a `do_not_call` stops are cleared with it (AAP 0.5.3). The checks run in the order
- * AAP 0.5.3 and 0.5.4 list them: a task that is not `needs_review` or `unreachable`, or that an
- * operator already resolved, is `422`, because terminal tasks stay terminal, and a task whose one
- * target the guarded client can no longer read is `422` rather than a `500` (AAP 0.5.2). A
- * resolution runs in one transaction behind the operator's own write fence and takes
- * `SELECT … FOR UPDATE` on the task row first, so two operators resolving one task serialize and
- * the second cannot store a second outcome.
+ * Whichever outcome a resolution records, the task leaves the dialing path with no `blockedReason`, and the tasks a
+ * `do_not_call` stops are cleared with it. The checks run in the order the contract lists them: a task that is not
+ * `needs_review` or `unreachable`, or that an operator already resolved, is `422`, because terminal tasks stay
+ * terminal, and a task whose one target the guarded client can no longer read is `422` rather than a `500`. A
+ * resolution runs in one transaction behind the operator's own write fence and takes `SELECT … FOR UPDATE` on the
+ * task row first, so two operators resolving one task serialize and the second cannot store a second outcome.
  *
- * Time arrives as the `now` argument, never from a clock of this file's own (AAP 0.11.1), and no log
- * line carries a phone number, a price or a summary.
+ * Time arrives as the `now` argument, never from a clock of this file's own, and no log line carries a phone number,
+ * a price or a summary.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -50,31 +45,20 @@ import { AppError } from '../../plugins/errors.ts';
 import { transact } from '../outbox/write.ts';
 import type { TransactServices } from '../outbox/write.ts';
 
-/**
- * What {@link resolveCallTask} needs: the transaction's own services type, because the state change
- * runs through `transact` with the operator's write fence (AAP 0.5.3).
- */
+/** What {@link resolveCallTask} needs: the transaction's own services type, because the state change runs through `transact` with the operator's write fence. */
 export type CallTaskServices = TransactServices;
 
 /**
- * What {@link listCallTasks} needs: the guarded client, narrowed to what one page of the queue is
- * read with, and the process logger the one warning a row the contract cannot carry is reported
- * through (AAP 0.11.1).
+ * What {@link listCallTasks} needs: the guarded client, narrowed to what one page of the queue is read with, and the
+ * process logger the one warning a row the contract cannot carry is reported through.
  */
 export interface CallTaskQueueReader {
-  /**
-   * The guarded Prisma client: the `callTask` delegate for the page and its count, and the raw reader
-   * for the exact `outcome_at` of the row a page ended on, which no `Date` carries
-   * ({@link exactOutcomeAt}).
-   */
+  /** The guarded Prisma client: the `callTask` delegate for the page and its count, and the raw reader for the exact `outcome_at` of the row a page ended on ({@link exactOutcomeAt}). */
   readonly db: Pick<DbClient, 'callTask' | '$queryRaw'>;
   readonly logger: Pick<Logger, 'warn'>;
 }
 
-/**
- * The page one read of the queue returns when the query names no `limit`, the quantity the contract's
- * first answer already carried (AAP 0.5.4).
- */
+/** The page one read of the queue returns when the query names no `limit`, the quantity the contract's first answer already carried. */
 export const ADMIN_CALL_TASKS_LIMIT = 200;
 
 /** The two task statuses an operator still has to resolve (AAP 0.5.3). */
@@ -112,9 +96,9 @@ const EXTRACTED_ITEM_FIELDS = [
 ] as const;
 
 /**
- * The currencies whose ICU currency digits are not their ISO 4217 minor-unit exponent: in Node
- * 22.23.4 `maximumFractionDigits` resolves to 0 for both, while ISO 4217 — and so the price
- * pipeline — gives each an exponent of 2.
+ * The currencies whose ICU currency digits are not their ISO 4217 minor-unit exponent: in Node 22.23.4
+ * `maximumFractionDigits` resolves to 0 for both, while ISO 4217 — and so the price pipeline — gives each an
+ * exponent of 2.
  */
 const ISO_MINOR_UNIT_OVERRIDES: Readonly<Record<string, number>> = { COP: 2, IDR: 2 };
 
@@ -123,14 +107,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The flat, scalar view of one menu call's extracted fields (AAP 0.5.4), or `null` when the payload
- * is not a menu result or holds no usable value.
- *
- * The relay records a menu call's extraction as `{ kind: 'menu_prices', items: [...] }`
- * (`voice-agent/scripts/menu-prices.ts`, AAP 0.5.6) — a list rather than a map — and the operator's
- * form reads one flat record, so each item becomes `<slot>.<field>` entries (`coffee.amountMinor`).
- * An item without a usable slot is skipped and a field whose value is not a scalar is left out, so a
- * half-written payload still shows what it does hold.
+ * The flat, scalar view of one menu call's extracted fields, or `null` when the payload is not a menu result or holds
+ * no usable value. The relay records a menu call's extraction as `{ kind: 'menu_prices', items: [...] }` — a list
+ * rather than a map — and the operator's form reads one flat record, so each item becomes `<slot>.<field>` entries
+ * (`coffee.amountMinor`). An item without a usable slot is skipped and a field whose value is not a scalar is left
+ * out, so a half-written payload still shows what it does hold.
  */
 export function flattenExtractedFields(value: unknown): ExtractedFields | null {
   if (!isRecord(value)) {
@@ -165,24 +146,19 @@ export function flattenExtractedFields(value: unknown): ExtractedFields | null {
 }
 
 /**
- * An item name in the form the suggestion estimate groups by (AAP 0.5.7): NFKC-normalized,
- * lower-cased, inner whitespace collapsed and the ends trimmed.
- *
- * `packages/db/seed/seed.ts` applies the same rule to a seeded record and
- * `apps/workers/src/menus/extract-items.ts` must apply it to an extracted one, because the estimate
- * keeps one record per `(itemCategory, normalizedName)` and a different spelling would show one
- * dish as two.
+ * An item name in the form the suggestion estimate groups by: NFKC-normalized, lower-cased, inner whitespace
+ * collapsed and the ends trimmed. `packages/db/seed/seed.ts` applies the same rule to a seeded record and
+ * `apps/workers/src/menus/extract-items.ts` must apply it to an extracted one, because the estimate keeps one record
+ * per `(itemCategory, normalizedName)` and a different spelling would show one dish as two.
  */
 function normalizeItemName(itemName: string): string {
   return itemName.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 /**
- * How many minor units one major unit of `currency` holds (AAP 0.11.1): the ISO 4217 exponent the
- * workers' `price-parse.ts` parses a menu price with and the relay's `menu-prices.ts` reads from the
- * same rule, so all three agree on every price this route can store.
- *
- * Derived from ICU, which resolves 2 for USD, EUR, MXN and THB, and corrected for the two launch
+ * How many minor units one major unit of `currency` holds: the ISO 4217 exponent the workers' `price-parse.ts` parses
+ * a menu price with and the relay's `menu-prices.ts` reads from the same rule, so all three agree on every price this
+ * route can store. Derived from ICU, which resolves 2 for USD, EUR, MXN and THB, and corrected for the two launch
  * currencies whose ICU currency digits are not their ISO 4217 exponent.
  */
 function currencyMinorDigits(currency: string): number {
@@ -197,9 +173,8 @@ function currencyMinorDigits(currency: string): number {
 }
 
 /**
- * `localAmountMinor` in whole USD cents (AAP 0.5.6), rounded half up. The computation stays in
- * `Prisma.Decimal`: a float loses cents at the scale of an IDR amount, and stored money is always
- * integer USD cents (AAP 0.11.1).
+ * `localAmountMinor` in whole USD cents, rounded half up. The computation stays in `Prisma.Decimal`: a float loses
+ * cents at the scale of an IDR amount, and stored money is always integer USD cents.
  */
 function toUsdCents(
   localAmountMinor: number,
@@ -220,11 +195,9 @@ function utcDay(now: Date): Date {
 }
 
 /**
- * What one queue row reads: the task's own columns, its one business target and its latest attempt.
- *
- * The attempt is taken by `startedAt` descending with `id` breaking a same-instant tie; a stripped
- * lodging attempt carries a null summary and null extracted fields, which is what `data-expiry`
- * leaves behind (AAP 0.5.2).
+ * What one queue row reads: the task's own columns, its one business target and its latest attempt. The attempt is
+ * taken by `startedAt` descending with `id` breaking a same-instant tie; a stripped lodging attempt carries a null
+ * summary and null extracted fields, which is what `data-expiry` leaves behind.
  */
 const CALL_TASK_SELECT = {
   id: true,
@@ -245,22 +218,18 @@ const CALL_TASK_SELECT = {
 export type CallTaskQueueRow = Prisma.CallTaskGetPayload<{ select: typeof CALL_TASK_SELECT }>;
 
 /**
- * One queue row as the operator contract carries it (AAP 0.5.4), field by field and never spread, so
- * a column added to `CallTask`, `Place`, `Lodging` or `CallAttempt` cannot reach an operator without
- * a change here. `extractedFields` is flattened for a menu task only, because a lodging
- * verification's content does not outlive its claim (AAP 0.5.2, 0.5.6).
+ * One queue row as the operator contract carries it, field by field and never spread, so a column added to
+ * `CallTask`, `Place`, `Lodging` or `CallAttempt` cannot reach an operator without a change here.
+ * `extractedFields` is flattened for a menu task only, because a lodging verification's content does not outlive its
+ * claim.
  *
- * `null` when neither `row.place` nor `row.lodging` resolves, and never a value invented for one:
- * `cityId` is a `CitySlug`, whose pattern the empty string fails, so a fallback would answer a body the
- * response schema cannot carry — and the route would raise `500 internal_error` in place of a DTO —
- * while `targetName` would name no business at all. `call_task_one_target_chk` keeps both relations from
- * being absent at once, but a row this mapper cannot answer for is still reachable: outside `test` and
- * `demo` the guarded client keeps a fixture business out of what a caller sees, both by excluding the
- * owning row from a read that selects `place` or `lodging` and by nulling an optional fixture relation
- * on a row a create-family operation hands back (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2), so a
- * production database still holding a seeded business can leave its task unrepresentable. The callers
- * answer such a row the way `modules/admin/onboarding.ts` answers a venue whose geography is NULL — by
- * leaving it out and reporting it, rather than by inventing the name and city it does not have.
+ * `null` when neither `row.place` nor `row.lodging` resolves, and never a value invented for one: `cityId` is a
+ * `CitySlug`, whose pattern the empty string fails, so a fallback would answer a body the response schema cannot
+ * carry — and the route would raise `500 internal_error` in place of a DTO — while `targetName` would name no
+ * business at all. `call_task_one_target_chk` keeps both relations from being absent at once, but a row this mapper
+ * cannot answer for is still reachable: outside `test` and `demo` the guarded client keeps a fixture business out of
+ * what a caller sees, so a production database still holding a seeded business can leave its task unrepresentable.
+ * The callers leave such a row out and report it, rather than inventing the name and city it does not have.
  */
 export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto | null {
   const target = row.place ?? row.lodging;
@@ -285,15 +254,12 @@ export function toAdminCallTaskDto(row: CallTaskQueueRow): AdminCallTaskDto | nu
 }
 
 /**
- * Decodes a queue cursor this file issued (AAP 0.5.4).
+ * Decodes a queue cursor this file issued. A cursor is a value the client sends back, so the shared codec parses it
+ * strictly: canonical base64url of a `{t,i}` payload that `NullableKeysetCursor` accepts — an instant in exactly the
+ * form {@link CURSOR_INSTANT_FORMAT} writes, or `null` for the tasks that have no outcome, and a UUID — and nothing
+ * else.
  *
- * A cursor is a value the client sends back, so the shared codec parses it strictly: canonical
- * base64url of a `{t,i}` payload that `NullableKeysetCursor` accepts — an instant in exactly the form
- * {@link CURSOR_INSTANT_FORMAT} writes, or `null` for the tasks that have no outcome, and a UUID —
- * and nothing else.
- *
- * @throws {AppError} `invalid_field` (400) for anything else, which is the contract's answer for a
- *   bad query value (AAP 0.5.4).
+ * @throws {AppError} `invalid_field` (400) for anything else, which is the contract's answer for a bad query value.
  */
 function decodeQueueCursor(value: string): NullableKeysetCursorPosition {
   const position = decodeNullableKeysetCursor(value);
@@ -304,13 +270,10 @@ function decodeQueueCursor(value: string): NullableKeysetCursorPosition {
 }
 
 /**
- * The keyset half of the read: every row ordered after `position` by `(outcomeAt asc, id asc)` with a
- * task that has no outcome last (AAP 0.5.4).
- *
- * A missing instant sorts last, so a cursor taken from a row with none continues inside the block of
- * those rows by id alone, while a cursor with an instant continues with the tasks that reached an
- * outcome later, the tasks that reached it at the same instant under a larger id, and then that whole
- * block of tasks without an outcome.
+ * The keyset half of the read: every row ordered after `position` by `(outcomeAt asc, id asc)` with a task that has
+ * no outcome last. A missing instant sorts last, so a cursor taken from a row with none continues inside the block of
+ * those rows by id alone, while a cursor with an instant continues with the tasks that reached an outcome later, the
+ * tasks that reached it at the same instant under a larger id, and then that whole block of tasks without an outcome.
  */
 function afterCursor(position: NullableKeysetCursorPosition): Prisma.CallTaskWhereInput {
   if (position.instant === null) {
@@ -326,18 +289,17 @@ function afterCursor(position: NullableKeysetCursorPosition): Prisma.CallTaskWhe
 }
 
 /**
- * The exact stored `outcome_at` of one task, as {@link CURSOR_INSTANT_FORMAT} renders it, or `null`
- * when that task has no outcome.
+ * The exact stored `outcome_at` of one task, as {@link CURSOR_INSTANT_FORMAT} renders it, or `null` when that task
+ * has no outcome.
  *
- * Why a string and not the row's own `Date`: Prisma answers a `timestamptz(6)` column as a `Date`,
- * which holds milliseconds, while a row whose `outcome_at` the database's own `now()` wrote keeps
- * microseconds. A cursor built from a truncated value would leave the equality branch of
- * {@link afterCursor} unable to match the boundary row at all, and every row sharing its millisecond
- * would be skipped from the middle of the list. PostgreSQL therefore formats the value here, as
- * `meetups/queries.ts` reads the `created_at` its own cursor continues from (AAP 0.5.4).
+ * A string and not the row's own `Date`: Prisma answers a `timestamptz(6)` column as a `Date`, which holds
+ * milliseconds, while a row whose `outcome_at` the database's own `now()` wrote keeps microseconds. A cursor built
+ * from a truncated value would leave the equality branch of {@link afterCursor} unable to match the boundary row at
+ * all, and every row sharing its millisecond would be skipped from the middle of the list. PostgreSQL therefore
+ * formats the value here, as `meetups/queries.ts` reads the `created_at` its own cursor continues from.
  *
- * @throws Error when the row is gone, which no request in the pilot can cause and which leaves no
- *   cursor to continue from.
+ * @throws Error when the row is gone, which no request in the pilot can cause and which leaves no cursor to continue
+ *   from.
  */
 async function exactOutcomeAt(db: Pick<DbClient, '$queryRaw'>, id: string): Promise<string | null> {
   const rows = await db.$queryRaw<{ exact: string | null }[]>`
@@ -352,10 +314,7 @@ async function exactOutcomeAt(db: Pick<DbClient, '$queryRaw'>, id: string): Prom
   return exact;
 }
 
-/**
- *
- * The exact instant is read only when another page follows, so the last page costs nothing extra.
- */
+/** The exact instant is read only when another page follows, so the last page costs nothing extra. */
 async function nextQueueCursor(
   db: Pick<DbClient, '$queryRaw'>,
   boundary: CallTaskQueueRow | undefined,
@@ -372,29 +331,22 @@ async function nextQueueCursor(
 /**
  * One page of the operator's call queue, oldest outcome first, narrowed by the request's filters.
  *
- * Both kinds are listed, so an operator sees a lodging verification's state too; only a
- * `menu_prices` task is resolvable from here, because a claim is resolved through its own route
- * (AAP 0.5.3).
+ * Both kinds are listed, so an operator sees a lodging verification's state too; only a `menu_prices` task is
+ * resolvable from here, because a claim is resolved through its own route. The order is the one the read states:
+ * `outcomeAt` ascending, the task id breaking a same-instant tie, and a task with no outcome yet last. This queue
+ * holds the tasks no dial is coming for, so the call-and-menu priority rule, the distance bands and the near locked
+ * meetup `calls/priority.ts` applies to `menu-ingest` and `call-dispatch` order that path and not this read.
  *
- * The order is the one the read states (AAP 0.5.4): `outcomeAt` ascending, the task id breaking a
- * same-instant tie, and a task with no outcome yet last. This queue holds the tasks no dial is coming
- * for — their calls are over, or they reached `unreachable` with `no_phone` or `do_not_call` and were
- * never dialed at all — so the call-and-menu priority rule of AAP 0.5.7, the distance bands and the
- * near locked meetup that `calls/priority.ts` applies to `menu-ingest` and to `call-dispatch`, where
- * `callTaskOrderSql` picks the next task to dial, orders that path and not this read.
+ * The filter is one `AND` list so each piece stands on its own and the fixtures guard's own `AND` composes with it
+ * rather than replacing it, which is what keeps a business the guard hides out of both the page and the count.
+ * `limit + 1` rows are read, so the presence of a next page is known without a second query: the extra row proves
+ * another page exists and is not returned, and the cursor is encoded from the page's last row read whether or not its
+ * DTO could be built, so paging can never stand still on a row it cannot carry.
  *
- * The filter is one `AND` list so each piece stands on its own and the fixtures guard's own `AND`
- * composes with it rather than replacing it, which is what keeps a business the guard hides out of
- * both the page and the count (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2). `limit + 1` rows are
- * read, so the presence of a next page is known without a second query: the extra row proves another
- * page exists and is not returned, and the cursor is encoded from the page's last row read whether or
- * not its DTO could be built, so paging can never stand still on a row it cannot carry.
- *
- * `total` counts the tasks the filters match with the cursor ignored, so an operator reads how many
- * rows the page leaves behind. A row whose target {@link toAdminCallTaskDto} cannot carry is left out
- * of the answer and reported under {@link CALL_TASK_TARGET_UNRESOLVED} with its own id, so the reply
- * is always a body the response schema accepts (AAP 0.5.2, 0.5.4) while the defect stays visible —
- * and such a row makes `items` one element shorter than `total`.
+ * `total` counts the tasks the filters match with the cursor ignored. A row whose target {@link toAdminCallTaskDto}
+ * cannot carry is left out of the answer and reported under {@link CALL_TASK_TARGET_UNRESOLVED} with its own id, so
+ * the reply is always a body the response schema accepts while the defect stays visible — and such a row makes
+ * `items` one element shorter than `total`.
  *
  * @throws {AppError} `invalid_field` (400) for a malformed cursor.
  */
@@ -463,9 +415,9 @@ type LockedCallTask = Pick<
 >;
 
 /**
- * Locks one task row for the rest of the transaction (AAP 0.5.3) and returns the columns the
- * resolution decides on, or `null` when no such task exists. Raw SQL, because Prisma has no
- * equivalent of `FOR UPDATE`; the id binds as a parameter cast to `uuid` (AAP 0.11.2).
+ * Locks one task row for the rest of the transaction and returns the columns the resolution decides on, or `null`
+ * when no such task exists. Raw SQL, because Prisma has no equivalent of `FOR UPDATE`; the id binds as a parameter
+ * cast to `uuid`.
  */
 async function lockCallTask(tx: DbTx, taskId: string): Promise<LockedCallTask | null> {
   const rows = await tx.$queryRaw<LockedCallTask[]>(Prisma.sql`
@@ -479,18 +431,17 @@ async function lockCallTask(tx: DbTx, taskId: string): Promise<LockedCallTask | 
 }
 
 /**
- * Refuses a resolution whose target the guarded client can no longer read (AAP 0.5.2, 0.5.3).
+ * Refuses a resolution whose target the guarded client can no longer read.
  *
- * The task's one business target is read back through the same guarded client the rest of the
- * transaction uses, because a to-one relation read is not a value this file holds: outside `test`
- * and `demo` the guarded client narrows `place` and `lodging` to `is_fixture = false`
- * (`packages/db/src/fixtures-guard.ts`), so a task on a seeded business has no name, no city and
- * no source a price could be attributed to. Refusing every outcome on such a task answers the
- * contract's `422` rather than half-applying one, and the update below — whose `where` the guard
- * narrows the same way — would otherwise match no row and surface as a `500`.
+ * The task's one business target is read back through the same guarded client the rest of the transaction uses,
+ * because a to-one relation read is not a value this file holds: outside `test` and `demo` the guarded client
+ * narrows `place` and `lodging` to `is_fixture = false`, so a task on a seeded business has no name, no city and no
+ * source a price could be attributed to. Refusing every outcome on such a task answers the contract's `422` rather
+ * than half-applying one, and the update below — whose `where` the guard narrows the same way — would otherwise
+ * match no row and surface as a `500`.
  *
- * @throws {AppError} `invalid_outcome` (422) when neither id names a readable row, which covers
- *   both a task with no target at all and a target the guard hides.
+ * @throws {AppError} `invalid_outcome` (422) when neither id names a readable row, which covers both a task with no
+ *   target at all and a target the guard hides.
  */
 async function assertTargetReadable(tx: DbTx, task: LockedCallTask): Promise<void> {
   const { placeId, lodgingId } = task;
@@ -506,11 +457,9 @@ async function assertTargetReadable(tx: DbTx, task: LockedCallTask): Promise<voi
 }
 
 /**
- * The URL a stored price is attributed to (AAP 0.5.7), from the first source the place has: the
- * number the operator called, its menu link, its website, or its OpenStreetMap object.
- *
- * A place with none of the four refuses the resolution rather than store a price with no
- * provenance, which a suggestion may not show (AAP 0.5.6).
+ * The URL a stored price is attributed to, from the first source the place has: the number the operator called, its
+ * menu link, its website, or its OpenStreetMap object. A place with none of the four refuses the resolution rather
+ * than store a price with no provenance, which a suggestion may not show.
  */
 function sourceUrlForPlace(
   place: Pick<Place, 'phone' | 'website' | 'menuUrl' | 'osmType' | 'osmId'>,
@@ -529,15 +478,14 @@ function sourceUrlForPlace(
 }
 
 /**
- * The rate to convert a price in `currency` on `day`: the latest `FxRate` at or before that day, or
- * the unit rate for USD, which the table need not carry (AAP 0.5.6). A currency with no rate at all
- * refuses the resolution, so nothing is stored and no price is guessed.
+ * The rate to convert a price in `currency` on `day`: the latest `FxRate` at or before that day, or the unit rate for
+ * USD, which the table need not carry. A currency with no rate at all refuses the resolution, so nothing is stored
+ * and no price is guessed.
  *
- * @throws {AppError} `fx_rate_unavailable` (503) when no row exists at or before `day`: only the
- *   `fx-refresh` job writes that table and it runs daily at 00:30 UTC (AAP 0.5.6), so a stack
- *   younger than its first run holds no row for a non-USD currency, and the contract's
- *   `422 invalid_outcome` (AAP 0.5.4) describes a refused outcome rather than a dependency still to
- *   arrive. The throw stays inside the caller's transaction, so the resolution stores nothing.
+ * @throws {AppError} `fx_rate_unavailable` (503) when no row exists at or before `day`: only the `fx-refresh` job
+ *   writes that table and it runs daily at 00:30 UTC, so a stack younger than its first run holds no row for a
+ *   non-USD currency, and the contract's `422 invalid_outcome` describes a refused outcome rather than a dependency
+ *   still to arrive. The throw stays inside the caller's transaction, so the resolution stores nothing.
  */
 async function usdRateFor(tx: DbTx, currency: string, day: Date) {
   if (currency === 'USD') {
@@ -558,9 +506,9 @@ async function usdRateFor(tx: DbTx, currency: string, day: Date) {
 }
 
 /**
- * Stores the prices an operator was told on the phone as one capture batch of `operator_entry`
- * records (AAP 0.5.6): one call is one batch, and each record is approved as it is stored, because
- * the operator is the review. No row is stored without a `sourceUrl` and a `priceUsdCents`.
+ * Stores the prices an operator was told on the phone as one capture batch of `operator_entry` records: one call is
+ * one batch, and each record is approved as it is stored, because the operator is the review. No row is stored
+ * without a `sourceUrl` and a `priceUsdCents`.
  */
 async function storeOperatorPrices(
   tx: DbTx,
@@ -607,13 +555,12 @@ async function storeOperatorPrices(
 }
 
 /**
- * The `completed` outcome (AAP 0.5.3): store the prices the operator was told, or, when none were
- * supplied, approve the `phone_quote` records the call left for review — a call's prices are stored
- * but held out of suggestions until an operator approves them (AAP 0.5.6).
+ * The `completed` outcome: store the prices the operator was told, or, when none were supplied, approve the
+ * `phone_quote` records the call left for review — a call's prices are stored but held out of suggestions until an
+ * operator approves them.
  *
- * An empty `prices` array is read as no prices at all, because an empty list carries no price either
- * way, and a `completed` with nothing to store is refused rather than closing the task with the
- * place still unpriced.
+ * An empty `prices` array is read as no prices at all, and a `completed` with nothing to store is refused rather
+ * than closing the task with the place still unpriced.
  */
 async function completeTask(
   tx: DbTx,
@@ -641,14 +588,13 @@ async function completeTask(
 }
 
 /**
- * The `do_not_call` side effects (AAP 0.5.3): flag the place and stop every other task of it,
- * marking a live call's attempt superseded so the relay speaks its closing line and ends the call.
+ * The `do_not_call` side effects: flag the place and stop every other task of it, marking a live call's attempt
+ * superseded so the relay speaks its closing line and ends the call.
  *
- * The cancelled tasks are neither `resolved_by` anyone nor given an `outcome_at`: nobody resolved
- * them, and the metrics count them in the cancelled lifecycle panel (AAP 0.5.7). Their
- * `blocked_reason` is cleared with the status: a task the place asked to stop calling is cancelled
- * rather than blocked, and a reason written while a dial was still possible would describe a call
- * that is never coming (AAP 0.5.3).
+ * The cancelled tasks are neither `resolved_by` anyone nor given an `outcome_at`: nobody resolved them, and the
+ * metrics count them in the cancelled lifecycle panel. Their `blocked_reason` is cleared with the status: a task the
+ * place asked to stop calling is cancelled rather than blocked, and a reason written while a dial was still possible
+ * would describe a call that is never coming.
  */
 async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>): Promise<void> {
   if (task.placeId === null) {
@@ -678,20 +624,17 @@ async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>
 }
 
 /**
- * Records one operator outcome on a `menu_prices` call task (AAP 0.5.3, 0.5.4).
+ * Records one operator outcome on a `menu_prices` call task. Every outcome clears the task's `blockedReason`, because
+ * a task an operator resolved has left the dialing path whatever status it now stands in, and the answer reports it
+ * that way. Nothing else about a resolution moves: the checks above and their order, the errors, the `do_not_call`
+ * side effects and the DTO are unaffected.
  *
- * Every outcome clears the task's `blockedReason`, because a task an operator resolved has left the
- * dialing path whatever status it now stands in, and the answer reports it that way (AAP 0.5.3,
- * 0.5.4). Nothing else about a resolution moves: the checks above and their order, the errors, the
- * `do_not_call` side effects and the DTO are unaffected.
- *
- * @throws {AppError} `invalid_outcome` (422) for an outcome outside the operator's four, for a
- *   lodging task, for a task that is not in the queue, for a `completed` with no prices to store,
- *   and for a task whose target is no longer readable — checked before the outcome is applied —
- *   which rolls the resolution back rather than storing an outcome the reply could not carry;
- *   `fx_rate_unavailable` (503) for a `completed` whose prices name a currency with no `FxRate` row
- *   at or before the capture day (AAP 0.5.6), which likewise stores nothing and leaves the task in
- *   the queue; `not_found` (404) for an unknown task id.
+ * @throws {AppError} `invalid_outcome` (422) for an outcome outside the operator's four, for a lodging task, for a
+ *   task that is not in the queue, for a `completed` with no prices to store, and for a task whose target is no
+ *   longer readable — checked before the outcome is applied — which rolls the resolution back rather than storing an
+ *   outcome the reply could not carry; `fx_rate_unavailable` (503) for a `completed` whose prices name a currency
+ *   with no `FxRate` row at or before the capture day, which likewise stores nothing and leaves the task in the
+ *   queue; `not_found` (404) for an unknown task id.
  */
 export async function resolveCallTask(
   services: CallTaskServices,

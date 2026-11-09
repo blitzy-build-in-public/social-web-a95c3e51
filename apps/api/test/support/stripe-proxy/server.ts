@@ -1,7 +1,6 @@
 /**
- * The HTTP proxy in front of `stripe-mock`: every Stripe request the API's gateway makes passes
- * through it, the mock validates the request, and every endpoint it models is answered statefully
- * (AAP 0.3.3, AAP 0.4.2, AAP 0.6.2).
+ * The HTTP proxy in front of `stripe-mock`: every Stripe request the API's gateway makes passes through it, the
+ * mock validates the request, and every endpoint it models is answered statefully (AAP 0.3.3, 0.4.2, 0.6.2).
  */
 import { randomBytes } from 'node:crypto';
 import {
@@ -44,10 +43,10 @@ const UPSTREAM_TIMEOUT_MS = 10_000;
 /** The port the compose `stripe-proxy` service listens on unless `PORT` names another (AAP 0.6.2). */
 const DEFAULT_PROXY_PORT = 12100;
 /**
- * The headers forwarded to `stripe-mock`, and the whole of them: an allowlist rather than a filter.
- * The idempotency key is dropped because the mock must see each retry as the request it is, and
- * `host`, `connection`, `keep-alive`, `transfer-encoding` and the inbound `content-length` are
- * dropped because the onward hop defines its own (AAP 0.3.3).
+ * The headers forwarded to `stripe-mock`, and the whole of them: an allowlist rather than a filter. The idempotency
+ * key, `host`, `connection`, `keep-alive`, `transfer-encoding` and the inbound `content-length` are dropped — the
+ * first because the mock must see each retry as the request it is, the rest because the onward hop defines its own
+ * (AAP 0.3.3).
  */
 const FORWARDED_HEADERS = [
   'authorization',
@@ -66,8 +65,8 @@ const IDEMPOTENCY_MISMATCH =
 const IDEMPOTENCY_IN_FLIGHT = 'A request with this idempotency key is still in progress.';
 const IDEMPOTENCY_KEY_IN_USE = 'idempotency_key_in_use';
 /**
- * The PaymentIntent statuses a control may query by: the lifecycle vocabulary of AAP 0.5.3, checked
- * here at compile time against the filter the state itself declares.
+ * The PaymentIntent statuses a control may query by: the lifecycle vocabulary of AAP 0.5.3, checked here at compile
+ * time against the filter the state itself declares.
  */
 const INTENT_STATUSES = [
   'requires_payment_method',
@@ -79,15 +78,12 @@ const INTENT_STATUSES = [
   'succeeded',
 ] as const satisfies readonly IntentFilter['status'][];
 
-/*
- * Form encoding (AAP 0.3.3)
- */
+// Form encoding (AAP 0.3.3)
 
 /**
- * Parameters the pinned SDK sends legitimately but `stripe-mock` v0.206.0's bundled spec rejects.
- *
- * They are removed from the **validation copy alone** — the copy forwarded to the mock — and never
- * from the parameters the state answers from, so a strip can never change what the proxy performs.
+ * Parameters the pinned SDK sends legitimately but `stripe-mock` v0.206.0's bundled spec rejects. They are removed
+ * from the **validation copy alone** — the copy forwarded to the mock — and never from the parameters the state
+ * answers from, so a strip can never change what the proxy performs.
  */
 export const VALIDATION_STRIP_PARAMS: readonly {
   readonly method: string;
@@ -97,8 +93,7 @@ export const VALIDATION_STRIP_PARAMS: readonly {
 }[] = [];
 
 /**
- * Parse an `application/x-www-form-urlencoded` body — or a query string — into Stripe's bracket
- * notation (AAP 0.3.3).
+ * Parse an `application/x-www-form-urlencoded` body — or a query string — into Stripe's bracket notation (AAP 0.3.3).
  */
 export function parseStripeForm(text: string): StripeParams {
   const params: StripeParams = {};
@@ -110,8 +105,8 @@ export function parseStripeForm(text: string): StripeParams {
 }
 
 /**
- * Encode a parameter tree back into `application/x-www-form-urlencoded` form: the inverse of
- * {@link parseStripeForm}, used only for the validation copy.
+ * Encode a parameter tree back into `application/x-www-form-urlencoded` form: the inverse of {@link parseStripeForm},
+ * used only for the validation copy.
  */
 export function encodeStripeForm(params: StripeParams): string {
   const search = new URLSearchParams();
@@ -180,9 +175,7 @@ function appendParam(search: URLSearchParams, key: string, value: FormValue): vo
   for (const [name, entry] of Object.entries(value)) appendParam(search, `${key}[${name}]`, entry);
 }
 
-/*
- * Answers and error envelopes (AAP 0.3.2, AAP 0.3.3)
- */
+// Answers and error envelopes (AAP 0.3.2, AAP 0.3.3)
 
 /** The provider's error types this proxy answers with. */
 type StripeErrorType =
@@ -238,9 +231,7 @@ function faultAnswer(status: number): ProxyAnswer {
   return errorAnswer(status, 'invalid_request_error', 'Simulated request error.');
 }
 
-/*
- * Reading and writing one request (AAP 0.3.3)
- */
+// Reading and writing one request (AAP 0.3.3)
 
 /** One request as this proxy reads it, before any step of the pipeline has acted on it. */
 interface ProxyTarget {
@@ -310,12 +301,9 @@ function headerOf(request: IncomingMessage, name: string): string | undefined {
 }
 
 /**
- * Read a request body, refusing one larger than {@link MAX_BODY_BYTES}.
- *
- * Past the bound nothing further is buffered, and the body is still drained to its end: a client that
- * is still uploading when the server answers would otherwise see its socket reset instead of the
- * refusal (AAP 0.11.1).
- *
+ * Read a request body, refusing one larger than {@link MAX_BODY_BYTES}. Past the bound nothing further is buffered,
+ * and the body is still drained to its end: a client that is still uploading when the server answers would otherwise
+ * see its socket reset instead of the refusal (AAP 0.11.1).
  */
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -347,9 +335,9 @@ function requestId(): string {
 }
 
 /**
- * Write one answer, with the headers every Stripe-path answer carries (AAP 0.3.3): a fresh
- * `request-id`, the request's own `stripe-version` or the pinned default, the `idempotency-key`
- * echoed back, and `Idempotent-Replayed` on an answer that came from a stored claim.
+ * Write one answer, with the headers every Stripe-path answer carries (AAP 0.3.3): a fresh `request-id`, the
+ * request's own `stripe-version` or the pinned default, the `idempotency-key` echoed back, and
+ * `Idempotent-Replayed` on an answer that came from a stored claim.
  */
 function writeAnswer(target: ProxyTarget, response: ServerResponse, answer: ProxyAnswer): void {
   if (response.writableEnded || response.destroyed) return;
@@ -367,11 +355,10 @@ function writeAnswer(target: ProxyTarget, response: ServerResponse, answer: Prox
 /**
  * Write one answer around a held `drop` or `delay` (AAP 0.3.2).
  *
- * A `drop` destroys the socket without writing anything, *after* the state has already changed: the
- * SDK sees a connection error while the effect stands, which is the ambiguous hold create the sweeper
- * replays under its original key. A `delay` writes the same answer once `ms` have passed, which the
- * gateway's own timeout turns into the same ambiguity, resolved by retrieving the PaymentIntent. A
- * client that disconnected first is never written to.
+ * A `drop` destroys the socket without writing anything, *after* the state has already changed: the SDK sees a
+ * connection error while the effect stands, which is the ambiguous hold create the sweeper replays under its
+ * original key. A `delay` writes the same answer once `ms` have passed, which the gateway's own timeout turns into
+ * the same ambiguity. A client that disconnected first is never written to.
  */
 function deliver(
   runtime: ProxyRuntime,
@@ -396,9 +383,7 @@ function deliver(
   writeAnswer(target, response, answer);
 }
 
-/*
- * The Stripe pipeline (AAP 0.3.2, AAP 0.3.3)
- */
+// The Stripe pipeline (AAP 0.3.2, AAP 0.3.3)
 
 /** Answer one `/v1/*` request, in the one order the recovery rules require (AAP 0.3.2). */
 async function serveStripe(
@@ -486,11 +471,9 @@ function stateAnswer(response: StateResponse): ProxyAnswer {
 }
 
 /**
- * The body `stripe-mock` validates: the request's own, minus the parameters it wrongly refuses.
- *
- * Only when {@link VALIDATION_STRIP_PARAMS} names one of them is the body re-encoded at all, and the
- * parameters the state answers from are never touched. A query string is forwarded as the client sent
- * it, so the list is read against a body, which is where the SDK puts its parameters.
+ * The body `stripe-mock` validates: the request's own, minus the parameters it wrongly refuses. Only when
+ * {@link VALIDATION_STRIP_PARAMS} names one of them is the body re-encoded at all, and the parameters the state
+ * answers from are never touched; a query string is forwarded as the client sent it.
  */
 function validationBody(target: ProxyTarget, params: StripeParams): string {
   const entry = VALIDATION_STRIP_PARAMS.find(
@@ -514,7 +497,6 @@ interface ForwardOptions {
 
 /**
  * Validate one request by sending it to `stripe-mock` and reading its answer (AAP 0.3.3).
- *
  */
 function forwardToUpstream(options: ForwardOptions): Promise<UpstreamAnswer | null> {
   const { upstream, target, body, timers } = options;
@@ -577,9 +559,7 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : undefined;
 }
 
-/*
- * The control routes (AAP 0.11.2)
- */
+// The control routes (AAP 0.11.2)
 
 /** One entry of {@link CONTROL_ROUTES} compiled, so this server routes by the test client's table. */
 interface ControlMatcher {
@@ -589,8 +569,8 @@ interface ControlMatcher {
 }
 
 /**
- * {@link CONTROL_ROUTES} compiled once: routing by the same table the test-side `proxyControl` builds
- * its requests from means a path renamed on one side cannot leave the other pointing at nothing.
+ * {@link CONTROL_ROUTES} compiled once: routing by the same table the test-side `proxyControl` builds its requests
+ * from means a path renamed on one side cannot leave the other pointing at nothing.
  */
 const CONTROL_MATCHERS: readonly ControlMatcher[] = Object.entries(CONTROL_ROUTES).map(
   ([name, route]) => ({
@@ -780,9 +760,7 @@ function readIntentFilter(body: Record<string, unknown>): IntentFilter {
   return filter;
 }
 
-/*
- * The proxy itself (AAP 0.3.3, AAP 0.6.2)
- */
+// The proxy itself (AAP 0.3.3, AAP 0.6.2)
 
 /** Answer one request: read it, then route it to the controls, to Stripe or to nothing. */
 async function handleRequest(
@@ -835,12 +813,10 @@ export interface StripeProxy {
 }
 
 /**
- * Start the stateful proxy in front of `stripe-mock` (AAP 0.3.3, AAP 0.6.2).
- *
- * One proxy owns one state, so two starts in one process cannot see each other's customers, intents
- * or events: a `globalSetup` starts it on an ephemeral port and hands the URL to every worker, and the
- * compose `stripe-proxy` service is the same server bound to `0.0.0.0`.
- *
+ * Start the stateful proxy in front of `stripe-mock` (AAP 0.3.3, AAP 0.6.2). One proxy owns one state, so two starts
+ * in one process cannot see each other's customers, intents or events: a `globalSetup` starts it on an ephemeral
+ * port and hands the URL to every worker, and the compose `stripe-proxy` service is the same server bound to
+ * `0.0.0.0`.
  */
 export async function startStripeProxy(options: StripeProxyOptions): Promise<StripeProxy> {
   const upstream = upstreamUrl(options.upstream);
@@ -898,17 +874,13 @@ function upstreamUrl(value: string): URL {
   return url;
 }
 
-/*
- * The standalone service (AAP 0.6.2)
- */
+// The standalone service (AAP 0.6.2)
 
 /**
- * Run the proxy from the environment (`pnpm --filter @tablemate/api stripe-proxy`).
- *
- * The compose `stripe-proxy` service is this binary on the api `test-support` image, and it is the
- * only process that reads `STRIPE_MOCK_UPSTREAM` (AAP 0.6.2). Both variables are validated before
- * anything listens: a failure names the variable and exits 1 without echoing a value, because an
- * upstream URL can carry a host and this process logs its port alone.
+ * Run the proxy from the environment (`pnpm --filter @tablemate/api stripe-proxy`): the compose `stripe-proxy`
+ * service is this binary on the api `test-support` image, and it is the only process that reads
+ * `STRIPE_MOCK_UPSTREAM` (AAP 0.6.2). Both variables are validated before anything listens: a failure names the
+ * variable and exits 1 without echoing a value, because an upstream URL can carry a host.
  */
 async function runStripeProxyCli(): Promise<void> {
   const port = readCliPort(process.env['PORT']);

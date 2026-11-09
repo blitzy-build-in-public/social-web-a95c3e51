@@ -1,12 +1,9 @@
 /**
- * The partner console's shell: which of its two screens a URL opens, and the gate holding the operator-issued secret in
- * front of both (AAP 0.5.1, 0.5.4, 0.8.1).
- *
- * The console holds no secret of its own (AAP 0.3.2): the operator types one in here, `api.ts` keeps it in `sessionStorage`
- * for the life of the tab, and it reaches only the two console routes' secret header — never a message, a log line or a
- * URL; a route answering `401`, with the secret already dropped by `api.ts`, returns this page to its secret form. There
- * is no router — `nginx` answers `index.html` for both paths (AAP 0.6.2) — so the path is read from `window.location`;
- * exactly one `<h1>` is on every page (AAP 0.5.8).
+ * The partner console's shell: which of its two screens a URL opens, and the gate holding the operator-issued secret
+ * in front of both (AAP 0.5.1, 0.5.4, 0.8.1). The console holds no secret of its own (AAP 0.3.2): the operator types
+ * one in here, `api.ts` keeps it in `sessionStorage` for the life of the tab, and it reaches only the two console
+ * routes' secret header. No router answers these paths -- nginx serves `index.html` for both (AAP 0.6.2) -- so the path
+ * comes from `window.location`, and exactly one `<h1>` is on every page (AAP 0.5.8).
  */
 import { useCallback, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
@@ -16,28 +13,21 @@ import type { ConsoleKind } from './api.ts';
 import { LodgingStats } from './routes/LodgingStats.tsx';
 import { VenueCode } from './routes/VenueCode.tsx';
 
-/** The two screens' paths (AAP 0.3.2, 0.5.8), and the site name every page carries -- the header
- * renders it as the page's only `<h1>` at most. */
+/** The two screens' paths (AAP 0.3.2, 0.5.8), and the site name every page carries as its only `<h1>`. */
 const VENUE_PATH = '/venue';
 const LODGING_PATH = '/lodging';
 const SITE_NAME = 'Tablemate partner console';
-
 /** Trailing slashes stripped from a path, so `/venue/` opens the venue console. */
 const TRAILING_SLASHES = /\/+$/;
-
 /** The help text beside the secret field, which that field's `aria-describedby` points at. */
 const HELP_TEXT =
   'Enter the secret Tablemate operations gave you. It stays in this browser tab and is cleared when the tab closes.';
-
 /** The messages this screen shows for an empty submission and for a secret the API rejected. */
 const EMPTY_SECRET_MESSAGE = 'Enter the secret.';
 const REJECTED_MESSAGE = 'That secret was not recognised. Ask Tablemate operations for a new one.';
-
-/**
- * One console's secret form: the label it shows and the ids its field and help text answer to
- * (AAP 0.5.4). The ids and `data-testid` values are relied on by `apps/mobile/e2e/playwright`, so
- * they are part of this component's contract.
- */
+/** One console's secret form: the label it shows and the ids its field and help text answer to (AAP 0.5.4).
+ * The ids and `data-testid` values are relied on by `apps/mobile/e2e/playwright`, so they are part of this
+ * component's contract. */
 interface SecretForm {
   label: string;
   fieldId: string;
@@ -45,7 +35,6 @@ interface SecretForm {
   inputTestId: string;
   submitTestId: string;
 }
-
 const SECRET_FORMS: Record<ConsoleKind, SecretForm> = {
   venue: {
     label: 'Venue secret',
@@ -62,11 +51,8 @@ const SECRET_FORMS: Record<ConsoleKind, SecretForm> = {
     submitTestId: 'lodging-secret-submit',
   },
 };
-
-/**
- * The path this page was opened at, with trailing slashes removed. Read during render and never held
- * in state: the console navigates by full page loads, so the path cannot change while the page is up.
- */
+/** The path this page was opened at, with trailing slashes removed. Read during render and never held in
+ * state: the console navigates by full page loads, so the path cannot change while the page is up. */
 function currentPath(): string {
   const stripped = window.location.pathname.replace(TRAILING_SLASHES, '');
   return stripped.length === 0 ? '/' : stripped;

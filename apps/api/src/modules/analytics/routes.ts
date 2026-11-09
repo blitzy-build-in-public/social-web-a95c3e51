@@ -1,25 +1,20 @@
 /**
- * Client analytics: the additive route `POST /v1/events` (AAP 0.5.1, 0.5.4, 0.5.7).
+ * Client analytics: the additive route `POST /v1/events`.
  *
- * This is the client's only analytics write, and the only event a client may report about itself: opening a
- * suggested place, which the operator dashboard counts as "places opened" (AAP 0.5.7). Every other
- * `AnalyticsEventName` is a server-side fact a client may not forge, so the body is validated against the shared
- * `ClientEventRequest`, whose name is the one-member `CLIENT_EVENT_NAMES` enum: an unlisted name and an unknown
- * key both answer `400 invalid_field` before the handler runs (AAP 0.5.4).
+ * This is the client's only analytics write, and the only event a client may report about itself: opening a suggested
+ * place. Every other `AnalyticsEventName` is a server-side fact a client may not forge, so the body is validated
+ * against the shared `ClientEventRequest`, whose name is the one-member `CLIENT_EVENT_NAMES` enum: an unlisted name and
+ * an unknown key both answer `400 invalid_field` before the handler runs.
  *
- * Everything else about the stored row comes from the session and the server. The actor reaches the table as the
- * HMAC of its id under `ANALYTICS_SALT` and never in the clear (AAP 0.5.2); the meetup and its venue's city are
- * read from the meetup the caller is a participant of rather than taken from the body; the variant columns stay
- * empty, because a client event carries no meetup pairing; and the instant comes from the injected clock inside
- * the transaction (AAP 0.11.1). The body therefore carries no actor, city, variant or timestamp that could be
- * spoofed.
+ * Everything else about the stored row comes from the session and the server: the actor is the HMAC of its id under
+ * `ANALYTICS_SALT` and never the clear id; the meetup and its venue's city are read from the meetup the caller is a
+ * participant of rather than taken from the body; the variant columns stay empty, because a client event carries no
+ * meetup pairing; and the instant comes from the injected clock inside the transaction.
  *
- * Two refusals are deliberately indistinguishable: an unknown meetup id and a meetup the caller is not part of
- * both answer `400 invalid_field`, so the route is no oracle for which meetup ids exist. The meetup is read
- * through this handler's own transaction, never through `meetups/queries.ts`, because `meetups` depends on
- * `analytics` and importing it back would close a cycle. The route is a traveler feature route, so it carries the
- * age gate and the write fence like every other mutating route, a success answers `204` with no body, and the body
- * is never logged (AAP 0.3.2, 0.5.3, 0.11.1).
+ * Two refusals are deliberately indistinguishable: an unknown meetup id and a meetup the caller is not part of both
+ * answer `400 invalid_field`, so the route is no oracle for which meetup ids exist. The meetup is read through this
+ * handler's own transaction, never through `meetups/queries.ts`, because `meetups` depends on `analytics` and
+ * importing it back would close a cycle. A success answers `204` with no body, and the body is never logged.
  */
 import { z } from 'zod';
 
@@ -35,21 +30,17 @@ import { emit } from './emit.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 
-/** The tag the route groups under: a member of the document's own vocabulary, never a new string. */
+/** The tag the route groups under. */
 const ANALYTICS_TAG = 'analytics' satisfies OpenApiTag;
 
 /**
- * Registers the client-analytics route (AAP 0.5.1, 0.5.4).
+ * Registers the client-analytics route.
  *
- * Encapsulated rather than wrapped in `fastify-plugin`, so the guard, the route and its schema stay
- * in their own context: `app.ts` registers this plugin with the `/v1` prefix, which is what makes
- * the route `POST /v1/events`. The guard is added here, at route-group level, and never globally —
- * the age gate covers the traveler feature routes alone (AAP 0.5.4).
- *
- * Registration is synchronous, as in every plugin the composition root installs, and it awaits
- * nothing: the hook and the route are queued on the context, and every value the handler needs is
- * resolved per request. The declared `Promise<void>` is what keeps this plugin usable wherever
- * Fastify's own plugin types expect one.
+ * Encapsulated rather than wrapped in `fastify-plugin`, so the guard, the route and its schema stay in their own
+ * context: `app.ts` registers this plugin with the `/v1` prefix, which is what makes the route `POST /v1/events`. The
+ * guard is added here, at route-group level, and never globally — the age gate covers the traveler feature routes
+ * alone. Registration is synchronous, as in every plugin the composition root installs, and the declared
+ * `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
  */
 export default function analyticsRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);
@@ -61,18 +52,15 @@ export default function analyticsRoutes(app: App): Promise<void> {
         tags: [ANALYTICS_TAG],
         security: OPENAPI_SECURITY.bearer,
         body: ClientEventRequest,
-        // `204` carries no body: Fastify runs no serializer for that status, and the reply below
-        // hands it the `null` the schema declares, so the route needs no response payload type.
-        // The `400` is the one error this route answers itself, so the document publishes it.
+        // `204` carries no body, and the reply below hands it the `null` the schema declares. The `400` is
+        // the one error this route answers itself, so the document publishes it.
         response: { 204: z.null(), 400: ErrorEnvelope },
       },
     },
     async (request, reply) => {
-      // Read the context rather than asserting it. The guard above admitted this request, so it is
-      // set — but that is a property of the registration two lines up, not of this handler: a hook
-      // that were moved, removed or shadowed would otherwise leave a `TypeError` to be answered as
-      // `500 internal_error` where the contract requires `401 token_invalid`, and no compiler check
-      // would catch it.
+      // Read the context rather than asserting it: the guard above admitted this request as a property of
+      // the registration, and a hook moved or shadowed would leave a `TypeError` answered as `500` where
+      // the contract requires `401 token_invalid`.
       if (request.auth === null) {
         throw new AppError('token_invalid');
       }
@@ -92,8 +80,7 @@ export default function analyticsRoutes(app: App): Promise<void> {
           if (meetup === null || (meetup.initiatorId !== userId && meetup.recipientId !== userId)) {
             throw new AppError('invalid_field');
           }
-          // The place is a business, not a person, so its id and category are the only body values
-          // that reach the row; the city comes from the venue the meetup is held at (AAP 0.5.2).
+          // The place is a business, so its id and category are the only body values that reach the row.
           const props: AnalyticsProps = {
             placeId: body.placeId,
             ...(body.placeCategory === undefined ? {} : { placeCategory: body.placeCategory }),

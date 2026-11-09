@@ -1,26 +1,16 @@
 /**
- * The operator's lodging-claim work: the claim queue, the operator's resolution of one claim, and the
- * audited read of a claim's booking details (AAP 0.5.1, 0.5.4, 0.5.3).
+ * The operator's lodging-claim work: the claim queue, the operator's resolution of one claim, and the audited read of a
+ * claim's booking details.
  *
- * {@link listLodgingClaims} answers the claims an operator still has to act on — `pending_call` and
- * `calling` (AAP 0.5.3) — each joined to the lodging it concerns, with a claim's availability computed
- * in SQL as a boolean so no ciphertext ever leaves PostgreSQL on this path. {@link resolveLodgingClaim}
- * is the operator's twin of the workers' `resolveClaim` — the same guarded status change, the same
- * cancellation of the verification work still outstanding, the same leaderboard backfill on
- * `verified`, the same analytics event and the same notification — with the differences that are the
- * operator's alone: the tasks it cancels record `resolvedBy = 'operator'` and lose any `blockedReason`
- * they were carrying. {@link bookingDetails} answers the additive booking-details route, whose read is
- * the one exception to the zero-knowledge principle the product rests on and is therefore audited:
- * every read writes an `OperatorAccessLog` row in the same transaction, and only a claim that is still
- * open and whose details are not yet erased can be read at all (AAP 0.5.2).
+ * {@link listLodgingClaims} answers the claims an operator still has to act on — `pending_call` and `calling` — with a
+ * claim's availability computed in SQL so no ciphertext ever leaves PostgreSQL on this path. {@link resolveLodgingClaim}
+ * is the operator's twin of the workers' `resolveClaim`, cancelling with `resolvedBy = 'operator'` and clearing any
+ * `blockedReason`. {@link bookingDetails} is the one exception to the zero-knowledge principle and is audited: every
+ * read writes an `OperatorAccessLog` row in the same transaction.
  *
- * Rules that hold across the file: time comes from the caller, never a clock of this file's own (AAP
- * 0.11.1); a resolution locks the claim row `FOR UPDATE` and only the claim, never the joined lodging
- * row, so a resolution serializes against a call result, the 72-hour expiry and another operator
- * without holding a lock on a shared business row; the leaderboard cache is dropped in the post-commit
- * callback and only for a `verified` outcome (AAP 0.3.2, 0.5.7); the booking name and reference are
- * wiped by the workers' hourly `data-expiry` run well inside the 24-hour limit (AAP 0.5.2); and no log
- * line names a booking field, a phone number or a stay date (AAP 0.11.1).
+ * Time comes from the caller; a resolution locks the claim row `FOR UPDATE` and never the joined lodging row; the
+ * leaderboard cache is dropped post-commit and only for `verified`; and no log line names a booking field, a phone
+ * number or a stay date.
  */
 
 import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';
@@ -47,39 +37,28 @@ import { transact } from '../outbox/write.ts';
 import type { AppServices } from '../../app.ts';
 
 /**
- * The most claims one read of the queue returns: a cap rather than a page size, because the contract carries no cursor,
- * so an operator who needs an older claim reads it in the database. The queue holds only what is still open, so a
- * standing queue longer than this is itself the signal an operator needs.
+ * The most claims one read of the queue returns: a cap rather than a page size, because the contract carries no cursor.
+ * The queue holds only what is still open, so a longer queue is itself the signal an operator needs.
  */
 export const ADMIN_LODGING_CLAIMS_LIMIT = 200;
 
-/**
- * The alias the raw statements give the joined `lodging`, which {@link fixturePredicate} is given; the claim's own
- * columns are addressed as `c` in those statements.
- */
+/** The alias the raw statements give the joined `lodging`, which {@link fixturePredicate} is given. */
 const LODGING_ALIAS = 'l';
 
 /**
- * How long an unresolved claim may live: 72 hours from its creation (AAP 0.5.3). Reported as `expiresAt` — the instant
- * `claim-expire-<claimId>` moves a claim still waiting in this queue to `unreachable` with no penalty — and applied by
- * the workers' job, never here.
+ * How long an unresolved claim may live: 72 hours from its creation, reported as `expiresAt` and applied by the workers,
+ * never here.
  */
 const CLAIM_EXPIRY_MS = CLAIM_EXPIRY_HOURS * HOUR_MS;
 
-/**
- * The two statuses a claim may still leave, so the only ones this queue lists and the only ones an operator may resolve:
- * every other status is terminal, and a terminal claim stays terminal (AAP 0.5.3).
- */
+/** The two statuses a claim may still leave, so the only ones this queue lists and an operator may resolve. */
 const ACTIVE_CLAIM_STATUSES = [
   'pending_call',
   'calling',
 ] as const satisfies readonly LodgingClaimStatus[];
 
-/**
- * The task statuses that are still outstanding, so a resolution cancels them: a verification task
- * that is `queued`, `in_progress`, `needs_review` or `unreachable` has not produced the claim's
- * result (AAP 0.5.3).
- */
+/** The task statuses that are still outstanding, so a resolution cancels them: those that have not produced the claim's
+ * result. */
 const OUTSTANDING_TASK_STATUSES = [
   'queued',
   'in_progress',
@@ -87,11 +66,7 @@ const OUTSTANDING_TASK_STATUSES = [
   'unreachable',
 ] as const satisfies readonly CallTaskStatus[];
 
-/**
- * The attempt states in which a call may genuinely be live, so a cancelled task's attempt is marked
- * superseded: the relay checks that flag before every turn, speaks its closing line and ends the call
- * (AAP 0.5.3).
- */
+/** The attempt states in which a call may genuinely be live, so a cancelled task's attempt is marked `superseded`. */
 const LIVE_ATTEMPT_STATES = [
   'dispatching',
   'dispatch_unknown',
@@ -102,21 +77,15 @@ const LIVE_ATTEMPT_STATES = [
 /** The one purpose for which this module may read a claim's booking details (AAP 0.5.4). */
 const MANUAL_VERIFICATION_PURPOSE: OperatorAccessPurpose = 'manual_verification_call';
 
-/**
- * What an unreadable stored value answers with. The message is a fixed sentence: the ciphertext, the
- * key id and the reason a {@link decryptField} call failed stay in the log's narrowed cause chain and
- * never in the envelope (AAP 0.11.1).
- */
+/** What an unreadable stored value answers with; the ciphertext, the key id and the failure's cause stay in the log,
+ * never in the envelope. */
 const DETAILS_UNREADABLE = 'The stored booking details could not be read.';
 
 /** What an outcome outside the contract, or on a claim that left its active state, answers with. */
 const INVALID_OUTCOME =
   'A lodging claim accepts verified, rejected or unreachable, and only while it is open.';
-/**
- * `city_id` is the lodging's city, which is the city every figure of the claim is counted under.
- * `details_available` is the SQL boolean `booking_name_ciphertext IS NOT NULL AND details_erased_at IS NULL` — the
- * queue never reads the ciphertext itself (AAP 0.5.2).
- */
+/** `city_id` is the lodging's city; `details_available` is the SQL boolean `booking_name_ciphertext IS NOT NULL AND
+ * details_erased_at IS NULL`, because the queue never reads the ciphertext itself. */
 export interface AdminLodgingClaimRow {
   readonly id: string;
   readonly lodging_name: string;
@@ -129,20 +98,16 @@ export interface AdminLodgingClaimRow {
   readonly details_available: boolean;
 }
 
-/**
- * A locked claim as {@link resolveLodgingClaim} reads it: the queue's own fields plus the two ids a
- * resolution acts on — the claimant, whose analytics event and notification it writes, and the
- * lodging, whose leaderboard it may credit.
- */
+/** A locked claim: the queue's own fields plus the two ids a resolution acts on — the claimant, whose analytics event
+ * and notification it writes, and the lodging, whose leaderboard it may credit. */
 interface LockedClaimRow extends AdminLodgingClaimRow {
   readonly user_id: string;
   readonly lodging_id: string;
 }
 
 /**
- * A shared claim as {@link bookingDetails} reads it: the two stored ciphertexts — the only read of
- * them anywhere in the API outside the voice relay (AAP 0.5.2) — and the three fields that decide
- * whether they may be opened at all.
+ * A shared claim as {@link bookingDetails} reads it: the two stored ciphertexts — the only read of them anywhere in the
+ * API outside the voice relay — and the three fields that decide whether they may be opened.
  */
 interface BookingClaimRow {
   readonly id: string;
@@ -153,11 +118,10 @@ interface BookingClaimRow {
 }
 
 /**
- * Every field is copied by name, so a column added to `lodging_claim` or to `lodging` can never reach an operator
- * without a change here, and no ciphertext is named at all. Two fields are derived rather than stored: `expiresAt`,
- * which is `createdAt + 72 h` (AAP 0.5.3), and the phone, answered as `null` when the lodging carries no E.164 number
- * the response schema accepts — the shape is the contract's, and the alternative would be a serialization failure that
- * hides a claim from the queue.
+ * Every field is copied by name, so a column added to `lodging_claim` or `lodging` can never reach an operator without a
+ * change here. Two fields are derived: `expiresAt`, which is `createdAt + 72 h`, and the phone, answered as `null` when
+ * the lodging carries no E.164 number the response schema accepts, because the alternative would be a serialization
+ * failure that hides a claim from the queue.
  */
 export function toAdminLodgingClaimDto(row: AdminLodgingClaimRow): AdminLodgingClaimDto {
   return {
@@ -194,15 +158,13 @@ function isActiveClaim(status: LodgingClaimStatus): boolean {
 }
 
 /**
- * Read-only, so it opens no transaction and takes no lock: the queue is a view of what an operator has to act on, and
- * the decision that acts on a claim belongs to {@link resolveLodgingClaim}, which locks the row it changes. A claim
- * resolved between this read and the operator's click is refused there with `422 invalid_outcome`, which is the answer
- * that keeps a terminal claim terminal.
+ * Read-only: the queue is a view of what an operator has to act on, and the decision that acts on a claim belongs to
+ * {@link resolveLodgingClaim}, which locks the row it changes. A claim resolved between this read and the operator's
+ * click is refused there with `422 invalid_outcome`, which keeps a terminal claim terminal.
  *
- * The statement selects the claim's own columns and the lodging's name, phone and city, and computes availability as a
- * boolean, so the booking ciphertext is never part of the row this process holds. It is raw SQL because that expression
- * has no Prisma client equivalent, which is also why it carries {@link fixturePredicate}: a raw query bypasses the
- * guarded client's fixture filter (AAP 0.5.2).
+ * The statement computes availability as a boolean, so the booking ciphertext is never part of the row this process
+ * holds. It is raw SQL, which is why it carries {@link fixturePredicate}: a raw query bypasses the guarded client's
+ * fixture filter.
  */
 export async function listLodgingClaims(
   services: AppServices,
@@ -231,29 +193,19 @@ export async function listLodgingClaims(
 /**
  * Refusals come in the route's order: an outcome outside {@link OperatorClaimOutcome} is `422 invalid_outcome` before
  * anything is locked, a claim that does not exist is `404 claim_not_found`, and a claim that already left `pending_call`
- * or `calling` is `422 invalid_outcome` — which is what makes a second click, a racing call result and the 72-hour expiry
- * all harmless. The acting operator's own account having requested deletion is `401 token_invalid`, raised by the fence
- * before any write.
+ * or `calling` is `422 invalid_outcome` — which is what makes a second click, a racing call result and the 72-hour
+ * expiry harmless. An operator whose own account requested deletion is `401 token_invalid`, raised by the fence before
+ * any write.
  *
- * One transaction, under the claim's row lock, writes everything the resolution means, so all of it commits with the
- * status change or none does:
+ * One transaction under the claim's row lock writes everything the resolution means, so it all commits with the status
+ * change or none does: the status change with `resolvedAt` from `now`; the cancellation of the outstanding verification
+ * work; on `verified`, the leaderboard facts the stay backfills for the meetups the claimant held inside it; the
+ * `lodging_claim_resolved` analytics event, whose `outcome` and `resolveSeconds` are the dashboard's claim measures; and
+ * the claimant's notification as an outbox row in this transaction.
  *
- * 1. The guarded status change to the outcome, with `resolvedAt` from `now`.
- * 2. The cancellation of the verification work still outstanding — its tasks become `cancelled` with
- *    `resolvedBy = 'operator'`, and an attempt in a possibly live state becomes `superseded`, the flag the voice relay
- *    reads before its next turn.
- * 3. On `verified`, the leaderboard facts the stay backfills, for the completed meetups the claimant held inside the
- *    stay (AAP 0.5.7).
- * 4. The `lodging_claim_resolved` analytics event, whose `outcome` and `resolveSeconds` are the dashboard's claim
- *    measures and whose city is the lodging's (AAP 0.5.7).
- * 5. The claimant's `lodging_claim_resolved` notification, as an outbox row in this transaction, so the message and the
- *    state it describes commit together (AAP 0.3.2).
- *
- * The lodging's cached leaderboard is dropped only after the commit and only for `verified`, through the transaction's
- * post-commit callback, so a rollback leaves no cold cache behind a change that never happened, and a Redis outage costs
- * nothing but the cache's own lifetime (AAP 0.3.2, 0.5.7). The booking details are deliberately untouched: the workers'
- * next hourly `data-expiry` run erases them once the claim is terminal, well inside the 24-hour limit (AAP 0.5.2). The
- * module reads no clock of its own: `now` is the caller's (AAP 0.11.1).
+ * The cached leaderboard is dropped only after the commit and only for `verified`, through the post-commit callback. The
+ * booking details are deliberately untouched: the workers' next hourly `data-expiry` run erases them once the claim is
+ * terminal. `now` is the caller's.
  */
 export async function resolveLodgingClaim(
   services: AppServices,
@@ -316,16 +268,13 @@ export async function resolveLodgingClaim(
 }
 
 /**
- * Cancels the verification work a resolved claim still has outstanding (AAP 0.5.3).
+ * Cancels the verification work a resolved claim still has outstanding: exactly the tasks that have not produced a
+ * result, and `outcomeAt` is never written here, because a cancelled task was cancelled rather than reaching an outcome.
+ * Its `blockedReason` is cleared with its status — the task is stopped, not blocked.
  *
- * Exactly the tasks that have not produced a result are cancelled: a task that is already terminal is left exactly as it
- * stands, and `outcomeAt` is never written here, because a cancelled task was cancelled rather than reaching an outcome
- * (AAP 0.5.7). Its `blockedReason` is cleared with its status: the task is stopped, not blocked, and a reason written
- * while a dial was still out of reach would describe a call that is never coming (AAP 0.5.3).
- *
- * A cancelled task's attempt in a possibly live state is marked `superseded`, which is the whole handshake with the relay
+ * A cancelled task's attempt in a possibly live state is marked `superseded`, which is the whole handshake with a relay
  * that may be speaking to the business right now: it reads the flag before every turn, speaks its closing line and ends
- * the call, and any result or callback that arrives afterwards is recorded on the attempt alone and never applied.
+ * the call.
  */
 async function cancelOutstandingVerification(tx: DbTx, claimId: string): Promise<number> {
   const tasks = await tx.callTask.findMany({
@@ -352,16 +301,13 @@ async function cancelOutstandingVerification(tx: DbTx, claimId: string): Promise
 }
 
 /**
- * Locks one claim for the rest of the caller's transaction and returns it, or `null` when no such claim exists
- * (AAP 0.5.3).
+ * Locks one claim for the rest of the caller's transaction and returns it, or `null` when no such claim exists: the lock
+ * is the claim's serialization point, taken by the 72-hour expiry, a call result and this resolution before they read a
+ * status, so the first writer wins.
  *
- * The lock is the claim's serialization point: the 72-hour expiry, a call result and this resolution all take it before
- * they read a status, so the first writer wins and every later one sees its result. `FOR UPDATE OF "c"` locks the claim
- * row alone — the join to `lodging` is there to read the name, the phone and the city, and locking a shared business row
- * would serialize resolutions against unrelated work in the same city.
- *
- * The row carries the same columns as the queue's read, plus the two ids a resolution acts on; like that read it is raw
- * SQL and carries {@link fixturePredicate} for the lodging it joins (AAP 0.5.2).
+ * `FOR UPDATE OF "c"` locks the claim row alone — the join to `lodging` is there to read the name, the phone and the
+ * city, and locking a shared business row would serialize resolutions against unrelated work. Raw SQL, so it carries
+ * {@link fixturePredicate} for the lodging it joins.
  */
 async function lockClaim(
   services: AppServices,
@@ -392,19 +338,14 @@ async function lockClaim(
 
 /**
  * This is the one route that returns a booking name, and it is the reason the audit log exists: every read inserts its
- * `OperatorAccessLog` row in the same transaction as the read, so no operator can see a guest's name without a record of
- * it, and a failure to decrypt rolls the audit row back with the read — an unauditable read does not happen.
+ * `OperatorAccessLog` row in the same transaction as the read, so no operator sees a guest's name without a record of
+ * it, and a failure to decrypt rolls the audit row back — an unauditable read does not happen.
  *
- * Only a claim that is still open and whose details have not been erased is readable; anything else is
- * `409 details_unavailable`. The first hourly `data-expiry` run after a claim reaches a terminal state erases the two
- * ciphertexts (AAP 0.5.2), so the window is the claim's own resolution plus at most an hour. The claim is read
- * `FOR SHARE`, the weakest lock that still does the job: it keeps the erasure's own update off the row for the length of
- * this read, while letting two operators read the same claim's details at the same time.
- *
- * The decrypted values leave the process only in this answer: they are never logged, cached, retried or echoed in an
- * error, and the one log line names the claim and the operator (AAP 0.11.1). `claim_not_found` covers an id no claim
- * holds, and `internal_error` a stored value this process's keyring cannot open — a defect of the stored data rather
- * than the caller's fault; `routes.ts` sets `Cache-Control: no-store` on the reply.
+ * Only a claim that is still open and whose details are not yet erased is readable; anything else is
+ * `409 details_unavailable`, and the window is the claim's own resolution plus at most one hourly `data-expiry` run. The
+ * claim is read `FOR SHARE`: it keeps the erasure's update off the row while letting two operators read the same claim at
+ * once. The decrypted values leave the process only in this answer and the one log line names the claim and the operator;
+ * `routes.ts` sets `Cache-Control: no-store`.
  */
 export async function bookingDetails(
   services: AppServices,
@@ -452,11 +393,8 @@ export async function bookingDetails(
 
 /**
  * Reads one claim's status, erasure mark and two ciphertexts, shared for the length of the caller's transaction, or
- * `null` when no such claim exists (AAP 0.5.2).
- *
- * No join, so no fixture predicate is needed: `lodging_claim` is user data rather than a fixture-bearing table, and the
- * one field of the lodging this route could have needed — a name to render — is not part of an answer that exists to be
- * read aloud on a phone call.
+ * `null` when no such claim exists. No join, so no fixture predicate: `lodging_claim` is user data rather than a
+ * fixture-bearing table.
  */
 async function shareClaim(tx: DbTx, claimId: string): Promise<BookingClaimRow | null> {
   const rows = await tx.$queryRaw<BookingClaimRow[]>(Prisma.sql`
@@ -473,13 +411,10 @@ async function shareClaim(tx: DbTx, claimId: string): Promise<BookingClaimRow | 
 }
 
 /**
- * Opens one stored field, or reports the failure as ours (AAP 0.5.2, 0.11.1).
- *
- * A {@link FieldDecryptionError} means the value was written under a key this process does not hold, that its payload was
- * altered at rest, or that the row is not the shape `encryptField` writes. None of those is the caller's mistake, so it
- * becomes a `500 internal_error` rather than a client error the operator would be told to retry against: a key the ring
- * has lost needs an operator to fix the environment, not the claim. The failure is attached as the cause, so the errors
- * plugin logs the reason and the key id while the envelope carries this fixed sentence alone.
+ * Opens one stored field, or reports the failure as ours. A {@link FieldDecryptionError} means the value was written
+ * under a key this process does not hold, was altered at rest, or is not the shape `encryptField` writes: none of those
+ * is the caller's mistake, so it becomes a `500 internal_error` with the failure attached as the cause, which the errors
+ * plugin logs as the reason and key id.
  */
 function openField(services: AppServices, ciphertext: string): string {
   try {

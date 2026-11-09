@@ -1,44 +1,16 @@
 /**
- * Retention enforcement: the hourly `data-expiry` step and its daily 03:00 UTC financial step (AAP 0.5.2, 0.5.6).
- * AAP 0.5.2 gives every record a retention rule and names `data-expiry` as the job that enforces it; AAP 0.5.6 runs
- * that job hourly, with the financial-retention purge in a daily step at 03:00 UTC. This module is the whole of it:
- * {@link runHourlyExpiry} applies the sub-daily rules, {@link runDailyExpiry} the four that only run once a day, and
- * `account-erasure` deletes an account's own rows at its request — this job owns everything that ages by time.
+ * Retention enforcement: the hourly `data-expiry` step and its daily 03:00 UTC financial step. {@link runHourlyExpiry}
+ * applies the sub-daily rules and {@link runDailyExpiry} the four that only run once a day; each rule's own doc below
+ * states its window.
  *
- * The hourly rules, in the order they run, the first two sharing one run as AAP 0.5.2 and 0.12.2 ask:
- *
- *   1. Booking details: a resolved `LodgingClaim` loses its encrypted booking name and reference and gets its
- *      `details_erased_at`, the 24-hour limit criterion 14 measures.
- *   2. The same run strips that claim's lodging call rows — its callbacks, its attempts' content and the task's claim
- *      link — in one transaction per batch, so a later Twilio callback matches nothing.
- *   3. Menu-call transcripts at 30 days, the only call content ever stored.
- *   4. Magic links: an expired token whose ciphertext was never cleared has it nulled, and the row is purged 24 hours
- *      after expiry.
- *   5. Sessions 24 hours after expiry.
- *   6. Call metadata at 365 days: terminal `menu_prices` tasks and stripped lodging tasks, with their attempts, while
- *      counts and spend stay in `call_budget_day`.
- *   7. Report and resolved-dispute reason text at 180 days, an open dispute keeping its text.
- *   8. `OperatorAccessLog` at 365 days.
- *   9. `LodgingActivityFact` at 120 days, past the 90-day leaderboard window.
- *
- * The daily rules run from `now - FINANCIAL_RETENTION_DAYS` (2,557 days, seven years): a meetup finalised before the
- * cut-off loses its deposits, payment operations, settlement, credit entries, check-ins, messages and disputes, with
- * the kept rows unlinked from it, then its activity facts and last the meetup itself, and a terminal
- * `delete_customer` operation with no deposit goes with it; `StripeEvent` rows older than the same cut-off, where the
- * webhook dedupe window ends; the tombstone-owned reputation rows — a `witness_event` with no meetup whose user is
- * erased, and a `pair_history` row inactive past the cut-off with an erased member — while a row that still counts
- * for a live account is never deleted, because counters never decay (AAP 0.5.2); and a tombstone no retained record
- * references, so an erased account does not outlive the last row that needed its id.
- *
- * Four invariants hold across every rule: time comes from `ctx.clock`, never from SQL `now()`, so every cut-off is
- * computed in Node, bound as a parameter and moved at once by the test clock (AAP 0.11.1); every rule is a
- * delete-or-update-where whose own predicate takes the write out of the selection, so a second run changes nothing
- * and reports zeros (AAP 0.3.2); bulk deletes and strips take {@link DELETE_BATCH_SIZE} rows per statement, and each
- * batch's transaction carries its own budget ({@link TRANSACTION_TIMEOUT_MS}) rather than Prisma's route-sized
- * default, so a busy database cannot expire it mid-batch and abort a pass before the later rules have run; and every
- * statement is a tagged template over the guarded client, identifiers double-quoted (`"user"` is reserved) and values
- * bound (AAP 0.11.2). Nothing here calls Stripe, Twilio, Overpass, a language model or any other provider, which is
- * what keeps retention working while every one of them is unreachable (AAP 0.3.2).
+ * Four invariants hold across every rule: time comes from `ctx.clock`, never from SQL `now()`, so every cut-off is computed
+ * in Node, bound as a parameter and moved at once by the test clock; every rule is a delete-or-update-where whose own
+ * predicate takes the write out of the selection, so a second run changes nothing and reports zeros; bulk deletes and strips
+ * take {@link DELETE_BATCH_SIZE} rows per statement, each batch's transaction carrying its own budget
+ * ({@link TRANSACTION_TIMEOUT_MS}) rather than Prisma's route-sized default, so a busy database cannot expire it mid-batch
+ * and abort a pass before the later rules have run; and every statement is a tagged template over the guarded client,
+ * identifiers double-quoted (`"user"` is reserved) and values bound. Nothing here calls Stripe, Twilio, Overpass, a language
+ * model or any other provider, which is what keeps retention working while every one of them is unreachable.
  */
 
 import type { DbClient, RawSqlClient } from '@tablemate/db';
@@ -48,78 +20,35 @@ import type { CallTaskStatus, LodgingClaimStatus, PaymentOperationStatus } from 
 
 import type { WorkerContext } from '../queues.ts';
 
-/**
- * The queue this file processes, and the two step names it dispatches on. Read from
- * `packages/server-core/src/queues/names.ts`, the one place either is written down, so a rename there
- * reaches this processor too (AAP 0.5.6).
- */
+// This file's queue and its two step names, read from `packages/server-core/src/queues/names.ts`, the one place either is written down, so a rename there reaches this processor too.
 const STEP = JOB[QUEUE.dataExpiry];
-
-/**
- * The rows one bulk statement takes (AAP 0.5.2). A rule with a large backlog runs its statement once
- * per batch instead of once over everything, so a run holds bounded statements and a bounded
- * transaction however much data is due.
- */
+// The rows one bulk statement takes: a rule with a large backlog runs its statement once per batch, so a run holds bounded statements and a bounded transaction however much data is due.
 const DELETE_BATCH_SIZE = 1_000;
-
-/**
- * How long one batch's transaction may run before Prisma closes it (AAP 0.5.2, 0.5.6).
- *
- * One budget covers each of the three batch transactions this module opens. A batch's statements are cheap in
- * isolation, but the transaction's wall clock grows with pool contention and host load, and five seconds is Prisma's
- * default, meant for a route: once it expires mid-batch the next statement is refused and every rule after it is
- * skipped for that pass with no counts line written. 60 s matches this repository's own budget for a
- * heavier-than-a-route transaction.
- */
+// How long one batch's transaction may run. One budget covers each of the three batch transactions this module opens: five seconds is Prisma's default, meant for a route, and once it expires mid-batch the next statement is refused and every rule after it is skipped for that pass with no counts line written.
 const TRANSACTION_TIMEOUT_MS = 60_000;
-
 /** How long a `menu_prices` call transcript is kept, the only call content ever stored (AAP 0.5.2). */
 const TRANSCRIPT_RETENTION_DAYS = 30;
-
 /** The grace after a magic-link token's expiry before its row is purged (AAP 0.5.2). */
 const MAGIC_LINK_PURGE_GRACE_HOURS = 24;
-
-/**
- * The grace after a session's expiry before its row is purged (AAP 0.5.2). A session lives 30 days
- * (`REFRESH_TOKEN_TTL_DAYS`), so the rule covers the expired rows; a revoked but unexpired row keeps
- * its place until its expiry passes.
- */
+// The grace after a session's expiry before its row is purged: a session lives 30 days, so the rule covers the expired rows, while a revoked but unexpired row keeps its place until its expiry passes.
 const SESSION_PURGE_GRACE_HOURS = 24;
-
 /** How long call, cap and spend metadata is kept for the call metrics (AAP 0.5.2). */
 const CALL_METADATA_RETENTION_DAYS = 365;
-
 /** How long report and dispute reason text is kept for safety and payment disputes (AAP 0.5.2). */
 const REASON_RETENTION_DAYS = 180;
-
 /** How long the operator's booking-detail access log is kept (AAP 0.5.2). */
 const OPERATOR_ACCESS_LOG_RETENTION_DAYS = 365;
-
 /** How long a lodging's activity fact is kept, past the 90-day leaderboard window (AAP 0.5.2, 0.5.7). */
 const LODGING_ACTIVITY_FACT_RETENTION_DAYS = 120;
-
-/**
- * The id a tombstone page starts before: the all-zero UUID, which no generated id is, so
- * `"id" > ${FIRST_UUID}` selects from the first row in uuid order.
- */
+// The id a tombstone page starts before: the all-zero UUID, which no generated id is, so `"id" > ${FIRST_UUID}` selects from the first row in uuid order.
 const FIRST_UUID = '00000000-0000-0000-0000-000000000000';
-
-/**
- * A lodging claim in one of these states has resolved, so its booking details are erased and its
- * lodging call rows are stripped (AAP 0.5.2, 0.5.3). A claim still `pending_call` or `calling` is
- * live: its call may be running and its details are what a manual verification call needs.
- */
+// A lodging claim in one of these states has resolved, so its booking details are erased and its lodging call rows are stripped; a claim still `pending_call` or `calling` is live and keeps its details.
 const TERMINAL_CLAIM_STATUSES: readonly LodgingClaimStatus[] = [
   'verified',
   'rejected',
   'unreachable',
 ];
-
-/**
- * A call task in one of these states has finished, so the 365-day rule ages it by its last activity
- * (AAP 0.5.2, 0.5.3). `queued`, `in_progress` and `needs_review` are still work: they wait for a
- * dispatch or for an operator.
- */
+// A call task in one of these states has finished, so the 365-day rule ages it by its last activity.
 const TERMINAL_TASK_STATUSES: readonly CallTaskStatus[] = [
   'completed',
   'refused',
@@ -127,53 +56,30 @@ const TERMINAL_TASK_STATUSES: readonly CallTaskStatus[] = [
   'unreachable',
   'cancelled',
 ];
-
-/**
- * A `delete_customer` operation in one of these states has finished with its target (AAP 0.5.2): it
- * either deleted the customer, failed for good, or was superseded. `pending`, `executing` and
- * `failed_retryable` are unfinished work and are never purged.
- */
+// A `delete_customer` operation in one of these states has finished with its target; `pending`, `executing` and `failed_retryable` are unfinished work and are never purged.
 const TERMINAL_PAYMENT_STATUSES: readonly PaymentOperationStatus[] = [
   'succeeded',
   'failed_terminal',
   'fenced',
 ];
-
-/**
- * What one run of a step changed, keyed by rule and counted in rows affected (AAP 0.5.2). Every rule
- * contributes at least one entry, and a rule that found nothing to do reports `0` — which is what the
- * job's log line carries and what makes a second run of the same step visibly a no-op.
- */
+// What one run of a step changed, keyed by rule and counted in rows affected. Every rule contributes at least one entry, and a rule that found nothing reports `0`, which makes a second run of the same step a no-op.
 export type ExpiryCounts = Record<string, number>;
-
-/**
- * The job a `data-expiry` processor receives: BullMQ's `Job`, narrowed to the two fields this processor reads and
- * the data it parses. `id` is part of the accepted shape so the worker entry point can hand its own `Job` straight
- * in, while the processor identifies its run by the `step` it parses, which its log line and counts are keyed by.
- */
+// The job a `data-expiry` processor receives: BullMQ's `Job`, narrowed to the two fields this processor reads and the data it parses. The processor identifies its run by the `step` it parses, which its log line and counts are keyed by.
 export interface DataExpiryJob {
-  /** The BullMQ job id; accepted for structural compatibility, not read (see the interface's note). */
   readonly id?: string;
-  /** The job name: `hourly` or `daily`, exactly as `names.ts` declares them. */
   readonly name: string;
-  /** The job data, unparsed: `{ step }`, validated by {@link process} before it is used. */
   readonly data: unknown;
 }
 
-/** The three removals of the lodging-call strip, keyed for {@link ExpiryCounts} (AAP 0.5.2). */
 type LodgingCallStripCounts = {
   lodgingCallCallbacksDeleted: number;
   lodgingCallAttemptsStripped: number;
   lodgingCallTasksStripped: number;
 };
-
-/** The two removals of the 365-day call-metadata rule, keyed for {@link ExpiryCounts} (AAP 0.5.2). */
 type CallMetadataCounts = {
   callAttemptsPurged: number;
   callTasksPurged: number;
 };
-
-/** The removals of the daily financial purge, keyed for {@link ExpiryCounts} (AAP 0.5.2). */
 type FinancialPurgeCounts = {
   meetupsPurged: number;
   depositOperationsPurged: number;
@@ -188,18 +94,11 @@ type FinancialPurgeCounts = {
   activityFactsPurgedForMeetups: number;
   customerOperationsPurged: number;
 };
-
-/** The two removals of the tombstone-reputation rule, keyed for {@link ExpiryCounts} (AAP 0.5.2). */
 type TombstoneReputationCounts = {
   tombstoneWitnessEventsPurged: number;
   pairHistoryRowsPurged: number;
 };
-
-/**
- * `now` less `days` days: the cut-off every age-based rule compares a stored timestamp against.
- * Computed in Node and bound as a parameter rather than written as SQL `now()`, so the injected clock
- * governs the run and the test clock can move a retention boundary (AAP 0.11.1).
- */
+// `now` less `days` days: the cut-off every age-based rule compares a stored timestamp against, computed in Node and bound as a parameter rather than written as SQL `now()`, so the injected clock governs the run.
 function daysBefore(now: Date, days: number): Date {
   return new Date(now.getTime() - days * DAY_MS);
 }
@@ -209,13 +108,7 @@ function hoursBefore(now: Date, hours: number): Date {
   return new Date(now.getTime() - hours * HOUR_MS);
 }
 
-/**
- * Runs `execute` until it affects no row, and returns the total it affected. Each call re-runs the same statement,
- * whose own predicate takes the rows it just removed out of the selection, so the next call takes the next
- * {@link DELETE_BATCH_SIZE} rows and the loop ends on the first call that changes nothing. A statement whose rows are
- * all gone therefore costs one extra no-op query per rule, the price of not trusting a row count to mean "the backlog
- * is empty".
- */
+// Runs `execute` until it affects no row, and returns the total it affected: each call re-runs the same statement, whose own predicate takes the rows it just removed out of the selection, so a statement whose rows are all gone costs one extra no-op query per rule — the price of not trusting a row count to mean "the backlog is empty".
 async function drainBatches(execute: () => Promise<number>): Promise<number> {
   let total = 0;
   for (;;) {
@@ -227,13 +120,7 @@ async function drainBatches(execute: () => Promise<number>): Promise<number> {
   }
 }
 
-/**
- * Erases the booking details of every lodging claim that has resolved (AAP 0.5.2). The rule runs within an hour of
- * the claim reaching `verified`, `rejected` or `unreachable`, well inside the 24-hour limit criterion 14 measures, and
- * `details_erased_at` records when — the row keeps the fact that the details are gone, which is what the operator's
- * booking-details route reads to answer `409 details_unavailable`. `details_erased_at IS NULL` is what makes a second
- * run a no-op.
- */
+// Erases the booking details of every lodging claim that has resolved, within an hour of the claim reaching `verified`, `rejected` or `unreachable`, which is well inside the 24-hour limit criterion 14 measures. `details_erased_at` records when, and its `IS NULL` predicate makes a second run a no-op.
 async function eraseBookingDetails(db: RawSqlClient, now: Date): Promise<number> {
   return db.$executeRaw`
     UPDATE "lodging_claim"
@@ -245,24 +132,7 @@ async function eraseBookingDetails(db: RawSqlClient, now: Date): Promise<number>
   `;
 }
 
-/**
- * Strips the lodging call rows of every claim that has resolved or been deleted (AAP 0.5.2, 0.12.2).
- *
- * The batch predicate is the whole of "not yet stripped": a task whose claim link is still set, or whose attempts
- * still hold a call id, summary, extracted fields, confidence, duration, transcript or a language-model reservation,
- * or which still has a callback row. Each of the three statements below takes one of those away, so the next query no
- * longer selects the task and a second run reports zeros.
- *
- * The order inside the transaction is load-bearing: `voice_callback_event` rows go first, by attempt id and by the
- * call's own sid, which is why both forms are written — the sid is still readable here and not after the next
- * statement, and a Twilio callback that arrives later matches no row; the attempts then lose their content and keep
- * their identity, so the call's outcome and its counts survive while nothing that described the guest or the
- * conversation does; and the task loses its claim link and keeps the fields the one-target check and the metrics
- * read, with `updated_at` set by hand because raw SQL bypasses the column's own maintenance.
- *
- * A claim still `pending_call` or `calling` is never selected: its call may be live, and the relay reads the claim's
- * status before every turn (AAP 0.5.3).
- */
+// Strips the lodging call rows of every claim that has resolved or been deleted. The batch predicate is the whole of "not yet stripped": a task whose claim link is still set, or whose attempts still hold a call id, summary, extracted fields, confidence, duration, transcript or language-model reservation, or which still has a callback row. Each of the three statements below takes one of those away, so the next query no longer selects the task and a second run reports zeros. The order inside the transaction is load-bearing: `voice_callback_event` rows go first, by attempt id and by the call's own sid, which is why both forms are written — the sid is still readable here and not after the next statement; the attempts then lose their content and keep their identity, so the outcome and the counts survive while nothing that described the guest or the conversation does; and the task loses its claim link and keeps the fields the one-target check and the metrics read. A claim still `pending_call` or `calling` is never selected: its call may be live, and the relay reads the claim's status before every turn.
 async function stripLodgingCallRows(db: DbClient, now: Date): Promise<LodgingCallStripCounts> {
   const counts: LodgingCallStripCounts = {
     lodgingCallCallbacksDeleted: 0,
@@ -350,15 +220,7 @@ async function stripLodgingCallRows(db: DbClient, now: Date): Promise<LodgingCal
   }
 }
 
-/**
- * Deletes the transcripts of menu calls whose 30 days are up (AAP 0.5.2). A lodging call never stores one, so this
- * statement cannot touch it.
- *
- * `transcript_delete_at` is what normally says when a transcript is due, and the writer sets it. The second branch is
- * the safety net for a stored transcript whose date is missing: the window belongs to the data, not to the column, so
- * such a transcript is still deleted once the call that produced it is more than {@link TRANSCRIPT_RETENTION_DAYS}
- * days old. Clearing `transcript_delete_at` as well takes the row out of the next run's selection either way.
- */
+// Deletes the transcripts of menu calls whose 30 days are up; a lodging call never stores one. `transcript_delete_at` is what normally says when a transcript is due, and the writer sets it; the second branch is the safety net for a stored transcript whose date is missing, because the window belongs to the data, not to the column, so such a transcript is still deleted once the call that produced it is more than {@link TRANSCRIPT_RETENTION_DAYS} days old. Clearing the date as well takes the row out of the next run's selection either way.
 async function deleteMenuTranscripts(db: RawSqlClient, now: Date): Promise<number> {
   const cutoff = daysBefore(now, TRANSCRIPT_RETENTION_DAYS);
   return db.$executeRaw`
@@ -373,12 +235,7 @@ async function deleteMenuTranscripts(db: RawSqlClient, now: Date): Promise<numbe
   `;
 }
 
-/**
- * Nulls the delivery ciphertext of every magic-link token that has expired (AAP 0.5.2). This is the sweep behind the
- * mailer's own cleanup: `notifications` nulls the ciphertext when it sends the link and when it finds an expired
- * token, and this statement catches whatever a backlogged, failed or dropped job left behind, so a dead link's token
- * cannot survive its expiry.
- */
+// Nulls the delivery ciphertext of every magic-link token that has expired: the sweep behind the mailer's own cleanup, since `notifications` nulls the ciphertext when it sends the link and when it finds an expired token, and this statement catches whatever a backlogged, failed or dropped job left behind.
 async function disarmExpiredMagicLinks(db: RawSqlClient, now: Date): Promise<number> {
   return db.$executeRaw`
     UPDATE "magic_link_token"
@@ -420,19 +277,7 @@ async function purgeExpiredSessions(db: RawSqlClient, now: Date): Promise<number
   );
 }
 
-/**
- * Deletes the call tasks whose 365 days are up, and their attempts (AAP 0.5.2).
- *
- * Two kinds of task qualify: a terminal `menu_prices` task, whose metadata exists only for the call, cap and spend
- * metrics, and a `lodging_stay_verification` task once its claim link is cleared, whatever its status, because a
- * stripped row carries no call content at all. A task still `queued`, `in_progress` or `needs_review` is not
- * selected: it is work the operator or the dispatcher may still need.
- *
- * A task is aged by the latest activity there is — its `outcome_at`, else the latest of its attempts' `started_at`
- * and `ended_at`, else its `updated_at` — so the clock starts when the task stopped doing anything. Deleting an
- * attempt and its task together keeps the pair consistent, and the attempts' callback rows go with them through the
- * schema's cascade.
- */
+// Deletes the call tasks whose 365 days are up, and their attempts. Two kinds of task qualify: a terminal `menu_prices` task, whose metadata exists only for the call, cap and spend metrics, and a `lodging_stay_verification` task once its claim link is cleared, whatever its status, because a stripped row carries no call content at all; a task still `queued`, `in_progress` or `needs_review` is work the operator or the dispatcher may still need and is never selected. A task is aged by the latest activity there is — its `outcome_at`, else the latest of its attempts' `started_at` and `ended_at`, else its `updated_at` — so the clock starts when the task stopped doing anything; the attempts' callback rows go with them through the schema's cascade.
 async function purgeCallMetadata(db: DbClient, now: Date): Promise<CallMetadataCounts> {
   const cutoff = daysBefore(now, CALL_METADATA_RETENTION_DAYS);
   let callAttemptsPurged = 0;
@@ -481,12 +326,7 @@ async function purgeCallMetadata(db: DbClient, now: Date): Promise<CallMetadataC
   }
 }
 
-/**
- * Clears the reason text of reports older than 180 days (AAP 0.5.2). The row is kept — it is the record that a report
- * exists, and the safety and payment-dispute window covers 180 days of its text — and only the text goes.
- * `"reason" <> ''` is what makes a second run a no-op: the column is `NOT NULL`, so an emptied reason is the empty
- * string rather than NULL and the predicate must exclude what this rule already cleared.
- */
+// Clears the reason text of reports older than 180 days: the row is kept — it is the record that a report exists — and only the text goes. `"reason" <> ''` is what makes a second run a no-op: the column is `NOT NULL`, so an emptied reason is the empty string rather than NULL.
 async function clearReportReasonText(db: RawSqlClient, now: Date): Promise<number> {
   const cutoff = daysBefore(now, REASON_RETENTION_DAYS);
   return db.$executeRaw`
@@ -497,12 +337,7 @@ async function clearReportReasonText(db: RawSqlClient, now: Date): Promise<numbe
   `;
 }
 
-/**
- * Clears the reason text of disputes resolved more than 180 days ago (AAP 0.5.2). An open dispute keeps its text
- * whatever its age: the operator resolving it reads it, and a dispute is open for at most five days plus the
- * escalation the sweeper raises. Reports date their text from `created_at` and disputes from `resolved_at`, which is
- * why the two rules are separate statements.
- */
+// Clears the reason text of disputes resolved more than 180 days ago. An open dispute keeps its text whatever its age: the operator resolving it reads it. Reports date their text from `created_at` and disputes from `resolved_at`, which is why the two rules are separate statements.
 async function clearResolvedDisputeReasonText(db: RawSqlClient, now: Date): Promise<number> {
   const cutoff = daysBefore(now, REASON_RETENTION_DAYS);
   return db.$executeRaw`
@@ -530,11 +365,7 @@ async function purgeOperatorAccessLogs(db: RawSqlClient, now: Date): Promise<num
   );
 }
 
-/**
- * Purges lodging activity facts at 120 days (AAP 0.5.2, 0.5.7). The leaderboard counts a fact only inside a 90-day
- * window, so a fact past 120 days changes no score; keeping the two dates apart leaves the window a month of slack,
- * so a fact a clock difference puts just inside 90 days is never deleted early.
- */
+// Purges lodging activity facts at 120 days: the leaderboard counts a fact only inside a 90-day window, so keeping the two apart leaves the window a month of slack and a fact a clock difference puts just inside 90 days is never deleted early.
 async function purgeLodgingActivityFacts(db: RawSqlClient, now: Date): Promise<number> {
   const cutoff = daysBefore(now, LODGING_ACTIVITY_FACT_RETENTION_DAYS);
   return drainBatches(
@@ -550,21 +381,7 @@ async function purgeLodgingActivityFacts(db: RawSqlClient, now: Date): Promise<n
   );
 }
 
-/**
- * Purges a meetup and its financial family once the retention period has run (AAP 0.5.2).
- *
- * A meetup is eligible when `final_at` — the moment it reached its final status, which is the retention clock — is
- * older than the caller's cut-off. Each batch runs in one transaction and deletes or unlinks in a fixed order, so one
- * meetup's family is never half-gone: `payment_operation` by deposit, then `deposit`, because the operations are what
- * an executor reads to resume a Stripe call and a deposit gone from under a pending operation would leave it
- * unrunnable; `meetup_settlement`, `table_credit_entry`, `check_in`, `message` and `dispute`, the children that
- * describe how the meetup went; `witness_event.meetup_id` and `report.meetup_id` nulled rather than deleted, so the
- * events and reports of live counterparts survive with no link to the purged meetup and a live account's reputation
- * counters stay unchanged; `lodging_activity_fact` rows for the meetup; and the meetup row itself, last.
- *
- * This runs whether or not the schema cascades each child, so the purge does not depend on the shape of a foreign key
- * written elsewhere. A tombstone the purge frees is deleted by the next rule of the daily step, in the same run.
- */
+// Purges a meetup and its financial family once the retention period has run. A meetup is eligible when `final_at` — the moment it reached its final status, which is the retention clock — is older than the caller's cut-off. Each batch runs in one transaction and deletes or unlinks in a fixed order, so one meetup's family is never half-gone: `payment_operation` by deposit, then `deposit`, because the operations are what an executor reads to resume a Stripe call; `meetup_settlement`, `table_credit_entry`, `check_in`, `message` and `dispute`; `witness_event.meetup_id` and `report.meetup_id` nulled rather than deleted, so the events and reports of live counterparts survive and a live account's reputation counters stay unchanged; `lodging_activity_fact` rows; and the meetup row itself, last. It runs whether or not the schema cascades each child, so the purge does not depend on the shape of a foreign key written elsewhere, and a tombstone it frees is deleted by the next rule of the daily step, in the same run.
 async function purgeFinancialRecords(db: DbClient, cutoff: Date): Promise<FinancialPurgeCounts> {
   const counts: FinancialPurgeCounts = {
     meetupsPurged: 0,
@@ -663,18 +480,7 @@ async function purgeFinancialRecords(db: DbClient, cutoff: Date): Promise<Financ
   return counts;
 }
 
-/**
- * Purges the finished `delete_customer` operations of accounts erased long ago (AAP 0.5.2).
- *
- * The operation carries no deposit — it targets the user and its `stripe_customer_id` copy is nulled in the
- * transaction that records success — so nothing but the row itself is left, and it is purged on the same cut-off as
- * the financial records because it is one of them and because while it exists its `user_id` keeps the erased
- * account's tombstone alive.
- *
- * A row is aged by `completed_at`, falling back to `created_at`: a `fenced` or failed-terminal operation may carry no
- * completion time, and ageing such a row by nothing would let it keep a tombstone forever. `pending`, `executing` and
- * `failed_retryable` rows are work in progress and are never selected, however old.
- */
+// Purges the finished `delete_customer` operations of accounts erased long ago. The operation carries no deposit — it targets the user and its `stripe_customer_id` copy is nulled when success is recorded — so nothing but the row is left, and it is purged on the same cut-off as the financial records because while it exists its `user_id` keeps the erased account's tombstone alive. A row is aged by `completed_at`, falling back to `created_at`: a `fenced` or failed-terminal operation may carry no completion time, and ageing such a row by nothing would let it keep a tombstone forever; `pending`, `executing` and `failed_retryable` rows are work in progress and are never selected, however old.
 async function purgeFinishedCustomerOperations(db: RawSqlClient, cutoff: Date): Promise<number> {
   return drainBatches(
     () => db.$executeRaw`
@@ -692,11 +498,7 @@ async function purgeFinishedCustomerOperations(db: RawSqlClient, cutoff: Date): 
   );
 }
 
-/**
- * Purges `StripeEvent` rows received before the cut-off (AAP 0.5.2). The row is the webhook dedupe record: a replay
- * is recognised because its event id is present. Once every meetup that could receive a retry is purged, the event of
- * an old delivery can no longer change anything, so the record goes with the same cut-off the financial records use.
- */
+// Purges `StripeEvent` rows received before the cut-off. The row is the webhook dedupe record: a replay is recognised because its event id is present. Once every meetup that could receive a retry is purged, the event of an old delivery can no longer change anything, so the record goes with the same cut-off the financial records use.
 async function purgeStripeEvents(db: RawSqlClient, cutoff: Date): Promise<number> {
   return drainBatches(
     () => db.$executeRaw`
@@ -711,17 +513,7 @@ async function purgeStripeEvents(db: RawSqlClient, cutoff: Date): Promise<number
   );
 }
 
-/**
- * Deletes the reputation rows that belong to an erased account alone (AAP 0.5.2), both narrowed so a live account's
- * counters cannot move:
- *
- *   - A `witness_event` whose user is a tombstone and whose `meetup_id` is already null, the meetup link being what
- *     the financial purge clears. A tombstone's counterpart keeps its own event, because that row's `user_id` is the
- *     live account.
- *   - A `pair_history` row older than the cut-off with a tombstone on either side: `completed_count` is read for a
- *     pair whose two members are both live, so dropping the row of a pair that no longer has two live members changes
- *     no tier and no reputation figure.
- */
+// Deletes the reputation rows that belong to an erased account alone, both narrowed so a live account's counters cannot move: a `witness_event` whose user is a tombstone and whose `meetup_id` is already null, the meetup link being what the financial purge clears — a tombstone's counterpart keeps its own event, because that row's `user_id` is the live account — and a `pair_history` row older than the cut-off with a tombstone on either side, because `completed_count` is read for a pair whose two members are both live.
 async function purgeTombstoneReputationRows(
   db: DbClient,
   cutoff: Date,
@@ -757,21 +549,7 @@ async function purgeTombstoneReputationRows(
   return { tombstoneWitnessEventsPurged, pairHistoryRowsPurged };
 }
 
-/**
- * Deletes every tombstone no retained record references (AAP 0.5.2). An erased account stays as a row so the records
- * kept about it — a deposit, a check-in, a reputation event — keep their foreign keys; once the last one is gone the
- * tombstone is the only thing left of the account, so it goes too.
- *
- * "No retained record" is every relation to `"user"` that does not cascade: the twelve RESTRICT foreign keys and the
- * three references that carry a uuid without a foreign key. The cascading children — sessions, proofs, the disclosure
- * profile, the photo, blocks, the experiment assignment, push tokens, lodging claims and their visibility rows — are
- * deleted by `account-erasure` and never block this delete, so they are deliberately not tested here.
- *
- * The page cursor is what keeps this loop bounded and finishing: candidates are read a page at a time in uuid order
- * and the cursor advances to the page's last id whatever the delete removes, so a page in which every tombstone is
- * still referenced cannot repeat itself. That matters because, unlike the other rules, this one's predicate does not
- * take a page out of its own selection.
- */
+// Deletes every tombstone no retained record references: an erased account stays as a row so the records kept about it — a deposit, a check-in, a reputation event — keep their foreign keys, and once the last one is gone the tombstone is the only thing left of the account. "No retained record" is every relation to `"user"` that does not cascade: the twelve RESTRICT foreign keys and the three references that carry a uuid without a foreign key; the cascading children — sessions, proofs, the disclosure profile, the photo, blocks, the experiment assignment, push tokens, lodging claims and their visibility rows — are `account-erasure`'s, so they are deliberately not tested here. The page cursor is what keeps this loop bounded and finishing: candidates are read a page at a time in uuid order and the cursor advances to the page's last id whatever the delete removes, so a page in which every tombstone is still referenced cannot repeat itself — which matters because, unlike the other rules, this one's predicate does not take a page out of its own selection.
 async function purgeUnreferencedTombstones(db: DbClient): Promise<number> {
   let cursor = FIRST_UUID;
   let purged = 0;
@@ -826,13 +604,7 @@ async function purgeUnreferencedTombstones(db: DbClient): Promise<number> {
   }
 }
 
-/**
- * Runs the hourly retention rules and returns what each one changed (AAP 0.5.2, 0.5.6). They run in the order the
- * module docblock lists them, one after the other: the booking-detail erase precedes the strip that follows it in the
- * same run, and nothing depends on a rule that runs after it. Every rule is idempotent, so a rerun of the same instant
- * reports zeros, and the run logs one line carrying its step and its counts and nothing a rule touched beyond them
- * (AAP 0.11.1).
- */
+// Runs the hourly retention rules and returns what each one changed, in the order the module docblock lists them: the booking-detail erase precedes the strip that follows it in the same run. Every rule is idempotent, so a rerun of the same instant reports zeros, and the run logs one line carrying its step and its counts.
 export async function runHourlyExpiry(ctx: WorkerContext): Promise<ExpiryCounts> {
   const now = ctx.clock.now();
   const counts: ExpiryCounts = {
@@ -855,13 +627,7 @@ export async function runHourlyExpiry(ctx: WorkerContext): Promise<ExpiryCounts>
   return counts;
 }
 
-/**
- * Runs the daily financial-retention rules and returns what each one changed (AAP 0.5.2, 0.5.6). The cut-off is
- * `now - env.FINANCIAL_RETENTION_DAYS`, so the period is configuration rather than a constant in this file. The four
- * rules run in an order that settles the tombstone question in one pass: the financial purge frees what it deletes,
- * the `StripeEvent` purge takes the webhook records of the same age, the reputation rule drops what belonged to an
- * erased account alone, and the tombstone cleanup then removes an account nothing references any more.
- */
+// Runs the daily financial-retention rules and returns what each one changed. The cut-off is `now - env.FINANCIAL_RETENTION_DAYS`, so the period is configuration rather than a constant here, and the four rules run in an order that settles the tombstone question in one pass: purge the financial records, purge the `StripeEvent` records of the same age, drop what belonged to an erased account alone, then remove a tombstone nothing references.
 export async function runDailyExpiry(ctx: WorkerContext): Promise<ExpiryCounts> {
   const cutoff = daysBefore(ctx.clock.now(), ctx.env.FINANCIAL_RETENTION_DAYS);
   const counts: ExpiryCounts = {
@@ -877,12 +643,7 @@ export async function runDailyExpiry(ctx: WorkerContext): Promise<ExpiryCounts> 
   return counts;
 }
 
-/**
- * The `data-expiry` queue's processor (AAP 0.5.6): one step per job, dispatched on the step the job carries. The job
- * name is narrowed with `isJobName` before the data is parsed, which is the pair `names.ts` is built for: a name this
- * queue does not accept fails here rather than reaching a rule. The job's own name and the `step` in its data are the
- * same value by construction, so dispatching on the parsed step is dispatching on the name.
- */
+// The `data-expiry` queue's processor: one step per job, dispatched on the step the job carries. The job name is narrowed with `isJobName` before the data is parsed, so a name this queue does not accept fails here rather than reaching a rule; the job's own name and the `step` in its data are the same value by construction.
 export async function process(job: DataExpiryJob, ctx: WorkerContext): Promise<ExpiryCounts> {
   const queue = QUEUE.dataExpiry;
   if (!isJobName(queue, job.name)) {

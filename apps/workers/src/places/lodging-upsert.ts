@@ -1,30 +1,20 @@
 /**
- * The OpenStreetMap lodging upsert behind the weekly place refresh (AAP 0.5.6). `./overpass.ts`
- * fetches the `tourism=hostel|hotel|guest_house` elements inside a city's bbox; this module turns
- * them into `Lodging` rows keyed by (`osmType`, `osmId`).
+ * The OpenStreetMap lodging upsert behind the weekly place refresh (AAP 0.5.6). `./overpass.ts` fetches the
+ * `tourism=hostel|hotel|guest_house` elements inside a city's bbox; this module turns them into `Lodging` rows keyed by
+ * (`osmType`, `osmId`).
  *
- * Four invariants decide every write, each because the alternative loses something a claim, a call
- * task or an operator relies on:
+ * Four invariants decide every write: operator-owned facts are never written, so `phone` is refreshed only while the row's
+ * `phoneSource` is still `osm`, and `doNotCall`, `isFixture`, `phoneSource`, the venue-console secret and an existing row's
+ * `cityId` are never part of an insert or an update; a row this pipeline does not own is never touched, because matching is by
+ * the global unique key (`osmType`, `osmId`) and a manually entered or seeded lodging carries no `osmId` at all; an element
+ * OSM stops listing is marked `osmMissingAt` rather than deleted, and one that reappears has it cleared, so the claims,
+ * activity facts, visibility rows and console secret referencing `Lodging.id` stay attached across the gap; and the
+ * disappearance statement runs only when at least one element survived mapping, because an empty answer for a whole city bbox
+ * is a data-source fault rather than mass closure, and reading it as closure would empty the city's directory in one run.
  *
- *   - Operator-owned facts are never written. `phone` is refreshed only while the row's
- *     `phoneSource` is still `osm`; `doNotCall`, `isFixture`, `phoneSource`, the venue-console
- *     secret and an existing row's `cityId` are never part of an insert or an update (AAP 0.5.2,
- *     0.5.6).
- *   - A row this pipeline does not own is never touched. Matching is by the global unique key
- *     (`osmType`, `osmId`), and a manually entered or seeded lodging carries no `osmId` at all, so
- *     it is neither selected nor updated (AAP 0.5.6).
- *   - An element OSM stops listing is marked `osmMissingAt` rather than deleted, and one that
- *     reappears has it cleared, so the claims, activity facts, visibility rows and console secret
- *     referencing `Lodging.id` — an id that never changes — stay attached across the gap (AAP 0.5.6,
- *     0.5.7).
- *   - The disappearance statement runs only when at least one element survived mapping. An empty
- *     answer for a whole city bbox is a data-source fault, not mass closure, and reading it as
- *     closure would empty the city's directory in a single run (AAP 0.5.6).
- *
- * The caller owns the transaction and the Overpass request: `../jobs/place-refresh.ts` fetches
- * outside any transaction (AAP 0.2.2) and passes the elements, the injected clock's instant and the
- * process's `APP_ENV` in. This module writes no log line and returns counts instead, so no phone
- * number, address or coordinate can reach a log through it (AAP 0.11.1).
+ * The caller owns the transaction and the Overpass request: `../jobs/place-refresh.ts` fetches outside any transaction and
+ * passes the elements, the injected clock's instant and the process's `APP_ENV` in. This module writes no log line and
+ * returns counts instead, so no phone number, address or coordinate can reach a log through it.
  */
 
 import { fixturePredicate, readPoints, setPoint, type DbTx, type Prisma } from '@tablemate/db';
@@ -33,24 +23,13 @@ import type { AppEnv, LatLng, LodgingKind, PhoneSource } from '@tablemate/shared
 import { elementPoint, osmAddress, toE164 } from './categorize.ts';
 import { osmKeyOf, osmKeyString, type OsmType, type OverpassElement } from './overpass.ts';
 
-/**
- * The OSM `tourism` tag value of each `Lodging.kind` (AAP 0.5.2, 0.5.6). `guest_house` is the one
- * value that does not spell the kind it maps to.
- */
+// The OSM `tourism` tag value of each `Lodging.kind` (AAP 0.5.2, 0.5.6): `guest_house` is the one value that does not spell the kind it maps to.
 export const LODGING_KIND_BY_TOURISM = {
   hostel: 'hostel',
   hotel: 'hotel',
   guest_house: 'guesthouse',
 } as const satisfies Record<string, LodgingKind>;
-
-/**
- * The lodging kind an element's `tourism` tag names, or `null` when the element is no lodging this
- * pipeline stores (AAP 0.5.6).
- *
- * The table is read through a widened record because the tag value is free text: `as const` keeps
- * {@link LODGING_KIND_BY_TOURISM}'s literals, and this view makes an unrecognized tag yield `null`
- * instead of a value TypeScript only believes exists.
- */
+// The lodging kind an element's `tourism` tag names, or `null` when the element is no lodging this pipeline stores (AAP 0.5.6). The table is read through a widened record because the tag value is free text, so an unrecognized tag yields `null` instead of a value TypeScript only believes exists.
 export function lodgingKindOf(
   tags: Readonly<Record<string, string>> | undefined,
 ): LodgingKind | null {
@@ -61,41 +40,21 @@ export function lodgingKindOf(
 
 /** How many ids one preload query binds: a city holds thousands, and a bound parameter list is not. */
 const ID_CHUNK = 1_000;
-
-/**
- * The three OSM element types, in the order {@link findExisting} builds its key branches from them
- * (AAP 0.5.6). The type is the one `./overpass.ts` declares, and the list exists because each branch
- * has to pin the `osmType` half of the pair by its literal.
- */
+// The three OSM element types, in the order {@link findExisting} builds its key branches from them (AAP 0.5.6): each branch has to pin the `osmType` half of the pair by its literal.
 const OSM_TYPES = ['node', 'way', 'relation'] as const satisfies readonly OsmType[];
-
-/**
- * The tolerance within which two coordinates are the same point, in degrees: about a centimetre,
- * far above the round-trip error of a `double precision` geography and far below any real move, so
- * an untouched row is never rewritten for a rounding difference.
- */
+// The tolerance within which two coordinates are the same point, in degrees: about a centimetre, far above the round-trip error of a `double precision` geography and far below any real move, so an untouched row is never rewritten for a rounding difference.
 const COORD_EPSILON = 1e-7;
-
-/** One element's `Lodging` fields, in the spelling the model stores them (AAP 0.5.2, 0.5.6). */
+// One element's `Lodging` fields, in the spelling the model stores them (AAP 0.5.2, 0.5.6): `key` is `<osmType>/<osmId>`, the same text as the SQL expression `osm_type || '/' || osm_id::text`, and `phone` is the `phone` or `contact:phone` tag in E.164 form, or `null` when it holds no usable number.
 type LodgingFields = {
-  /** `<osmType>/<osmId>`, the same text as the SQL expression `osm_type || '/' || osm_id::text`. */
   key: string;
-  /** The element's type: the first half of the upsert key. */
   osmType: OsmType;
-  /** The element's OSM id, the width of the `BigInt` column it is stored in. */
   osmId: bigint;
-  /** The trimmed `name` tag, which `Lodging.name` requires. */
   name: string;
-  /** `hostel`, `hotel` or `guesthouse`. */
   kind: LodgingKind;
-  /** The `addr:*` address as `osmAddress` joins it, or `null`. */
   address: string | null;
-  /** The `phone` or `contact:phone` tag in E.164 form, or `null` when it holds no usable number. */
   phone: string | null;
-  /** Where the element sits, as `setPoint` takes it. */
   point: LatLng;
 };
-
 /** The columns of one existing row this module decides against (AAP 0.5.2). */
 type ExistingLodging = {
   id: string;
@@ -108,36 +67,16 @@ type ExistingLodging = {
   phoneSource: PhoneSource;
   osmMissingAt: Date | null;
 };
-
-/**
- * What one refresh wrote (AAP 0.5.6): `returned` counts the rows whose `osmMissingAt` was cleared,
- * which are also counted in `updated`, and `missing` the rows the disappearance statement marked.
- * `unchanged` and `skipped` exist for the job's log line, so a run that changed nothing is visible
- * as such.
- */
+// What one refresh wrote (AAP 0.5.6): `returned` counts the rows whose `osmMissingAt` was cleared, which are also counted in `updated`, and `missing` the rows the disappearance statement marked. `unchanged` and `skipped` exist for the job's log line, so a run that changed nothing is visible as such.
 export type LodgingUpsertResult = {
-  /** Elements that had no row yet, inserted with their location. */
   inserted: number;
-  /** Rows whose OSM-sourced fields or location changed, including every returned row. */
   updated: number;
-  /** Rows already holding exactly what OSM reports; nothing was written for them. */
   unchanged: number;
-  /** Rows of this city marked `osmMissingAt` because OSM no longer lists them. */
   missing: number;
-  /** Rows OSM lists again, whose `osmMissingAt` was cleared. */
   returned: number;
-  /** Elements that cannot become a lodging: no name, no kind, or no usable coordinate. */
   skipped: number;
 };
-
-/**
- * The `Lodging` fields one element yields, or `null` when it cannot become a lodging (AAP 0.5.6).
- *
- * A missing name would have to be invented, a missing kind would make the lodging unfilterable and a
- * missing coordinate could not be searched or called, so any of the three drops the element; every
- * other tag stands on its own, because a lodging with no phone is still listed and can still be
- * claimed.
- */
+// The `Lodging` fields one element yields, or `null` when it cannot become a lodging (AAP 0.5.6). A missing name would have to be invented, a missing kind would make the lodging unfilterable and a missing coordinate could not be searched or called, so any of the three drops the element; every other tag stands on its own, because a lodging with no phone is still listed and can still be claimed.
 function lodgingFields(element: OverpassElement): LodgingFields | null {
   const { tags } = element;
   const name = tags?.['name']?.trim() ?? '';
@@ -164,23 +103,18 @@ function samePoint(a: LatLng, b: LatLng): boolean {
   return Math.abs(a.lat - b.lat) <= COORD_EPSILON && Math.abs(a.lng - b.lng) <= COORD_EPSILON;
 }
 
-/**
- * Reads the rows the elements already have, by (`osmType`, `osmId`) (AAP 0.5.6).
- *
- * Matching is global rather than per city, because the unique key is: a row already owned by another
- * city is found and updated in place, and its `cityId` is never written. City bboxes do not overlap
- * in `config/cities.json`, so this only matters for a boundary element OSM moved between two
- * queries.
- *
- * The predicate constrains both halves of the key, because `lodging_osm_type_osm_id_key` is a btree
- * on (`osmType`, `osmId`) and PostgreSQL can seek such a key only when its leading column is
- * constrained: filtering on `osmId` alone scans the whole `lodging` table — a table no city bbox
- * bounds — once per chunk. The three branches cover every non-NULL `osmType` between them, so they
- * return the rows the `osmId`-only filter returned (AAP 0.5.2, 0.5.6).
- *
- * `osmType` is NULL cannot be keyed and is left out, as is a fixture row outside `test` and `demo`,
- * which the client's fixture guard filters from the read (AAP 0.5.2).
- */
+// Reads the rows the elements already have, by (`osmType`, `osmId`) (AAP 0.5.6).
+//
+// Matching is global rather than per city, because the unique key is: a row already owned by another city is found
+// and updated in place, and its `cityId` is never written. City bboxes do not overlap in `config/cities.json`, so
+// this only matters for a boundary element OSM moved between two queries.
+//
+// The predicate constrains both halves of the key, because `lodging_osm_type_osm_id_key` is a btree on (`osmType`,
+// `osmId`) and PostgreSQL can seek such a key only when its leading column is constrained: filtering on `osmId` alone
+// scans the whole `lodging` table — a table no city bbox bounds — once per chunk. The three branches cover every
+// non-NULL `osmType` between them, so they return the rows the `osmId`-only filter returned. `osmType` NULL cannot be
+// keyed and is left out, as is a fixture row outside `test` and `demo`, which the client's fixture guard filters from
+// the read.
 async function findExisting(
   tx: DbTx,
   ids: readonly bigint[],
@@ -189,9 +123,7 @@ async function findExisting(
   const wanted = [...new Set(ids)];
   for (let start = 0; start < wanted.length; start += ID_CHUNK) {
     const chunk = wanted.slice(start, start + ID_CHUNK);
-    // One branch per osm_type: the unique key's leading column has to be constrained for the index
-    // to be seeked, and every branch pins it beside the same id chunk (AAP 0.5.2's Lodging unique
-    // key, AAP 0.5.6's upsert by the pair).
+    // One branch per osm_type: the unique key's leading column has to be constrained for the index to be seeked, and every branch pins it beside the same id chunk.
     const rows = await tx.lodging.findMany({
       where: { OR: OSM_TYPES.map((osmType) => ({ osmType, osmId: { in: chunk } })) },
       select: {
@@ -216,14 +148,7 @@ async function findExisting(
   return found;
 }
 
-/**
- * Inserts one element as a new lodging and writes its location (AAP 0.5.6). The row is created by
- * Prisma, which supplies the `uuid(7)` id, and `setPoint` writes the `geography` column Prisma
- * cannot write, in the same transaction.
- *
- * `phoneSource` is `osm` because this is an OSM phone, and `doNotCall`, `isFixture` and the console
- * secret are left at their schema defaults.
- */
+/** Inserts one element as a new lodging and writes its location (AAP 0.5.6). The row is created by Prisma, which supplies the `uuid(7)` id, and `setPoint` writes the `geography` column Prisma cannot write, in the same transaction. `phoneSource` is `osm` because this is an OSM phone, and `doNotCall`, `isFixture` and the console secret are left at their schema defaults. */
 async function insertLodging(tx: DbTx, cityId: string, fields: LodgingFields): Promise<void> {
   const data: Prisma.LodgingUncheckedCreateInput = {
     cityId,
@@ -240,15 +165,7 @@ async function insertLodging(tx: DbTx, cityId: string, fields: LodgingFields): P
   await setPoint(tx, 'lodging', row.id, fields.point);
 }
 
-/**
- * Brings one existing row up to what OSM reports (AAP 0.5.6), writing nothing when it already
- * agrees, and returns whether anything changed.
- *
- * Only the OSM-sourced fields are written: the phone only while the row's own `phoneSource` is
- * `osm`, so an operator-entered number survives an OSM edit, and an OSM number that disappeared is
- * cleared. A row that OSM lists again has `osmMissingAt` cleared in the same update. The location is
- * rewritten only when the point moved or was never stored.
- */
+// Brings one existing row up to what OSM reports (AAP 0.5.6), writing nothing when it already agrees, and returns whether anything changed. Only the OSM-sourced fields are written: the phone only while the row's own `phoneSource` is `osm`, so an operator-entered number survives an OSM edit, and an OSM number that disappeared is cleared. A row that OSM lists again has `osmMissingAt` cleared in the same update, and the location is rewritten only when the point moved or was never stored.
 async function refreshLodging(
   tx: DbTx,
   row: ExistingLodging,
@@ -283,22 +200,17 @@ async function refreshLodging(
   return true;
 }
 
-/**
- * Marks the city's rows that OSM no longer lists (AAP 0.5.6) and returns how many rows changed.
- *
- * The statement is one tagged template, so every value is a bound parameter and the only text in it
- * is a double-quoted identifier; the array binds as `text[]` through its explicit cast, and the key
- * is compared against the very `osm_type || '/' || osm_id::text` spelling {@link osmKeyString}
- * produces. `updated_at` is set by hand because raw SQL bypasses Prisma's `@updatedAt`, and
- * `fixturePredicate` is ANDed in because raw SQL also bypasses the client's fixture guard (AAP
- * 0.5.2).
- *
- * The `osm_missing_at IS NULL` condition keeps a row's first disappearance time, and the two
- * NOT NULL conditions keep a row the concatenation could never match — and which `NOT (NULL)` would
- * therefore never update — out of the statement's way.
- *
- * statement when nothing survived mapping, because an empty list would mark the whole city missing.
- */
+// Marks the city's rows that OSM no longer lists (AAP 0.5.6) and returns how many rows changed.
+//
+// The statement is one tagged template, so every value is a bound parameter and the only text in it is a
+// double-quoted identifier; the array binds as `text[]` through its explicit cast, and the key is compared against
+// the very `osm_type || '/' || osm_id::text` spelling {@link osmKeyString} produces. `updated_at` is set by hand
+// because raw SQL bypasses Prisma's `@updatedAt`, and `fixturePredicate` is ANDed in because raw SQL also bypasses the
+// client's fixture guard.
+//
+// The `osm_missing_at IS NULL` condition keeps a row's first disappearance time, and the two NOT NULL conditions keep
+// a row the concatenation could never match — and which `NOT (NULL)` would therefore never update — out of the
+// statement's way.
 async function markMissing(
   tx: DbTx,
   cityId: string,
@@ -318,17 +230,12 @@ async function markMissing(
   `;
 }
 
-/**
- * Turns one city's Overpass lodging elements into `Lodging` rows (AAP 0.5.6): inserts what is new,
- * updates what changed, marks what OSM stopped listing, and clears `osmMissingAt` on what it lists
- * again. Run inside the caller's transaction, it is idempotent — a second run with the same elements
- * writes nothing — and a concurrent refresh of the same city can only collide on the unique
- * (`osmType`, `osmId`) index, which fails the transaction and lets BullMQ retry the job rather than
- * leaving a partial write (AAP 0.3.2, 0.5.6).
- *
- * thousand lodgings, and the writes cost up to two round trips per element (`{ timeout: 120_000 }`).
- * are the only candidates for `osmMissingAt`.
- */
+// Turns one city's Overpass lodging elements into `Lodging` rows (AAP 0.5.6): inserts what is new, updates what
+// changed, marks what OSM stopped listing, and clears `osmMissingAt` on what it lists again. Run inside the caller's
+// transaction, it is idempotent — a second run with the same elements writes nothing — and a concurrent refresh of the
+// same city can only collide on the unique (`osmType`, `osmId`) index, which fails the transaction and lets BullMQ
+// retry the job rather than leaving a partial write. The caller sizes the transaction for a city of several thousand
+// lodgings, whose writes cost up to two round trips per element.
 export async function upsertLodgings(
   tx: DbTx,
   cityId: string,
@@ -351,9 +258,7 @@ export async function upsertLodgings(
       result.skipped += 1;
       continue;
     }
-    // The first occurrence wins, so a duplicated element is refreshed once. It is not counted as
-    // skipped: nothing is dropped that a caller would have missed, and `runOverpass` already
-    // deduplicates an answer by key.
+    // The first occurrence wins, so a duplicated element is refreshed once. It is not counted as skipped: nothing is dropped that a caller would have missed.
     if (!byKey.has(fields.key)) {
       byKey.set(fields.key, fields);
     }

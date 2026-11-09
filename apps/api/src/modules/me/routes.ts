@@ -1,18 +1,14 @@
 /**
- * The six Me routes of AAP 0.5.4: the caller's own profile, their age gate and terms, their push token,
- * their saved card and their account deletion (AAP 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.8.1).
+ * The six Me routes: the caller's own profile, their age gate and terms, their push token, their saved card and their account
+ * deletion.
  *
- * The bearer group carries {@link requireBearer} with the 18+ gate deliberately left off, because
- * `GET /me`, `POST /me/consents` and `DELETE /me` are the three routes a new account needs *before* the
- * gate can open; the traveler group carries {@link requireTraveler}, so `PUT /me/profile`,
- * `POST /me/push-tokens` and `POST /me/payment-setup` answer `403 age_gate_required` until it is passed.
- * Both are encapsulated children of this context, because a hook added to an instance covers that
- * instance's routes *and its children's*, so no route outside them inherits a guard by accident.
+ * The bearer group carries {@link requireBearer} with the 18+ gate deliberately left off, because `GET /me`, `POST /me/consents`
+ * and `DELETE /me` are the three routes a new account needs *before* the gate can open; the traveler group carries
+ * {@link requireTraveler}, so `PUT /me/profile`, `POST /me/push-tokens` and `POST /me/payment-setup` answer `403 age_gate_required`
+ * until it is passed. Both are encapsulated children of this context, so no route outside them inherits a guard by accident.
  *
- * Each handler delegates to the module function that owns its rule and answers what that returned; the
- * counters are `mutatingLimits(app)` on the five mutating routes and none on `GET /me`. The instant a
- * handler judges at is `request.receivedAt`, the single instant `plugins/clock.ts` stamps per request, so
- * proof validity cannot be decided across the boundary of the proof's own window (AAP 0.11.1).
+ * Each handler delegates to the module function that owns its rule and answers what that returned; the counters are
+ * `mutatingLimits(app)` on the five mutating routes and none on `GET /me`. The instant a handler judges at is `request.receivedAt`.
  */
 import { z } from 'zod';
 
@@ -42,21 +38,18 @@ import type { FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { App } from '../../app.ts';
 
-/** The tag all six routes group under: a member of the document's own vocabulary (AAP 0.11.2). */
 const ME_TAG = 'me' satisfies OpenApiTag;
 
 /**
- * The one refusal `POST /me/push-tokens` answers when the token belongs to another account, whether it
- * was read as such or met as a unique-key collision; the message names neither the token nor an
- * account, so nothing about the device or its owner leaves the server (AAP 0.5.4).
+ * The one refusal `POST /me/push-tokens` answers when the token belongs to another account: the message names neither the token nor
+ * an account, so nothing about the device or its owner leaves the server.
  */
 const TOKEN_OWNED_MESSAGE = 'This push token is already registered to another account.';
 
 /**
- * The authenticated caller's context, or a refusal. The group guard admitted this request, so
- * `request.auth` is set — but that is a property of the registration, not of the handler, and a hook
- * moved, removed or shadowed would otherwise answer a `TypeError` as `500 internal_error` where the
- * contract requires `401 token_invalid` (AAP 0.5.4).
+ * The authenticated caller's context, or a refusal: the group guard admitted this request, but that is a property of the registration
+ * rather than of the handler, and a hook moved, removed or shadowed would otherwise answer a `TypeError` as `500 internal_error`
+ * where the contract requires `401 token_invalid`.
  */
 function callerAuth(request: FastifyRequest): AuthContext {
   if (request.auth === null) {
@@ -66,11 +59,10 @@ function callerAuth(request: FastifyRequest): AuthContext {
 }
 
 /**
- * Registers the six Me routes on the context `app.ts` mounts under `/v1` (AAP 0.5.1, 0.5.4).
+ * Registers the six Me routes on the context `app.ts` mounts under `/v1`.
  *
- * Registration is synchronous, so the returned promise is already resolved; the declared `Promise<void>`
- * and `return Promise.resolve()` are what keep this plugin usable wherever Fastify's plugin types expect
- * one, rather than relying on the absence of an `await` (AAP 0.11.2).
+ * Registration is synchronous, so the returned promise is already resolved; the declared `Promise<void>` and `return
+ * Promise.resolve()` are what keep this plugin usable wherever Fastify's plugin types expect one.
  */
 export default function meRoutes(app: App): Promise<void> {
   // The bearer group: `GET /me`, `POST /me/consents` and `DELETE /me`, and only those three. A

@@ -1,14 +1,10 @@
 /**
  * TwiML, status callbacks and the relay dialogue: the three surfaces of one automated call.
  *
- * Every case here breaks one of the rules that hold the call together: the signature is checked over
- * the URL Twilio called and every field it posted, only attempt-tied evidence adopts a `CallSid`, a
- * callback has one effect however often it is delivered, and the dialogue says only what its fixed
- * templates say.
- *
- * The relay cases are driven through the scripted simulator. Whether a call is dialled at all when no
- * dialogue budget can be reserved is a `workers` decision; what is asserted here is the API's side of
- * that path.
+ * Every case here breaks one of the rules that hold the call together: the signature is checked over the URL Twilio called and every
+ * field it posted, only attempt-tied evidence adopts a `CallSid`, a callback has one effect however often it is delivered, and the
+ * dialogue says only what its fixed templates say. The relay cases are driven through the scripted simulator; whether a call is dialled
+ * at all when no dialogue budget can be reserved is a `workers` decision.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -89,8 +85,8 @@ const SID_TWO = 'CA000000000000000000000000000000a2';
 const BOOKING_NAME = 'Fixture Guest';
 
 /**
- * The most a case waits for a played call. The simulator holds every step to its own bound, and a
- * dialogue that closed through a closing line adds that line's playback time.
+ * The most a case waits for a played call. The simulator holds every step to its own bound, and a dialogue that closed through a closing
+ * line adds that line's playback time.
  */
 const CALL_TIMEOUT_MS = 20_000;
 
@@ -99,16 +95,14 @@ const DIALOGUE_TIMEOUT_MS = 30_000;
 let t: TestApp;
 
 /**
- * The adapter the app was built with. It is the same `fake` provider the factory would have built —
- * same scenario classifier, same prices — taken here as its own type so a case can read what was
- * counted and what was sent.
+ * The adapter the app was built with: the same `fake` provider the factory built — same scenario classifier, same prices — taken here as
+ * its own type so a case can read what was counted and what was sent.
  */
 let llm: FakeLlmAdapter;
 
 /**
- * What `apps/workers`' `call-dispatch` reserves before it dials: one turn's bound at
- * `LLM_MAX_TURNS_PER_CALL`, which it stores in `CallAttempt.llmReservedMicros`. A live call a case
- * builds gets the same figure, because the relay refuses every turn without one.
+ * What `apps/workers`' `call-dispatch` reserves before it dials: one turn's bound at `LLM_MAX_TURNS_PER_CALL`, which it stores in
+ * `CallAttempt.llmReservedMicros`. A live call a case builds gets the same figure, because the relay refuses every turn without one.
  */
 let dispatchedMicros = 0n;
 
@@ -135,8 +129,8 @@ afterAll(async () => {
 });
 
 /**
- * The address Twilio called: the public base plus the raw request target. The route rebuilds this
- * exact string, which is why signing anything else can never match (AAP 0.3.3).
+ * The address Twilio called: the public base plus the raw request target. The route rebuilds this exact string, which is why signing
+ * anything else can never match (AAP 0.3.3).
  */
 function publicUrl(path: string, attemptId: string | null): string {
   const query = attemptId === null ? '' : `?${VOICE_ATTEMPT_PARAMETER}=${attemptId}`;
@@ -210,9 +204,8 @@ async function postTwilio(
 }
 
 /**
- * Open one raw relay socket against the API, signed over the public `wss://` address: the cap is
- * taken at the upgrade, so a case needs connections that hold their slots with no dialogue behind
- * them.
+ * Open one raw relay socket against the API, signed over the public `wss://` address: the cap is taken at the upgrade, so a case needs
+ * connections that hold their slots with no dialogue behind them.
  */
 function openRelay(
   baseUrl: string,
@@ -239,13 +232,10 @@ function openRelay(
 }
 
 /**
- * One relay conversation a case drives itself (AAP 0.3.3, 0.5.6): the `CallSid` a signed TwiML
- * fetch adopts for the call, a socket upgraded against the public address with a valid signature,
- * the `setup` frame that attaches the attempt, and every line the API speaks back.
- *
- * The simulator drives this same socket for the scripted scenarios. A case sends its own frames
- * where the framing no scenario file carries is what it is about: an utterance the relay has to cut
- * at its own byte bound, or a provider `error` frame.
+ * One relay conversation a case drives itself (AAP 0.3.3, AAP 0.5.6): the `CallSid` a signed TwiML fetch adopts for the call, a socket
+ * upgraded against the public address with a valid signature, the `setup` frame that attaches the attempt, and every line the API speaks
+ * back. A case sends its own frames where the framing no scenario file carries is what it is about: an utterance the relay has to cut at
+ * its own byte bound, or a provider `error` frame.
  */
 interface Conversation {
   /** The upgraded socket. */
@@ -261,10 +251,8 @@ interface Conversation {
 }
 
 /**
- * Open one relay conversation for `call` and attach it, so a case can send its own frames.
- *
- * The `CallSid` comes first: only a signed TwiML fetch of the answered call adopts it, and the relay
- * refuses a socket whose `setup` names another one (AAP 0.3.2).
+ * Open one relay conversation for `call` and attach it, so a case can send its own frames. The `CallSid` comes first: only a signed TwiML
+ * fetch of the answered call adopts it, and the relay refuses a socket whose `setup` names another one (AAP 0.3.2).
  */
 async function openConversation(call: LiveCall): Promise<Conversation> {
   await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
@@ -329,8 +317,8 @@ interface LiveCallOptions {
 }
 
 /**
- * Build one live `menu_prices` call: a place, its task, and an attempt no callback has adopted yet —
- * the state both adoption rules start from.
+ * Build one live `menu_prices` call: a place, its task, and an attempt no callback has adopted yet — the state both adoption rules start
+ * from.
  */
 async function menuCall(
   options: LiveCallOptions = {},
@@ -360,9 +348,8 @@ async function stayCall(): Promise<LiveCall & { readonly claimId: string }> {
 }
 
 /**
- * Create one attempt in the state a case needs, with no `CallSid` yet: the fixture builder always
- * writes one so the unique column stays unique, and a call this suite drives is one no callback has
- * adopted — the signed fetch or callback carrying the attempt id is what adopts it.
+ * Create one attempt in the state a case needs, with no `CallSid` yet: the fixture builder always writes one so the unique column stays
+ * unique, and the signed fetch or callback carrying the attempt id is what adopts it.
  */
 async function startAttempt(task: CallTaskFixture, options: LiveCallOptions): Promise<string> {
   const attempt = await makeCallAttempt(t, task, {
@@ -384,8 +371,8 @@ async function attemptRow(id: string) {
 }
 
 /**
- * The attempt row once its outcome is recorded: the relay writes it in its own transaction, which can
- * settle just after the socket the simulator watched has closed.
+ * The attempt row once its outcome is recorded: the relay writes it in its own transaction, which can settle just after the socket the
+ * simulator watched has closed.
  */
 async function settledAttempt(id: string, expected: CallAttemptOutcome) {
   await waitUntil(async () => (await attemptRow(id)).outcome === expected, `${id} → ${expected}`);
@@ -430,11 +417,8 @@ function menuFields(row: { readonly extractedFields: unknown }): MenuFields {
 }
 
 /**
- * One attribute of the `ConversationRelay` tag exactly as the document spells it, or `null`.
- *
- * The document is one this API writes and the tag is unique, so a case reads the bytes rather than
- * running a parser over them. The values compared against it carry no XML-significant character, so
- * the escaped form is the literal one.
+ * One attribute of the `ConversationRelay` tag exactly as the document spells it, or `null`. The document is one this API writes and the
+ * tag is unique, so a case reads the bytes rather than running a parser over them.
  */
 function relayAttribute(xml: string, name: string): string | null {
   const tag = /<\s*ConversationRelay\b([^>]*)>/i.exec(xml);
@@ -680,16 +664,13 @@ describe('the relay dialogue', () => {
     DIALOGUE_TIMEOUT_MS,
   );
   /**
-   * The relay-side half of AAP 0.5.3's drop rule: a peer that disappears mid-dialogue leaves the task
-   * with what the call had collected and confirmed, and with nothing the call never heard — what
-   * `apps/workers` then applies to the task is the rule's other half, covered in
+   * The relay-side half of AAP 0.5.3's drop rule: a peer that disappears mid-dialogue leaves the task with what the call had collected and
+   * confirmed, and with nothing the call never heard — what `apps/workers` then applies to the task is the rule's other half, covered in
    * `apps/workers/test/integration/call-results.test.ts`.
    *
-   * The fixture drops the socket on the turn that answered the first read-back: the callee's "sim" to
-   * the cheapest main was delivered before the socket went, so the value it confirmed is part of what
-   * the call collected even though the dialogue never got to record it itself. The relay waits for the
-   * turn it had already received before it records the ending, and invents nothing beyond it: the two
-   * questions the call never reached contribute no item (AAP 0.5.3, AAP 0.5.6).
+   * The fixture drops the socket on the turn that answered the first read-back: the callee's "sim" to the cheapest main was delivered
+   * before the socket went, so the value it confirmed is part of what the call collected. The two questions the call never reached
+   * contribute no item (AAP 0.5.3, AAP 0.5.6).
    */
   it(
     'keeps only what a call dropped mid-dialogue collected',
@@ -824,9 +805,8 @@ describe('the relay dialogue', () => {
   });
 
   /**
-   * The two framings of an utterance that outgrows the classification window (AAP 0.5.6): the pieces
-   * that together pass it, and one `last` frame that does so on its own. Only the framing differs, so
-   * both are rows of one case — and both owe the same answer, because the relay holds neither.
+   * The two framings of an utterance that outgrows the classification window (AAP 0.5.6): the pieces that together pass it, and one `last`
+   * frame that does so on its own. Both owe the same answer, because the relay holds neither.
    */
   const OVERLONG_ROWS: readonly {
     readonly name: string;
@@ -907,10 +887,9 @@ describe('the relay dialogue', () => {
 });
 
 /**
- * One scenario fixture the suite plays end to end, and the ending it must produce. Playing the
- * fixture is what each row proves: the document the TwiML route answers with, what the relay socket
- * carried and the outcome the attempt settles at all come from the scenario file rather than from a
- * callback the case posted itself.
+ * One scenario fixture the suite plays end to end, and the ending it must produce. Playing the fixture is what each row proves: the
+ * document the TwiML route answers with, what the relay socket carried and the outcome the attempt settles at all come from the scenario
+ * file.
  */
 interface FixtureRow {
   readonly scenario: ScenarioName;

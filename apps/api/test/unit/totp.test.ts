@@ -76,8 +76,8 @@ const STEP_EDGE_ROWS: ReadonlyArray<[described: string, offsetMs: number]> = [
 ];
 
 /**
- * The tolerance from `CODE_TOLERANCE_STEPS`: the three steps around the server's are accepted, and
- * the step beyond either edge is not.
+ * The tolerance from `CODE_TOLERANCE_STEPS`: the three steps around the server's are accepted, and the
+ * step beyond either edge is not.
  */
 const TOLERANCE_ROWS: ReadonlyArray<[offset: number, accepted: boolean]> = [
   [-(CODE_TOLERANCE_STEPS + 1), false], // T-2, answered `422 invalid_code`

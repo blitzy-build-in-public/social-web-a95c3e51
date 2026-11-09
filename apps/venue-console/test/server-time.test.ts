@@ -1,12 +1,10 @@
 /**
- * The venue console's clock arithmetic (AAP 0.5.1, 0.5.7, 0.12.2). A code is accepted on the server
- * clock alone, so the console derives nothing: it renders the server's `{ code, expiresAt }` and reads
- * the gap between the two clocks from each response's `Date` header as `serverNow = deviceNow +
- * offset`, which cancels a device skew. Every instant here is explicit -- no timers, no `Date.now()`,
- * no DOM -- so both clocks are pinned and the skew is a parameter. The browser-level case is
- * `apps/mobile/e2e/playwright/console-clock.spec.ts`.
+ * The venue console's clock arithmetic (AAP 0.5.1, 0.5.7, 0.12.2). A code is accepted on the server clock alone, so the
+ * console derives nothing: it renders the server's `{ code, expiresAt }` and reads the gap between the two clocks from
+ * each response's `Date` header as `serverNow = deviceNow + offset`, which cancels a device skew. Every instant here is
+ * explicit -- no timers, no `Date.now()`, no DOM -- so both clocks are pinned and the skew is a parameter; the sibling
+ * browser-level case is `apps/mobile/e2e/playwright/console-clock.spec.ts`.
  */
-
 import { CODE_STEP_SECONDS, CODE_TOLERANCE_STEPS } from '@tablemate/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -21,37 +19,27 @@ import {
 } from '../src/server-time.ts';
 
 /**
- * One step of tolerance: the server accepts T-1, T and T+1, so a code just replaced is still valid
- * for 60 s of server clock beyond the step it was derived from (AAP 0.5.7). Written out rather than
- * computed from `CODE_STEP_SECONDS * CODE_TOLERANCE_STEPS`, so the `isStale` rows below fail when
- * either constant changes instead of moving with it; the pin inside that describe holds the two
- * constants to this figure.
+ * One step of tolerance: the server accepts T-1, T and T+1, so a code just replaced is still valid for 60 s of
+ * server clock beyond the step it was derived from (AAP 0.5.7). Written out rather than computed from
+ * `CODE_STEP_SECONDS * CODE_TOLERANCE_STEPS`, so the `isStale` rows below fail when either constant changes
+ * instead of moving with it. The pin inside that describe holds the two constants to this figure.
  */
 const TOLERANCE_MS = 60_000;
-
-/** The server instant the sampled response was handled, 700 ms into its second deliberately: a `Date`
- * header carries whole seconds, so on an exact second the estimate would inherit the header's own
- * resolution and the countdown below would read 42 instead of 43. */
+/** The server instant the sampled response was handled, 700 ms into its second deliberately: a `Date` header
+ * carries whole seconds, so on an exact second the estimate would inherit the header's own resolution. */
 const SERVER_HANDLED_MS = Date.UTC(2026, 10, 4, 20, 17, 5, 700);
-
 /** The instant that response's code expires: 42.3 s after it was handled. */
 const EXPIRES_AT_MS = SERVER_HANDLED_MS + 42_300;
-
 /** Round trip of the sampled request, split evenly around the instant the server handled it. */
 const ROUND_TRIP_MS = 200;
-
 /** The countdown that sample leaves: 42.4 s on the server clock, rounded up. */
 const COUNTDOWN_SECONDS = 43;
-
 /** The estimator's whole error: half the `Date` resolution plus half the round trip. */
 const ESTIMATE_ERROR_MS = HTTP_DATE_RESOLUTION_MS / 2 + ROUND_TRIP_MS / 2;
-
 /** A parser case: the header value and the epoch milliseconds it must yield, or `null`. */
 type HeaderCase = readonly [header: string | null | undefined, expected: number | null];
-
 /** A countdown case: the distance to the expiry and the whole seconds reported for it. */
 type CountdownCase = readonly [expiresAtMs: number, expected: number];
-
 /** A poll-delay case: the target server instant, the device reading and the estimated offset. */
 type DelayCase = readonly [
   targetServerMs: number,
@@ -59,21 +47,16 @@ type DelayCase = readonly [
   offsetMs: number,
   expected: number,
 ];
-
 /** A staleness case: the server-clock reading and whether the displayed code is refused then. */
 type StaleCase = readonly [serverNowMs: number, expected: boolean];
-
 /** A device's view of the sampled round trip, and the offset it estimated from the response. */
 type SkewedClock = {
   deviceNowMs: number;
   offsetMs: number;
   serverNowMs: number;
 };
-
-/**
- * Replays the sampled round trip on a device running `skewMs` ahead of the server's, which stamps
- * the request and the response and treats the arrival as its present instant.
- */
+/** Replays the sampled round trip on a device running `skewMs` ahead of the server's, which stamps the request
+ * and the response and treats the arrival as its present instant. */
 function skewedClock(skewMs: number): SkewedClock {
   const sentAtMs = SERVER_HANDLED_MS - ROUND_TRIP_MS / 2 + skewMs;
   const receivedAtMs = SERVER_HANDLED_MS + ROUND_TRIP_MS / 2 + skewMs;

@@ -1,6 +1,4 @@
-/**
- * Lodgings — the city directory and leaderboard (AAP 0.5.8, AAP 0.8.1, criterion 15).
- */
+/** Lodgings — the city directory and leaderboard. */
 import { useEffect, useState, type ReactElement } from 'react';
 import { FlatList, Linking, StyleSheet, Text, View, type TextProps } from 'react-native';
 import { router } from 'expo-router';
@@ -31,8 +29,6 @@ const styles = StyleSheet.create({
   trailing: { alignItems: 'flex-end', gap: spacing.xs, marginLeft: 'auto' },
   trailingText: { ...typography.body, color: colors.textMuted },
   fill: { flex: 1 },
-  // The block spacing the screen's content container gives every child: a row sits flush against the
-  // next one, its own hairline separating them, so the header and the footer carry it instead.
   listHeader: { gap: spacing.lg, paddingBottom: spacing.lg },
   listFooter: { paddingTop: spacing.lg },
 });
@@ -40,10 +36,7 @@ const VALID_PROOF_STATUS = 'valid' satisfies ProofStatus;
 const TAB_EDGES = ['left', 'right'] as const;
 type SortLabels = Record<LodgingSort, string>;
 const SORT_LABELS = { activity: 'Most active', name: 'A–Z' } as const satisfies SortLabels;
-/**
- * The name of the sort row, which is a `radiogroup`: axe's `aria-required-parent` rule requires the
- * radio chips to sit inside a named group, and VoiceOver and TalkBack announce it with them.
- */
+/** The sort row is a `radiogroup`: axe's `aria-required-parent` rule requires the radio chips to sit in a named group, and VoiceOver and TalkBack announce it with them. */
 const SORT_GROUP_LABEL = 'Sort lodgings';
 const KIND_LABELS = {
   hostel: 'Hostel',
@@ -59,20 +52,9 @@ const COPY = {
 };
 const OPEN_OSM = (): void => void Linking.openURL(OSM_COPYRIGHT_URL);
 const IMPORT_ACTION = { label: 'Verify my stay', onPress: () => router.push('/proof/import') };
-/**
- * The narrowest a lodging row's text column is allowed to become, in points / CSS px: eight `xxl`
- * steps, 256 px. The activity and guest block beside it is about 200 px wide, so below the width that
- * leaves a column this wide the row stacks — the block drops under the text and the name, the address
- * and the phone number each keep a readable measure at the app's own 375-point width, where the row's
- * padding leaves 343 px to share.
- */
+/** The narrowest a lodging row's text column may become, in points / CSS px: eight `xxl` steps (256 px); below the width that leaves a column this wide the row stacks. */
 const LODGING_TEXT_MIN_WIDTH = spacing.xxl * 8;
-/**
- * How many viewports of rows the directory keeps mounted: the rows on screen plus about half a screen
- * either side of them. A city's directory arrives in one read and can hold every hostel, hotel and
- * guest house in the city, so the list mounts a couple of screens of it and mounts the rest as the
- * reader scrolls, instead of the whole directory at once.
- */
+/** How many viewports of rows the directory keeps mounted: the rows on screen plus about half a screen either side. */
 const LIST_WINDOW_SIZE = 2;
 type Heading = TextProps & Readonly<{ 'aria-level': number }>;
 const HEADING: Heading = { role: 'heading', 'aria-level': 2 };
@@ -146,14 +128,11 @@ export default function LodgingsScreen(): ReactElement {
   const cityName = cities.data?.items.find((city) => city.id === cityId)?.name;
   const heading = cityName === undefined ? COPY.name : `${COPY.name} in ${cityName}`;
   const items = lodgings.data?.items ?? [];
-  // An error supersedes the rows, the empty state and the loading notice; a directory that has not
-  // answered yet is not an empty one, so the reader sees the notice this screen already shows while it
-  // waits until the query has settled and the empty state only when the server returns no rows.
+  // An error supersedes the rows and the empty state; a directory that has not answered is not an empty one.
   const rows = dirMessage === null ? items : [];
   const waiting = <Text style={styles.note}>{'Loading…'}</Text>;
   const settledNotice = lodgings.isSuccess ? NO_ROWS : waiting;
   const emptyState = dirMessage === null && rows.length === 0 ? settledNotice : null;
-  // With no rows the header's own bottom step is already the gap above the attribution row.
   const footerStyle = rows.length === 0 ? undefined : styles.listFooter;
   return (
     <Screen edges={TAB_EDGES} scroll={false}>

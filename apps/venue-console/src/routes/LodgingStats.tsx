@@ -1,14 +1,12 @@
 /**
  * The lodging stats console: one lodging's leaderboard standing and its 90-day trend, read from
- * `GET /v1/lodging-console/stats` with the operator-issued secret in `X-Lodging-Secret` (AAP 0.5.1, 0.5.4, 0.8.1;
- * requirement 15).
+ * `GET /v1/lodging-console/stats` with the operator-issued secret in `X-Lodging-Secret` (AAP 0.5.1, 0.5.4, 0.8.1).
  *
- * The screen shows the server's numbers and derives none of its own: a verified guest count below three never arrives as a
- * number, because the API serializes the label instead (AAP 0.5.7 "Lodging visibility"), so the value is printed exactly as
- * received and is never computed, compared or substituted here; every score and rank is the leaderboard's, cached in Redis
- * for 60 s (AAP 0.5.7), so there is no auto-poll; and a rejected secret is not retried here, because `api.ts` has already
- * dropped it and reported kind `unauthorized` (AAP 0.5.4). Nothing is styled inline: the console's Content-Security-Policy
- * admits no inline style attribute (AAP 0.3.2), so every colour and measurement comes from a class in `../styles.css`.
+ * The screen shows the server's numbers and derives none of its own: a verified guest count below three arrives as the
+ * label the API serializes rather than a number (AAP 0.5.7), so the value is printed exactly as received; every score
+ * and rank is the leaderboard's, cached in Redis for 60 s, so there is no auto-poll; a rejected secret is not retried
+ * here, because `api.ts` has already dropped it and reported kind `unauthorized` (AAP 0.5.4); and nothing is styled
+ * inline, which the console's Content-Security-Policy refuses (AAP 0.3.2).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -28,12 +26,9 @@ const TREND_UNIT_WIDTH = componentSizes.trendUnitWidth;
 const TREND_BAR_WIDTH = componentSizes.trendBarWidth;
 const TREND_HEIGHT = componentSizes.trendHeight;
 const TREND_WIDTH = LODGING_TREND_WEEKS * TREND_UNIT_WIDTH;
-
-/** Every fourth week carries an axis label below the chart (AAP 0.5.8): with 13 slots that is the
- * first, fifth, ninth and last column, which dates a bar closely enough to read the chart while
- * leaving the labels room enough not to meet at the narrowest viewport. */
+/** Every fourth week carries an axis label below the chart (AAP 0.5.8): with 13 slots that is the first,
+ * fifth, ninth and last column, which dates a bar closely enough to read the chart. */
 const TREND_LABEL_EVERY = 4;
-
 /** One week of the trend as drawn: where its slot sits, how tall its bar is and the point it draws,
  * which is also its React key. A height of 0 is a week with no activity: it shows no bar, and its
  * slot still carries a target of its own, so the week is inspected like any other. */
@@ -42,13 +37,10 @@ interface TrendWeek {
   x: number;
   height: number;
 }
-
 /**
  * The trend's weeks, each bar scaled against the busiest week of the window (AAP 0.5.4). A week with activity keeps at
- * least one unit, so a score that rounds below one still shows as a bar; a week with none keeps a height of 0 and draws no
- * bar at all — a zero-height rect has no area and cannot be pointed at — but it keeps its slot, which is what lets the
- * chart give it a target of its own. A window with no activity is therefore its baseline alone, with all 13 weeks still
- * inspectable.
+ * least one unit, so a score that rounds below one still shows as a bar; a week with none draws no bar -- a zero-height
+ * rect has no area and cannot be pointed at -- but keeps its slot, which is what gives it a target of its own.
  */
 function trendWeeks(trend: readonly TrendPoint[]): TrendWeek[] {
   const busiest = trend.reduce((highest, point) => Math.max(highest, point.activityScore), 0);
@@ -61,14 +53,12 @@ function trendWeeks(trend: readonly TrendPoint[]): TrendWeek[] {
         : Math.max(1, Math.round((point.activityScore / busiest) * TREND_HEIGHT)),
   }));
 }
-
 /** The trend's accessible name: every score in the order it is drawn, oldest first, because the
  * chart's own shape says nothing to a screen reader (AAP 0.5.8). */
 function trendLabel(trend: readonly TrendPoint[]): string {
   const scores = trend.map((point) => point.activityScore).join(', ');
   return `Weekly activity scores, oldest first: ${scores}`;
 }
-
 /** The abbreviated month names, by month number minus one, for {@link axisLabel}. */
 const MONTH_ABBREVIATIONS = [
   'Jan',
@@ -84,12 +74,11 @@ const MONTH_ABBREVIATIONS = [
   'Nov',
   'Dec',
 ] as const;
-
 /**
- * The axis row's label for one week start: the server's own `2026-08-30` reads as `Aug 30`. The fields are read out of the
- * string, never through `Date`, which would read a bare date at UTC midnight and show the previous day in a browser behind
- * UTC, while `weekStart` is the city's own calendar date (AAP 0.5.4). A value outside the schema's `DateOnly` spelling falls
- * back to the string it arrived as, so a label is always printed rather than a blank track.
+ * The axis row's label for one week start: the server's own `2026-08-30` reads as `Aug 30`. The fields are read out of
+ * the string, never through `Date`, which would read a bare date at UTC midnight and show the previous day behind UTC,
+ * while `weekStart` is the city's own calendar date (AAP 0.5.4). A value outside the schema's `DateOnly` spelling falls
+ * back to the string it arrived as, so a label is always printed.
  */
 function axisLabel(weekStart: string): string {
   const month = MONTH_ABBREVIATIONS[Number(weekStart.slice(5, 7)) - 1];
@@ -100,10 +89,8 @@ function axisLabel(weekStart: string): string {
   return `${month} ${day}`;
 }
 
-/**
- * The lodging stats screen (AAP 0.5.4, 0.5.8). `onUnauthorized` is called when the API rejects the
- * secret, so `App.tsx` can return the console to its secret form.
- */
+/** The lodging stats screen (AAP 0.5.4, 0.5.8). `onUnauthorized` is called when the API rejects the
+ * secret, so `App.tsx` can return the console to its secret form. */
 export function LodgingStats({
   secret,
   onUnauthorized,
@@ -133,9 +120,8 @@ export function LodgingStats({
         setFailed(false);
         setLoading(false);
       } catch (error) {
-        // A cancellation is this effect's own cleanup -- `api.ts` rethrows it exactly as it arrived
-        // -- and is never a failure. A request cut short by its deadline is a `ConsoleApiError` of
-        // kind `network`, which is handled with the other failures below (AAP 0.5.4, 0.11.1).
+        // A cancellation is this effect's own cleanup -- `api.ts` rethrows it as it arrived -- never a
+        // failure; a request cut short by its deadline is a `ConsoleApiError` of kind `network`, handled below.
         if (controller.signal.aborted) {
           return;
         }
@@ -180,8 +166,8 @@ export function LodgingStats({
     <>
       <header>
         <button type="button" onClick={refresh} disabled={loading}>
-          {/* The control states what it is doing: before the first answer it is loading the screen,
-              after one it is refreshing stats a reader has already been shown. */}
+          {/* The control states what it is doing: before the first answer it is loading the screen, after one it
+              is refreshing stats a reader has already been shown. */}
           {loading ? (stats === null ? 'Loading…' : 'Refreshing…') : 'Refresh'}
         </button>
       </header>
@@ -193,9 +179,8 @@ export function LodgingStats({
           </button>
         </div>
       ) : null}
-      {/* The heading is the screen's own and never the lodging's — the route's body carries no name
-          (AAP 0.5.4) — so the level-1 heading is here in every state, and the section, which is the
-          region the request updates, carries the in-flight state rather than the button. */}
+      {/* The heading is the screen's own and never the lodging's -- the route's body carries no name (AAP 0.5.4)
+          -- so the level-1 heading is here in every state, and the section carries the in-flight state. */}
       <section data-testid="lodging-stats" aria-busy={loading}>
         <h1>Lodging stats</h1>
         {stats === null ? (
@@ -219,9 +204,8 @@ export function LodgingStats({
               </div>
               <div>
                 <dt>Verified guests</dt>
-                {/* Printed exactly as the server sent it: a number of three or more, or the label it
-                    substitutes below three, so a count under three never appears as a number
-                    (AAP 0.5.7). */}
+                {/* Printed exactly as the server sent it: a number of three or more, or the label it substitutes
+                    below three, so a count under three never appears as a number (AAP 0.5.7). */}
                 <dd data-testid="lodging-verified-guests">{stats.verifiedGuests}</dd>
               </div>
             </dl>
@@ -247,10 +231,9 @@ export function LodgingStats({
               x2={TREND_WIDTH}
               y2={TREND_HEIGHT}
             />
-            {/* The bars first, then one transparent target per week over them: a target drawn under
-                its bar would answer the pointer only in the slot beside it, and a week with no
-                activity would answer nothing at all, because its own rect has no area. Every week
-                therefore carries its own `<title>`, the zero weeks included (AAP 0.5.8). */}
+            {/* The bars first, then one transparent target per week over them: a target drawn under its bar would
+                answer the pointer only in the slot beside it, and a week with no activity would answer nothing at
+                all. Every week therefore carries its own `<title>`, the zero weeks included (AAP 0.5.8). */}
             {weeks.map((week) =>
               week.height === 0 ? null : (
                 <rect
@@ -276,10 +259,9 @@ export function LodgingStats({
               </rect>
             ))}
           </svg>
-          {/* The x-axis as HTML rather than text inside the SVG, whose `preserveAspectRatio`
-              "none" would stretch whatever it draws. Its 13 tracks are the bars' own slots -- one
-              per week, so a label starts where the bar above it starts -- and it is hidden from
-              assistive technology because the SVG's own name already lists every score. */}
+          {/* The x-axis as HTML rather than text inside the SVG, whose `preserveAspectRatio` "none" would stretch
+              whatever it draws. Its 13 tracks are the bars' own slots, and it is hidden from assistive technology
+              because the SVG's own name already lists every score. */}
           <div className="trend-axis" data-testid="lodging-trend-axis" aria-hidden="true">
             {weeks.map((week, index) => (
               <span key={week.point.weekStart}>

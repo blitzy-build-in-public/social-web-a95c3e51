@@ -4,7 +4,6 @@
 // in that blocking is observable: the fetches below must never reach the network.
 
 self.addEventListener('install', () => self.skipWaiting());
-
 self.addEventListener('fetch', (event) => {
   event.waitUntil(
     Promise.allSettled([

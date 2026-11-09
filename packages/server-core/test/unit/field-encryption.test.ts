@@ -13,37 +13,27 @@ import {
   keyringFromEnv,
 } from '../../src/crypto/field-encryption.ts';
 import type { FieldKeyring } from '../../src/crypto/field-encryption.ts';
-
 const key = (): string => randomBytes(32).toString('base64');
-
 const VALUE_PATTERN = /^[A-Za-z0-9_-]{1,16}\.[A-Za-z0-9_-]+$/;
-
 const IV_BYTES = 12;
 const MIN_PAYLOAD_BYTES = IV_BYTES + 16;
-
 function b64url(value: string): [keyId: string, body: Buffer] {
   const separator = value.indexOf('.');
   return [value.slice(0, separator), Buffer.from(value.slice(separator + 1), 'base64url')];
 }
-
 function join(keyId: string, body: Buffer): string {
   return `${keyId}.${body.toString('base64url')}`;
 }
-
 const payloadOf = (value: string): Buffer => b64url(value)[1];
-
 const ivOf = (value: string): string => payloadOf(value).subarray(0, IV_BYTES).toString('hex');
-
 function withPayload(value: string, body: Buffer, keyId = b64url(value)[0]): string {
   return join(keyId, body);
 }
-
 function flipPayloadBit(value: string, index: number): string {
   const [keyId, body] = b64url(value);
   body.writeUInt8(body.readUInt8(index) ^ 1, index);
   return join(keyId, body);
 }
-
 function failureOf<Thrown extends Error>(
   run: () => unknown,
   expected: new (...args: never) => Thrown,

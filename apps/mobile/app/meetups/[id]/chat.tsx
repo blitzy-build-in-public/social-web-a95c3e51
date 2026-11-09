@@ -1,5 +1,4 @@
-/** Pair chat — the meetup's history over REST, its live messages over the app's one chat socket, and
- * the Block and Report actions the chat header offers (AAP 0.5.8, AAP 0.7.1 rows 9 and 12). */
+/** Pair chat — the meetup's history over REST, its live messages over the app's one chat socket, and the Block and Report actions the chat header offers. */
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ComponentProps, ReactElement } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native';
@@ -43,9 +42,7 @@ const SCREEN_EDGES = ['left', 'right', 'bottom'] as const;
 const BEHAVIOR = Platform.OS === 'ios' ? 'padding' : undefined;
 const COUNTER_VISIBLE_FROM = 900;
 const AVATAR_SIZE = componentSizes.avatarSmall;
-// A message takes at most this share of the thread: without a cap, a long paragraph's bubble fills
-// the whole column and stops reading as its sender's side, and one unbreakable token's bubble grows
-// wider than the thread, whose hidden overflow hides most of it. A share scales with the font size.
+// A message takes at most this share of the thread: a wider bubble stops reading as its sender's side, and one unbreakable token would grow past the thread's own hidden overflow. A share scales with the font size.
 const BUBBLE_MAX_WIDTH = '80%' as const;
 const MORE_HINT = 'Shows block and report options';
 const BLOCK_CONFIRM_TEXT =
@@ -57,10 +54,7 @@ const CONNECTION_TEXT = {
   reconnecting: 'Reconnecting…',
   limited: 'Chat is open elsewhere',
 } satisfies Record<ConnectionState, string>;
-/** The label for a device with no connectivity at all. An open socket on a device that has lost its
- * connection still reports `open` until its own close arrives, so the socket's state alone is no
- * reason to say the chat is connected. It is kept out of {@link CONNECTION_TEXT} rather than folded
- * into the `idle` entry, so a lost connection and a socket that was never opened stay apart. */
+/** The label for a device with no connectivity at all: an open socket on a lost connection still reports `open`, so the socket's state alone is no reason to say the chat is connected. */
 const OFFLINE_TEXT = 'Offline';
 const MORE = { testID: 'user-more', label: 'More', variant: 'secondary' as const };
 /**
@@ -111,7 +105,6 @@ export function messagesInPages(pages: readonly MessageHistoryResponse[]): Messa
   return [...first.values()];
 }
 
-/** The history a pushed message belongs in, unchanged when the id is already there. */
 export function withMessage(data: History | undefined, message: Message): History | undefined {
   const newest = data?.pages[0];
   if (data === undefined || newest === undefined) return data;
@@ -252,17 +245,7 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-/**
- * Whether the device itself has no connectivity, from the signal the platform reports it with.
- *
- * On the web that signal is `navigator.onLine` and the `online`/`offline` events it carries — the
- * same value `@react-native-community/netinfo` 11.4.1 reads there for `isConnected`, but not one it
- * delivers: its web build watches `navigator.connection`'s `change` event whenever the browser
- * exposes that interface (Chrome and Safari do), and its reachability probe is what then gates a
- * recovery, so a browser that came back would keep reading "Offline" for the probe's retry
- * interval. On iOS and Android there is no `navigator.onLine`, so NetInfo is the whole answer there,
- * read as `isOnline()` in `src/checkin/offline-code.ts` reads it.
- */
+// On the web the signal is `navigator.onLine` and the `online`/`offline` events it carries: NetInfo's web build watches `navigator.connection` and gates a recovery behind its own reachability probe, so a browser that came back would keep reading Offline for the probe's retry interval. On iOS and Android there is no `navigator.onLine`, so NetInfo is the whole answer there, read as `isOnline()` is in `src/checkin/offline-code.ts`.
 function useOfflineDevice(): boolean {
   const [offline, setOffline] = useState<boolean | null>(null);
   useEffect(() => {
@@ -279,8 +262,7 @@ function useOfflineDevice(): boolean {
     }
 
     return NetInfo.addEventListener((state) => {
-      // `isInternetReachable` is `null` until reachability is known, so only an explicit `false`
-      // counts against the connection, as in `offline-code.ts`.
+      // `isInternetReachable` is `null` until reachability is known, so only an explicit `false` counts against the connection, as in `offline-code.ts`.
       setOffline(state.isConnected !== true || state.isInternetReachable === false);
     });
   }, []);
@@ -440,10 +422,7 @@ export default function ChatScreen(): ReactElement {
       setFrameError(null);
       return;
     }
-    // Refused, so nothing was written and nothing is queued: the draft stays in the composer and the
-    // sentence says which refusal it was. An offline send is reported rather than buffered, because
-    // the socket keeps answering as open while the connection is gone and would drop the frame with
-    // the tab — hence the network sentence the product shows everywhere else for that case.
+    // A refused send wrote nothing and queued nothing: the draft stays in the composer, and an offline send is reported rather than buffered, because the socket keeps answering as open while the connection is gone.
     setSendFailure(
       isOnline() ? 'Not connected. Try again in a moment.' : userMessageFor('network_error'),
     );

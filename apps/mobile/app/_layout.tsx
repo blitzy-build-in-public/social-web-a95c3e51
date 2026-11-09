@@ -35,17 +35,10 @@ import { AppNoticeProvider, Banner, announce, navigationHeaderOptions } from '..
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 const BENCH_BUILD = process.env.EXPO_PUBLIC_ZK_BENCH === '1';
 const OFFLINE_MESSAGE = userMessageFor('network_error');
-/**
- * The safe-area edges the notice strip claims. It is the first element of the content column, so it
- * clears the status bar or the notch on iOS and Android rather than drawing behind them; the
- * navigator's chrome below it insets itself.
- */
+/** The safe-area edges the notice strip claims: as the first element of the content column it clears the status bar or notch rather than drawing behind them. */
 const NOTICE_EDGES = ['top', 'left', 'right'] as const;
 const NOTICE = { tone: 'error', message: OFFLINE_MESSAGE } as const;
-// The root Stack's chrome comes from the one definition the group layouts also spread
-// (`src/ui/NavigationHeader`), so a pushed screen this stack owns paints the same header the tab and
-// auth groups do, and every one of them draws the app's own back control rather than the navigator's
-// PNG-backed one; `contentStyle` is the stack's own, and stays with the stack.
+// The root Stack's chrome comes from the one shared definition (`src/ui/NavigationHeader`); `contentStyle` is the stack's own.
 const HEADER = {
   ...navigationHeaderOptions('background'),
   contentStyle: { backgroundColor: colors.background },
@@ -53,17 +46,7 @@ const HEADER = {
 export const unstable_settings = { initialRouteName: '(tabs)' };
 const isOpenArea = (area: string | undefined): boolean =>
   area === '(auth)' || area === 'auth' || area === 'legal' || (BENCH_BUILD && area === 'dev');
-/**
- * Whether the route the client is on does its own job with no session at all: the sign-in screens,
- * the link emailed to the reader and the legal pages. One predicate answers for both the navigation
- * gate and the app-level notice, so what counts as a public route cannot differ between them — a
- * public screen that shows a connection failure would be telling the reader about a request it never
- * made.
- *
- * The resolved route's first segment is what the gate routes on, and the requested path's first
- * segment is the fallback for a URL that resolves to the not-found route: a deep link to a public
- * area stays public, as its own rule records.
- */
+/** Whether the route the client is on does its own job with no session at all: the sign-in screens, the emailed link and the legal pages. One predicate answers for both the navigation gate and the app-level notice, so what counts as public cannot differ between them. */
 function isOpenRoute(segments: readonly string[], path: string): boolean {
   return isOpenArea(segments[0]) || isOpenArea(path.split('/')[1] || undefined);
 }
@@ -107,38 +90,15 @@ function protectedRouteFor(session: SessionSnapshot, segments: readonly string[]
 const navigationIsMounted = (raw: unknown): boolean =>
   raw !== null && typeof raw === 'object' && typeof (raw as { key?: unknown }).key === 'string';
 
-/**
- * The elements whose field keeps focus. A text field's caret, selection and scroll position are the
- * reader's, and taking focus out of one would interrupt typing — a space especially, which is one of
- * the two keys focus is released on everywhere else (AAP 0.5.8: every web flow is keyboard-operable).
- */
+/** The elements whose field keeps focus: taking focus out of a text field would interrupt typing — a space especially, which is one of the two keys focus is released on everywhere else. */
 const TEXT_ENTRY_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
-/**
- * Whether the control that holds focus answers the key-down itself.
- *
- * A link drawn as a row rather than as an anchor — `role="link"` on an element carrying no `href` — is
- * activated by the app on the key-down: a browser activates no element without an anchor, and
- * react-native-web withholds its own press from `role="link"`, so the row answers Enter itself
- * (`ListItem`, and the link rows of the suggestion, attribution and lodging screens). Its navigation
- * is committed before the key comes back up, which is why focus has to be released on the way down for
- * that control.
- */
+/** Whether the control that holds focus answers the key-down itself: a link drawn as a row (`role="link"` with no `href`) is activated by the app on the key-down, because the browser activates no such element and react-native-web withholds its own press from `role="link"`. */
 function answersKeyDown(active: HTMLElement): boolean {
   return active.tagName !== 'A' && active.getAttribute('role') === 'link';
 }
 
-/**
- * Whether the browser performs the press on the control that holds focus.
- *
- * react-native-web renders `role="button"` as a real button and leaves an anchor alone, and a browser
- * activates both by itself: the click an Enter produces, and a click a key-up Space produces on a
- * button — which is dispatched only while the control still holds focus, so releasing focus on the way
- * up would swallow the press. Those two are left to the press itself, and the click listener releases
- * focus as the click arrives. Every other control is pressed inside the app by react-native-web's own
- * responder, which matches the element the key went down on rather than the element in focus when it
- * comes up, and that press is unaffected by the release.
- */
+/** Whether the browser performs the press on the control that holds focus: react-native-web renders `role="button"` as a real button and leaves an anchor alone, and a browser activates both, so those presses are left to the press itself. */
 function browserAnswersPress(active: HTMLElement): boolean {
   return active.tagName === 'A' || active.tagName === 'BUTTON';
 }
@@ -199,27 +159,10 @@ function restoreReleasedFocus(released: HTMLElement): void {
   });
 }
 
-/**
- * Marks the containers the router has hidden `inert` as well, on web.
- *
- * react-navigation keeps every screen the reader has visited mounted and gives the ones they have left
- * `aria-hidden`, which takes those screens out of the accessibility tree but leaves their controls in
- * the tab order: one Tab press lands a keyboard or screen-reader user inside a screen that is not on
- * the window — a control they cannot see, cannot reach again, and cannot be moved off without leaving
- * the screen behind. That same focus is what makes the next `aria-hidden` write to such a container
- * impossible to apply, which Chrome reports as "Blocked aria-hidden on an element because its
- * descendant retained focus". `inert` is the state a hidden subtree needs: the browser takes it out of
- * the tab order and out of hit testing too, so focus can never be parked in a screen the router has
- * left and a container it hides is written to with nothing focused inside it.
- *
- * The router's own attribute is the source of truth: this mirrors it on the element it is written to,
- * whenever it is written, and on a subtree the router mounts with it already set — a screen mounted
- * unfocused never had an attribute write of its own.
- */
+/** Marks the containers the router has hidden `inert` as well, on web: `aria-hidden` alone leaves their controls in the tab order and blocks the next `aria-hidden` write while a descendant holds focus. */
 function mirrorHiddenContainers(): () => void {
   const sync = (element: Element): void => {
-    // `inert` is an HTML attribute, and the app's decorative `aria-hidden` glyphs are SVG elements
-    // that hold no focus; the body is left alone, because a hidden document is not a hidden screen.
+    // `inert` is an HTML attribute, and the app's decorative `aria-hidden` glyphs hold no focus; the body is left alone, because a hidden document is not a hidden screen.
     if (!(element instanceof HTMLElement) || element === document.body) return;
     element.inert = element.getAttribute('aria-hidden') === 'true';
   };
@@ -287,10 +230,7 @@ export default function RootLayout(): ReactElement {
   const session = useSession();
   const segments = useSegments();
   const pathname = usePathname();
-  // The insets every screen below the notice is laid out in. Read from the context rather than with
-  // `useSafeAreaInsets`, because this component is where the shell's own provider is mounted: a null
-  // value means no provider above it, and then nothing is overridden and the navigator keeps
-  // building its insets from the window as it always did.
+  // The insets every screen below the notice is laid out in, read from the context rather than with `useSafeAreaInsets`, because this component is where the provider is mounted: a null value means no provider above it.
   const insets = useContext(SafeAreaInsetsContext);
   const [{ settled, offline }, setStatus] = useState({ settled: false, offline: false });
   const [retrying, setRetrying] = useState(false);
@@ -310,20 +250,9 @@ export default function RootLayout(): ReactElement {
     busy: retrying,
     testID: 'bootstrap-retry',
   };
-  /**
-   * The notice belongs to the routes that need the session at all. A public screen — sign-in, the
-   * emailed link, the legal pages — reaches no API, so it has nothing to be told about the failure;
-   * the predicate the navigation gate uses decides this too, so the two cannot disagree.
-   */
+  /** The notice belongs to the routes that need the session at all: a public screen reaches no API, so it has nothing to be told about the failure. The predicate the navigation gate uses decides this too, so the two cannot disagree. */
   const noticeMessage = offline && !isOpenRoute(segments, pathname) ? OFFLINE_MESSAGE : null;
-  /**
-   * The notice is the window's topmost element and carries the status bar's inset itself, exactly as
-   * a navigator's own header does. Everything below it must therefore stop reserving that band, or
-   * the same inset is spent twice and a status-bar-height blank strip separates the notice from the
-   * header title on iOS and Android: the stack takes its header height from these insets, and the
-   * native header pads by them. With the notice away the window's own insets pass through untouched,
-   * which on a device with no insets and on the web is the same value either way.
-   */
+  /** The notice is the window's topmost element and carries the status bar's inset itself, exactly as a navigator's own header does: everything below it must stop reserving that band, or the same inset is spent twice. */
   const contentInsets = useMemo(() => {
     if (noticeMessage === null || insets === null) return insets;
     return { ...insets, top: 0 };
@@ -354,11 +283,7 @@ export default function RootLayout(): ReactElement {
       if (!(active instanceof HTMLElement) || browserAnswersPress(active)) return;
       releaseFocusedControl();
     };
-    // Capture phase, so focus is released before the app's own handlers navigate. The key-down answers
-    // a link row that presses itself, the key-up answers a control react-native-web presses, and the
-    // click answers everything the browser presses — including a mouse press, an anchor's Enter and a
-    // button's Space — so no press is released before it is delivered. The mirror of the router's own
-    // hidden containers is installed here too, so both live for as long as the app is mounted.
+    // Capture phase, so focus is released before the app's own handlers navigate: the key-down answers a link row that presses itself, the key-up answers a control react-native-web presses, and the click answers everything the browser presses — so no press is released before it is delivered.
     document.addEventListener('click', releaseFocusedControl, true);
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('keyup', onKeyUp, true);
@@ -378,14 +303,8 @@ export default function RootLayout(): ReactElement {
             <ShareIntentIntake>
               <Gate />
               <RouteHead />
-              {/* No landmark here: the page's own `main` landmark lives in the `Screen` primitive,
-                  and a second one wrapping every route would nest two. */}
+              {/* No landmark here: the page's own `main` landmark lives in the `Screen` primitive, and a second one wrapping every route would nest two. */}
               <View style={styles.fill}>
-                {/* The notice is the first element of the content column, in normal flow, so it can
-                    neither cover nor block the screen's own content nor the tab bar at the foot of
-                    the window. It is deliberately the sibling of the provider below rather than a
-                    child of it: the notice is what the screens' error banners yield to, and a notice
-                    cannot yield to itself. */}
                 {noticeMessage === null ? null : (
                   <SafeAreaView edges={NOTICE_EDGES} style={styles.notice}>
                     <Banner {...NOTICE} action={retry} testID="bootstrap-notice" />
@@ -414,7 +333,6 @@ export default function RootLayout(): ReactElement {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   fill: { flex: 1 },
-  // In flow, above the navigator: the notice takes its own height and leaves every control below it
-  // exactly where it was, rather than floating over the content it reports on.
+  // In flow, above the navigator: the notice takes its own height and leaves every control below it where it was.
   notice: { padding: spacing.lg },
 });

@@ -115,12 +115,7 @@ function parseStart(text: string, timeZone: string): Date | null {
 }
 const isWithinHorizon = (startsAt: Date, nowMs: number): boolean =>
   startsAt.getTime() > nowMs && startsAt.getTime() <= nowMs + START_HORIZON_DAYS * DAY_MS;
-/**
- * What the start field says about the text it holds: an empty field, text that is not
- * `YYYY-MM-DD HH:mm`, a time that has already passed and a time beyond {@link START_HORIZON_DAYS}
- * each name the one thing to change, and a time the API would accept says nothing (AAP 0.5.4
- * `422 starts_at_invalid`, AAP 0.5.8).
- */
+/** What the start field says about the text it holds: an empty field, text that is not `YYYY-MM-DD HH:mm`, a time that has already passed and a time beyond {@link START_HORIZON_DAYS} each name the one thing to change, and a time the API would accept says nothing. */
 function startMessage(text: string, startsAt: Date | null, nowMs: number): string | null {
   if (text.trim() === '') return START_EMPTY;
   if (startsAt === null) return START_FORMAT;
@@ -144,8 +139,7 @@ const rowOf = (
 ): { readonly label: string; readonly subtitle: string; readonly leading: ReactElement } => {
   const fields = ['nickname' in p ? p.nickname : null, 'bio' in p ? p.bio : null];
   const described = fields.filter((field) => field !== null).join(' · ');
-  // A viewer below the tier that releases the nickname and bio gets the shared traveler subtitle
-  // instead, so the same person reads the same way here and in the Discover list (AAP 0.5.4, 0.5.8).
+  // A viewer below the tier that releases the nickname and bio gets the shared traveler subtitle instead, so the same person reads the same way here and in the Discover list.
   return {
     label: p.handle,
     subtitle: described === '' ? travelerSubtitle(p) : described,
@@ -201,8 +195,7 @@ function RadioOption({ label, note, selected, onPress, testID, style }: RadioPro
       accessibilityState={{ selected, checked: selected }}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
-      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      // Hover is a web state: React Native declares the pair on `PressableProps` and react-native-web forwards it to its hover hook, while iOS and Android never fire it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={onPress}
@@ -397,8 +390,7 @@ export default function ProposeScreen(): ReactElement {
   const errorMessage = errorCode === null ? null : userMessageFor(errorCode);
   const notFound = userMessageFor('user_not_found');
   const readsCopy = userMessageFor(errorCodeOf(venues.error ?? recipient.error));
-  // One sentence, spoken in the precedence the banners render in (AAP 0.5.8): an unverified caller
-  // sees the import banner alone, which needs no announcement of a state the screen is not in.
+  // One sentence, spoken in the precedence the banners render in: an unverified caller sees the import banner alone, which needs no announcement of a state the screen is not in.
   const announced =
     errorMessage ?? (gone ? notFound : noRecipient && cityId !== undefined ? NO_RECIPIENT : null);
   useEffect(() => {
@@ -411,10 +403,7 @@ export default function ProposeScreen(): ReactElement {
   const retryHoldAction = { label: 'Try again', onPress: retryHold };
   const find = { label: 'Find travelers', onPress: () => router.replace('/discover') };
   const toMeetups = { label: 'Go to Meetups', onPress: () => router.replace('/meetups') };
-  // The states that stand before the form, in the order the caller has to be told them: the recipient
-  // read is settled before the caller's own proof, and the missing-recipient notice waits for the
-  // city reads. An unverified caller is owed the import banner rather than an action that reaches no
-  // traveler, and an unresolvable recipient is owed the error the reader is alerted to (AAP 0.5.8).
+  // The states that stand before the form, in the order the caller has to be told them: the recipient read is settled before the caller's own proof, and an unverified caller is owed the import banner rather than an action that reaches no traveler.
   const blocked: ReactElement | null = me.isError ? (
     <Banner tone="error" message={userMessageFor(errorCodeOf(me.error))} action={retryMe} />
   ) : me.data === undefined ? (
@@ -425,8 +414,7 @@ export default function ProposeScreen(): ReactElement {
         testID="propose-recipient-error"
         tone="error"
         message={notFound}
-        // The action is offered only where /discover lists travelers: an unverified caller finds the
-        // import banner there, which is the dead end this branch exists to keep off the screen.
+        // The action is offered only where /discover lists travelers: an unverified caller finds the import banner there, which is the dead end this branch exists to keep off the screen.
         {...(cityId === undefined ? {} : { action: find })}
       />
       {cityId === undefined ? PROOF_BANNER : null}
@@ -594,9 +582,6 @@ const styles = StyleSheet.create({
   body: { ...typography.body, color: colors.textMuted },
   group: { gap: spacing.sm },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  // `flexBasis: 0` is what makes same-type siblings equal: with `flexGrow` alone each chip keeps its
-  // own text width as a base, so the free space is shared on top of unequal bases and a row that wraps
-  // at a narrow width reads as columns of different widths (AAP 0.5.8).
   chip: { flexBasis: 0, flexGrow: 1 },
   option: { ...OPTION_BOX, ...OPTION_SHAPE, ...OPTION_SIZE },
   optionHovered: { backgroundColor: colors.surface },

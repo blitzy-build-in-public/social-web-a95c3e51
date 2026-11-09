@@ -1,20 +1,16 @@
 /**
- * The proving Worker's two artefact sources, from the page's side: the artefacts' published URLs, for
- * an engine whose origin private file system cannot be used, and the origin private file system's own
- * download, on the failure path a write takes (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1, AAP 0.12.2).
+ * The proving Worker's two artefact sources, from the page's side: the artefacts' published URLs, for an engine
+ * whose origin private file system cannot be used, and the origin private file system's own download, on the
+ * failure path a write takes (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1, AAP 0.12.2).
  *
- * A Node process has no `navigator.storage` at all, which is exactly the environment the URL source
- * exists for: the Worker's first attempt at the origin private file system is
- * `artifact_storage_unavailable`, and `ensure` then has to answer from the URLs the artefacts are
- * published at. That storage is therefore deliberately left alone everywhere but the one case at the
- * end — which stubs it to reach the download — and so is snarkjs, because this suite is about where
- * the Worker gets the artefact bytes from and not about the proof it makes with them.
- *
- * Everything else is the Worker's own code: `self` is stubbed with the scope it registers its message
- * listener on and posts its frames to, `fetch` with a server that answers the ranged GET and the
- * artefact bodies, and the entry is imported dynamically because it reads `self` while loading. Every
- * case drives one frame through that loop and reads the frames that come back, so what it asserts is
- * the protocol the page sees rather than the shape of the module.
+ * A Node process has no `navigator.storage` at all, which is exactly the environment the URL source exists for:
+ * the Worker's first attempt at the origin private file system is `artifact_storage_unavailable`, and `ensure`
+ * then answers from the published URLs. That storage is therefore left alone everywhere but the one case at the
+ * end, which stubs it to reach the download, and so is snarkjs, this suite being about where the Worker gets the
+ * artefact bytes from and not about the proof it makes with them. Everything else is the Worker's own code:
+ * `self` is stubbed with the scope it registers its message listener on and posts its frames to, `fetch` with a
+ * server that answers the ranged GET and the artefact bodies, and the entry is imported dynamically because it
+ * reads `self` while loading.
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -26,7 +22,6 @@ import type {
   WorkerArtifactRef,
   WorkerRequest,
 } from '../src/zk/prover.worker.ts';
-
 /**
  * snarkjs, replaced: a real Groth16 proof over the real key belongs to the engine walk of
  * `web-proving.spec.ts`, while what matters here is the key the Worker hands snarkjs and how much of
@@ -79,20 +74,15 @@ const snark = vi.hoisted(() => {
 });
 
 vi.mock('snarkjs', () => snark);
-
-/* --- The artefacts a case publishes ------------------------------------------------------------ */
-
 /** fastfile 0.0.20's page size, which `prover.worker.ts` mirrors: a key of one page and five bytes is
  * the smallest one that shows the page array the Worker builds. */
 const ZKEY_PAGE_BYTES = 1 << 22;
-
 /** The bytes of the two artefacts a `prove` case streams: a tiny circuit WASM, and such a key. */
 const WASM_BYTES = Uint8Array.from({ length: 64 }, (_value, index) => index);
 const ZKEY_BYTES = Uint8Array.from(
   { length: ZKEY_PAGE_BYTES + 5 },
   (_value, index) => index & 0xff,
 );
-
 /** One artefact as its URL publishes it: the declared size and digest are the served bytes' own. */
 function published(bytes: Uint8Array, name: string): WorkerArtifactRef {
   return {
@@ -104,12 +94,8 @@ function published(bytes: Uint8Array, name: string): WorkerArtifactRef {
 
 const WASM: WorkerArtifactRef = published(WASM_BYTES, 'tablemate_itinerary.wasm');
 const ZKEY: WorkerArtifactRef = published(ZKEY_BYTES, 'tablemate_itinerary.zkey');
-
-/* --- The page's side of the protocol ----------------------------------------------------------- */
-
 /** One frame either side of the Worker's protocol, as this suite reads it. */
 type Frame = Record<string, unknown>;
-
 /**
  * What a case's server answers one request with. `status: 0` stands for a request that never got an
  * answer at all. `chunks` is what a read of the body yields — absent for the ranged GET, whose body the
@@ -120,28 +106,21 @@ interface Answer {
   readonly headers?: Record<string, string>;
   readonly chunks?: readonly Uint8Array[];
 }
-
 /** The server one case runs against, addressed by the artefact the request is about. */
 type Server = (ref: WorkerArtifactRef) => Answer;
-
 /** The Worker under test, and everything the page would otherwise own. */
 interface Harness {
   /** Every frame the Worker posted, in order, progress reports included. */
   readonly frames: Frame[];
-
   /** The requests it made: the URL it asked for and the `Range` header it sent, or null for none. */
   readonly requests: { readonly url: string; readonly range: string | null }[];
-
   /** What the bodies it was answered with saw: cancelled, and read. */
   readonly bodies: { cancelled: number; pulled: number };
-
   /** Posts one request frame, as `runWorker` in `artifacts.web.ts` does. */
   send(frame: WorkerRequest): void;
-
   /** The one frame that answers request `id`, besides its progress reports. */
   reply(id: number): Promise<Frame>;
 }
-
 /**
  * The body of one response: it yields `chunks` when it is read, and records being read and being
  * cancelled. The high-water mark of 0 is what makes the two tellable apart — such a stream holds no
@@ -168,7 +147,6 @@ function bodyOf(
     { highWaterMark: 0 },
   );
 }
-
 /**
  * Loads the Worker entry with `self` and `fetch` stubbed, which is what a browser gives it: the scope
  * it registers its listener on and the network its requests go out on. The module is imported
@@ -180,7 +158,6 @@ async function loadWorker(server: Server): Promise<Harness> {
   const bodies = { cancelled: 0, pulled: 0 };
   const waiting = new Map<number, (frame: Frame) => void>();
   let listener: ((event: MessageEvent<unknown>) => void) | null = null;
-
   const scope = {
     postMessage(message: Frame): void {
       frames.push(message);
@@ -196,7 +173,6 @@ async function loadWorker(server: Server): Promise<Harness> {
       if (type === 'message') listener = handler;
     },
   };
-
   vi.stubGlobal('self', scope);
   vi.stubGlobal('fetch', (input: unknown, init?: RequestInit): Promise<Response> => {
     const url = String(input);
@@ -208,10 +184,8 @@ async function loadWorker(server: Server): Promise<Harness> {
     const responseInit: ResponseInit = { status: answer.status, headers: answer.headers ?? {} };
     return Promise.resolve(new Response(body, responseInit));
   });
-
   vi.resetModules();
   await import('../src/zk/prover.worker.ts');
-
   return {
     frames,
     requests,
@@ -229,19 +203,14 @@ async function loadWorker(server: Server): Promise<Harness> {
     },
   };
 }
-
 /** The `ensure` request the page posts for the two artefacts a case publishes. */
 function ensureFrame(id: number): EnsureRequest {
   return { type: 'ensure', id, artifacts: { wasm: WASM, zkey: ZKEY }, appVersion: '0.1.0' };
 }
-
-/* --- `ensure`: the ranged GET that confirms what is published ---------------------------------- */
-
 /** The one request that answers a case once its reply has arrived. */
 function onlyReply(worker: Harness, id: number): Frame[] {
   return worker.frames.filter((frame) => frame.id === id && frame.type !== 'progress');
 }
-
 /**
  * One row per answer a static file server can give the ranged GET, and per answer that leaves an
  * artefact unconfirmed. `probes` and `cancelled` are what the Worker's handling implies: it asks about
@@ -329,7 +298,6 @@ describe('ensure where the origin private file system cannot be used', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-
   it.each(CONFIRMATIONS.filter((row) => row.code === null))(
     'resolves both artefacts to their published URLs: $name',
     async (row) => {
@@ -337,7 +305,6 @@ describe('ensure where the origin private file system cannot be used', () => {
       const reply = worker.reply(1);
       worker.send(ensureFrame(1));
       const frame = await reply;
-
       expect(frame).toEqual({
         type: 'ensured',
         id: 1,
@@ -356,7 +323,6 @@ describe('ensure where the origin private file system cannot be used', () => {
       expect(worker.bodies).toEqual({ cancelled: 2, pulled: 0 });
     },
   );
-
   it.each(CONFIRMATIONS.filter((row) => row.code !== null))(
     'answers one error frame: $name',
     async (row) => {
@@ -364,7 +330,6 @@ describe('ensure where the origin private file system cannot be used', () => {
       const reply = worker.reply(1);
       worker.send(ensureFrame(1));
       const frame = await reply;
-
       expect(frame).toEqual({ type: 'error', id: 1, code: row.code });
       // The failure is the whole answer: no progress frames, and the artefact after the failing one
       // is never asked about.
@@ -377,9 +342,6 @@ describe('ensure where the origin private file system cannot be used', () => {
     },
   );
 });
-
-/* --- `prove`: the streaming read that replaces the OPFS read ----------------------------------- */
-
 /** The bytes of an artefact in the slices a server sends them: a size no page boundary divides. */
 function chunks(bytes: Uint8Array): Uint8Array[] {
   const size = 1_500_000;
@@ -387,7 +349,6 @@ function chunks(bytes: Uint8Array): Uint8Array[] {
   for (let at = 0; at < bytes.byteLength; at += size) slices.push(bytes.subarray(at, at + size));
   return slices;
 }
-
 /**
  * A server that streams each artefact's own bytes, with `adjust` free to serve the key differently —
  * more bytes than the declaration, or fewer — which is how a case asks for a refusal.
@@ -398,7 +359,6 @@ function servingKey(adjust: (bytes: Uint8Array) => readonly Uint8Array[] = chunk
       ? { status: 200, chunks: adjust(ZKEY_BYTES) }
       : { status: 200, chunks: chunks(WASM_BYTES) };
 }
-
 /** The `prove` request the page posts for the two artefacts a case publishes. */
 function proveFrame(id: number): ProveRequest {
   return {
@@ -419,13 +379,11 @@ describe('prove over the published URLs', () => {
     snark.keys.length = 0;
     snark.wasms.length = 0;
   });
-
   it('loads each artefact from its own URL into the shape snarkjs reads', async () => {
     const worker = await loadWorker(servingKey());
     const reply = worker.reply(1);
     worker.send(proveFrame(1));
     const frame = await reply;
-
     expect(frame).toMatchObject({ type: 'proved', id: 1, publicSignals: ['1'] });
     expect(onlyReply(worker, 1)).toEqual([frame]);
     // Both artefacts were fetched whole from their URLs, with no range and nothing stored.
@@ -446,7 +404,6 @@ describe('prove over the published URLs', () => {
       },
     ]);
   });
-
   it.each([
     {
       name: 'a key body longer than the declaration',
@@ -463,7 +420,6 @@ describe('prove over the published URLs', () => {
     const reply = worker.reply(1);
     worker.send(proveFrame(1));
     const frame = await reply;
-
     expect(frame).toEqual({ type: 'error', id: 1, code: row.code });
     expect(onlyReply(worker, 1)).toEqual([frame]);
     // The WASM was read first and the key's own read was refused, so snarkjs was never called.
@@ -475,14 +431,10 @@ describe('prove over the published URLs', () => {
     expect(snark.wasms).toHaveLength(0);
   });
 });
-
-/* --- The declaration this Worker refuses before anything is read ------------------------------- */
-
 describe('a declaration the Worker cannot confirm', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-
   it('answers artifact_hash_mismatch without touching the network', async () => {
     const worker = await loadWorker(() => ({ status: 206 }));
     const reply = worker.reply(1);
@@ -491,14 +443,10 @@ describe('a declaration the Worker cannot confirm', () => {
       artifacts: { wasm: { ...WASM, sha256: 'nope' }, zkey: ZKEY },
     });
     const frame = await reply;
-
     expect(frame).toEqual({ type: 'error', id: 1, code: 'artifact_hash_mismatch' });
     expect(worker.requests).toEqual([]);
   });
 });
-
-/* --- `ensure` over the origin private file system: the download a write interrupts -------------- */
-
 /**
  * The origin private file system, stubbed: a directory that answers a probe with `NotFoundError`, so
  * both artefacts count as absent and are downloaded, and a synchronous access handle whose every call
@@ -540,7 +488,6 @@ describe('ensure where a write fails part-way through a download', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
-
   it('answers the failure that storage reported, with the transfer released', async () => {
     const worker = await loadWorker(() => ({
       status: 200,
@@ -558,11 +505,9 @@ describe('ensure where a write fails part-way through a download', () => {
         return chunk.byteLength;
       }),
     );
-
     const reply = worker.reply(1);
     worker.send(ensureFrame(1));
     const frame = await reply;
-
     expect(frame).toEqual({ type: 'error', id: 1, code: 'artifact_insufficient_storage' });
     // One reply and nothing else: the single report of the transfer is below the step a frame needs.
     expect(worker.frames).toEqual([frame]);

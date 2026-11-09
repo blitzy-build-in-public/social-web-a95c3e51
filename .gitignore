@@ -1,13 +1,9 @@
-# Tablemate repository exclusions.
+# Tablemate repository exclusions, grouped by what produces the path. Everything the toolchain generates is
+# ignored; everything a build must be reproducible from stays tracked: the pnpm and Cargo lockfiles, the issuer
+# registries, the emitted OpenAPI document, the Prisma migrations, the signed test emails and the labelled menus.
 #
-# Grouped by what produces the path. Everything the toolchain generates is ignored;
-# everything a build must be reproducible from stays tracked: the pnpm and Cargo
-# lockfiles, the generated issuer registries, the emitted OpenAPI document, the Prisma
-# migrations, the DKIM-signed test emails and the labelled menu fixtures.
-#
-# Paths inside this repository are anchored with a leading "/", so a rule such as
-# "/apps/mobile/ios/" cannot reach the committed native module sources at
-# "apps/mobile/modules/tablemate-prover/ios/".
+# Paths inside this repository are anchored with a leading "/", so a rule such as "/apps/mobile/ios/" cannot reach
+# the committed native module sources at "apps/mobile/modules/tablemate-prover/ios/".
 
 # Dependencies, build output and OS files
 node_modules/
@@ -54,9 +50,8 @@ coverage/
 *.aab
 *.ipa
 
-# The web proving Worker, bundled as its own entry by apps/mobile's `export:worker` step and copied
-# into the web export from public/. Expo SDK 52's Metro cannot bundle a Worker through
-# `new Worker(new URL(...))`, so this file is generated rather than committed.
+# The web proving Worker, bundled as its own entry by apps/mobile's `export:worker` step and copied into the web
+# export from public/: Expo SDK 52's Metro cannot bundle a Worker through `new Worker(new URL(...))`.
 /apps/mobile/public/prover.worker.js
 
 # Test output

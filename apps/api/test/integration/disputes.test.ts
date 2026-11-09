@@ -1,13 +1,11 @@
 /**
- * Dispute filing, escalation and resolution: `POST /meetups/:id/dispute`, the
- * `dispute-escalate-<disputeId>` timer, and the operator resolutions that end the meetup an open
- * dispute was holding.
+ * Dispute filing, escalation and resolution: `POST /meetups/:id/dispute`, the `dispute-escalate-<disputeId>` timer, and the operator
+ * resolutions that end the meetup an open dispute was holding.
  *
- * Two rules the cases turn on: the filing guards answer in the contract's order, with the window
- * closing at `startsAt + 24 h` — a `201` at that instant, the refusal a second later — and a dispute
- * resolved `no_fault` moves no money on a `venue_unavailable` filing, while a post-settlement one
- * reverses the capture, voids the credit and removes the no-show. The one case that needs an
- * expirable authorization runs behind `it.runIf(MOCK)`, because only the stateful proxy expires one.
+ * Two rules the cases turn on: the filing guards answer in the contract's order, with the window closing at `startsAt + 24 h` — a `201` at that
+ * instant, the refusal a second later — and a dispute resolved `no_fault` moves no money on a `venue_unavailable` filing, while a
+ * post-settlement one reverses the capture, voids the credit and removes the no-show. The one case that needs an expirable authorization runs
+ * behind `it.runIf(MOCK)`, because only the stateful proxy expires one.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -67,8 +65,8 @@ const MOCK = inject('stripeMode') === 'mock';
 const STEP_MS = 1_000;
 
 /**
- * The step between two reads of a state the provider decides: a webhook runs the payment operations
- * its decision planned after it has committed, without holding up its answer (`payments/webhook.ts`).
+ * The step between two reads of a state the provider decides: a webhook runs the payment operations its decision planned after it has committed,
+ * without holding up its answer (`payments/webhook.ts`).
  */
 const POLL_MS = 50;
 

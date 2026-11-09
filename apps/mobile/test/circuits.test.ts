@@ -1,16 +1,11 @@
 /**
- * The circuit-API pair: each half's recognition of the input generator's error, and the deferred load
- * the web half performs (AAP 0.5.5 "Client input generation", AAP 0.8.1).
- *
- * The pair exists so a caller can read a generator code without the class having to be in the bundle
- * it starts from: iOS and Android test membership of the class, the web tests the shape the class
- * gives itself. The cases below pin both answers against the real generator's error and against
- * errors that merely look like it — a screen shows one sentence per code, so a wrong answer here is a
- * wrong sentence there, and a missing one is the generic failure instead.
- *
- * The deferred half is then exercised the way the app uses it: `loadCircuitApi` is awaited and the
- * values it answers with are checked to be the package's own functions, so the deferred path and the
- * static one cannot drift into different behaviour.
+ * The circuit-API pair: each half's recognition of the input generator's error, and the deferred load the web
+ * half performs (AAP 0.5.5 "Client input generation", AAP 0.8.1). The pair exists so a caller can read a
+ * generator code without the class having to be in the bundle it starts from — iOS and Android test membership
+ * of the class, the web tests the shape the class gives itself — and the cases pin both answers against the real
+ * generator's error and against errors that merely look like it: a screen shows one sentence per code, so a
+ * wrong answer here is a wrong sentence there. The deferred half is exercised the way the app uses it:
+ * `loadCircuitApi` is awaited and the values it answers with are checked to be the package's own functions.
  */
 import { CircuitInputError, base64ToBytes, buildCircuitInputs } from '@tablemate/circuits';
 import { describe, expect, it } from 'vitest';
@@ -18,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 import * as neutral from '../src/zk/circuits.ts';
 import * as web from '../src/zk/circuits.web.ts';
 import { errorCodeOf } from '../src/zk/prover.ts';
-
 /** Four of the generator's own codes: a malformed message, an unregistered issuer, and two fields. */
 const GENERATOR_CODES = [
   'eml_malformed',
@@ -26,7 +20,6 @@ const GENERATOR_CODES = [
   'body_hash_mismatch',
   'field_invalid',
 ] as const;
-
 /** One error that is not the generator's, with the case's own name for it. */
 type NotGeneratorError = readonly [label: string, error: unknown];
 
@@ -47,7 +40,6 @@ const NOT_GENERATOR_ERRORS: readonly NotGeneratorError[] = [
   ],
   ['a plain error', new Error('body_hash_mismatch')],
 ];
-
 /** Values that are not errors at all, so neither half may answer true for them. */
 const NOT_ERRORS: readonly (readonly [label: string, error: unknown])[] = [
   ['null', null],
@@ -63,17 +55,14 @@ describe('the generator’s error, as each half recognises it', () => {
     expect(web.isCircuitInputError(error)).toBe(true);
     expect(errorCodeOf(error)).toBe(code);
   });
-
   it.each(NOT_GENERATOR_ERRORS)('refuses %s on both halves', (_label, error) => {
     expect(neutral.isCircuitInputError(error)).toBe(false);
     expect(web.isCircuitInputError(error)).toBe(false);
   });
-
   it.each(NOT_ERRORS)('refuses %s on both halves', (_label, error) => {
     expect(neutral.isCircuitInputError(error)).toBe(false);
     expect(web.isCircuitInputError(error)).toBe(false);
   });
-
   it('answers the class’s shape on the half that has no class, and its code either way', () => {
     // What the generator's error reduces to once the package is not loaded: the class's own name and
     // a `snake_case` code. The half holding the class is exact and refuses the copy, and the code
@@ -93,7 +82,6 @@ describe('the circuit API of each half', () => {
     expect(nativeApi.base64ToBytes).toBe(base64ToBytes);
     expect(webApi.base64ToBytes).toBe(base64ToBytes);
   });
-
   it('decodes base64 through the deferred decoder', async () => {
     const { base64ToBytes: deferred } = await web.loadCircuitApi();
     expect(Array.from(deferred('aGVsbG8='))).toEqual([104, 101, 108, 108, 111]);

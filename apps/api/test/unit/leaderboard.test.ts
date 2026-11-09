@@ -1,9 +1,8 @@
 /**
  * The lodging leaderboard's pure rules as unit rows: the 90-day activity window, the
- * once-in-any-30-days pair dedupe, the "fewer than 3" guest-count label, the ranking order and the
- * 13 city-local weekly points of the console's trend (AAP 0.5.7, 0.5.4, criterion 16). Almost every
- * row pins a boundary the directory's SQL also relies on, and both readers share one implementation
- * of the rule.
+ * once-in-any-30-days pair dedupe, the "fewer than 3" guest-count label, the ranking order and the 13
+ * city-local weekly points of the console's trend (AAP 0.5.7, 0.5.4, criterion 16). Almost every row
+ * pins a boundary the directory's SQL also relies on, and both readers share one implementation.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -58,8 +57,8 @@ interface ScoreCase {
   readonly name: string;
   readonly facts: readonly ActivityFact[];
   /**
-   * Lodging id to the instants that must count. A lodging named nowhere here must be absent from
-   * the result, which is how a caller reads a score of 0.
+   * Lodging id to the instants that must count. A lodging named nowhere here must be absent from the
+   * result, which is how a caller reads a score of 0.
    */
   readonly expected: Readonly<Record<string, readonly Date[]>>;
 }
@@ -293,14 +292,14 @@ describe('compareForLeaderboard', () => {
 });
 
 /**
- * The one launch city whose clocks change (AAP 0.5.7): the trend's DST boundary is expressed in it,
- * because seven 24-hour spans back from an instant fall on the same local date in every other city.
+ * The one launch city whose clocks change (AAP 0.5.7): the trend's DST boundary is expressed in it, because
+ * seven 24-hour spans back from an instant fall on the same local date in every other city.
  */
 const LISBON = 'Europe/Lisbon';
 
 /**
- * The instant the trend's boundary rows are read at: 2026-11-01T23:00Z is 23:00 in Lisbon, and the
- * seven local days before it span the 2026-10-25 01:00 UTC change from WEST to WET.
+ * The instant the trend's boundary rows are read at: 2026-11-01T23:00Z is 23:00 in Lisbon, and the seven
+ * local days before it span the 2026-10-25 01:00 UTC change from WEST to WET.
  */
 const DST_NOW = new Date(Date.UTC(2026, 10, 1, 23));
 
@@ -407,13 +406,11 @@ describe('trendFromCounted', () => {
 });
 
 /**
- * The one covering-meetup statement both processes run, pinned at the place it is stated
- * (AAP 0.5.2, 0.5.7).
+ * The one covering-meetup statement both processes run, pinned at the place it is stated (AAP 0.5.2, 0.5.7).
  *
  * These rows assert on `@tablemate/db`'s builder itself: it is the statement the API's
- * `recordActivityForVerifiedClaim` and the workers' `backfillActivityFacts` share, so there is no
- * second copy to keep in step with it, and nothing in this suite runs SQL. The rows it returns, and
- * the facts written from them, are covered by the integration suites.
+ * `recordActivityForVerifiedClaim` and the workers' `backfillActivityFacts` share, so there is no second
+ * copy to keep in step with it, and nothing in this suite runs SQL.
  */
 /** The claim every statement row is built for: one traveler, one five-day stay. */
 const COVERAGE = {

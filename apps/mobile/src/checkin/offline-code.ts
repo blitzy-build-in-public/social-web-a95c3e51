@@ -1,60 +1,32 @@
 /**
  * Offline retention of an entered venue check-in code (AAP 0.5.1, 0.5.7, 0.5.8).
  *
- * A check-in code rotates every 60 s and the server accepts the current step and one either side of it, so a code typed
- * just before connectivity drops is still worth submitting when it comes back. This module holds one such code in
+ * A check-in code rotates every 60 s and the server accepts the current step and one either side of it, so a code
+ * typed just before connectivity drops is still worth submitting when it comes back. This module holds one such code in
  * memory for at most `OFFLINE_CODE_RETENTION_MS`, submits it on the next online signal, and otherwise drops it so the
  * screen can ask for a fresh one.
- *
  * The code is never persisted and never logged: it lives in the single active hold below and nowhere else, and is
  * released the moment that hold settles. Coordinates are not held either — the caller's `submit` reads them when it
  * runs. Client-only and Hermes-safe: one file serves iOS, Android and web, because NetInfo's web build runs on
  * `navigator.onLine`.
  */
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
-
 import { CODE_DIGITS, OFFLINE_CODE_RETENTION_MS } from '@tablemate/shared';
-
 /** The shape of a venue check-in code, built from the contract's `CODE_DIGITS` so the two agree. */
 const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
 
-/**
- * `isInternetReachable` is `null` until reachability is known — at start-up, and on web — so only an
- * explicit `false` counts against the connection.
- */
 function isOnlineState(state: NetInfoState): boolean {
   return state.isConnected === true && state.isInternetReachable !== false;
 }
 
-/**
- * Whether the device is online right now; the screen calls this to submit straight away, and holds
- * the code through {@link holdCode} when it cannot.
- */
 export async function isOnline(): Promise<boolean> {
   return isOnlineState(await NetInfo.fetch());
 }
 
-/**
- * How a held code ended. `cancelled` is kept apart from `expired` because the screen says different
- * things about them: an expired code needs a fresh one read from the venue console, while a cancelled
- * hold submitted nothing and would only mislead the user if it asked for one.
- */
 export type HoldOutcome = 'submitted' | 'expired' | 'cancelled';
 
-/**
- * A code under hold. Await {@link HeldCode.result}, which settles exactly once, and call
- * {@link HeldCode.cancel} when the screen unmounts, so nothing is left waiting on connectivity.
- */
 export interface HeldCode {
-  /**
-   * Ends the hold as `cancelled` and releases the code at once. A submission already in flight keeps
-   * its own outcome, though the request it sent may still complete on the server.
-   */
   cancel(): void;
-  /**
-   * Rejects with the error `submit` threw when {@link HoldOptions.isNetworkError} does not call that
-   * error a connectivity failure — an `invalid_code` or `outside_window`, for the screen to announce.
-   */
   readonly result: Promise<HoldOutcome>;
 }
 
@@ -67,22 +39,12 @@ export interface HoldOptions {
   isNetworkError?: (error: unknown) => boolean;
 }
 
-/**
- * The clock the retention window is measured on, monotonic where the platform offers one so that a
- * device clock change cannot stretch a hold; `Date.now()` is the fallback for a runtime without
- * `performance`. This is client code, so the server's injected-clock rule does not apply (AAP 0.11.1).
- */
 function now(): number {
   const perf = globalThis.performance;
   return typeof perf?.now === 'function' ? perf.now() : Date.now();
 }
 
-/**
- * The one hold in flight. A new hold supersedes it, so a code the user has already replaced cannot
- * be submitted behind the newer one.
- */
 let active: HeldCode | null = null;
-
 /**
  * Holds `code` until the device is online, submitting it at most once and only within
  * `OFFLINE_CODE_RETENTION_MS` of this call (AAP 0.5.7).
@@ -92,9 +54,7 @@ let active: HeldCode | null = null;
  * asks for a fresh code from the venue console, which imposes no hard time limit — or as `cancelled`
  * from {@link HeldCode.cancel}, which the screen must call on unmount. The code is kept in memory
  * alone, for no longer than the window, and never logged.
- *
  * Only one hold exists at a time: calling this supersedes an earlier hold, which ends as `cancelled`.
- *
  * @throws A `TypeError` when `code` is not exactly `CODE_DIGITS` digits. It names no code itself.
  */
 export function holdCode(

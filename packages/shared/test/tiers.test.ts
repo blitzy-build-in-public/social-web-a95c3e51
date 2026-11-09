@@ -1,9 +1,4 @@
-/**
- * Disclosure allowlists and the profile DTOs that must match them (AAP 0.5.4, 0.11.2). The
- * allowlist here is typed out by hand from the AAP's own table rather than imported, so a schema's
- * key set is checked against the specification and not against itself, and the sample profiles are
- * built field by field from the allowlists.
- */
+/** Disclosure allowlists and the profile DTOs that must match them. The allowlist here is typed out by hand from the specification rather than imported, so a schema's key set is checked against the specification and not against itself, and the sample profiles are built field by field from the allowlists. */
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -24,10 +19,7 @@ import {
   toGuestCount,
 } from '../src/index.ts';
 import type { DisclosureTier, ProfileField } from '../src/index.ts';
-
-/**
- * The tier table of AAP 0.5.4: what each tier adds, in the order its response schema declares it.
- */
+/** The tier table: what each tier adds, in the order its response schema declares it. */
 const EXPECTED_ADDED = {
   0: [
     'id',
@@ -43,30 +35,21 @@ const EXPECTED_ADDED = {
   2: ['hasPhoto'],
   3: ['externalContact', 'fullName'],
 } as const satisfies Record<DisclosureTier, readonly string[]>;
-
 /** The tiers in ascending order, so no case is written out per tier. */
 const TIERS = [0, 1, 2, 3] as const satisfies readonly DisclosureTier[];
-
-/**
- * `TIER_FIELDS[tier]`, widened to the field names it holds, so indexing a readonly tuple of
- * readonly tuples stays total.
- */
+/** `TIER_FIELDS[tier]`, widened to the field names it holds, so indexing a readonly tuple of readonly tuples stays total. */
 function tierFields(tier: DisclosureTier): readonly ProfileField[] {
   return TIER_FIELDS[tier];
 }
-
 function tierAddedFields(tier: DisclosureTier): readonly ProfileField[] {
   return TIER_ADDED_FIELDS[tier];
 }
-
 function expectedFields(tier: DisclosureTier): readonly string[] {
   return TIERS.filter((lower) => lower <= tier).flatMap<string>((lower) => EXPECTED_ADDED[lower]);
 }
-
 function sorted(fields: readonly string[]): string[] {
   return [...fields].sort();
 }
-
 /** One sample profile, valid at the widest tier: every payload a case needs is derived from it. */
 const SAMPLE = {
   id: '0190a5b2-7c3d-7e4f-8a1b-2c3d4e5f6a7b',
@@ -91,45 +74,36 @@ const SAMPLE = {
   externalContact: '@ana',
   fullName: 'Ana Example',
 } satisfies Tier3Profile;
-
 const SAMPLE_BY_FIELD: Readonly<Record<ProfileField, unknown>> = SAMPLE;
-
 function payloadFor(tier: DisclosureTier): Record<string, unknown> {
   return Object.fromEntries(tierFields(tier).map((field) => [field, SAMPLE_BY_FIELD[field]]));
 }
-
 function payloadWithout(tier: DisclosureTier, field: ProfileField): Record<string, unknown> {
   const keys = tierFields(tier).filter((key) => key !== field);
   return Object.fromEntries(keys.map((key) => [key, SAMPLE_BY_FIELD[key]]));
 }
-
 const GROWTH_ROWS: readonly (readonly [DisclosureTier, DisclosureTier])[] = [
   [0, 1],
   [1, 2],
   [2, 3],
 ];
-
 const STRIP_ROWS: readonly (readonly [DisclosureTier, DisclosureTier])[] = TIERS.flatMap((lower) =>
   TIERS.filter((upper) => upper > lower).map((upper) => [lower, upper] as const),
 );
-
 /** Every (tier, added field) pair: one row per field that must be present at its own tier. */
 const ADDED_FIELD_ROWS: readonly (readonly [DisclosureTier, ProfileField])[] = TIERS.flatMap(
   (tier) => tierAddedFields(tier).map((field) => [tier, field] as const),
 );
-
 const INCOMPLETE_ROWS: readonly (readonly [DisclosureTier, ProfileField, DisclosureTier])[] =
   GROWTH_ROWS.flatMap(([lower, upper]) =>
     tierAddedFields(upper).map((field) => [upper, field, lower] as const),
   );
-
 const NAMED_SCHEMA_ROWS = [
   [0, Tier0Profile],
   [1, Tier1Profile],
   [2, Tier2Profile],
   [3, Tier3Profile],
 ] as const;
-
 /** Fields only a tier above 0 may release: a stranger's view holds none of them (AAP 0.5.4). */
 const TIER0_PERSONAL_FIELDS = [
   'nickname',
@@ -155,8 +129,7 @@ describe('disclosure tier allowlists', () => {
   it.each(GROWTH_ROWS)('tier %i is a strict subset of tier %i', (lower, upper) => {
     const lowerFields = tierFields(lower);
     const upperFields = tierFields(upper);
-    // Nothing a lower tier releases is withdrawn, the list strictly grows, and the difference is
-    // exactly what the upper tier adds.
+    // Nothing a lower tier releases is withdrawn, and the difference is what the upper tier adds.
     expect(lowerFields.filter((field) => !upperFields.includes(field))).toEqual([]);
     expect(upperFields.length).toBeGreaterThan(lowerFields.length);
     expect(upperFields.filter((field) => !lowerFields.includes(field))).toEqual(
@@ -164,8 +137,7 @@ describe('disclosure tier allowlists', () => {
     );
   });
   it('serves photo bytes from the first tier whose allowlist holds hasPhoto', () => {
-    // The allowlists are cumulative, so every tier above the photo tier holds the field too, and
-    // the smallest one that does is the tier `GET /users/:userId/photo` serves bytes from.
+    // The allowlists are cumulative, so the smallest tier holding the field is the tier that serves bytes.
     const holdingPhoto = TIERS.filter((tier) => tierFields(tier).includes('hasPhoto'));
     expect(PHOTO_MIN_TIER).toBe(2);
     expect(holdingPhoto).toEqual([2, 3]);
@@ -199,8 +171,7 @@ describe('profile DTO schemas', () => {
   it.each(INCOMPLETE_ROWS)(
     'resolves a tier %i payload missing %s to tier %i',
     (upper, field, lower) => {
-      // A payload short of one of its tier's fields cannot be resolved to that tier, so the union
-      // a route serializes with never claims a tier the payload does not satisfy.
+      // A payload short of one of its tier's fields cannot resolve to that tier, so the union a route serializes with never claims a tier the payload does not satisfy.
       const resolved = AnyTierProfile.parse(payloadWithout(upper, field));
       expect(sorted(Object.keys(resolved))).toEqual(sorted(tierFields(lower)));
     },

@@ -84,9 +84,7 @@ import pricesHighScenario from '../support/voice-simulator/scenarios/prices-high
 import stopScenario from '../support/voice-simulator/scenarios/stop.json' with { type: 'json' };
 import yesScenario from '../support/voice-simulator/scenarios/yes.json' with { type: 'json' };
 
-// ---------------------------------------------------------------------------------------------
 // Fixtures (AAP 0.5.2, 0.5.6): fixed ids, a fixture guest and the two launch cities this file uses
-// ---------------------------------------------------------------------------------------------
 
 const RELAY_URL = 'wss://api.tablemate.test/v1/webhooks/voice/relay';
 const ATTEMPT_ID = '018f2a10-0000-7000-8000-000000000001';
@@ -158,15 +156,12 @@ const KINDS = [
   'lodging_stay_verification',
 ] as const satisfies readonly CallTaskKind[];
 
-// ---------------------------------------------------------------------------------------------
 // Row builders: the rows a call is, and the values its scripts collect
-// ---------------------------------------------------------------------------------------------
 
 /**
- * One `CallAttempt` row, with the dialogue budget `reservationFor` rebuilds from it.
- *
- * `Object.assign` keeps the model's own field types for the overridden keys, so a case changes one
- * column without restating the fifteen it does not care about.
+ * One `CallAttempt` row, with the dialogue budget `reservationFor` rebuilds from it. `Object.assign`
+ * keeps the model's own field types for the overridden keys, so a case changes one column without
+ * restating the fifteen it does not care about.
  */
 function attemptRow(overrides: Partial<CallAttempt> = {}): CallAttempt {
   return Object.assign(
@@ -316,9 +311,7 @@ function menuCollected(
   return collected;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Fakes (AAP 0.11.2): the two database reads, the socket, the meter and the provider
-// ---------------------------------------------------------------------------------------------
 
 /** One scenario turn, as the simulator's files carry it: what was said and how it classifies. */
 interface ScenarioTurn {
@@ -382,10 +375,9 @@ function linesFor(
 }
 
 /**
- * The stand-in for the provider's classifier: it answers with the scenario turn whose words appear
- * last in the window the caller sent, and `unclear` when none does. The voice simulator's own
- * responder applies that rule to every scenario at once, and this is the same rule for the one
- * scenario a row drives.
+ * The stand-in for the provider's classifier: it answers with the scenario turn whose words appear last
+ * in the window the caller sent, and `unclear` when none does — the same rule the voice simulator's own
+ * responder applies to every scenario at once.
  */
 function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest) => unknown {
   return (request: LlmRequest): Record<string, unknown> => {
@@ -418,8 +410,8 @@ function scenarioResponder(turns: readonly ScenarioTurn[]): (request: LlmRequest
 
 /**
  * One whole call over fakes: the two database reads the session makes, a metered send that charges
- * nothing, a frozen clock, a capturing socket, a logger whose lines the case reads back, and no wait
- * for speech.
+ * nothing, a frozen clock, a capturing socket, a logger whose lines the case reads back, and no wait for
+ * speech.
  */
 function driveScenario(input: {
   readonly ctx: CallContext;
@@ -543,7 +535,6 @@ function driveScenario(input: {
   };
 }
 
-/** Every frame the session spoke, in order. */
 function textFrames(frames: readonly RelayOutboundFrame[]): RelayTextFrame[] {
   return frames.filter((frame): frame is RelayTextFrame => frame.type === 'text');
 }
@@ -593,9 +584,7 @@ function textOf(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-// ---------------------------------------------------------------------------------------------
 // The five template files (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 describe('the five language files', () => {
   it('carries the same fifteen keys in the same order in every language', () => {
@@ -641,9 +630,7 @@ describe('the five language files', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // The disclosure first, in every language (AAP 0.12.2)
-// ---------------------------------------------------------------------------------------------
 
 describe('the disclosure a call opens with', () => {
   const cases = LANGUAGES.flatMap((language) => KINDS.map((kind) => [language, kind] as const));
@@ -677,9 +664,7 @@ describe('the TwiML a call is answered with', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // The two scripts (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 describe('the menu price script', () => {
   it('asks the three questions in order, each read back and confirmed by a prompt', () => {
@@ -795,9 +780,7 @@ describe('the stay verification script', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // What the stay script decrypts, and when it refuses to ask at all (AAP 0.5.2)
-// ---------------------------------------------------------------------------------------------
 
 describe('the stay script prepares a guest it may ask about', () => {
   // The script declares `AppServices` and reads the keyring and the logger from it; the cast names
@@ -855,9 +838,7 @@ describe('the stay script prepares a guest it may ask about', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // The classification turn (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 describe('the utterance classifier', () => {
   it('offers exactly the nine labels the AAP names', () => {
@@ -900,9 +881,7 @@ describe('the utterance classifier', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // One call per script, driven over fakes (AAP 0.5.6)
-// ---------------------------------------------------------------------------------------------
 
 describe('a call driven turn by turn', () => {
   it('asks the three questions, reads each answer back, confirms it and records high confidence', async () => {

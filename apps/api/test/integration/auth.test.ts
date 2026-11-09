@@ -1,10 +1,8 @@
 /**
  * The four `/auth` routes, the session lifetime, the age gate's scope and the health probe.
  *
- * Three properties the cases are built around: a known address and an unknown one are answered
- * identically, so nothing is enumerated; a rotated refresh token presented again revokes the
- * account's whole session family; and the age gate covers the traveler feature routes and nothing
- * else.
+ * Three properties the cases are built around: a known address and an unknown one are answered identically, so nothing is enumerated; a rotated
+ * refresh token presented again revokes the account's whole session family; and the age gate covers the traveler feature routes and nothing else.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -78,10 +76,8 @@ function postMagicLink(email: string): Promise<RouteResponse> {
 }
 
 /**
- * Request one magic link for `email` and answer with the row that request wrote. The new row is
- * identified by what the request added rather than by `createdAt` order: that column is the
- * database's own `now()`, not the injected clock, so two requests of one case can land in the same
- * microsecond and no ordering would separate them.
+ * Request one magic link for `email` and answer with the row that request wrote. The new row is identified by what the request added rather than by
+ * `createdAt` order: that column is the database's own `now()`, so two requests of one case can land in the same microsecond.
  */
 async function requestLink(email: string): Promise<LinkRow> {
   const before = new Set((await linkRows(email)).map((row) => row.id));
@@ -103,8 +99,8 @@ function deliveryCiphertext(row: LinkRow): string {
 }
 
 /**
- * The raw token the mailer would have sent, decrypted exactly as `jobs/notifications.ts` decrypts
- * it — the value never exists on the server outside the ciphertext this reads it from.
+ * The raw token the mailer would have sent, decrypted exactly as `jobs/notifications.ts` decrypts it — the value never exists on the server outside
+ * the ciphertext this reads it from.
  */
 function deliveryToken(row: LinkRow): string {
   return decryptField(t.services.keyring, deliveryCiphertext(row));
@@ -130,9 +126,8 @@ function postRefresh(refreshToken: string): Promise<RouteResponse> {
 }
 
 /**
- * Bodies `POST /auth/magic-link` must refuse, each answered `400 invalid_email`: the route maps any
- * parse failure of its body to that one code, so a caller cannot learn which part of an address the
- * server disliked. 254 characters is the SMTP limit on a full address.
+ * Bodies `POST /auth/magic-link` must refuse, each answered `400 invalid_email`: the route maps any parse failure of its body to that one code, so a
+ * caller cannot learn which part of an address the server disliked. 254 characters is the SMTP limit on a full address.
  */
 const INVALID_ADDRESS_ROWS: readonly (readonly [string, object])[] = [
   ['a string that is not an address', { email: 'not-an-email' }],
@@ -142,9 +137,8 @@ const INVALID_ADDRESS_ROWS: readonly (readonly [string, object])[] = [
 ];
 
 /**
- * Bodies `POST /auth/verify` refuses before the service behind it sees them. `VerifyRequest` takes a
- * token of 1 to 512 characters, so an empty or absurd one is a malformed body and never reaches the
- * `401 token_invalid` the route answers for a token that is unknown, expired or already used.
+ * Bodies `POST /auth/verify` refuses before the service behind it sees them. `VerifyRequest` takes a token of 1 to 512 characters, so an empty or
+ * absurd one is a malformed body and never reaches the `401 token_invalid` the route answers for a token that is unknown, expired or already used.
  */
 const MALFORMED_TOKEN_ROWS: readonly (readonly [string, object])[] = [
   ['an empty token', { token: '' }],

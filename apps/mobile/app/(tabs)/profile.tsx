@@ -1,5 +1,4 @@
-/** The Profile tab (AAP 0.5.8): the caller's own identity, its proof, the witnessed-presence
- * counters and the doors out of the tab. */
+/** The Profile tab: the caller's own identity, its proof, the witnessed-presence counters and the doors out of the tab. */
 import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useRef, type ComponentProps } from 'react';
@@ -49,7 +48,6 @@ const styles = StyleSheet.create({
 });
 
 type Counter = { readonly label: string; readonly value: number };
-/** One row of the links block: its testID, label, href, then the props only that row carries. */
 type Row = readonly [string, string, string, Partial<ListItemProps>?];
 type ProofText = Record<ProofStatus, (proof: MeDto['proof'], cityName: string | null) => string>;
 const PROOF_STATUS_TEXT = {
@@ -91,9 +89,7 @@ function homeLine(homeCity: string | null, homeCountryCode: string | null): stri
 function creditText(cents: number): string {
   return cents % 100 === 0 ? formatUsdWhole(cents) : `${(cents / 100).toFixed(2)} USD`;
 }
-/** All five counters always render, whatever their values: a zero record reads the same here as it
- * does on the traveler profile (`app/users/[userId].tsx`), and the empty-state line below them
- * carries the "nothing yet" meaning. */
+/** All five counters always render, whatever their values: a zero record reads the same here as on the traveler profile. */
 function counterRows(reputation: MeDto['reputation']): Counter[] {
   return [
     { label: COUNTER_LABELS[0], value: reputation.witnessedMeetups },

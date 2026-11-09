@@ -1,7 +1,4 @@
-/**
- * The four traveler tabs — Discover, Meetups, Lodgings, Profile — and the header and tab bar every
- * one of them renders inside (AAP 0.5.8, AAP 0.8.1).
- */
+/** The four traveler tabs — Discover, Meetups, Lodgings, Profile — and the header and tab bar every one of them renders inside. */
 import type { ReactElement } from 'react';
 import { Tabs } from 'expo-router';
 import { MIN_TOUCH_TARGET, borderWidths, colors, fontWeights, typography } from '@tablemate/shared';
@@ -29,7 +26,6 @@ export default function TabsLayout(): ReactElement {
     <Tabs
       screenOptions={{
         headerShown: true,
-        // The tab screens are this navigator's roots: the chrome carries no back control here.
         ...navigationHeaderOptions('surface', { back: false }),
         tabBarStyle: {
           backgroundColor: colors.surface,
@@ -43,12 +39,7 @@ export default function TabsLayout(): ReactElement {
         tabBarLabelStyle: { ...typography.label, fontWeight: fontWeights.medium },
         tabBarItemStyle: { minHeight: MIN_TOUCH_TARGET },
         tabBarAllowFontScaling: true,
-        // The bar's items are this app's own button, so they paint its focus ring rather than the
-        // browser's outline. The framework hands its button the anchor target, the accessible name
-        // it computed, the tab's role and selected state, its own label node and the item's
-        // geometry; `hoverEffect` and `pressOpacity` are `PlatformPressable`'s own and are left
-        // behind, together with the iOS large-content-viewer hints, which are a platform extra for
-        // a label the bar already shows.
+        // The bar's items are this app's own button, so they paint its focus ring rather than the browser's outline; `hoverEffect`, `pressOpacity` and the iOS large-content-viewer hints are deliberately not spread.
         tabBarButton: (props) => (
           <NavButton
             accessibilityLabel={props['aria-label']}

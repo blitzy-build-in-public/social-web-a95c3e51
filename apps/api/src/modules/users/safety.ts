@@ -1,18 +1,15 @@
 /**
- * Safety basics: blocking a traveler and reporting one (AAP 0.5.1, 0.5.3, 0.5.4, 0.7.3).
+ * Safety basics: blocking a traveler and reporting one.
  *
- * A block cancels any open meetup of the pair — at any time before settlement, inside the
- * late-cancellation window and after the start included — with `cancelReason = block` and no forfeit, no
- * Table Credit and no reputation change whatsoever (AAP 0.5.3, 0.7.3). Reporting records a reason for the
- * operator queue and settles nothing.
+ * A block cancels any open meetup of the pair — at any time before settlement, inside the late-cancellation window and
+ * after the start included — with `cancelReason = block` and no forfeit, no Table Credit and no reputation change
+ * whatsoever. Reporting records a reason for the operator queue and settles nothing.
  *
- * Both functions write through one fenced transaction, and inside it the target's row is read `FOR SHARE`:
- * the deletion takes `FOR UPDATE` on the same row, so a block against an account being deleted either
- * commits first — and the erasure that follows removes it, the `Block` row cascading with the user — or
- * waits for the deletion and then reads no live row, answering `404 user_not_found` (AAP 0.3.2, 0.5.3).
- * An open meetup is cancelled only through the state machine, after `lockMeetup` and a re-read, and the
- * releases it plans run after the commit, through `after`, so no provider call happens inside the
- * transaction (AAP 0.3.2).
+ * Both functions write through one fenced transaction, and inside it the target's row is read `FOR SHARE`: the
+ * deletion takes `FOR UPDATE` on the same row, so a block against an account being deleted either commits first — and
+ * the erasure that follows removes it, the `Block` row cascading with the user — or waits for the deletion and then
+ * reads no live row, answering `404 user_not_found`. An open meetup is cancelled only through the state machine, after
+ * `lockMeetup` and a re-read, and the releases it plans run after the commit, through `after`.
  */
 import { Prisma, type DbTx } from '@tablemate/db';
 import type { MeetupStatus, ReportRequest } from '@tablemate/shared';
@@ -25,17 +22,15 @@ import { runOperationsFor } from '../payments/operations.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
-/**
- * The two statuses an open meetup can hold, and the only ones a block cancels: a meetup in any final status
- * is never touched, because its money has already been decided (AAP 0.5.3).
- */
+/** The two statuses an open meetup can hold, and the only ones a block cancels: a meetup in any final status is never
+ * touched, because its money has already been decided. */
 const OPEN_PAIR_STATUSES = ['proposed', 'locked'] as const satisfies readonly MeetupStatus[];
 
 /**
- * Refuses a target that is unknown, deleted or on its way out, holding its row for the caller's
- * transaction: the `FOR SHARE` is the invariant, not an optimisation, because `DELETE /me` takes
- * `FOR UPDATE` on this same row and the two locks cannot be held at once, so a block either commits before
- * the deletion — and the erasure removes the row it wrote — or waits and reads no live row at all.
+ * Refuses a target that is unknown, deleted or on its way out, holding its row for the caller's transaction: the
+ * `FOR SHARE` is the invariant, not an optimisation, because `DELETE /me` takes `FOR UPDATE` on this same row and the
+ * two locks cannot be held at once, so a block either commits before the deletion — and the erasure removes the row it
+ * wrote — or waits and reads no live row at all.
  */
 async function lockLiveTarget(tx: DbTx, targetId: string): Promise<void> {
   const rows = await tx.$queryRaw<readonly { id: string }[]>(Prisma.sql`
@@ -51,14 +46,14 @@ async function lockLiveTarget(tx: DbTx, targetId: string): Promise<void> {
 }
 
 /**
- * Block a traveler, cancelling any open meetup the pair shares (AAP 0.5.3, 0.5.4, 0.7.3).
+ * Block a traveler, cancelling any open meetup the pair shares.
  *
- * The `Block` row is written idempotently, so a repeated block is a no-op that still answers `204`, and a
- * block the target placed first does not prevent this one: the pair is then blocked in both directions,
- * which is what makes `GET /users/:userId` answer `404` to either of them. An open meetup is cancelled
- * through the locked row and the state machine, so its deposits are released and an open dispute is
- * resolved `no_fault` with the note `cancelled_by_block`. The cancellation is free at every hour: no hold
- * is captured, no Table Credit is granted and no reputation counter changes (AAP 0.5.7).
+ * The `Block` row is written idempotently, so a repeated block is a no-op that still answers `204`, and a block the
+ * target placed first does not prevent this one: the pair is then blocked in both directions, which is what makes
+ * `GET /users/:userId` answer `404` to either of them. An open meetup is cancelled through the locked row and the
+ * state machine, so its deposits are released and an open dispute is resolved `no_fault` with the note
+ * `cancelled_by_block`; the cancellation is free at every hour, capturing no hold, granting no Table Credit and
+ * changing no reputation counter.
  */
 export async function block(
   services: AppServices,
@@ -102,7 +97,7 @@ export async function block(
         at: now,
         source: 'route',
       });
-      // The releases the transition planned run after the commit, never inside it (AAP 0.3.2).
+      // The releases the transition planned run after the commit, never inside it.
       after(() => runOperationsFor(services, { meetupId: open.id }));
       return true;
     },
@@ -116,7 +111,7 @@ export async function block(
 }
 
 /**
- * Report a traveler to the operators (AAP 0.5.2, 0.5.4).
+ * Report a traveler to the operators.
  *
  * A block in either direction does not prevent a report: the pair most likely to need one is the pair where
  * one side has already blocked the other. A report has no effect on the meetup, on a deposit or on any

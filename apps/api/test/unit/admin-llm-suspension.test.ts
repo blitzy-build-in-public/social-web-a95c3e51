@@ -1,16 +1,10 @@
 /**
- * The operator's language-model re-enable at the module boundary (AAP 0.5.6, 0.11.1): the flag it
- * clears, the counter it leaves standing, the store it resolves and the one refusal it raises.
- *
- * The route end to end, against real Redis, is `apps/api/test/integration/admin.test.ts`. What no
- * integration case can stage is a flag store that fails while Redis otherwise answers, because such a
- * request is refused at the rate limiter first: an operator would see the limiter's
- * `503 service_unavailable` and never reach the handler. That refusal is what these rows pin, since
- * it is the difference between an actionable "the suspension could not be cleared" and a `500` for an
- * outage the route never mentions.
- *
- * @see AAP 0.5.6 for the suspension, its two Redis keys and the operator's re-enable, 0.11.1 for the
- *   narrowed log line that carries a failure's own short code and nothing else.
+ * The operator's language-model re-enable at the module boundary (AAP 0.5.6, 0.11.1): the flag it clears,
+ * the counter it leaves standing, the store it resolves and the one refusal it raises. The route end to
+ * end, against real Redis, is `apps/api/test/integration/admin.test.ts`; what no integration case can
+ * stage is a flag store that fails while Redis otherwise answers, because such a request is refused at the
+ * rate limiter first — the refusal that separates an actionable "the suspension could not be cleared" from
+ * a `500` for an outage the route never mentions.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -44,8 +38,8 @@ const lines: CapturedLine[] = [];
 
 /**
  * The two suspension keys in memory, as {@link createRedisSuspensionStore} uses them: one map behind
- * `get`/`set`/`del`, an `incr` the mismatch path needs, and a `failWith` that makes every command
- * reject with that code, which is what a connection left unanswered by a paused server reports.
+ * `get`/`set`/`del`, an `incr` the mismatch path needs, and a `failWith` that makes every command reject
+ * with that code, which is what a connection left unanswered by a paused server reports.
  */
 class FakeSuspensionRedis implements SuspensionRedis {
   readonly values = new Map<string, string>();
@@ -86,13 +80,10 @@ class FakeSuspensionRedis implements SuspensionRedis {
 }
 
 /**
- * The services {@link reEnableLanguageModel} reads — the flag's store or the Redis it is built from,
- * and the logger — under the narrowed declaration `metrics.ts` states.
- *
- * The database and configuration members the interface also carries are `null` behind the one cast:
- * the re-enable reaches the flag and no table and no cap, so a fake Prisma client and a fabricated
- * environment would be two more doubles for nothing. The logger is a real double rather than pino, so
- * a row asserts on the fields of each line.
+ * The services {@link reEnableLanguageModel} reads — the flag's store or the Redis it is built from, and
+ * the logger — under the narrowed declaration `metrics.ts` states. The database and configuration members
+ * the interface also carries are `null` behind the one cast: the re-enable reaches the flag and no table and
+ * no cap. The logger is a real double rather than pino, so a row asserts on the fields of each line.
  */
 function servicesWith(
   stores: Pick<AdminMetricsServices, 'suspension' | 'redis'>,

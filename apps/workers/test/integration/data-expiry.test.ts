@@ -1,7 +1,4 @@
-/**
- * Integration tests for the retention rules `apps/workers/src/jobs/data-expiry.ts` enforces
- * (AAP 0.5.2, 0.5.6, 0.12.2).
- */
+/** Integration tests for the retention rules `apps/workers/src/jobs/data-expiry.ts` enforces (AAP 0.5.2, 0.5.6, 0.12.2). */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -32,21 +29,12 @@ import {
 import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
 const CITY = 'lisbon';
-
 /** The minutes one day holds, so the two 24-hour boundaries below are written as the rules state them. */
 const DAY_MINUTES = 24 * 60;
-
-/**
- * The provider call ids of the lodging call the strip removes and of the live one it must leave
- * alone: `CA` and thirty-two hex digits, the shape Twilio reports and the unique column takes.
- */
+/** The provider call ids of the lodging call the strip removes and of the live one it must leave alone: `CA` and thirty-two hex digits, the shape Twilio reports and the unique column takes. */
 const STRIPPED_CALL_SID = 'CA0123456789abcdef0123456789abcdef';
 const LIVE_CALL_SID = 'CAfedcba9876543210fedcba9876543210';
-
-/**
- * What a lodging call's attempt carries before the strip: every field the rule has to take away, so
- * the case asserts the retained shape against a row that was not already empty.
- */
+/** What a lodging call's attempt carries before the strip: every field the rule has to take away, so the case asserts the retained shape against a row that was not already empty. */
 const LODGING_CALL_CONTENT = {
   outcome: 'completed' as const,
   confidence: 'high' as const,
@@ -55,12 +43,7 @@ const LODGING_CALL_CONTENT = {
   durationSec: 42,
   llmReservedMicros: 1_234n,
 };
-
-/**
- * The fields the strip takes off an attempt (AAP 0.5.2, 0.12.2): the provider's id, the summary, the
- * extracted fields, the confidence, the duration, the transcript with its deadline, and the
- * language-model reservation the call has released.
- */
+/** The fields the strip takes off an attempt (AAP 0.5.2, 0.12.2): the provider's id, the summary, the extracted fields, the confidence, the duration, the transcript with its deadline, and the language-model reservation the call has released. */
 const STRIPPED_ATTEMPT = {
   twilioCallSid: null,
   summary: null,
@@ -71,16 +54,10 @@ const STRIPPED_ATTEMPT = {
   transcriptDeleteAt: null,
   llmReservedMicros: 0n,
 } as const;
-
-/**
- * The `workers` configuration of this host: `FINANCIAL_RETENTION_DAYS` is the daily step's cut-off
- * and is read here rather than assumed, because it is configuration (AAP 0.5.2, 0.6.2).
- */
+/** The `workers` configuration of this host: `FINANCIAL_RETENTION_DAYS` is the daily step's cut-off and is read here rather than assumed, because it is configuration (AAP 0.5.2, 0.6.2). */
 const env = loadWorkersEnv(testWorkersEnv());
-
 let testApp: TestApp;
 let ctx: WorkerContext;
-
 function minutesFromNow(minutes: number): Date {
   return new Date(testApp.time.now().getTime() + minutes * MINUTE_MS);
 }
@@ -89,10 +66,7 @@ function daysFromNow(days: number): Date {
   return new Date(testApp.time.now().getTime() + days * DAY_MS);
 }
 
-/**
- * `now` shifted by `days` and then by `minutes`, negative for the past: the instant one minute either
- * side of a day-count rule's window.
- */
+/** `now` shifted by `days` and then by `minutes`, negative for the past: the instant one minute either side of a day-count rule's window. */
 function atAge(days: number, minutes: number): Date {
   return new Date(testApp.time.now().getTime() + (days * DAY_MINUTES + minutes) * MINUTE_MS);
 }
@@ -101,13 +75,7 @@ function residual(counts: Record<string, number>): readonly (readonly [string, n
   return Object.entries(counts).filter(([, count]) => count !== 0);
 }
 
-/**
- * Run the hourly step once, then once more, and require the first pass to report `expected`, the
- * second to report zeros, and `read` to be unchanged across it (AAP 0.3.2).
- * @param read - The rows this case asserts on, read afresh before and after the second pass.
- * @param expected - What the first pass must report, as the rule's own count keys.
- * @returns The rows as they stand once the first pass has run.
- */
+/** Run the hourly step once, then once more, and require the first pass to report `expected`, the second to report zeros, and `read` to be unchanged across it (AAP 0.3.2). @param read - The rows this case asserts on, read afresh before and after the second pass. @param expected - What the first pass must report, as the rule's own count keys. @returns The rows as they stand once the first pass has run. */
 async function hourlyPass<Row>(
   read: () => Promise<Row>,
   expected: Record<string, number>,
@@ -117,42 +85,32 @@ async function hourlyPass<Row>(
     first,
     'the first pass of the hourly step did not report the rule’s own counts',
   ).toMatchObject(expected);
-
   const after = await read();
   const second = residual(await runHourlyExpiry(ctx));
   expect(second, 'a second pass of the hourly step still changed rows').toEqual([]);
   expect(await read(), 'a second pass of the hourly step changed rows').toEqual(after);
-
   return after;
 }
 
 beforeAll(async () => {
   testApp = await createTestApp();
-  // The app's own clock, so a case that advances it moves the job's cut-offs too, and the app's own
-  // database, which `resetState` truncates between cases (AAP 0.11.2).
+  // The app's own clock, so a case that advances it moves the job's cut-offs too, and the app's own database, which `resetState` truncates between cases (AAP 0.11.2).
   ctx = await createWorkerContext(env, { clock: testApp.clock });
 });
-
 afterAll(async () => {
   await closeWorkerContext(ctx);
   await testApp.close();
 });
-
 beforeEach(async () => {
   await testApp.resetState();
   await testApp.seedCities();
 });
-
 interface HourlyCase {
   readonly name: string;
   readonly check: () => Promise<void>;
 }
 
-/**
- * One entry per hourly rule of `data-expiry.ts`, each seeding the record its rule is due to reach
- * and, beside it, the record just inside the window the rule must not: one minute either side of the
- * rule's own edge, which is what makes the rule's count move when its window moves (AAP 0.5.2).
- */
+/** One entry per hourly rule of `data-expiry.ts`, each seeding the record its rule is due to reach and, beside it, the record just inside the window the rule must not: one minute either side of the rule's own edge, which is what makes the rule's count move when its window moves (AAP 0.5.2). */
 const HOURLY_CASES: readonly HourlyCase[] = [
   {
     name: 'erases a resolved claim’s booking details and keeps a live claim’s',
@@ -168,8 +126,7 @@ const HOURLY_CASES: readonly HourlyCase[] = [
         status: 'calling',
         bookingReference: 'FIXTURE-REFERENCE-2',
       });
-      // The claim resolved a minute before the run. The rule keys off the status rather than the
-      // instant, which is what keeps it well inside the 24-hour limit criterion 14 measures.
+      // The claim resolved a minute before the run. The rule keys off the status rather than the instant, which is what keeps it well inside the 24-hour limit criterion 14 measures.
       const erasedAt = testApp.time.advance({ minutes: 1 });
       const read = () =>
         Promise.all([
@@ -432,8 +389,7 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       const current = await taskOf(atAge(-365, 1));
       const staleAttempt = await makeCallAttempt(testApp, stale, { outcome: 'completed' });
       const currentAttempt = await makeCallAttempt(testApp, current, { outcome: 'completed' });
-      // Every instant on the row is set to the same boundary, so the rule's own COALESCE reads any of
-      // them and still ages the call by the outcome that ended it.
+      // Every instant on the row is set to the same boundary, so the rule's own COALESCE reads any of them and still ages the call by the outcome that ended it.
       const ageAttempt = (id: string, at: Date) =>
         db.callAttempt.update({ where: { id }, data: { startedAt: at, endedAt: at } });
       await ageAttempt(staleAttempt.id, atAge(-365, -1));
@@ -472,9 +428,7 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       const current = await taskOf(atAge(-365, 1));
       const staleAttempt = await makeCallAttempt(testApp, stale, { outcome: 'completed' });
       const currentAttempt = await makeCallAttempt(testApp, current, { outcome: 'completed' });
-      // The strip's own shape, which is what the age rule selects on: no provider id, no duration and
-      // every instant on the boundary. A row that still held a sid would be stripped by the hourly
-      // rule first, which is what makes this case about the age rule alone.
+      // The strip's own shape, which is what the age rule selects on: no provider id, no duration and every instant on the boundary. A row that still held a sid would be stripped by the hourly rule first, which is what makes this case about the age rule alone.
       const strip = (id: string, at: Date) =>
         db.callAttempt.update({
           where: { id },
@@ -556,8 +510,7 @@ const HOURLY_CASES: readonly HourlyCase[] = [
       });
       const before = await read();
       const after = await hourlyPass(read, { reportReasonsCleared: 1, disputeReasonsCleared: 1 });
-      // The row stays and only its text goes. Both columns are NOT NULL, so a cleared reason is the
-      // empty string rather than null.
+      // The row stays and only its text goes. Both columns are NOT NULL, so a cleared reason is the empty string rather than null.
       expect(before.reportDue.reason).toBe('Fixture report due');
       expect(after.reportDue).toEqual({ ...before.reportDue, reason: '' });
       expect(after.reportInside).toEqual(before.reportInside);

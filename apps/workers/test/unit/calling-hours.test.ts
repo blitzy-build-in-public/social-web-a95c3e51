@@ -1,7 +1,4 @@
-/**
- * The calling-hours rule's unit suite (AAP 0.5.6): the 09:00-20:00 window in the business's own
- * city, the `now + CAP_CALL_SECONDS <= 20:00` bound, and the deferral to the next 09:00 local.
- */
+/** The calling-hours rule's unit suite (AAP 0.5.6): the 09:00-20:00 window in the business's own city, the `now + CAP_CALL_SECONDS <= 20:00` bound, and the deferral to the next 09:00 local. */
 
 import { describe, expect, it } from 'vitest';
 
@@ -15,15 +12,9 @@ import {
 } from '../../src/calls/calling-hours.ts';
 
 const CAP_CALL_SECONDS = 300;
-
 type WindowCase = readonly [zone: string, at: string, maxSeconds: number, within: boolean];
-
 type DeferralCase = readonly [zone: string, at: string, next: string];
-
-/**
- * The 09:00 opening and the closing bound, in every launch city's zone (AAP 0.5.6): 09:00:00 local is
- * allowed and 08:59:59 is not; with a 300-second call, 19:55:00 local is allowed and 19:55:01 is not.
- */
+/** The 09:00 opening and the closing bound, in every launch city's zone (AAP 0.5.6): 09:00:00 local is allowed and 08:59:59 is not; with a 300-second call, 19:55:00 local is allowed and 19:55:01 is not. */
 const WINDOW_CASES: readonly WindowCase[] = [
   // Lisbon in summer, WEST = UTC+1.
   ['Europe/Lisbon', '2026-07-01T07:59:59Z', CAP_CALL_SECONDS, false], // 08:59:59 local
@@ -56,11 +47,7 @@ const WINDOW_CASES: readonly WindowCase[] = [
   ['Asia/Makassar', '2026-07-01T11:55:00Z', CAP_CALL_SECONDS, true], // 19:55:00 local
   ['Asia/Makassar', '2026-07-01T11:55:01Z', CAP_CALL_SECONDS, false], // 19:55:01 local
 ];
-
-/**
- * The window's own edges and the cases where the city is closed or the span would cross local
- * midnight, none of which depends on the call's length.
- */
+/** The window's own edges and the cases where the city is closed or the span would cross local midnight, none of which depends on the call's length. */
 const EDGE_CASES: readonly WindowCase[] = [
   ['Europe/Lisbon', '2026-07-01T19:00:00Z', 0, true], // 20:00:00 local
   ['Europe/Lisbon', '2026-07-01T19:00:01Z', 0, false], // 20:00:01 local
@@ -71,10 +58,7 @@ const EDGE_CASES: readonly WindowCase[] = [
   ['Asia/Makassar', '2026-07-01T14:00:00Z', 7_200, false], // 22:00:00 -> 00:00:00 next day
   ['Europe/Lisbon', '2026-07-01T08:00:00Z', 86_400, false], // 09:00:00 -> 09:00:00 next day
 ];
-
-/**
- * The next 09:00 local for an instant outside the window, in every launch city's zone (AAP 0.5.6).
- */
+/** The next 09:00 local for an instant outside the window, in every launch city's zone (AAP 0.5.6). */
 const DEFERRAL_CASES: readonly DeferralCase[] = [
   ['Europe/Lisbon', '2026-07-01T08:00:00Z', '2026-07-02T08:00:00Z'], // exactly 09:00 local
   ['Europe/Lisbon', '2026-07-01T06:00:00Z', '2026-07-01T08:00:00Z'], // 07:00 local
@@ -89,12 +73,7 @@ const DEFERRAL_CASES: readonly DeferralCase[] = [
   ['Asia/Bangkok', '2026-07-01T01:00:00Z', '2026-07-01T02:00:00Z'], // 08:00 local
   ['Asia/Makassar', '2026-07-01T15:30:00Z', '2026-07-02T01:00:00Z'], // 23:30 local, next day
 ];
-
-/**
- * The five launch cities' IANA zones (AAP 0.5.2): Lisbon, Mexico City, Medellín, Chiang Mai and
- * Canggu. It is what turns the boundaries below into the same six rows five times over, so a
- * zone-dependent mistake in the rule cannot hide behind a single timezone.
- */
+/** The five launch cities' IANA zones (AAP 0.5.2): Lisbon, Mexico City, Medellín, Chiang Mai and Canggu. It is what turns the boundaries below into the same six rows five times over, so a zone-dependent mistake in the rule cannot hide behind a single timezone. */
 const ZONES = [
   'Europe/Lisbon',
   'America/Mexico_City',
@@ -102,33 +81,16 @@ const ZONES = [
   'Asia/Bangkok',
   'Asia/Makassar',
 ] as const;
-
-/**
- * The local day the derived cases are read on: a Tuesday in November, outside every launch zone's
- * DST transition, so the instant `localTimeOn` builds and the wall time the case names agree.
- */
+/** The local day the derived cases are read on: a Tuesday in November, outside every launch zone's DST transition, so the instant `localTimeOn` builds and the wall time the case names agree. */
 const LOCAL_DAY = '2026-11-10';
-
-/**
- * A case on {@link LOCAL_DAY}: the wall time read off the city's clock, the seconds past it, how
- * long the call may last, and the verdict. `localTimeOn` takes `HH:MM` alone, so a case one second
- * past a minute carries that second here rather than inside the time.
- */
+/** A case on {@link LOCAL_DAY}: the wall time read off the city's clock, the seconds past it, how long the call may last, and the verdict. `localTimeOn` takes `HH:MM` alone, so a case one second past a minute carries that second here rather than inside the time. */
 type LocalWindowCase = readonly [
   at: string,
   plusSeconds: number,
   maxSeconds: number,
   within: boolean,
 ];
-
-/**
- * The window's edges read off the city's own clock (AAP 0.5.6), one row per boundary: the opening
- * instant and the second before it; 19:55:00, the last start that finishes by 20:00:00 exactly under
- * a 300-second call, and the second after it; the two `maxSeconds` rows, which refuse a 120-second
- * call one minute before the close while allowing a zero-length one, so the closing bound is proved
- * to follow the call's own length rather than a fixed 300; and the two closed-city instants, late
- * evening and after midnight, which are outside at any length.
- */
+/** The window's edges read off the city's own clock (AAP 0.5.6), one row per boundary: the opening instant and the second before it; 19:55:00, the last start that finishes by 20:00:00 exactly under a 300-second call, and the second after it; the two `maxSeconds` rows, which refuse a 120-second call one minute before the close while allowing a zero-length one, so the closing bound is proved to follow the call's own length rather than a fixed 300; and the two closed-city instants, late evening and after midnight, which are outside at any length. */
 const LOCAL_WINDOW_CASES: readonly LocalWindowCase[] = [
   ['08:59', 59, CAP_CALL_SECONDS, false], // 08:59:59 local, before the window opens
   ['09:00', 0, CAP_CALL_SECONDS, true], // 09:00:00 local, the opening instant itself
@@ -139,20 +101,9 @@ const LOCAL_WINDOW_CASES: readonly LocalWindowCase[] = [
   ['23:30', 0, CAP_CALL_SECONDS, false], // the city is closed for the evening
   ['00:30', 0, CAP_CALL_SECONDS, false], // the window has not opened yet today
 ];
-
-/**
- * A deferral case: the wall time read off the city's clock, the seconds past it, and whether the
- * 09:00 it defers to belongs to the following local day.
- */
+/** A deferral case: the wall time read off the city's clock, the seconds past it, and whether the 09:00 it defers to belongs to the following local day. */
 type LocalDeferralCase = readonly [at: string, plusSeconds: number, nextDay: boolean];
-
-/**
- * Where each instant the window refuses is deferred to (AAP 0.5.6): today's 09:00 while it is still
- * strictly ahead of `now`, the following local day's otherwise. The instants themselves are built by
- * `city-time.ts` in the assertions rather than written out here, so a row states only which of the
- * two it expects — 00:30 and 08:59:59 have today's opening still to come, while 09:00 itself,
- * 19:55:01, 19:59 and 23:30 have used it up.
- */
+/** Where each instant the window refuses is deferred to (AAP 0.5.6): today's 09:00 while it is still strictly ahead of `now`, the following local day's otherwise. The instants themselves are built by `city-time.ts` in the assertions rather than written out here, so a row states only which of the two it expects — 00:30 and 08:59:59 have today's opening still to come, while 09:00 itself, 19:55:01, 19:59 and 23:30 have used it up. */
 const LOCAL_DEFERRAL_CASES: readonly LocalDeferralCase[] = [
   ['00:30', 0, false],
   ['08:59', 59, false],
@@ -161,15 +112,8 @@ const LOCAL_DEFERRAL_CASES: readonly LocalDeferralCase[] = [
   ['19:59', 0, true],
   ['23:30', 0, true],
 ];
-
 type DstCase = readonly [day: string, sixLocalUtc: string, opensUtc: string];
-
-/**
- * Lisbon's two 2026 transitions (AAP 0.5.6), the only DST the launch set has: the clocks spring
- * forward at 01:00Z on 2026-03-29, so 09:00 local is 08:00Z, and fall back at 01:00Z on 2026-10-25,
- * so it is 09:00Z again. Neither transition meets the window's bounds, so a window on either day is
- * the full nine-to-eight rather than a shortened one.
- */
+/** Lisbon's two 2026 transitions (AAP 0.5.6), the only DST the launch set has: the clocks spring forward at 01:00Z on 2026-03-29, so 09:00 local is 08:00Z, and fall back at 01:00Z on 2026-10-25, so it is 09:00Z again. Neither transition meets the window's bounds, so a window on either day is the full nine-to-eight rather than a shortened one. */
 const DST_CASES: readonly DstCase[] = [
   ['2026-03-29', '2026-03-29T05:00:00.000Z', '2026-03-29T08:00:00.000Z'], // WEST, UTC+1
   ['2026-10-25', '2026-10-25T06:00:00.000Z', '2026-10-25T09:00:00.000Z'], // WET, UTC+0

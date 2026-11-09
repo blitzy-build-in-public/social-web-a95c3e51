@@ -1,31 +1,24 @@
 /**
- * Groth16 verification of a submitted itinerary proof, and the server-side checks that bind it to the
- * circuit configuration this API published (AAP 0.5.5).
- *
- * `POST /itinerary-proofs` hands this module the only thing the server ever receives about a booking
- * confirmation — `{ proof, publicSignals }` — and answers with the stay that proof proves. The checks run
- * in the order AAP 0.5.5 fixes, each answering its own code: every signal must be a canonical field
- * element and the proof must verify against the mounted verification key, or `422 proof_invalid`; the
- * `nullifierSalt` signal must equal the published `NULLIFIER_SALT`; the `registryRoot` signal must be a
- * root this process publishes, or `422 issuer_not_allowlisted`; the `cityId` and `issuerId` signals must
- * name entries of that registry, the city's slug must resolve in the launch-city configuration and both
- * date signals must decode as calendar dates; and the stay must be between `STAY_MIN_DAYS` and
- * `STAY_MAX_DAYS`, or `422 stay_out_of_range`.
- *
- * Step 6 of that order belongs to the route: `routes.ts` spends the returned `nullifier` by inserting it
- * into `SpentNullifier`, which answers `409 nullifier_used` (AAP 0.5.2, 0.5.5). Canonicalizing the signals
- * first is what makes that insert the one key a booking has — `FieldElement` admits leading zeros, so
- * `"007"` and `"7"` would otherwise be two spellings of one nullifier and slip past a unique index — and
- * it is also what verification is fed, so the signals that verifies are the signals the checks below read.
- *
- * No proving happens here, and the API image holds no proving key, no circuit WASM, no witness generator
- * and no private input (AAP 0.5.5, 0.12.2). The hot path is deliberately free of I/O after the first call:
- * ffjavascript's `buildBn128` reuses the singleton `globalThis.curve_bn128` whenever it is asked without
- * `singleThread`, and snarkjs' Groth16 verifier asks for the curve on every call, so one built instance
- * serves every later proof and a verification costs a pairing check rather than a WebAssembly module
- * build — which is what the 500 ms server-verification budget rests on (AAP 0.1.1). {@link closeVerifier}
- * releases that instance, because its worker threads would otherwise keep a process alive after
- * `app.close()`.
+ * Groth16 verification of a submitted itinerary proof, and the server-side checks that bind it to the circuit configuration
+ * this API published.
+ * `POST /itinerary-proofs` hands this module the only thing the server ever receives about a booking confirmation —
+ * `{ proof, publicSignals }` — and answers with the stay that proof proves. The checks run in the order the contract fixes,
+ * each answering its own code: every signal must be a canonical field element and the proof must verify against the mounted
+ * verification key, or `422 proof_invalid`; the `nullifierSalt` signal must equal the published `NULLIFIER_SALT`; the
+ * `registryRoot` signal must be a root this process publishes, or `422 issuer_not_allowlisted`; the `cityId` and `issuerId`
+ * signals must name entries of that registry, the city's slug must resolve in the launch-city configuration and both date
+ * signals must decode as calendar dates; and the stay must be between `STAY_MIN_DAYS` and `STAY_MAX_DAYS`, or
+ * `422 stay_out_of_range`.
+ * The last step belongs to the route: `routes.ts` spends the returned `nullifier` by inserting it into `SpentNullifier`, which
+ * answers `409 nullifier_used`. Canonicalizing the signals first is what makes that insert the one key a booking has —
+ * `FieldElement` admits leading zeros, so `"007"` and `"7"` would otherwise be two spellings of one nullifier and slip past a
+ * unique index — and it is also what verification is fed.
+ * No proving happens here, and the API image holds no proving key, no circuit WASM, no witness generator and no private input.
+ * The hot path is deliberately free of I/O after the first call: ffjavascript's `buildBn128` reuses the singleton
+ * `globalThis.curve_bn128` whenever it is asked without `singleThread`, and snarkjs' Groth16 verifier asks for the curve on
+ * every call, so one built instance serves every later proof and a verification costs a pairing check rather than a
+ * WebAssembly module build — which is what the 500 ms server-verification budget rests on. {@link closeVerifier} releases that
+ * instance, because its worker threads would otherwise keep a process alive after `app.close()`.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -38,8 +31,7 @@ import { AppError } from '../../plugins/errors.ts';
 import { activeRegistries, circuitsBuildPath, cityBySlug } from './registry.ts';
 import { signalDateToIso, stayDays } from './validity.ts';
 
-// Type-only, so this file holds no runtime edge to the module that builds the app — the single
-// `AppServices` declaration every module of `apps/api/src/modules` names (AAP 0.5.1).
+// Type-only, so this file holds no runtime edge to the module that builds the app — the single `AppServices` declaration every module of `apps/api/src/modules` names.
 import type { AppServices } from '../../app.ts';
 
 const VERIFICATION_KEY_FILE = 'verification_key.json';
@@ -47,26 +39,22 @@ const VERIFICATION_KEY_FILE = 'verification_key.json';
 const BN128 = 'bn128';
 
 /**
- * The BN254 scalar field order `r`: the largest value a public signal may carry. A larger one is
- * reduced modulo `r` in-circuit, so accepting it would verify a proof over a different number than
- * the checks below read.
+ * The BN254 scalar field order `r`: the largest value a public signal may carry. A larger one is reduced modulo `r`
+ * in-circuit, so accepting it would verify a proof over a different number than the checks below read.
  */
 const FIELD_ORDER = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
 const PROOF_REJECTED = 'proof_rejected';
 
-/**
- * The BN254 curve instance ffjavascript builds, as the one member this module calls on it: releasing
- * it stops the curve's worker threads (AAP 0.5.1, `app.close()`).
- */
+/** The BN254 curve instance ffjavascript builds, as the one member this module calls on it: releasing it stops the curve's
+ * worker threads (AAP 0.5.1, `app.close()`). */
 interface CachedCurve {
   terminate(): Promise<void>;
 }
 
 /**
- * The two parts of snarkjs 0.7.6 this module reaches, narrowed here because the package ships no
- * declarations. `verify` takes the parsed verification key object, the public signals in circuit
- * order and the parsed proof, and answers whether the proof is valid.
+ * The two parts of snarkjs 0.7.6 this module reaches, narrowed here because the package ships no declarations: `verify` takes
+ * the parsed verification key object, the public signals in circuit order and the parsed proof.
  */
 interface Snarkjs {
   readonly groth16: {
@@ -83,16 +71,14 @@ interface Snarkjs {
 }
 
 /**
- * snarkjs 0.7.6, loaded through `createRequire` because it is CommonJS with no declarations — the
- * one shape that both typechecks and resolves under Node ESM, Vitest and tsx, the spelling
- * `apps/workers/src/menus/robots.ts` uses for the same reason.
+ * snarkjs 0.7.6, loaded through `createRequire` because it is CommonJS with no declarations — the one shape that both
+ * typechecks and resolves under Node ESM, Vitest and tsx, as `apps/workers/src/menus/robots.ts` does for the same reason.
  */
 const snarkjs = createRequire(import.meta.url)('snarkjs') as Snarkjs;
 
 /**
- * The parsed `verification_key.json`: the Groth16 key `pnpm circuits:setup` writes and the `api`
- * image mounts (AAP 0.4.2, 0.5.5). Only the three fields the shape check reads are typed; the key
- * material is handed to snarkjs untouched.
+ * The parsed `verification_key.json`: the Groth16 key `pnpm circuits:setup` writes and the `api` image mounts. Only the three
+ * fields the shape check reads are typed; the key material is handed to snarkjs untouched.
  */
 export interface VerificationKey {
   readonly protocol: string;
@@ -102,30 +88,24 @@ export interface VerificationKey {
 }
 
 /**
- * What verifying a proof reads of the app's services (AAP 0.5.5): the process configuration the proof
- * is checked against, and the logger a rejection is recorded in. Narrowed to those two — the narrow
- * environment `./registry.ts` declares as `ZkEnv`, for exactly this caller — so
- * `apps/api/scripts/bench-verify.ts` can drive the verifier without building the app, and a unit test
- * can stand a one-line logger in for one.
+ * What verifying a proof reads of the app's services: the process configuration the proof is checked against, and the logger a
+ * rejection is recorded in. Narrowed to those two — the narrow environment `./registry.ts` declares as `ZkEnv`, for exactly
+ * this caller — so `apps/api/scripts/bench-verify.ts` can drive the verifier without building the app.
  */
 export type VerifierServices = Pick<AppServices, 'env' | 'logger'>;
 
 type VerifierLogger = VerifierServices['logger'];
 
-/**
- * The verifier a submission is checked with, injectable so `apps/api/test/unit/nullifier.test.ts`
- * runs without built artefacts. The default is snarkjs' own Groth16 verification.
- */
+/** The verifier a submission is checked with, injectable so `apps/api/test/unit/nullifier.test.ts` runs without built
+ * artefacts; the default is snarkjs' own Groth16 verification. */
 export type Groth16Verify = (
   verificationKey: unknown,
   publicSignals: readonly string[],
   proof: ProofSubmission['proof'],
 ) => Promise<boolean>;
 
-/**
- * snarkjs' own Groth16 verification, the verifier every proof submission uses unless a test injects
- * one: the mounted key, the signals in circuit order and the submitted proof, answered as a boolean.
- */
+/** snarkjs' own Groth16 verification, used unless a test injects one: the mounted key, the signals in circuit order and the
+ * submitted proof, answered as a boolean. */
 const defaultVerify: Groth16Verify = (verificationKey, publicSignals, proof) =>
   snarkjs.groth16.verify(verificationKey, publicSignals, proof);
 export interface VerifiedItinerary {
@@ -151,10 +131,9 @@ let curveBuild: Promise<CachedCurve | undefined> | undefined;
 let cachedCurve: CachedCurve | undefined;
 
 /**
- * Whether a parsed value is the Groth16 key over BN254 for this circuit: the protocol, the curve and
- * the seven public signals the submitted proofs carry (AAP 0.5.5). Anything else is refused rather
- * than passed to snarkjs, whose failure for a mismatched key would be indistinguishable from a
- * rejectable proof.
+ * Whether a parsed value is the Groth16 key over BN254 for this circuit: the protocol, the curve and the seven public signals
+ * the submitted proofs carry. Anything else is refused rather than passed to snarkjs, whose failure for a mismatched key would
+ * be indistinguishable from a rejectable proof.
  */
 function isVerificationKey(value: unknown): value is VerificationKey {
   if (typeof value !== 'object' || value === null) {
@@ -177,9 +156,8 @@ function isNotFound(error: unknown): boolean {
 }
 
 /**
- * The rejection of a submission this API will not accept as a proof of a stay, recorded as one line
- * naming the event and the code and nothing else: no signal, no root, no salt, no proof
- * (AAP 0.11.1).
+ * The rejection of a submission this API will not accept as a proof of a stay, recorded as one line naming the event and the
+ * code and nothing else: no signal, no root, no salt, no proof.
  */
 function reject(logger: VerifierLogger, code: ErrorCode): AppError {
   logger.warn({ event: PROOF_REJECTED, code }, PROOF_REJECTED);
@@ -187,14 +165,12 @@ function reject(logger: VerifierLogger, code: ErrorCode): AppError {
 }
 
 /**
- * Reads, parses and checks `verification_key.json` (AAP 0.4.2, 0.5.5).
- *
- * A missing file, or one that is not the key, is a `503 service_unavailable`, because proof
- * submission has no way to verify without it. The failure travels as the thrown error's `cause` —
- * the `ENOENT` naming the file, or the `zk_vkey_invalid` marker an operator greps for with the parse
- * failure beneath it — so the one line it is recorded by is the errors plugin's, which logs the code
- * with the head of that chain (AAP 0.11.1). `main.ts` requires the file outright in staging and
- * production, so this state is reachable only where a build has not run or the mount is absent.
+ * Reads, parses and checks `verification_key.json`.
+ * A missing file, or one that is not the key, is a `503 service_unavailable`, because proof submission has no way to verify
+ * without it. The failure travels as the thrown error's `cause` — the `ENOENT` naming the file, or the `zk_vkey_invalid` marker
+ * an operator greps for with the parse failure beneath it — so the one line it is recorded by is the errors plugin's, which logs
+ * the code with the head of that chain. `main.ts` requires the file outright in staging and production, so this state is
+ * reachable only where a build has not run or the mount is absent.
  */
 async function readVerificationKey(): Promise<VerificationKey> {
   const file = VERIFICATION_KEY_FILE;
@@ -227,15 +203,11 @@ async function readVerificationKey(): Promise<VerificationKey> {
 }
 
 /**
- * The verification key, read from `packages/circuits/build/verification_key.json` once and kept
- * (AAP 0.4.2, 0.5.5).
- *
- * Only a successful read is kept: a failure is cleared, so a build directory mounted after the
- * process started is picked up by the next proof submission, and a suite that never proves still
- * starts without the artefacts.
- *
- * @throws {AppError} `service_unavailable` when the file is absent, is not JSON, or is not the
- *   Groth16 key over BN254 with seven public signals.
+ * The verification key, read from `packages/circuits/build/verification_key.json` once and kept.
+ * Only a successful read is kept: a failure is cleared, so a build directory mounted after the process started is picked up by
+ * the next proof submission, and a suite that never proves still starts without the artefacts.
+ * @throws {AppError} `service_unavailable` when the file is absent, is not JSON, or is not the Groth16 key over BN254 with
+ *   seven public signals.
  */
 export async function loadVerificationKey(): Promise<VerificationKey> {
   const inFlight = keyLoad ?? readVerificationKey();
@@ -251,11 +223,9 @@ export async function loadVerificationKey(): Promise<VerificationKey> {
 }
 
 /**
- * Builds the process-wide BN254 curve before the first verification, so no request pays for it
- * (AAP 0.5.5).
- *
- * A build that fails is not kept and does not fail the request: the verification that follows builds
- * the instance itself, and whatever it then reports is answered in the contract's own terms.
+ * Builds the process-wide BN254 curve before the first verification, so no request pays for it.
+ * A build that fails is not kept and does not fail the request: the verification that follows builds the instance itself, and
+ * whatever it then reports is answered in the contract's own terms.
  */
 async function warmCurve(): Promise<void> {
   const curves = snarkjs.curves;
@@ -270,11 +240,9 @@ async function warmCurve(): Promise<void> {
 }
 
 /**
- * Releases the shared BN254 curve (AAP 0.5.1): `app.ts` wires this into the instance's `onClose`, so a
- * closed app leaves no curve worker thread behind to keep the process, a Vitest run or a graceful
- * shutdown alive.
- *
- * Idempotent and never throwing: a second close, or a close before any proof arrived, does nothing.
+ * Releases the shared BN254 curve: `app.ts` wires this into the instance's `onClose`, so a closed app leaves no curve worker
+ * thread behind to keep the process, a Vitest run or a graceful shutdown alive. Idempotent and never throwing: a second close,
+ * or a close before any proof arrived, does nothing.
  */
 export async function closeVerifier(): Promise<void> {
   const curve = cachedCurve;
@@ -290,18 +258,16 @@ export async function closeVerifier(): Promise<void> {
   }
 }
 
-/**
- * Each signal's position in circuit order, off the shared contract: a signal is read by name, never
- * by a bare index written here.
- */
+/** Each signal's position in circuit order, off the shared contract: a signal is read by name, never by a bare index written
+ * here. */
 const SIGNAL_INDEX = new Map<PublicSignalName, number>(
   PUBLIC_SIGNAL_NAMES.map((name, index) => [name, index] as const),
 );
 
 /**
- * One signal's text, or the `400 proof_malformed` the route answers a submission that does not carry
- * the seven signals `ProofSubmission` declares (AAP 0.5.4). Re-checked here with the schema the route
- * already parsed with, so a direct caller meets the same bound.
+ * One signal's text, or the `400 proof_malformed` the route answers a submission that does not carry the seven signals
+ * `ProofSubmission` declares. Re-checked here with the schema the route already parsed with, so a direct caller meets the same
+ * bound.
  */
 function signalText(signals: readonly string[], name: PublicSignalName): string {
   const index = SIGNAL_INDEX.get(name);
@@ -322,16 +288,13 @@ function signalInteger(value: bigint, logger: VerifierLogger): number {
 }
 
 /**
- * The seven signals as canonical field elements (AAP 0.5.5).
- *
- * A signal outside the shared `FieldElement` shape is `400 proof_malformed`, because such a
- * submission is not the contract's body at all; one at or above {@link FIELD_ORDER} is
- * `422 proof_invalid`, because the circuit reduces it modulo the field order and would therefore
- * verify a different number than the checks below read. Both are answered with a code and a log line
- * and never with a value.
- *
- * The keys of `PUBLIC_SIGNAL_NAMES` are exactly the record's keys by construction, which is why the
- * loop's result is the complete record.
+ * The seven signals as canonical field elements.
+ * A signal outside the shared `FieldElement` shape is `400 proof_malformed`, because such a submission is not the contract's
+ * body at all; one at or above {@link FIELD_ORDER} is `422 proof_invalid`, because the circuit reduces it modulo the field order
+ * and would therefore verify a different number than the checks below read. Both are answered with a code and a log line and
+ * never with a value.
+ * The keys of `PUBLIC_SIGNAL_NAMES` are exactly the record's keys by construction, which is why the loop's result is the
+ * complete record.
  */
 function canonicalSignals(
   signals: readonly string[],
@@ -349,17 +312,14 @@ function canonicalSignals(
 }
 
 /**
- * Verifies a submitted itinerary proof and checks that it proves a stay this API accepts (AAP 0.5.5).
- *
- * The checks run in the order the module documentation lists, and the value returned is the stay the
- * proof proves, with its nullifier in canonical form for the route's `SpentNullifier` insert.
- *
- * @throws {AppError} `proof_malformed` for a submission that does not carry the seven signals;
- *   `proof_invalid` for a signal outside the field, a proof that does not verify, a salt that is not
- *   the published one, an unknown city or issuer, or a date signal that is not a calendar date;
- *   `issuer_not_allowlisted` for a registry root this process does not publish; `stay_out_of_range`
- *   for a stay outside `STAY_MIN_DAYS` to `STAY_MAX_DAYS` days; `service_unavailable` when the
- *   verification key is absent or unusable.
+ * Verifies a submitted itinerary proof and checks that it proves a stay this API accepts.
+ * The checks run in the order the module documentation lists, and the value returned is the stay the proof proves, with its
+ * nullifier in canonical form for the route's `SpentNullifier` insert.
+ * @throws {AppError} `proof_malformed` for a submission that does not carry the seven signals; `proof_invalid` for a signal
+ *   outside the field, a proof that does not verify, a salt that is not the published one, an unknown city or issuer, or a date
+ *   signal that is not a calendar date; `issuer_not_allowlisted` for a registry root this process does not publish;
+ *   `stay_out_of_range` for a stay outside `STAY_MIN_DAYS` to `STAY_MAX_DAYS` days; `service_unavailable` when the verification
+ *   key is absent or unusable.
  */
 export async function verifyItineraryProof(
   services: VerifierServices,

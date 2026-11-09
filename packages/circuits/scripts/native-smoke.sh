@@ -1,36 +1,34 @@
 #!/usr/bin/env bash
 #
-# The native prover smoke check: mopro 0.3.7 with rust-witness and rapidsnark inside an Expo SDK 52
-# development build (AAP 0.2.4, AAP 0.5.5, AAP 0.8.2).
+# The native prover smoke check: mopro 0.3.7 with rust-witness and rapidsnark inside an Expo SDK 52 development build
+# (AAP 0.2.4, AAP 0.5.5).
 #
-# That combination is unverified, and a standalone native-library test would not settle it, because the risk is
-# the integration inside the app. So this script drives the real bench build through Maestro on a device or
-# simulator and verifies the proof it produces on the host:
+# That combination is unverified, and a standalone native-library test would not settle it, because the risk is the
+# integration inside the app. So this script drives the real bench build through Maestro on a device or simulator and
+# verifies the proof it produces on the host:
 #
 #   compile.sh, setup.sh                only when the circuit artefacts are missing or stale
 #   build-native.sh <platform>          only when that platform's libraries are missing or stale
-#   eas build --local --profile bench   a build with the JS bundle embedded, so no Metro server
+#   eas build --local --profile bench    a build with the JS bundle embedded, so no Metro server
 #   install, then `maestro test apps/mobile/e2e/maestro/zk-bench.yaml` with RUNS=1
 #   snarkjs groth16 verify              the host's own verdict on the proof the device produced
 #
-# A `pass` is the gate of AAP 0.8.2: native-prover work on that platform proceeds only after it. A platform
-# whose host, device or tool is unavailable is recorded as `pending` and stays unverified, which is the
-# fallback AAP 0.2.4 permits — proving there is neither confirmed nor moved to the server. Neither outcome is
-# a crash, and one platform's failure never stops the other: every step is checked explicitly, so a failure is
-# recorded against the platform it happened on.
+# A `pass` is the gate of AAP 0.8.2: native-prover work on that platform proceeds only after it. A platform whose host,
+# device or tool is unavailable is recorded as `pending` and stays unverified, which is the fallback AAP 0.2.4 permits —
+# proving there is neither confirmed nor moved to the server. Neither outcome is a crash, and one platform's failure
+# never stops the other.
 #
-# The row this writes into docs/zk-performance.md reports one run's timings as a diagnostic. The criterion 4
-# p95 figures come from the device benchmark (RUNS defaults to 30, run directly with `maestro test` on an
-# iPhone 13 class and a Pixel 7 class device), not from this check.
+# The row this writes into docs/zk-performance.md reports one run's timings as a diagnostic; the criterion 4 p95 figures
+# come from the device benchmark (RUNS defaults to 30, run directly with `maestro test`), not from this check.
 #
-# Invoked as `bash scripts/native-smoke.sh [ios|android|all]` through the `native-smoke` package script and
-# root `circuits:smoke`. The default is `all`. Environment: ARTIFACTS_PORT (host port the `artifacts` service
-# publishes, default 8070) and ARTIFACTS_BASE_URL (the origin to check and hand the device, default
+# Invoked as `bash scripts/native-smoke.sh [ios|android|all]` through the `native-smoke` package script and root
+# `circuits:smoke`. The default is `all`. Environment: ARTIFACTS_PORT (host port the `artifacts` service publishes,
+# default 8070) and ARTIFACTS_BASE_URL (the origin to check and hand the device, default
 # http://localhost:$ARTIFACTS_PORT); CIRCUITS_NODE_HEAP_MB, PTAU_PATH, BEACON_HASH and TMPDIR pass through to
 # compile.sh and setup.sh.
 #
-# Exit status: 0 every selected platform passed or is pending a host it cannot run on; 1 a platform failed its
-# native build, bench build, install, Maestro run or verification.
+# Exit status: 0 every selected platform passed or is pending a host it cannot run on; 1 a platform failed its native
+# build, bench build, install, Maestro run or verification.
 
 set -euo pipefail
 
@@ -251,10 +249,10 @@ function isG2Point(value) {
 }
 
 /**
- * Reads what Maestro printed for the run. scripts/collect-bench.js has no filesystem of its own, so
- * its payload reaches the host on the single ZK_BENCH_RESULT line and this writes the files the
- * script goes on to verify: the result itself, the proof and the public signals. A missing or
- * malformed result fails with its reason, and never becomes an empty pass.
+ * Reads what Maestro printed for the run. scripts/collect-bench.js has no filesystem of its own, so its payload
+ * reaches the host on the single ZK_BENCH_RESULT line, and this writes the files the script goes on to verify: the
+ * result itself, the proof and the public signals. A missing or malformed result fails with its reason, and never
+ * becomes an empty pass.
  */
 function extract(args) {
   const [out, proofPath, publicPath, ...logs] = args;
@@ -339,9 +337,9 @@ function extract(args) {
 }
 
 /**
- * The markdown table of the document's block. Cells are padded to the widest of their column counted
- * in characters rather than bytes, so the em dash a pending note carries (one character, three bytes)
- * lines the table up the way `prettier --check`, which `pnpm lint` runs over docs/, wants to find it.
+ * The markdown table of the document's block. Cells are padded to the widest of their column counted in characters
+ * rather than bytes, so the em dash a pending note carries (one character, three bytes) lines the table up the way
+ * `prettier --check`, which `pnpm lint` runs over docs/, wants to find it.
  */
 function table(args) {
   const [rowsPath] = args;
@@ -653,13 +651,12 @@ install_app() {
 }
 
 run_maestro() {
-    # run_maestro <platform>: the check itself, through the flow that renders app/dev/zk-bench.tsx.
-    # RUNS and ARTIFACTS_URL and OUTPUT (with the flow's optional COLLECT_URL and SALT) are the
-    # binding contract with apps/mobile/e2e/maestro/zk-bench.yaml, its scripts/collect-bench.js and
-    # the screen: RUNS=1 makes this the single-run smoke check the flow would otherwise run 30 times,
-    # and OUTPUT is the file the result is written to here, because GraalJS has no filesystem and the
-    # payload reaches the host on the one ZK_BENCH_RESULT line Maestro prints. A stale result must
-    # never be read as this run's, so OUTPUT is removed first.
+    # run_maestro <platform>: the check itself, through the flow that renders app/dev/zk-bench.tsx. RUNS and
+    # ARTIFACTS_URL and OUTPUT (with the flow's optional COLLECT_URL and SALT) are the binding contract with
+    # apps/mobile/e2e/maestro/zk-bench.yaml, its scripts/collect-bench.js and the screen: RUNS=1 makes this the
+    # single-run smoke check the flow would otherwise run 30 times, and OUTPUT is the file the result is written to
+    # here, because GraalJS has no filesystem and the payload reaches the host on the one ZK_BENCH_RESULT line Maestro
+    # prints. A stale result must never be read as this run's, so OUTPUT is removed first.
     local p="$1" device output log debug_dir artifacts_url status=0 summary sample_device sample_os sample_build
     case "$p" in
         ios) device="$IOS_DEVICE"; output="$RUN_DIR/ios.json" ;;
@@ -771,22 +768,18 @@ run_platform() {
 # docs/zk-performance.md
 
 write_doc_block() {
-    # write_doc_block <file> <block name> <content file>: replaces what sits between the named
-    # markers, or appends the block when the file or either marker is absent. The replacement goes
-    # through a temporary file in the same directory, so a reader never sees a half-written document.
-    # This is the function compile.sh and setup.sh carry, with one difference: a document that does
-    # not exist yet starts at the marker instead of after a blank line, because a leading blank line
-    # is the one thing `prettier --check`, which `pnpm lint` runs over docs/, rejects there.
+    # write_doc_block <file> <block name> <content file>: replaces what sits between the named markers, or appends the
+    # block when the file or either marker is absent. The replacement goes through a temporary file in the same
+    # directory, so a reader never sees a half-written document. This is the function compile.sh and setup.sh carry, with
+    # one difference: a document that does not exist yet starts at the marker instead of after a blank line, because a
+    # leading blank line is the one thing `prettier --check`, which `pnpm lint` runs over docs/, rejects there.
     local file="$1" name="$2" content="$3" tmp begin end
     begin="<!-- BEGIN $name -->"
     end="<!-- END $name -->"
     mkdir -p "$(dirname "$file")"
-    # The temp file stays in the document's own directory, so the rename below is atomic, but its
-    # name is generated rather than derived from this process's pid and the document's name: a
-    # symlink planted at a name a local writer can predict can then no longer make this script
-    # truncate a file outside the repository through the write below (CWE-377, CWE-59). mktemp
-    # creates it 0600, and the document it becomes ships with the 0644 mode of every other tracked
-    # file under docs/.
+    # The temp file stays in the document's own directory, so the rename below is atomic, but its name is generated
+    # rather than derived from this process's pid and the document's name: a symlink planted at a predictable name can
+    # then no longer make this script truncate a file outside the repository (CWE-377, CWE-59). mktemp creates it 0600.
     tmp="$(mktemp "${file}.tmp.XXXXXX")" || die "could not create a temporary file next to $file"
     chmod 0644 "$tmp"
     if [ -s "$file" ] && grep -qF "$begin" "$file" && grep -qF "$end" "$file"; then

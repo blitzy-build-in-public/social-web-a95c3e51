@@ -1,26 +1,17 @@
 import prismaPkg from '@prisma/client';
 
 import type { AppEnv } from '@tablemate/shared';
-
-// Named ESM imports from Prisma's CommonJS package are unreliable under plain Node 22, so the
-// namespace is reached through the default import, which carries `sql`, `raw` and `defineExtension`.
+// Named ESM imports from Prisma's CommonJS package are unreliable under plain Node 22, so the namespace is reached through the default import, which carries `sql`, `raw` and `defineExtension`.
 import Prisma = prismaPkg.Prisma;
-
 /** The environments that may hold fixture rows (AAP 0.5.2). */
 export const FIXTURE_APP_ENVS = ['test', 'demo'] as const satisfies readonly AppEnv[];
-
 /** An environment in which fixture rows are permitted. */
 export type FixtureAppEnv = (typeof FIXTURE_APP_ENVS)[number];
-
 /** True when `appEnv` may hold and read fixture rows: `test` and `demo` only (AAP 0.5.2). */
 export function fixturesAllowed(appEnv: AppEnv): boolean {
   return FIXTURE_APP_ENVS.some((allowed) => allowed === appEnv);
 }
-
-/**
- * Raised when fixture data would be written in, or is asked for by, an environment that forbids it,
- * and when the seed is asked to load fixtures there (AAP 0.5.2).
- */
+/** Raised when fixture data would be written in, or is asked for by, an environment that forbids it, and when the seed is asked to load fixtures there (AAP 0.5.2). */
 export class FixturesNotAllowedError extends Error {
   /** The environment that refused the fixtures. */
   readonly appEnv: AppEnv;
@@ -29,41 +20,31 @@ export class FixturesNotAllowedError extends Error {
     super(`Fixture data is not allowed when APP_ENV=${appEnv} (allowed: test, demo)`);
     this.name = 'FixturesNotAllowedError';
     this.appEnv = appEnv;
-    // `super()` does not restore the prototype chain of a subclass of a built-in, so `instanceof`
-    // still has to be repaired here.
+    // `super()` does not restore the prototype chain of a subclass of a built-in, so `instanceof` still has to be repaired here.
     Object.setPrototypeOf(this, FixturesNotAllowedError.prototype);
   }
 }
-
 /** Throws {@link FixturesNotAllowedError} unless fixtures are permitted in `appEnv` (AAP 0.5.2). */
 export function assertFixturesAllowed(appEnv: AppEnv): void {
   if (!fixturesAllowed(appEnv)) {
     throw new FixturesNotAllowedError(appEnv);
   }
 }
-
 /** The only identifier shape `Prisma.raw` may be given here, which keeps raw SQL un-injectable. */
 export const SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
-
-/**
- * The predicate a raw read over `venue`, `lodging`, `place` or `price_record` needs, because
- * `$queryRaw` and `$queryRawUnsafe` are reads the guard leaves alone: outside `test` and `demo`
- * every fixture row must be filtered out (AAP 0.5.2).
- */
+/** The predicate a raw read over `venue`, `lodging`, `place` or `price_record` needs, because `$queryRaw` and `$queryRawUnsafe` are reads the guard leaves alone: outside `test` and `demo` every fixture row must be filtered out (AAP 0.5.2). */
 export function fixturePredicate(appEnv: AppEnv, alias: string): Prisma.Sql {
   if (!SQL_IDENTIFIER.test(alias)) {
     throw new RangeError('SQL alias must match /^[a-z_][a-z0-9_]*$/');
   }
   return fixturesAllowed(appEnv) ? Prisma.sql`TRUE` : Prisma.raw(`"${alias}"."is_fixture" = false`);
 }
-
 type GuardOperationArgs = {
   model: string;
   operation: string;
   args: Record<string, unknown> | undefined;
   query: (args: unknown) => Promise<unknown>;
 };
-
 const FILTERED_OPERATIONS: ReadonlySet<string> = new Set([
   'findUnique',
   'findUniqueOrThrow',
@@ -80,22 +61,17 @@ const FILTERED_OPERATIONS: ReadonlySet<string> = new Set([
   'deleteMany',
   'upsert',
 ]);
-
 const SELECTION_FIELDS = ['select', 'include'] as const;
-
 const CREATE_OPERATIONS: ReadonlySet<string> = new Set([
   'create',
   'createMany',
   'createManyAndReturn',
   'upsert',
 ]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 const MAX_WRITE_PAYLOAD_DEPTH = 8;
-
 function writesFixture(operation: string, args: Record<string, unknown>): boolean {
   switch (operation) {
     case 'create':
@@ -104,8 +80,7 @@ function writesFixture(operation: string, args: Record<string, unknown>): boolea
     case 'update':
     case 'updateMany':
     case 'updateManyAndReturn':
-      // `createMany` and `createManyAndReturn` hand their rows over as an array, the rest as one
-      // object; the walk reads either.
+      // `createMany` and `createManyAndReturn` hand their rows over as an array, the rest as one object; the walk reads either.
       return marksFixture(args['data']);
     case 'upsert':
       return marksFixture(args['create']) || marksFixture(args['update']);
@@ -113,7 +88,6 @@ function writesFixture(operation: string, args: Record<string, unknown>): boolea
       return false;
   }
 }
-
 function marksFixture(value: unknown, depth = 0): boolean {
   if (depth > MAX_WRITE_PAYLOAD_DEPTH) {
     return true;
@@ -130,30 +104,24 @@ function marksFixture(value: unknown, depth = 0): boolean {
   }
   return Object.values(value).some((entry) => marksFixture(entry, depth + 1));
 }
-
 type Relation = {
   readonly targetModel: string;
   readonly isList: boolean;
   readonly isRequired: boolean;
 };
-
 type RelationStep = { readonly field: string; readonly isList: boolean };
-
 type ReturnCheck = {
   readonly owner: readonly RelationStep[];
   readonly field: string;
   readonly required: boolean;
   readonly added: boolean;
 };
-
 type SchemaGraph = {
   readonly relations: ReadonlyMap<string, ReadonlyMap<string, Relation>>;
   readonly fixtureModels: ReadonlySet<string>;
 };
-
 const UNREADABLE_DATAMODEL =
   'fixtures-guard: Prisma.dmmf.datamodel.models could not be read, so the guard cannot tell which relations reach a fixture row';
-
 function buildSchemaGraph(): SchemaGraph {
   const relations = new Map<string, ReadonlyMap<string, Relation>>();
   const fixtureModels = new Set<string>();
@@ -179,9 +147,7 @@ function buildSchemaGraph(): SchemaGraph {
   }
   return { relations, fixtureModels };
 }
-
 type WhereHolder = { readonly exclusions: RelationStep[][] };
-
 type WalkPosition = {
   readonly modelName: string;
   readonly args: Record<string, unknown>;
@@ -189,7 +155,6 @@ type WalkPosition = {
   readonly holder: WhereHolder | null;
   readonly returns: ReturnCheck[] | null;
 };
-
 function rewriteArgs(graph: SchemaGraph, position: WalkPosition): Record<string, unknown> {
   const { args } = position;
   let nextArgs = args;
@@ -198,8 +163,7 @@ function rewriteArgs(graph: SchemaGraph, position: WalkPosition): Record<string,
     if (!isRecord(selection)) {
       continue;
     }
-    // `_count` is Prisma's own key rather than a relation of the model, and Prisma takes it under
-    // either selection key, so it is dispatched on the field name alone.
+    // `_count` is Prisma's own key rather than a relation of the model, and Prisma takes it under either selection key, so it is dispatched on the field name alone.
     let next: Record<string, unknown> = selection;
     for (const [field, value] of Object.entries(selection)) {
       const rewritten =
@@ -220,7 +184,6 @@ function rewriteArgs(graph: SchemaGraph, position: WalkPosition): Record<string,
   }
   return nextArgs;
 }
-
 function rewriteRelation(
   graph: SchemaGraph,
   position: WalkPosition,
@@ -260,7 +223,6 @@ function rewriteRelation(
   const rewritten = rewriteArgs(graph, { ...child, args: fetched.args, path });
   return rewritten === args ? value : rewritten;
 }
-
 function narrowArgs(
   args: Record<string, unknown>,
   filterFixtures: boolean,
@@ -272,8 +234,7 @@ function narrowArgs(
   const where = args['where'];
   const nextWhere: Record<string, unknown> = { ...(isRecord(where) ? where : {}) };
   if (filterFixtures) {
-    // Spreading keeps a unique `where` valid and overwrites a caller-supplied `isFixture: true`
-    // filter, so a fixture row can neither be found nor mutated (AAP 0.5.2).
+    // Spreading keeps a unique `where` valid and overwrites a caller-supplied `isFixture: true` filter, so a fixture row can neither be found nor mutated (AAP 0.5.2).
     nextWhere['isFixture'] = false;
   }
   if (exclusions.length > 0) {
@@ -281,7 +242,6 @@ function narrowArgs(
   }
   return { ...args, where: nextWhere };
 }
-
 function exclusionClause(path: readonly RelationStep[]): Record<string, unknown> {
   return {
     NOT: path.reduceRight<Record<string, unknown>>(
@@ -290,7 +250,6 @@ function exclusionClause(path: readonly RelationStep[]): Record<string, unknown>
     ),
   };
 }
-
 function andWith(existing: unknown, clauses: readonly Record<string, unknown>[]): unknown[] {
   const caller: readonly unknown[] = Array.isArray(existing)
     ? existing
@@ -299,7 +258,6 @@ function andWith(existing: unknown, clauses: readonly Record<string, unknown>[])
       : [];
   return [...caller, ...clauses];
 }
-
 function rewriteCount(graph: SchemaGraph, modelName: string, value: unknown): unknown {
   if (value === true) {
     return countEveryRelation(graph, modelName);
@@ -324,7 +282,6 @@ function rewriteCount(graph: SchemaGraph, modelName: string, value: unknown): un
   }
   return next === selection ? value : { ...counted, select: next };
 }
-
 function countEveryRelation(graph: SchemaGraph, modelName: string): unknown {
   const relations = graph.relations.get(modelName);
   if (relations === undefined) {
@@ -341,7 +298,6 @@ function countEveryRelation(graph: SchemaGraph, modelName: string): unknown {
   const filtered = Object.values(select).some((entry) => entry !== true);
   return filtered ? { select } : true;
 }
-
 function countRelationArgs(entry: unknown): unknown {
   if (!isRecord(entry)) {
     return entry === true ? { where: { isFixture: false } } : entry;
@@ -349,7 +305,6 @@ function countRelationArgs(entry: unknown): unknown {
   const where = entry['where'];
   return { ...entry, where: { ...(isRecord(where) ? where : {}), isFixture: false } };
 }
-
 function fetchFixtureKey(args: Record<string, unknown>): {
   readonly args: Record<string, unknown>;
   readonly added: boolean;
@@ -360,7 +315,6 @@ function fetchFixtureKey(args: Record<string, unknown>): {
   }
   return { args: { ...args, select: { ...select, isFixture: true } }, added: true };
 }
-
 function recordAt(
   row: unknown,
   path: readonly RelationStep[],
@@ -374,7 +328,6 @@ function recordAt(
   }
   return isRecord(current) ? current : undefined;
 }
-
 function judgeFixtureReturns(
   appEnv: AppEnv,
   result: unknown,
@@ -399,25 +352,19 @@ function judgeFixtureReturns(
   }
   return result;
 }
-
 const FIXTURE_COLUMN = /is_fixture/i;
-
 const FIXTURE_COLUMN_CONSTRAINED = /is_fixture"?\s*(?:=\s*false|is\s+false)/i;
-
 const FIXTURE_COLUMN_SET = /is_fixture"?\s*(?:=\s*true|is\s+true|is\s+not\s+false)/i;
-
 function rawWritesFixture(text: string): boolean {
   return (
     FIXTURE_COLUMN.test(text) &&
     (!FIXTURE_COLUMN_CONSTRAINED.test(text) || FIXTURE_COLUMN_SET.test(text))
   );
 }
-
 type RawStatementArgs = {
   readonly args: unknown;
   query: (args: unknown) => Promise<unknown>;
 };
-
 function rawStatementText(args: unknown): string | null {
   if (Array.isArray(args)) {
     return templateText(args[0]);
@@ -433,7 +380,6 @@ function rawStatementText(args: unknown): string | null {
   }
   return templateText(args['strings']);
 }
-
 function templateText(value: unknown): string | null {
   if (typeof value === 'string') {
     return value;
@@ -442,11 +388,9 @@ function templateText(value: unknown): string | null {
     ? value.join('')
     : null;
 }
-
 function guardRawStatement(appEnv: AppEnv) {
   return async function guardRaw({ args, query }: RawStatementArgs): Promise<unknown> {
-    // Where fixtures are permitted the handler is a pass-through: `test` and `demo` write fixture
-    // rows freely (AAP 0.5.2).
+    // Where fixtures are permitted the handler is a pass-through: `test` and `demo` write fixture rows freely (AAP 0.5.2).
     if (!fixturesAllowed(appEnv)) {
       const text = rawStatementText(args);
       if (text !== null && rawWritesFixture(text)) {
@@ -456,10 +400,8 @@ function guardRawStatement(appEnv: AppEnv) {
     return query(args);
   };
 }
-
 function guardOperation(appEnv: AppEnv) {
-  // The graph is read once per client; where fixtures are allowed it is not needed, and the handler
-  // is a pass-through: `test` and `demo` read and write fixture rows freely (AAP 0.5.2).
+  // The graph is read once per client; where fixtures are allowed it is not needed, and the handler is a pass-through: `test` and `demo` read and write fixture rows freely (AAP 0.5.2).
   const graph = fixturesAllowed(appEnv) ? null : buildSchemaGraph();
   return async function guard({
     model,
@@ -473,16 +415,12 @@ function guardOperation(appEnv: AppEnv) {
     // `findMany()` and `count()` are called with no arguments at all.
     const operationArgs = args ?? {};
     const fixtureModel = graph.fixtureModels.has(model);
-    // The write check stands alone and comes first: a write that stores a fixture row — its own row
-    // or the row of a nested write inside its payload — is refused, never narrowed into a no-op
-    // (AAP 0.5.2).
+    // The write check stands alone and comes first: a write that stores a fixture row — its own row or the row of a nested write inside its payload — is refused, never narrowed into a no-op (AAP 0.5.2).
     if (fixtureModel && writesFixture(operation, operationArgs)) {
       throw new FixturesNotAllowedError(appEnv);
     }
     const holder: WhereHolder = { exclusions: [] };
-    // A create-family operation has no `where` to exclude a fixture relation's row with, so the
-    // selection its return value reads is walked for those relations and the row is judged once it
-    // arrives (AAP 0.5.2).
+    // A create-family operation has no `where` to exclude a fixture relation's row with, so the selection its return value reads is walked for those relations and the row is judged once it arrives (AAP 0.5.2).
     const returns: ReturnCheck[] | null = CREATE_OPERATIONS.has(operation) ? [] : null;
     const position = { modelName: model, args: operationArgs, path: [], holder, returns };
     const rewritten = rewriteArgs(graph, position);
@@ -492,7 +430,6 @@ function guardOperation(appEnv: AppEnv) {
     return returns === null ? result : judgeFixtureReturns(appEnv, result, returns);
   };
 }
-
 /** Builds the fixture guard to pass to `client.$extends(...)`. */
 export function fixturesGuardExtension(appEnv: AppEnv) {
   const guard = guardOperation(appEnv);
@@ -501,8 +438,7 @@ export function fixturesGuardExtension(appEnv: AppEnv) {
     name: 'tablemate-fixtures-guard',
     query: {
       $allModels: { $allOperations: guard },
-      // `$executeRaw` and `$executeRawUnsafe` are keys of their own, not model operations, so a raw
-      // write reaches the guard only from here (AAP 0.5.2).
+      // `$executeRaw` and `$executeRawUnsafe` are keys of their own, not model operations, so a raw write reaches the guard only from here (AAP 0.5.2).
       $executeRaw: guardRaw,
       $executeRawUnsafe: guardRaw,
     },

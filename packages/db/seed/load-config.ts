@@ -5,24 +5,13 @@ import { fileURLToPath } from 'node:url';
 
 import { CitiesFile, CityFixturesFile } from '@tablemate/shared';
 import type { CityConfig, PlaceFixture } from '@tablemate/shared';
-
 const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
-
 const CITIES_FILE = 'config/cities.json';
-
 const FIXTURES_DIR = 'config/fixtures';
-
-// The city-slug shape, checked before a slug is joined into a path: the ids come from
-// `config/cities.json`, whose schema already constrains them, but no `cityId` reaching this loader
-// may escape the fixture directory.
+// The city-slug shape, checked before a slug is joined into a path: the ids come from `config/cities.json`, whose schema already constrains them, but no `cityId` reaching this loader may escape the fixture directory.
 const CITY_ID_PATTERN = /^[a-z]+(-[a-z]+)*$/;
-
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * A configuration file this loader refused, carrying the repository-relative path and every issue
- * found in it, so the seed reports all of a file's problems at once.
- */
+/** A configuration file this loader refused, carrying the repository-relative path and every issue found in it, so the seed reports all of a file's problems at once. */
 export class ConfigFileError extends Error {
   /** The repository-relative path of the offending file, with forward slashes. */
   readonly file: string;
@@ -37,7 +26,6 @@ export class ConfigFileError extends Error {
     this.issues = issues;
   }
 }
-
 function formatIssues(
   issues: readonly { readonly path: readonly PropertyKey[]; readonly message: string }[],
 ): string[] {
@@ -46,18 +34,15 @@ function formatIssues(
     return where === '' ? issue.message : `${where}: ${issue.message}`;
   });
 }
-
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
 function readFailureIssue(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
     return 'file not found';
   }
   return `file could not be read: ${messageOf(error)}`;
 }
-
 /** The repository root: the nearest ancestor of `from` holding `pnpm-workspace.yaml`. */
 export function findRepoRoot(from: string = MODULE_DIR): string {
   const start = path.resolve(from);
@@ -70,7 +55,6 @@ export function findRepoRoot(from: string = MODULE_DIR): string {
     }
   }
 }
-
 async function readJson(repoRoot: string, relativePath: string): Promise<unknown> {
   let text: string;
   try {
@@ -84,12 +68,7 @@ async function readJson(repoRoot: string, relativePath: string): Promise<unknown
     throw new ConfigFileError(relativePath, [`invalid JSON: ${messageOf(error)}`]);
   }
 }
-
-/**
- * Loads the launch-city configuration (AAP 0.5.2): `config/cities.json`, whose schema already
- * enforces unique city ids, unique circuit city ids, the bounding-box ordering and the alias byte
- * bound. Every issue is reported, not just the first.
- */
+/** Loads the launch-city configuration (AAP 0.5.2): `config/cities.json`, whose schema already enforces unique city ids, unique circuit city ids, the bounding-box ordering and the alias byte bound. Every issue is reported, not just the first. */
 export async function loadCitiesConfig(repoRoot: string): Promise<CityConfig[]> {
   const raw = await readJson(repoRoot, CITIES_FILE);
   const parsed = CitiesFile.safeParse(raw);
@@ -98,11 +77,9 @@ export async function loadCitiesConfig(repoRoot: string): Promise<CityConfig[]> 
   }
   return parsed.data.cities;
 }
-
 function quotesByPhone(place: PlaceFixture): boolean {
   return place.items.some((item) => item[3] === 'phone_quote');
 }
-
 function fixtureIssues(file: CityFixturesFile, cityId: string): string[] {
   const issues: string[] = [];
   if (file.cityId !== cityId) {
@@ -129,12 +106,7 @@ function fixtureIssues(file: CityFixturesFile, cityId: string): string[] {
   }
   return issues;
 }
-
-/**
- * Loads one city's fixture set (AAP 0.5.2): `config/fixtures/<cityId>.json`, whose schema enforces
- * the minimum counts, the "Fixture" name prefix, the fictional phone ranges and at least
- * `MIN_PRICED_ITEMS` priced items per place.
- */
+/** Loads one city's fixture set (AAP 0.5.2): `config/fixtures/<cityId>.json`, whose schema enforces the minimum counts, the "Fixture" name prefix, the fictional phone ranges and at least `MIN_PRICED_ITEMS` priced items per place. */
 export async function loadCityFixtures(
   repoRoot: string,
   cityId: string,

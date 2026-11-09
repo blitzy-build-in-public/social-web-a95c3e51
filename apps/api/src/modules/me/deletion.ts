@@ -1,21 +1,16 @@
 /**
- * Account deletion: the disposition `DELETE /me` applies and the erasure request it queues
- * (AAP 0.5.1, 0.5.2, 0.5.3, 0.5.4).
+ * Account deletion: the disposition `DELETE /me` applies and the erasure request it queues.
  *
- * {@link requestDeletion} runs in three steps. One transaction locks the account's row with
- * `SELECT … FOR UPDATE` and sets `deletionRequestedAt`, revokes every session and refresh token, deletes
- * the account's lodging claims, plans the `delete_customer` `PaymentOperation` and writes the
- * `account_erasure` outbox row. After it commits, the account's sessions are invalidated in Redis and
- * each open meetup is cancelled in a transaction of its own through `applyCancellationRules`. Last, the
- * executor carries out the operations those decisions planned; it is the only place a Stripe call
- * happens, and it never runs inside a transaction (AAP 0.3.2).
+ * {@link requestDeletion} runs in three steps. One transaction locks the account's row with `SELECT … FOR UPDATE` and sets
+ * `deletionRequestedAt`, revokes every session and refresh token, deletes the account's lodging claims, plans the
+ * `delete_customer` `PaymentOperation` and writes the `account_erasure` outbox row. After it commits, the account's sessions
+ * are invalidated in Redis and each open meetup is cancelled in a transaction of its own through `applyCancellationRules`.
+ * Last, the executor carries out the operations those decisions planned; it is the only place a Stripe call happens, and it
+ * never runs inside a transaction.
  *
- * The transaction takes no fence: `transact`'s fence refuses once `deletionRequestedAt` is set, and this
- * is the transaction that sets it. The lock order is `user` → `session` → `lodging_claim` → `call_task`
- * → `payment_operation`, the order the other modules keep; taking any of them the other way round would
- * let two of those transactions deadlock against each other. Nothing here logs an email address, a
- * handle or a Stripe identifier: the summary carries counts alone, and the one per-meetup failure line
- * carries a meetup id (AAP 0.11.1).
+ * The transaction takes no fence: `transact`'s fence refuses once `deletionRequestedAt` is set, and this is the transaction
+ * that sets it. The lock order is `user` → `session` → `lodging_claim` → `call_task` → `payment_operation`, the order the
+ * other modules keep. Nothing here logs an email address, a handle or a Stripe identifier: the summary carries counts alone.
  */
 import { Prisma, type DbTx } from '@tablemate/db';
 import type { MeetupStatus } from '@tablemate/shared';
@@ -31,16 +26,14 @@ import { runOperationsFor } from '../payments/operations.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
-/**
- * The two statuses a meetup can still be cancelled from; every other status is final, and
- * `applyCancellationRules` answers `already_final` for one anyway (AAP 0.5.3).
- */
+/** The two statuses a meetup can still be cancelled from; every other status is final, and `applyCancellationRules` answers
+ * `already_final` for one anyway. */
 const OPEN_MEETUP_STATUSES = ['proposed', 'locked'] as const satisfies readonly MeetupStatus[];
 
 /**
- * What {@link requestDeletion} decided, as counts alone: an id of a meetup, a claim or a session has no
- * place in a summary an operator or a log line reads. The six meetup counters partition the meetups the
- * disposition reached, and the ones whose cancellation raised land in {@link meetupsFailed} (AAP 0.5.3).
+ * What {@link requestDeletion} decided, as counts alone: an id of a meetup, a claim or a session has no place in a summary an
+ * operator or a log line reads. The meetup counters partition the meetups the disposition reached, and the ones whose
+ * cancellation raised land in {@link meetupsFailed}.
  */
 export interface DeletionSummary {
   readonly sessionsRevoked: number;
@@ -55,7 +48,6 @@ export interface DeletionSummary {
   /** `locked` meetups with an open dispute, left to the operator with their holds and dispute. */
   readonly meetupsLeftForOperator: number;
   readonly meetupsSkipped: number;
-  /** Meetups whose cancellation raised: logged, and left to the sweeper and the operator. */
   readonly meetupsFailed: number;
 }
 
@@ -79,14 +71,12 @@ interface MeetupCounts {
 }
 
 /**
- * Applies the account-deletion disposition of `DELETE /me` (AAP 0.5.3); the route answers `202`, because
- * nothing here is a refusal (AAP 0.5.4).
+ * Applies the account-deletion disposition of `DELETE /me`; the route answers `202`, because nothing here is a refusal.
  *
- * The account is closed to writes the moment this commits: a mutation that started before it commits
- * first and is erased by the job that follows, and one that starts later is refused `401 token_invalid`
- * by the fence. A failure costs the meetup it happened on, not the deletion — a cancellation that raises
- * is logged and counted in `meetupsFailed`, the remaining meetups still run, the operations already
- * planned stay durable, and the erasure request is queued either way.
+ * The account is closed to writes the moment this commits: a mutation that started before it commits first and is erased by
+ * the job that follows, and one that starts later is refused `401 token_invalid` by the fence. A failure costs the meetup it
+ * happened on, not the deletion — a cancellation that raises is logged and counted, the remaining meetups still run, the
+ * operations already planned stay durable, and the erasure request is queued either way.
  */
 export async function requestDeletion(
   services: AppServices,
@@ -158,27 +148,22 @@ export async function requestDeletion(
 }
 
 /**
- * Queues the erasure of one account in the transaction that requests it (AAP 0.5.2, 0.5.3).
- *
- * `account_erasure` is the outbox kind whose job deletes what is left of the account; written in the
- * caller's transaction, it is durable with the deletion it belongs to, so a process that dies before the
- * dispatcher runs still leaves the request behind (AAP 0.3.2). {@link requestDeletion} and the operator
- * path that resolves the account's last open dispute both call it, and a second row is harmless: the job
- * deletes by id, is idempotent, and each row gets its own job id.
+ * Queues the erasure of one account in the transaction that requests it. `account_erasure` is the outbox kind whose job
+ * deletes what is left of the account; written in the caller's transaction, it is durable with the deletion it belongs to, so
+ * a process that dies before the dispatcher runs still leaves the request behind. A second row is harmless: the job deletes
+ * by id, is idempotent, and each row gets its own job id.
  */
 export async function writeAccountErasure(tx: DbTx, userId: string): Promise<string> {
   return writeOutbox(tx, 'account_erasure', { userId });
 }
 
 /**
- * Cancels every open meetup of the account, one transaction each (AAP 0.5.3).
+ * Cancels every open meetup of the account, one transaction each.
  *
- * The meetups are read first and cancelled one at a time, because `applyCancellationRules` owns its own
- * transaction and re-reads the row under the meetup lock: a meetup that a settlement, a hold-loss
- * webhook or the counterpart took first comes back `already_final`, `lock_lost` or `left_for_operator`
- * and is counted as such rather than cancelled twice. A failure is contained — logged with the meetup and
- * counted, the next meetup still runs — because a deletion that stopped there would leave the account
- * half-disposed with its erasure pending.
+ * The meetups are read first and cancelled one at a time, because `applyCancellationRules` owns its own transaction and
+ * re-reads the row under the meetup lock: a meetup that a settlement, a hold-loss webhook or the counterpart took first comes
+ * back `already_final`, `lock_lost` or `left_for_operator` and is counted as such. A failure is contained — logged with the
+ * meetup and counted — because a deletion that stopped there would leave the account half-disposed.
  */
 async function cancelOpenMeetups(
   services: AppServices,
@@ -228,10 +213,9 @@ async function cancelOpenMeetups(
 }
 
 /**
- * The meetups the disposition still owns: those in one of {@link OPEN_MEETUP_STATUSES} on either side of
- * the account, ordered by id so two deletions that share a meetup walk it in the same order. Each id is
- * then resolved under its own meetup lock by `applyCancellationRules`, so this list is a hint rather
- * than a decision (AAP 0.5.3).
+ * The meetups the disposition still owns: those in one of {@link OPEN_MEETUP_STATUSES} on either side of the account, ordered
+ * by id so two deletions that share a meetup walk it in the same order. Each id is then resolved under its own meetup lock by
+ * `applyCancellationRules`, so this list is a hint rather than a decision.
  */
 async function openMeetupIds(services: AppServices, userId: string): Promise<string[]> {
   const rows: readonly { readonly id: string }[] = await services.db.meetup.findMany({
@@ -246,10 +230,9 @@ async function openMeetupIds(services: AppServices, userId: string): Promise<str
 }
 
 /**
- * Locks the account's row for the rest of the deletion transaction (AAP 0.5.3). `FOR UPDATE` and not
- * `FOR SHARE`: this transaction is the one that closes the account, so it waits for the mutations already
- * in flight and holds off the ones that would start behind it. Spelled as raw SQL because the row lock
- * has no Prisma client equivalent, and `"user"` quoted because it is a reserved word.
+ * Locks the account's row for the rest of the deletion transaction. `FOR UPDATE` and not `FOR SHARE`: this transaction is the
+ * one that closes the account, so it waits for the mutations already in flight and holds off the ones that would start behind
+ * it. Raw SQL because the row lock has no Prisma client equivalent, with `"user"` quoted as a reserved word.
  */
 async function lockUserRow(tx: DbTx, userId: string): Promise<LockedUserRow> {
   const rows = await tx.$queryRaw<LockedUserRow[]>(Prisma.sql`
@@ -265,24 +248,17 @@ async function lockUserRow(tx: DbTx, userId: string): Promise<LockedUserRow> {
   return row;
 }
 
-/** The safe shape a logged failure token may have: a short identifier and nothing else. */
 const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
- * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
- * class name (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1).
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its class name, and never its
+ * message or stack. pino writes a message and a stack as strings that key-based redaction cannot rewrite, and the Prisma or
+ * Stripe failure this walk swallows can quote what it concerns — a driver's message names the column and the value it refused,
+ * a provider's names the email address or the customer the call carried. A token that is not a plain short identifier becomes
+ * `Error`.
  *
- * pino writes a message and a stack as strings that key-based redaction cannot rewrite, and the
- * Prisma or Stripe failure this walk swallows can quote what it concerns: a driver's message names
- * the column and the value it refused, and a provider's names the email address or the customer the
- * call carried — the values this module's own documentation says no line of it holds. A token that
- * is not a plain short identifier becomes `Error`, so nothing a thrown value happens to say can
- * reach a log through this path.
- *
- * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
- * modules its disposition names (`../lodgings/claims.ts`, `../meetups/cancel.ts`, `../outbox/write.ts`,
- * `../payments/holds.ts`, `../payments/operations.ts`) — the same course `../settlement/timers.ts`
- * took with its own `errorTokenOf`.
+ * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the modules its disposition
+ * names, the same course `../settlement/timers.ts` took with its own `errorTokenOf`.
  */
 function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {

@@ -1,16 +1,12 @@
 import { z } from 'zod';
-
 /**
- * Every error code the API can return in the error envelope
- * `{ error: { code: string, message: string } }` (AAP 0.5.4), `snake_case` (AAP 0.11.1) and listed in
- * the group order of the HTTP status {@link ERROR_STATUS} maps them to. A few carry a rule of their
- * own: `not_found` is the generic 404, used where no more specific code applies; `internal_error` is
- * the mapping for an unexpected error, which the errors plugin answers with a request id and no stack
- * trace in the body (AAP 0.11.1); `service_unavailable` is the rate limiter's Redis outage, which
- * every rate-limited route answers instead of running because the limiter keeps `skipOnError: false`
- * (AAP 0.3.2); `suggestions_unavailable` is a failure confined to the suggestions route (AAP 0.3.2);
- * and `fx_rate_unavailable` is a price conversion whose currency has no rate for the capture day
- * (AAP 0.5.6), confined to the operator price-entry route.
+ * Every error code the API can return in the error envelope `{ error: { code, message } }`, `snake_case` and
+ * listed in the group order of the HTTP status {@link ERROR_STATUS} maps them to. A few carry a rule of their
+ * own: `not_found` is the generic 404; `internal_error` is the mapping for an unexpected error, which the errors
+ * plugin answers with a request id and no stack trace in the body; `service_unavailable` is the rate limiter's
+ * Redis outage, which every rate-limited route answers instead of running because the limiter keeps
+ * `skipOnError: false`; `suggestions_unavailable` is a failure confined to the suggestions route; and
+ * `fx_rate_unavailable` is a price conversion whose currency has no rate for the capture day.
  */
 export const ErrorCode = z.enum([
   'invalid_email',
@@ -76,15 +72,8 @@ export const ErrorCode = z.enum([
   'service_unavailable',
   'suggestions_unavailable',
 ]);
-
 export type ErrorCode = z.infer<typeof ErrorCode>;
-
-/**
- * The HTTP status each error code is answered with (AAP 0.5.4), grouped in the same order as
- * {@link ErrorCode}, and no code has more than one status. The `satisfies` clause makes
- * exhaustiveness compiler-enforced, so the errors plugin can resolve an `AppError`'s status by code
- * alone.
- */
+/** The HTTP status each error code is answered with, grouped in the same order as {@link ErrorCode}, and no code has more than one status. The `satisfies` clause makes exhaustiveness compiler-enforced, so the errors plugin can resolve an `AppError`'s status by code alone. */
 export const ERROR_STATUS = {
   invalid_email: 400,
   proof_malformed: 400,
@@ -149,17 +138,7 @@ export const ERROR_STATUS = {
   service_unavailable: 503,
   suggestions_unavailable: 503,
 } as const satisfies Record<ErrorCode, number>;
-
-/**
- * Codes the pilot adds to routes the request's contract already defines, each marked as an addition
- * in `docs/api/README.md` (AAP 0.5.4).
- *
- * `payment_unavailable` and `hold_pending` carry the lost-response recovery for a card hold
- * (AAP 0.3.2): the deposit stays `pending`, no second authorization is created and the client
- * recovers through `GET /meetups`. `self_proposal` rejects a proposal whose recipient is its caller.
- * `token_invalid` is original on `POST /auth/verify` and an addition on every other route, which
- * returns it for a write attempted after account deletion (AAP 0.5.3).
- */
+/** Codes the pilot adds to routes the request's contract already defines, each marked as an addition in `docs/api/README.md`. `payment_unavailable` and `hold_pending` carry the lost-response recovery for a card hold: the deposit stays `pending`, no second authorization is created and the client recovers through `GET /meetups`. `self_proposal` rejects a proposal whose recipient is its caller. `token_invalid` is original on `POST /auth/verify` and an addition on every other route, which returns it for a write attempted after account deletion. */
 export const ADDED_ERROR_CODES = [
   'payment_unavailable',
   'hold_pending',
@@ -168,19 +147,11 @@ export const ADDED_ERROR_CODES = [
   'service_unavailable',
   'fx_rate_unavailable',
 ] as const satisfies readonly ErrorCode[];
-
-/**
- * The error envelope every failing route answers with, verbatim from the request: one `error` key
- * holding a `code` from {@link ErrorCode} and a human-readable `message` (AAP 0.5.4). No other field
- * is added — no request id, no stack trace (AAP 0.11.1). It is a strip-mode `z.object` with no
- * transforms, so unknown keys on a serialized response are dropped rather than rejected and
- * `@fastify/swagger` can emit the schema into `docs/api/openapi.json`.
- */
+/** The error envelope every failing route answers with, verbatim from the request: one `error` key holding a `code` from {@link ErrorCode} and a human-readable `message`. No other field is added — no request id, no stack trace. It is a strip-mode `z.object` with no transforms, so unknown keys on a serialized response are dropped rather than rejected and `@fastify/swagger` can emit the schema into `docs/api/openapi.json`. */
 export const ErrorEnvelope = z.object({
   error: z.object({
     code: ErrorCode,
     message: z.string(),
   }),
 });
-
 export type ErrorEnvelope = z.infer<typeof ErrorEnvelope>;

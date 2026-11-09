@@ -1,14 +1,9 @@
 /**
- * Criterion 5 — field-level disclosure by tier. One profile is requested by the same viewer as a
- * stranger, after a locked meetup, after one completed meetup and after two, and each answer is
- * compared with the contract in four independent ways, because each alone misses a different
- * mistake: the parsed key set equals `TIER_FIELDS[tier]`; every leaf path `keysDeep` finds hangs off
- * one of those keys, so an object smuggled inside a permitted field is caught too; the body parses
- * through its own tier's shared schema and fails the next tier's; and the raw text carries a
- * distinctive marker for each field the tier releases and none for a field it withholds.
- *
- * The photo bytes are read from `app.inject`'s `rawPayload`, because `callRoute` answers a
- * utf8-decoded string, which cannot carry binary.
+ * Criterion 5 — field-level disclosure by tier. One profile is requested by the same viewer as a stranger, after a locked meetup, after one
+ * completed meetup and after two, and each answer is compared with the contract in four independent ways, because each alone misses a different
+ * mistake: the parsed key set equals `TIER_FIELDS[tier]`; every leaf path `keysDeep` finds hangs off one of those keys, so an object smuggled
+ * inside a permitted field is caught too; the body parses through its own tier's shared schema and fails the next tier's; and the raw text carries
+ * a distinctive marker for each field the tier releases and none for a field it withholds.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -40,9 +35,8 @@ import type { MeetupFixture, RouteResponse, UserFixture } from '../support/facto
 const CITY = 'lisbon';
 
 /**
- * The distinctive values the target fills in through `PUT /me/profile`, each a string that occurs in
- * no other field, so finding it in the raw text proves the field travelled and not finding it proves
- * it did not.
+ * The distinctive values the target fills in through `PUT /me/profile`, each a string that occurs in no other field, so finding it in the raw
+ * text proves the field travelled and not finding it proves it did not.
  */
 const NICKNAME = 'NickMarker';
 const BIO = 'BioMarker';
@@ -50,8 +44,8 @@ const FULL_NAME = 'FullNameMarker';
 const EXTERNAL_CONTACT = 'ContactMarker';
 
 /**
- * Which tier's release each marker belongs to. Tier 0 adds identity and reputation and tier 2 a
- * boolean, so neither has one; the key-set and schema comparisons cover those two tiers.
+ * Which tier's release each marker belongs to. Tier 0 adds identity and reputation and tier 2 a boolean, so neither has one; the key-set and
+ * schema comparisons cover those two tiers.
  */
 const MARKERS_BY_TIER = {
   1: [NICKNAME, BIO],
@@ -113,10 +107,8 @@ function headerOf(response: RouteResponse, name: string): string {
 }
 
 /**
- * The pair a case is about: a viewer and a target, both consented travelers with a valid `lisbon`
- * proof, the target's profile filled in through the real route, so every marker is stored by the
- * code that serves it. `withPhoto: false` leaves the target without one, which the photo route must
- * refuse at tier 2; no case writes a `ProfilePhoto` row by hand.
+ * The pair a case is about: a viewer and a target, both consented travelers with a valid `lisbon` proof, the target's profile filled in through
+ * the real route. `withPhoto: false` leaves the target without one, which the photo route must refuse at tier 2.
  */
 async function pair(
   options: { readonly withPhoto?: boolean } = {},
@@ -191,9 +183,8 @@ const COMPLETED_ONCE: Arrange = async (viewer, target) => {
 };
 
 /**
- * Two completed meetups a day apart: tier 3. The spacing is inside the anti-farming window on
- * purpose — `PairHistory.completedCount` counts both anyway, because that rule limits the reputation
- * counters and the leaderboard only (AAP 0.5.7, 0.7.3).
+ * Two completed meetups a day apart: tier 3. The spacing is inside the anti-farming window on purpose — `PairHistory.completedCount` counts both
+ * anyway, because that rule limits the reputation counters and the leaderboard only (AAP 0.5.7, 0.7.3).
  */
 const COMPLETED_TWICE: Arrange = async (viewer, target) => {
   await meetupOf(viewer, target, 'completed');
@@ -201,9 +192,8 @@ const COMPLETED_TWICE: Arrange = async (viewer, target) => {
 };
 
 /**
- * One row of the criterion-5 table: the arrangement, the tier that must follow, and the label the
- * report prints. The tier precedes the arrangement so the title's placeholders read the row in
- * order.
+ * One row of the criterion-5 table: the arrangement, the tier that must follow, and the label the report prints. The tier precedes the arrangement
+ * so the title's placeholders read the row in order.
  */
 type TierRow = readonly [label: string, tier: DisclosureTier, arrange: Arrange];
 
@@ -330,9 +320,8 @@ describe(`field-level disclosure by tier ${stripeModeLabel()}`, () => {
         return target.id;
       }
       /**
-       * Every way a profile must not be served: a block in either direction, the two flags account
-       * deletion leaves, and an id no account holds. The route answers one code for all of them, so
-       * no caller can tell which applies (AAP 0.5.3, 0.5.4).
+       * Every way a profile must not be served: a block in either direction, the two flags account deletion leaves, and an id no account holds. The
+       * route answers one code for all of them, so no caller can tell which applies (AAP 0.5.3, 0.5.4).
        */
       const NOT_FOUND_ROWS: readonly NotFoundRow[] = rows<NotFoundRow>([
         [
@@ -361,9 +350,8 @@ describe(`field-level disclosure by tier ${stripeModeLabel()}`, () => {
   });
   describe('GET /users/:userId/photo', () => {
     /**
-     * The tiers the gate refuses, each with the arrangement that reaches it: both are below
-     * `PHOTO_MIN_TIER`, and the pair shares a locked meetup at tier 1, so what refuses the request is
-     * the gate and not the absence of a history (AAP 0.5.4).
+     * The tiers the gate refuses, each with the arrangement that reaches it: both are below `PHOTO_MIN_TIER`, and the pair shares a locked meetup at
+     * tier 1, so what refuses the request is the gate and not the absence of a history (AAP 0.5.4).
      */
     const REFUSAL_ROWS: readonly (readonly [string, Arrange])[] = rows<readonly [string, Arrange]>([
       ['a stranger at tier 0', STRANGER],

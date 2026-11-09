@@ -1,18 +1,15 @@
 /**
- * `PaymentOperation` recovery: the executor's crash points, the ambiguous hold create, the hold
- * attempts a client restarts, and the late, orphan and lost authorizations.
+ * `PaymentOperation` recovery: the executor's crash points, the ambiguous hold create, the hold attempts a client restarts, and
+ * the late, orphan and lost authorizations.
  *
- * Every Stripe mutation Tablemate makes is a durable `payment_operation` row written in the
- * transaction that decided it, and the rules the cases break one at a time are: claim, call, record —
- * a throw before the request is sent returns the claim, a throw after a successful call leaves the row
- * `executing` for the two-minute reclaim to reconcile; an ambiguous result is not a failure; an
- * ambiguous hold create is replayed under its own key rather than replaced, and handed to the
- * operator once `HOLD_UNRESOLVED_AFTER_MS` has passed; an attempt a client restarts is confirmed,
- * never re-authorized; and a late authorization never leaves money outstanding.
+ * Every Stripe mutation Tablemate makes is a durable `payment_operation` row written in the transaction that decided it, and the
+ * rules the cases break one at a time are: a throw before the request is sent returns the claim, a throw after a successful call
+ * leaves the row `executing` for the two-minute reclaim to reconcile; an ambiguous result is not a failure; an ambiguous hold
+ * create is replayed under its own key rather than replaced, and handed to the operator once `HOLD_UNRESOLVED_AFTER_MS` has
+ * passed; an attempt a client restarts is confirmed, never re-authorized; and a late authorization never leaves money outstanding.
  *
- * The cases that drive a provider-side outcome come from the stateful proxy's control routes and run
- * in `mock` alone; the rest run in both topologies and carry `stripeModeLabel()`. Time comes from the
- * injected clock, faults are disarmed in a `finally`, and no assertion reads a card field.
+ * The cases that drive a provider-side outcome come from the stateful proxy's control routes and run in `mock` alone; the rest run
+ * in both topologies and carry `stripeModeLabel()`. Time comes from the injected clock and faults are disarmed in a `finally`.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -81,8 +78,8 @@ const TIMEOUT_CASE_MS = 30_000;
 const RECLAIM_AFTER_MS = 2 * MINUTE_MS;
 
 /**
- * How far out a proposal this file locks starts, inside the five-day horizon and far enough ahead
- * that the recipient deadline is the 48-hour one rather than the start.
+ * How far out a proposal this file locks starts, inside the five-day horizon and far enough ahead that the recipient deadline is
+ * the 48-hour one rather than the start.
  */
 const PROPOSAL_LEAD_MS = 4 * DAY_MS;
 
@@ -215,8 +212,8 @@ function objectId(object: unknown): string | null {
 }
 
 /**
- * A fresh delivery of an event the provider already recorded: the same payload under a new event id,
- * which is what makes two deliveries of one historical object two distinct events (AAP 0.3.2).
+ * A fresh delivery of an event the provider already recorded: the same payload under a new event id, which is what makes two
+ * deliveries of one historical object two distinct events (AAP 0.3.2).
  */
 function rewrap(event: StripeEvent): ProviderEvent {
   return {
@@ -238,8 +235,8 @@ async function recordedEvent(type: string, intentId: string): Promise<StripeEven
 }
 
 /**
- * The attempt's PaymentIntent as the provider reports it, through the same API the gateway's own
- * reconciliation reads — in either topology, because the proxy answers this path from its state.
+ * The attempt's PaymentIntent as the provider reports it, through the same API the gateway's own reconciliation reads — in either
+ * topology, because the proxy answers this path from its state.
  */
 function intentById(intentId: string): Promise<ProviderIntent> {
   return stripeApi(t).get<ProviderIntent>(`${INTENTS_PATH}/${encodeURIComponent(intentId)}`);
@@ -258,8 +255,8 @@ async function customerIdOf(depositId: string): Promise<string> {
 }
 
 /**
- * Every PaymentIntent the provider has for `depositId`, newest first: the count is how a case proves
- * that no second authorization was created for one attempt (AAP 0.3.2).
+ * Every PaymentIntent the provider has for `depositId`, newest first: the count is how a case proves that no second authorization
+ * was created for one attempt (AAP 0.3.2).
  */
 async function intentsFor(depositId: string): Promise<ProviderIntent[]> {
   const customer = await customerIdOf(depositId);
@@ -313,8 +310,8 @@ async function customerDeleted(customerId: string): Promise<boolean> {
 }
 
 /**
- * Save another card on the account, as the card-setup step does before a hold is retried — the
- * provider control route, so this belongs to the `mock` topologies alone.
+ * Save another card on the account, as the card-setup step does before a hold is retried — the provider control route, so this
+ * belongs to the `mock` topologies alone.
  */
 async function attachVisa(user: UserFixture): Promise<void> {
   const row = await t.services.db.user.findUniqueOrThrow({
@@ -350,11 +347,11 @@ interface Cast {
 }
 
 /**
- * Write what a proposal needs and nothing else: two accounts with their cards, a partner venue, a
- * valid proof on either side and the instant the meetup starts at.
+ * Write what a proposal needs and nothing else: two accounts with their cards, a partner venue, a valid proof on either side and
+ * the instant the meetup starts at.
  *
- * The route call is deliberately a separate step, so a case can arm a fault — a dropped create, a
- * refusal — between the fixture and the request that has to survive it.
+ * The route call is deliberately a separate step, so a case can arm a fault — a dropped create, a refusal — between the fixture
+ * and the request that has to survive it.
  */
 async function cast(options: OpenProposalOptions = {}): Promise<Cast> {
   const venue = await makeVenue(t, { cityId: CITY_ID });
@@ -383,9 +380,8 @@ function meetupIdOf(response: RouteResponse): string {
 }
 
 /**
- * Propose through the real route: a cast, then `POST /meetups`, whose initiator hold the request
- * itself places. A `3ds` card leaves the proposal invisible behind `requires_action`, which is the
- * state the recovery rows start from.
+ * Propose through the real route: a cast, then `POST /meetups`, whose initiator hold the request itself places. A `3ds` card leaves
+ * the proposal invisible behind `requires_action`, which is the state the recovery rows start from.
  */
 async function openProposal(options: OpenProposalOptions = {}): Promise<Proposal> {
   const actors = await cast(options);
@@ -402,8 +398,8 @@ interface ListedMeetup {
 }
 
 /**
- * The caller's own meetups, as the recovery path the contract names reads them (AAP 0.5.4): the
- * initiator of a proposal whose hold the response never confirmed recovers its id here.
+ * The caller's own meetups, as the recovery path the contract names reads them (AAP 0.5.4): the initiator of a proposal whose hold
+ * the response never confirmed recovers its id here.
  */
 async function listedMeetups(actor: UserFixture, status?: string): Promise<ListedMeetup[]> {
   const query = new URLSearchParams({
@@ -416,12 +412,9 @@ async function listedMeetups(actor: UserFixture, status?: string): Promise<Liste
 }
 
 /**
- * Read until `read` reports what the case expects, or give up at the bound.
- *
- * A delivery's post-commit work runs after its response and is deliberately not awaited
- * (`payments/webhook.ts`), so the effect of an event is observable a moment after it is
- * acknowledged. A case that asserts on such an effect waits here instead of racing the pass that
- * carries it out.
+ * Read until `read` reports what the case expects, or give up at the bound. A delivery's post-commit work runs after its response
+ * and is deliberately not awaited (`payments/webhook.ts`), so the effect of an event is observable a moment after it is
+ * acknowledged; a case that asserts on such an effect waits here instead of racing the pass that carries it out.
  */
 async function eventually<T>(
   read: () => Promise<T>,
@@ -447,10 +440,8 @@ async function lockedPair(): Promise<Proposal> {
 }
 
 /**
- * One route call as an actor, with an optional JSON body.
- *
- * The token is signed for this call from the injected clock, never the fixture's own: several cases
- * jump the clock past an access token's 15 minutes, and the account acting is the same one.
+ * One route call as an actor, with an optional JSON body. The token is signed for this call from the injected clock, never the
+ * fixture's own: several cases jump the clock past an access token's 15 minutes.
  */
 async function route(
   method: 'GET' | 'POST' | 'DELETE',
@@ -467,14 +458,10 @@ async function route(
 }
 
 /**
- * Retry a hold through the route that owns it.
- *
- * A retry that supersedes an attempt which recorded an authorization writes that attempt's release
- * ahead of the new attempt in the deposit's own plan, and the same request carries both rows out: the
- * release first, the new attempt inline after it, and the answer is that attempt's own client secret —
- * the deposit ends holding attempt `n + 1` and the meetup moves with it (AAP 0.3.2, 0.5.4). A retry
- * whose predecessor cannot conclude still answers `409 hold_pending`, which is the case that pins the
- * refusal against a deposit left `pending`.
+ * Retry a hold through the route that owns it. A retry that supersedes an attempt which recorded an authorization writes that
+ * attempt's release ahead of the new attempt in the deposit's own plan, and the same request carries both rows out: the release
+ * first, the new attempt inline after it, and the answer is that attempt's own client secret (AAP 0.3.2, AAP 0.5.4). A retry whose
+ * predecessor cannot conclude still answers `409 hold_pending`.
  */
 function retryHold(
   proposal: Proposal,

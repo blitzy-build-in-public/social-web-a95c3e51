@@ -1,18 +1,13 @@
 /**
- * Platform-neutral proving orchestration and the zero-knowledge client contracts (AAP 0.5.1, AAP 0.5.5,
- * AAP 0.8.1).
+ * Platform-neutral proving orchestration and the zero-knowledge client contracts (AAP 0.5.1, AAP 0.5.5).
  *
- * The proof is built on the device and nowhere else: the email bytes, the private inputs and the inputs
- * JSON live in local variables for the length of one call and reach neither the proof store, a route
- * parameter, a log line nor an error (AAP 0.5.5, AAP 0.12.2, success criterion 3). The neutral half of a
- * three-file split — it imports no `expo-*`, no `react-native`, no snarkjs, no native module and no Node
- * built-in, so it loads on every platform and in a Node test process — and its two collaborators arrive
- * per platform through the extensionless `./prover` and `./circuits` imports below.
- *
- * {@link prove} measures one span — input construction through witness generation and proving to the
- * proof output — which is the figure AAP 0.5.5 holds against p95 ≤ 90 s on phone-class devices; artefact
- * downloads happen before it, so network time cannot distort a proving measurement. Client state keeps
- * only `{ status, issuerId?, errorCode? }` and a numeric download progress.
+ * The proof is built on the device and nowhere else: the email bytes, the private inputs and the inputs JSON live in
+ * local variables for the length of one call and reach neither the proof store, a route parameter, a log line nor an
+ * error (criterion 3). The neutral half of a three-file split — no `expo-*`, no `react-native`, no snarkjs, no native
+ * module, no Node built-in — with its two collaborators arriving through the extensionless `./prover` and `./circuits`
+ * imports.
+ * {@link prove} measures input construction through witness generation and proving, the span AAP 0.5.5 holds against
+ * p95 <= 90 s on phone-class devices; artefact downloads happen before it.
  */
 import type { CircuitInputErrorCode, CircuitInputs, SupportedIssuer } from '@tablemate/circuits';
 import { PUBLIC_SIGNAL_NAMES, ProofSubmission } from '@tablemate/shared';
@@ -24,59 +19,47 @@ import type {
   RegistryFile,
   ZkConfig,
 } from '@tablemate/shared';
-
 import { apiClient } from '../api/client';
 import { isApiError } from '../api/errors';
 import type { ClientErrorCode } from '../api/errors';
 import { resetProof, setProofError, setProofStatus } from '../state/proof-store';
 
 /*
- * The circuit API — the witness input generator, and the way this platform recognises the error it
- * raises — resolved by the bundler exactly as the platform half below is: `circuits.ts` on iOS and
- * Android, where the package is in the bundle the app starts from, `circuits.web.ts` on the web.
+ * The circuit API — the witness input generator and the way this platform recognises the error it raises — resolved
+ * by the bundler: `circuits.ts` on iOS and Android, `circuits.web.ts` on the web.
  */
 import { isCircuitInputError, loadCircuitApi } from './circuits';
 
 /*
- * The platform half of the split, resolved by the bundler rather than a runtime flag: Metro maps this
- * extensionless path to `prover.native.ts` on iOS and Android and to `prover.web.ts` on the web, and
- * `tsconfig.json` type-checks it through `moduleSuffixes` against the native half.
- *
- * Its properties are read lazily inside the functions below, never at module load, because in a Vitest
- * run this path resolves back to this file: a harmless self-cycle in which both properties are absent,
- * so a test injects its own engine and artefact store instead of reading a missing default at load time.
+ * The platform half of the split, resolved by the bundler rather than a runtime flag: Metro maps this extensionless
+ * path to `prover.native.ts` on iOS and Android and to `prover.web.ts` on the web.
  */
 import * as platform from './prover';
-
-/* --- The platform contracts (AAP 0.3.4, AAP 0.5.5) ------------------------------------------ */
-
 /**
- * One picked or shared booking-confirmation file. It carries no file name, path or URI, because the
- * name of a confirmation email can hold a booking reference.
+ * One picked or shared booking-confirmation file. It carries no file name, path or URI, because the name of a
+ * confirmation email can hold a booking reference.
  */
 export interface EmlHandle {
   /** The bytes, passed to the input generator and never stored or sent. */
   readonly bytes: Uint8Array;
   /**
-   * Deletes the app-owned copy and releases its bytes; idempotent, and awaited on every path —
-   * success, failure and cancellation (AAP 0.5.5). The user's own original is never touched.
+   * Deletes the app-owned copy and releases its bytes; idempotent, and awaited on every path — success, failure and
+   * cancellation. The user's own original is never touched.
    */
   release(): Promise<void>;
 }
 
 /** How the flow obtains an `.eml`: the document picker everywhere, plus the native share sheet. */
 export interface EmlIntake {
-  /** Opens the platform's file picker; `null` means the user cancelled. */
   pickEml(): Promise<EmlHandle | null>;
-  /** Reads a file the operating system handed to the app. Absent on the web. */
   fromShareIntent?(uri: string): Promise<EmlHandle>;
 }
 
 /** One artefact on disk, after download and SHA-256 verification against the manifest. */
 export interface ResolvedFile {
   /**
-   * Where the engine reads it: a verified file URI on native, an OPFS entry on the web, or the
-   * artefact's published URL on an engine whose origin-private file system cannot be used.
+   * Where the engine reads it: a verified file URI on native, an OPFS entry on the web, or the artefact's published
+   * URL on an engine whose origin-private file system cannot be used.
    */
   readonly location: string;
   readonly sha256: string;
@@ -84,15 +67,14 @@ export interface ResolvedFile {
 }
 
 /**
- * The two artefacts a proof needs, resolved and verified. `wasm` is null on native, where
- * `tablemate-prover` compiles the witness generator into the app (AAP 0.3.4).
+ * The two artefacts a proof needs, resolved and verified. `wasm` is null on native, where `tablemate-prover` compiles
+ * the witness generator into the app.
  */
 export interface ResolvedArtifacts {
   readonly zkey: ResolvedFile;
   readonly wasm: ResolvedFile | null;
 }
 
-/** How far an artefact download has got, as a store reports it. */
 export interface DownloadProgress {
   readonly receivedBytes: number;
   /** The total the manifest declared, or 0 while it is unknown. */
@@ -100,8 +82,8 @@ export interface DownloadProgress {
 }
 
 /**
- * What {@link ArtifactStore.plan} reports before downloading anything, so the generate screen can show
- * the download size and recommend Wi-Fi (AAP 0.5.5).
+ * What {@link ArtifactStore.plan} reports before downloading anything, so the generate screen can show the download
+ * size and recommend Wi-Fi.
  */
 export interface ArtifactPlan {
   /** True when both artefacts are already on disk, verified and current. */
@@ -112,16 +94,11 @@ export interface ArtifactPlan {
 }
 
 /**
- * The artefact half of the split: fetching the proving key and the circuit WASM, verifying each against
- * its published SHA-256, and keeping them for the next attempt (AAP 0.5.5). A store re-verifies what it
- * holds by size and modification time before each use and re-hashes it after an app update; a store
- * whose platform cannot keep the artefacts resolves them to the URLs they are published at instead, and
- * the engine then re-verifies each as it streams it in.
+ * The artefact half of the split: fetching the proving key and the circuit WASM, verifying each against its published
+ * SHA-256, and keeping them for the next attempt. A store re-verifies what it holds before every use.
  */
 export interface ArtifactStore {
-  /** Reports what a download would cost, without starting one. */
   plan(artifacts: ZkConfig['artifacts']): Promise<ArtifactPlan>;
-  /** Downloads, hash-checks and returns both artefacts, reporting progress as bytes arrive. */
   ensureArtifacts(
     artifacts: ZkConfig['artifacts'],
     onProgress?: (progress: DownloadProgress) => void,
@@ -130,9 +107,8 @@ export interface ArtifactStore {
 }
 
 /**
- * What a proving engine returns. `proof` and `publicSignals` stay `unknown` because this module validates
- * them with `ProofSubmission`, turning a malformed result into `proof_output_invalid` rather than a proof
- * the API refuses; {@link ProveTimings.totalMs} is the span AAP 0.5.5 records.
+ * What a proving engine returns. `proof` and `publicSignals` stay `unknown` because this module validates them with
+ * `ProofSubmission`, turning a malformed result into `proof_output_invalid`.
  */
 export interface EngineOutput {
   readonly proof: unknown;
@@ -142,15 +118,15 @@ export interface EngineOutput {
 }
 
 /**
- * The proving engine of one platform: rapidsnark through the native `tablemate-prover` module on iOS
- * and Android, snarkjs in a dedicated Web Worker on the web (AAP 0.3.4, AAP 0.5.5).
+ * The proving engine of one platform: rapidsnark through the native `tablemate-prover` module on iOS and Android,
+ * snarkjs in a dedicated Web Worker on the web.
  */
 export interface ProverEngine {
   /** True when this build can prove at all; a missing native module or Worker says false. */
   available(): boolean;
   /**
-   * Proves one witness from the circuit inputs `JSON.stringify`ed in this process — an in-memory
-   * string to the native module, a `postMessage` frame to the web Worker — against verified artefacts.
+   * Proves one witness from the circuit inputs `JSON.stringify`ed in this process — an in-memory string to the native
+   * module, a `postMessage` frame to the web Worker — against verified artefacts.
    */
   generate(
     inputsJson: string,
@@ -160,9 +136,8 @@ export interface ProverEngine {
 }
 
 /**
- * Everything a proof needs that does not come from the email (AAP 0.5.5). `ZkConfig` from
- * `GET /v1/zk/config` satisfies this shape, and `app/dev/zk-bench.tsx` builds one from the committed
- * configuration files without calling the API.
+ * Everything a proof needs that does not come from the email. `ZkConfig` from `GET /v1/zk/config` satisfies this
+ * shape, and `app/dev/zk-bench.tsx` builds one from the committed artefacts.
  */
 export interface ProveConfig {
   /** The issuers whose keys and templates the input generator may use. */
@@ -176,8 +151,8 @@ export interface ProveConfig {
 }
 
 /**
- * How one proof's span breaks down, in milliseconds. `totalMs` runs from input construction through
- * proving, which is what AAP 0.5.5 compares with its p95 ≤ 90 s target; the rest are diagnostics.
+ * How one proof's span breaks down, in milliseconds: `totalMs` runs from input construction through proving, which
+ * is what AAP 0.5.5 compares with its p95 <= 90 s target.
  */
 export interface ProveTimings {
   readonly inputMs: number;
@@ -199,10 +174,8 @@ export interface ProveResult {
 
 /**
  * The witness inputs of one attempt, built before any artefact is fetched: an email that is not a booking
- * confirmation and one whose issuer the published configuration does not support are both refused by the
- * input generator, which settles the second by the message's own `d=`/`s=` tags against
- * `ZkConfig.issuers`. Building the inputs first, through {@link ProveOptions.built}, therefore refuses an
- * unusable email without downloading the ~1.6 GB artefact set (AAP 0.5.5, AAP 0.5.8).
+ * confirmation and one whose issuer the published configuration does not support are refused by the input generator,
+ * so an unusable email costs ~1.6 GB less than refusing after the artefacts.
  */
 export interface BuiltInputs {
   /** The witness, ready for `JSON.stringify`. */
@@ -215,49 +188,31 @@ export interface BuiltInputs {
 
 /** What {@link prove} may be told besides the email bytes and the configuration. */
 export interface ProveOptions {
-  /** The proving engine; defaults to this platform's. */
   engine?: ProverEngine;
   /** Inputs already built from these bytes, which are proved instead of being built again. */
   built?: BuiltInputs;
-  /** Artefacts already resolved, which skips the download entirely. */
   artifacts?: ResolvedArtifacts;
-  /** The artefact store to download through; defaults to this platform's. */
   artifactStore?: ArtifactStore;
-  /** Aborts the download or the proof. */
   signal?: AbortSignal;
-  /** Called as artefact bytes arrive; never called when `artifacts` is supplied. */
   onProgress?: (progress: DownloadProgress) => void;
 }
 
-/** What {@link importAndProve} may be told. */
 export interface ImportAndProveOptions {
-  /** The proving engine; defaults to this platform's. */
   engine?: ProverEngine;
-  /** The artefact store; defaults to this platform's. */
   artifactStore?: ArtifactStore;
-  /** Aborts the download, the proof or the submission. */
   signal?: AbortSignal;
 }
 
-/** One completed import-and-prove attempt: the server's answer and the measured span. */
 export interface ImportAndProveResult {
   /** The `201` answer of `POST /itinerary-proofs`. */
   readonly accepted: ProofAccepted;
   readonly timings: ProveTimings;
 }
 
-/* --- Error codes ---------------------------------------------------------------------------- */
-
 /**
- * Every code this client's proving flow can raise, so a screen maps one code to one sentence (AAP 0.5.8).
- * The intake raises `eml_read_failed` and `share_intake_unsupported`; the artefact store raises
- * `artifact_download_failed`, `artifact_hash_mismatch`, `artifact_insufficient_storage` and
- * `artifact_storage_unavailable`; the engine raises `prover_unavailable`, `worker_unavailable`,
- * `worker_failed` and `out_of_memory`; `proof_output_invalid` is an engine result this module refuses,
- * and `proof_in_progress` and `cancelled` are the flow's own.
- *
- * The platform files raise these as errors shaped `{ name: 'ZkClientError', code, message: code }` and
- * import only the type, so an engine never imports this module at runtime.
+ * Every code this client's proving flow can raise, so a screen maps one code to one sentence (AAP 0.5.8): the input
+ * generator's own codes, this module's `proof_output_invalid` and `cancelled`, and the `worker_failed` and
+ * `unsupported_platform` a platform engine reports.
  */
 export const ZK_CLIENT_ERROR_CODES = [
   'eml_read_failed',
@@ -274,14 +229,11 @@ export const ZK_CLIENT_ERROR_CODES = [
   'proof_in_progress',
   'cancelled',
 ] as const;
-
 /** One {@link ZK_CLIENT_ERROR_CODES} entry. */
 export type ZkClientErrorCode = (typeof ZK_CLIENT_ERROR_CODES)[number];
-
 /**
- * Every code the proving flow can carry: the input generator's, this module's, the API client's and the
- * native module's five `ProverErrorCode` values — listed literally rather than imported, because
- * importing them would pull the native module into the web bundle.
+ * The proving error a screen catches. The prototype chain is restored because Babel under Hermes does not preserve
+ * it for a built-in subclass.
  */
 export type ProofErrorCode =
   | CircuitInputErrorCode
@@ -292,11 +244,9 @@ export type ProofErrorCode =
   | 'prover_failed'
   | 'file_missing'
   | 'hash_failed';
-
 /**
- * The only error this module raises. Its `message` is the code, so no free text can travel out of a
- * proof attempt, and its `name` matches the shape the platform files use, which {@link errorCodeOf}
- * reads.
+ * The reason an attempt stopped, as a code and the shape `proof-store` requires, so a screen can map it to one
+ * sentence.
  */
 class ZkError extends Error {
   /** The reason the attempt stopped. */
@@ -313,10 +263,8 @@ class ZkError extends Error {
 
 /** The shape of a code {@link errorCodeOf} passes through, which `proof-store` also requires. */
 const CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-
 /** A decimal field element, the form the circuit, the registry and the store all use. */
 const FIELD_ELEMENT_PATTERN = /^\d{1,78}$/;
-
 /** What the platform files export, read lazily and possibly absent. */
 interface PlatformImplementations {
   readonly engine?: ProverEngine;
@@ -329,30 +277,23 @@ function platformImplementations(): PlatformImplementations {
 }
 
 /**
- * This platform's proving engine, or undefined where the build has none (AAP 0.3.4, AAP 0.5.5).
- *
- * The generate screen asks {@link ProverEngine.available} through this accessor *before* it offers to
- * prove, so a build without the native module — Expo Go, or a native build made before
- * `pnpm circuits:native` — or a browser without a Worker states that as its own screen state instead of
- * failing an attempt that has already read a booking email (AAP 0.2.4, AAP 0.5.8).
+ * This platform's proving engine, or undefined where the build has none: a capability probe returns false rather
+ * than failing an attempt that has already read a booking email.
  */
 export function platformEngine(): ProverEngine | undefined {
   return platformImplementations().engine;
 }
 
 /**
- * This platform's artefact store, or undefined where the build has none. The generate screen reads
- * {@link ArtifactStore.plan} through this accessor to show the download size and the Wi-Fi advice before
- * anything is downloaded (AAP 0.5.5).
+ * Why the flow may refuse before anything is downloaded: an unsupported build is reported to the traveler without
+ * spending the ~1.6 GB artefact download.
  */
 export function platformArtifactStore(): ArtifactStore | undefined {
   return platformImplementations().artifactStore;
 }
 
 /**
- * The clock the measured span is taken on, monotonic where the platform offers one so a device clock
- * change cannot distort a benchmark; `Date.now()` is the fallback. This is client code, so the
- * server's injected-clock rule does not apply (AAP 0.11.1).
+ * The stored proof status after a step, so a screen repaints from the store alone and never holds an email byte.
  */
 function now(): number {
   const perf = globalThis.performance;
@@ -360,8 +301,7 @@ function now(): number {
 }
 
 /**
- * Releases an intake handle, swallowing a failure: the copy is app-owned cleanup, so a storage error
- * must neither replace the error that caused the release nor fail an otherwise successful proof.
+ * A staged picked file, waiting for the generate screen. It lives in memory alone, for the length of one attempt.
  */
 async function releaseQuietly(handle: EmlHandle): Promise<void> {
   try {
@@ -373,21 +313,11 @@ async function releaseQuietly(handle: EmlHandle): Promise<void> {
 
 /** The picked file waiting for the generate screen, in memory alone. */
 let pendingEml: EmlHandle | null = null;
-
 /** True while {@link importAndProve} is running, so a second attempt is refused, not interleaved. */
 let sessionInFlight = false;
-
-/* --- Reading an error ----------------------------------------------------------------------- */
-
 /**
- * The code of anything the proving flow can throw, or `unknown_error` for an error that offers none.
- *
- * The two error types this client owns are recognised by identity: the input generator's refusal through
- * the circuit API's own predicate — membership of the class on iOS and Android, its shape on the web,
- * where the package is not loaded — and the API client's `ApiError` by class. Everything else is read by
- * shape: an `AbortError` is this flow's `cancelled`, and any error carrying a `snake_case` `code` keeps
- * it, which covers the platform files, the native module and a Web Worker's reported failure. No message
- * is ever read: an exception's text can carry a field value.
+ * The client code an error maps to: this module's own codes pass through, an `ApiError`'s code is read, and anything
+ * else is `worker_failed`. `proof-store` requires the same shape.
  */
 export function errorCodeOf(err: unknown): ProofErrorCode | 'unknown_error' {
   if (isCircuitInputError(err)) return err.code;
@@ -399,8 +329,6 @@ export function errorCodeOf(err: unknown): ProofErrorCode | 'unknown_error' {
     ? (shape.code as ProofErrorCode)
     : 'unknown_error';
 }
-
-/* --- Proof output validation ---------------------------------------------------------------- */
 
 /** The decimal value of one named public signal, or null when the submission carries no such signal. */
 function signalValue(submission: ProofSubmission, name: PublicSignalName): string | null {
@@ -421,11 +349,8 @@ function matchesSignal(signal: string | null, expected: string): boolean {
 }
 
 /**
- * Refuses an engine result this client cannot submit: a proof or signal list the contract rejects, or one
- * whose public signals name another registry root, another nullifier salt or another issuer than the
- * inputs were built from. Both are `proof_output_invalid`, which keeps a proof the server would answer
- * `422 proof_invalid` for from leaving the device. Signals are read by name through `PUBLIC_SIGNAL_NAMES`,
- * never by a hard-coded position, and compared as numbers, so padding cannot make equal values differ.
+ * Validates a proof output against `ProofSubmission` and the seven public signals read by name through
+ * `PUBLIC_SIGNAL_NAMES`, so a `422 proof_invalid` cannot come from a shape this client could have checked.
  */
 function validatedSubmission(
   output: EngineOutput,
@@ -446,11 +371,8 @@ function validatedSubmission(
   return submission;
 }
 
-/* --- Artefact download ---------------------------------------------------------------------- */
-
 /** One percentage point: the smallest movement a download report is published for. */
 const PROGRESS_STEP = 0.01;
-
 /** A reported byte pair as a 0-1 ratio, or undefined when no usable total was reported. */
 function progressRatio(progress: DownloadProgress): number | undefined {
   const { receivedBytes, totalBytes } = progress;
@@ -461,8 +383,7 @@ function progressRatio(progress: DownloadProgress): number | undefined {
 }
 
 /**
- * Wraps a reporter so a store that calls back on every chunk publishes at most one state change per
- * percentage point — and always the last one, so a bar that reaches complete shows complete.
+ * What one artefact download reports as it runs: the bytes fetched so far and the total the manifest declared.
  */
 function progressReporter(
   report: (progress: number) => void,
@@ -478,9 +399,8 @@ function progressReporter(
 }
 
 /**
- * The artefacts a proof needs, downloaded and hash-checked unless the caller resolved them already. A
- * missing artefact link and a platform without an artefact store are both `artifact_download_failed`:
- * in either case no artefacts can be obtained, so proving cannot start.
+ * Downloads both artefacts through the store, reporting whole percentage points of progress as bytes arrive, and
+ * resolving with the verified refs.
  */
 async function resolveArtifacts(
   artifacts: ZkConfig['artifacts'] | undefined,
@@ -495,14 +415,9 @@ async function resolveArtifacts(
   return resolvedStore.ensureArtifacts(artifacts, onProgress, signal);
 }
 
-/* --- Proving -------------------------------------------------------------------------------- */
-
 /**
- * Builds the witness inputs from the in-memory email bytes, yielding once first so a status can paint
- * before the synchronous work below blocks the JS thread, and measuring how long the build took.
- *
- * Split out of {@link prove} so the import flow can run it *before* it fetches anything: refusing an
- * unusable file first costs ~1.6 GB less than refusing after the artefacts (AAP 0.5.5, AAP 0.5.8).
+ * Proves one email without submitting anything: builds (or accepts) the witness, resolves the artefacts, and returns
+ * the proof with its measured span.
  */
 async function buildInputs(emlBytes: Uint8Array, config: ProveConfig): Promise<BuiltInputs> {
   // Let a status paint before the input generation below blocks the JS thread, which under Hermes is
@@ -510,11 +425,8 @@ async function buildInputs(emlBytes: Uint8Array, config: ProveConfig): Promise<B
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
   });
-  // The generator is loaded before the span starts: on the web this call fetches the package's chunk,
-  // the one download a first attempt on the entry route pays, and a figure measured across it would
-  // not be the span AAP 0.5.5 defines. Every caller reaches the generator through here — `prove` when
-  // it is asked to build, and `importAndProve` before it downloads the artefacts — so the load happens
-  // once, on whichever path builds the witness, and always outside the measured span.
+  // The generator is loaded before the span starts: on the web this call fetches the package's chunk, which must not
+  // be measured as proving time.
   const { buildCircuitInputs } = await loadCircuitApi();
   const startedAt = now();
   const { inputs, issuerId } = buildCircuitInputs(emlBytes, config.issuers, config.registry, {
@@ -524,17 +436,12 @@ async function buildInputs(emlBytes: Uint8Array, config: ProveConfig): Promise<B
 }
 
 /**
- * Builds the witness inputs from the in-memory email bytes, proves them on this device and returns a
- * schema-validated proof (AAP 0.5.1, AAP 0.5.5).
+ * Builds the witness from the email bytes and proves it, measuring one span from input construction to the proof
+ * output.
  *
- * The DKIM key comes from the published registry through the signature's own `d=` and `s=` tags, so
- * nothing is looked up over the network and the email never leaves the device. `timings.totalMs` is the
- * measured span — input construction on the in-memory bytes, witness generation and proving — while a
- * download triggered here runs before the timer starts; inputs the caller already built are proved as
- * they are, which is how {@link importAndProve} refuses an unusable email before the download and still
- * measures the same span. Throws a {@link ProofErrorCode}: `prover_unavailable` with no usable engine,
- * `artifact_download_failed`, `cancelled`, an input generator code, `proof_output_invalid`, or whatever
- * the engine reports.
+ * Nothing about the attempt leaves the device except the proof and its public signals: the email bytes and the private
+ * inputs are local variables for the length of the call, and the witness is built before any download.
+ * @returns The proof, its registry issuer id and the measured span.
  */
 export async function prove(
   emlBytes: Uint8Array,
@@ -573,11 +480,8 @@ export async function prove(
 }
 
 /**
- * Submits a proof to `POST /itinerary-proofs` (AAP 0.5.4).
- *
- * The body is built key by key, so exactly `{ proof, publicSignals }` leaves the device: the whole of what
- * the server learns about the email, with a strict schema at both ends rejecting anything else
- * (AAP 0.12.2, criterion 3). A refusal arrives as an `ApiError` whose code {@link errorCodeOf} reads.
+ * Submits a proof to `POST /itinerary-proofs` (AAP 0.5.4). The body is exactly `{ proof, publicSignals }`, so no
+ * email byte leaves the device; a refusal arrives as an `ApiError` whose code {@link errorCodeOf} reads.
  */
 export function submitProof(
   result: Pick<ProveResult, 'proof' | 'publicSignals'>,
@@ -600,19 +504,12 @@ function proveOptions(
 }
 
 /**
- * The whole flow behind the generate screen: read the picked file, build the witness inputs, fetch and
- * verify the artefacts, prove, submit, and release the app-owned copy on every path (AAP 0.5.5,
- * AAP 0.5.8).
+ * The whole flow of the Import screen: read (or share in) the `.eml`, resolve and verify the artefacts, prove,
+ * submit, and release the app-owned copy on every path.
  *
- * It drives `../state/proof-store` one step at a time — `reading`, `downloading` with a 0-1 progress
- * fraction, `proving`, `submitting`, `accepted` — and ends a refused attempt as `error` with one code, or
- * as `cancelled` when it was aborted; the store and the screens built on it never see an email byte, a
- * field value or a proof. One attempt runs at a time: a second concurrent call releases its own handle
- * and fails with `proof_in_progress`, rather than interleaving two proofs over one artefact set. The
- * inputs are built before the artefacts are fetched, so a file that is not a booking confirmation and an
- * email whose issuer the published configuration does not support are refused as the import states
- * AAP 0.5.8 requires without downloading the ~1.6 GB artefact set. Throws the error that ended the
- * attempt, after the store recorded its code.
+ * It drives `../state/proof-store` one step at a time — `reading`, `downloading` with a 0-1 progress fraction,
+ * `proving`, `submitting` — and keeps only `{ status, issuerId?, errorCode? }` there. An email the input generator
+ * refuses is reported before any download. Throws the error that ended the attempt.
  */
 export async function importAndProve(
   handle: EmlHandle,
@@ -628,10 +525,8 @@ export async function importAndProve(
   try {
     resetProof();
     setProofStatus('reading');
-    // Build the witness before fetching anything (AAP 0.5.5, AAP 0.5.8): an email that is not a
-    // booking confirmation, or one whose issuer the published configuration does not support, is
-    // refused here by the generator reading the signature's own `d=`/`s=` tags against
-    // `zkConfig.issuers`, so it costs no download of the ~1.6 GB artefact set.
+    // Build the witness before fetching anything: an email that is not a booking confirmation, or one whose issuer
+    // `zkConfig.issuers` does not support, is refused here and so costs no download of the ~1.6 GB artefact set.
     const built = await buildInputs(handle.bytes, zkConfig);
     setProofStatus('downloading', { downloadProgress: 0 });
     const artifacts = await resolveArtifacts(
@@ -660,12 +555,9 @@ export async function importAndProve(
   }
 }
 
-/* --- The picked-file hand-off ---------------------------------------------------------------- */
-
 /**
- * Holds a picked or shared file for the generate screen, which is how the bytes travel between the two
- * screens without a route parameter or a store field ever holding them. A file already staged is
- * released first, so staging a replacement leaves exactly one app-owned copy and no orphan.
+ * The staged file, or null when nothing is staged. The generate screen reads it so the two screens never hold the
+ * bytes twice.
  */
 export async function stagePendingEml(handle: EmlHandle): Promise<void> {
   const previous = pendingEml;
@@ -674,8 +566,7 @@ export async function stagePendingEml(handle: EmlHandle): Promise<void> {
 }
 
 /**
- * Takes the staged file and clears the slot, so exactly one flow can run {@link importAndProve} on it.
- * The caller owns releasing it — `importAndProve` does that itself.
+ * True while an import-and-prove attempt runs, so a second one is refused rather than interleaved.
  */
 export function takePendingEml(): EmlHandle | null {
   const handle = pendingEml;
@@ -684,16 +575,14 @@ export function takePendingEml(): EmlHandle | null {
 }
 
 /**
- * Releases the staged file and clears the slot, for an import screen the user left before generating
- * (AAP 0.5.5). Safe to call when nothing is staged.
+ * Clears the staged file, safe to call when nothing is staged, so a cancelled or finished attempt leaves no bytes
+ * behind.
  */
 export async function discardPendingEml(): Promise<void> {
   const handle = pendingEml;
   pendingEml = null;
   if (handle !== null) await releaseQuietly(handle);
 }
-
-/* --- Published configuration helpers -------------------------------------------------------- */
 
 /**
  * The artefacts of `manifest` as the published configuration advertises them: one URL per file
@@ -718,9 +607,8 @@ function artifactLink(file: ArtifactRef, base: string): ZkConfig['artifacts']['w
 }
 
 /**
- * The booking sites the import screen can name: those the published configuration supports today, and
- * those still awaiting real confirmation emails — Booking.com and Airbnb — which it shows as not yet
- * supported (AAP 0.5.5, AAP 0.5.8).
+ * The published configuration as the screens and the input generator read it: the supported issuers, the registry,
+ * the nullifier salt and the artefact refs.
  */
 export function issuerSupport(zkConfig: Pick<ZkConfig, 'issuers' | 'unsupportedIssuers'>): {
   supported: string[];

@@ -1,7 +1,4 @@
-/**
- * The `/ops` area's layout: the operator gate, and on web the bar its three screens share
- * (AAP 0.3.2, AAP 0.5.8).
- */
+/** The `/ops` area's layout: the operator gate, and on web the bar its three screens share. */
 import { useState, type ReactElement } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { Link, Redirect, Stack, usePathname, type Href } from 'expo-router';

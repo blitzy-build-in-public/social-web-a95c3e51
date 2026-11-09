@@ -1,8 +1,4 @@
-/**
- * The safety screen a traveler's profile or a chat header opens: report a traveler in free text,
- * with the profile's handle read from the cache it is already in and the way back a route that
- * names no reportable traveler needs (AAP 0.5.8, AAP 0.7.1 row 12).
- */
+/** The safety screen a traveler's profile or a chat header opens: report a traveler in free text, with the profile's handle read from the cache it is already in. */
 import { useMutation } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';

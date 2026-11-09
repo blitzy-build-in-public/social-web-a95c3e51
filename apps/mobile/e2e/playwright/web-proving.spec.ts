@@ -1,20 +1,15 @@
 /**
- * Local proving in each browser engine (AAP 0.3.4, AAP 0.5.5; criterion 4's web rows).
- *
- * One walk, run once per project of `playwright.config.ts` — Chromium, Firefox and WebKit — in which a
- * throwaway account imports the committed fixture booking through the app's own screens and the page's Web
- * Worker proves it on the device. Nothing is mocked and snarkjs is never called from here: this spec reads
- * what the API answers when the proof that browser produced arrives.
- *
- * The API's checks run in order with the nullifier last, and actor A has normally spent `valid.eml`'s
- * nullifier by the time this walk runs, so a `409 nullifier_used` proves the Groth16 proof this browser
- * generated verified; a `201` is the same evidence on a stack whose actors have not proved yet. Every other
- * answer — `422 proof_invalid` above all — fails the web capability.
- *
- * The measured span runs from the proving step's first paint to the instant the submission request is issued:
- * the AAP 0.5.5 span of input construction, witness generation and proving, with the artefact download and
- * its hash verification outside it. Each engine's figure becomes one row of `docs/zk-performance.md`, pass
- * or fail.
+ * Local proving in each browser engine (AAP 0.3.4, AAP 0.5.5; criterion 4's web rows). One walk, run once per
+ * project of `playwright.config.ts` — Chromium, Firefox and WebKit — in which a throwaway account imports the
+ * committed fixture booking through the app's own screens and the page's Web Worker proves it. Nothing is mocked
+ * and snarkjs is never called from here: this spec reads what the API answers when the proof that browser
+ * produced arrives, where `409 nullifier_used` proves the Groth16 proof this browser generated verified (the
+ * API's checks run in order with the nullifier last, and actor A has normally spent `valid.eml`'s nullifier by
+ * then) and a `201` is the same evidence on a stack whose actors have not proved yet, so any other answer —
+ * `422 proof_invalid` above all — fails the web capability. The measured span runs from the proving step's
+ * first paint to the instant the submission request is issued — the AAP 0.5.5 span of input construction,
+ * witness generation and proving, with the artefact download and its hash verification outside it — and each
+ * engine's figure becomes one row of `docs/zk-performance.md`, pass or fail.
  */
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
@@ -29,10 +24,8 @@ import {
   throwawayEmail,
   writeResult,
 } from './support/api-actor.ts';
-
 /** The fixture booking this walk proves, relative to the repository root (AAP 0.8.1). */
 const FIXTURE = 'packages/circuits/fixtures/test-issuer/valid.eml';
-
 /** The app's test-id contract for the two screens and the three outcomes of the walk (AAP 0.5.8). */
 const PROFILE_TAB = 'tab-profile';
 const IMPORT_SCREEN = 'proof-import';
@@ -42,30 +35,24 @@ const STATUS = 'proof-generate-status';
 const START = 'proof-generate-start';
 const ACCEPTED = 'proof-accepted';
 const ERROR = 'proof-generate-error';
-
 /**
  * The proving step's own sentence, matched inside the status line, which carries no state attribute. It is the
  * `proving` case of `statusText` in `apps/mobile/app/proof/generate.tsx`, so a reworded step breaks this walk
  * loudly rather than measuring the wrong span.
  */
 const PROVING_PREFIX = 'Creating your proof on this device';
-
 /** A screen or a banner appearing: navigation and the app's first read of `GET /me`. */
 const UI_STEP_TIMEOUT_MS = 60_000;
-
 /**
  * The whole walk, which is unbounded work rather than slow work: the proving key is hundreds of
  * megabytes to gigabytes and the Worker holds all of it while proving (AAP 0.3.4, AAP 0.5.5).
  */
 const WALK_TIMEOUT_MS = 30 * 60_000;
-
 /** `ensureActors()` signs two accounts in and may prove actor A's booking in a browser of its own. */
 const PREPARE_TIMEOUT_MS = 20 * 60_000;
-
 /** What `POST /v1/itinerary-proofs` may answer and still leave the browser's proof verified. */
 const ACCEPTED_STATUS = 201;
 const NULLIFIER_USED_STATUS = 409;
-
 /** The statuses a walk records, and the engine's own version, as `docs/zk-performance.md` reads them. */
 interface EngineResult {
   engine: string;
@@ -76,7 +63,6 @@ interface EngineResult {
   method: 'single-pass' | 'two-pass';
   ranAt: string;
 }
-
 /**
  * Prepares the stack's shared state first, before any throwaway of this walk can prove anything:
  * `ensureActors()` is what proves `valid.eml` for actor A, so a fresh stack's fixture is never spent by a
@@ -189,12 +175,10 @@ test('a browser generates the fixture proof and the API verifies it', async ({
     await context.close();
   }
 });
-
 /** The live copy of one test id; React Navigation keeps a hidden twin of every screen it has mounted. */
 function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`);
 }
-
 /**
  * Installs the listener that timestamps the proving step's first paint, inside the page.
  *
@@ -227,7 +211,6 @@ async function observeProving(page: Page): Promise<void> {
     { testID: STATUS, prefix: PROVING_PREFIX },
   );
 }
-
 /** The instant the proving step painted, on the page's clock, or null when it was never observed. */
 async function provingStartedAt(page: Page): Promise<number | null> {
   const mark = await page.evaluate(

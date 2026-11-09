@@ -29,13 +29,10 @@ import {
   type EnvStripeConfig,
   type EnvTelephonyConfig,
 } from './modes.ts';
-
 const FIELD_ORDER = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-
 function isFieldElement(value: string): boolean {
   return FieldElement.safeParse(value).success && BigInt(value) < FIELD_ORDER;
 }
-
 const API_ONLY_ENV_SHAPE = {
   API_PORT: envInt({ min: 1, max: 65_535, default: '3000' }),
   API_PUBLIC_URL: envUrl({ protocols: ['http:', 'https:'] }),
@@ -59,11 +56,7 @@ const API_ONLY_ENV_SHAPE = {
   PILOT_LOCK_RATE_THRESHOLD: envDecimal({ min: 0, max: 1, maxFractionDigits: 4, default: '0.5' }),
   PILOT_COMPLETION_THRESHOLD: envDecimal({ min: 0, max: 1, maxFractionDigits: 4, default: '0.7' }),
 } as const;
-
-/**
- * The API's schema (AAP 0.6.2): the variables `api` and `workers` share, the test-only switches,
- * the three mode groups and the variables only `api` reads.
- */
+/** The API's schema (AAP 0.6.2): the variables `api` and `workers` share, the test-only switches, the three mode groups and the variables only `api` reads. */
 export const API_ENV_SHAPE = {
   ...COMMON_ENV_SHAPE,
   ...TEST_ONLY_ENV_SHAPE,
@@ -72,7 +65,6 @@ export const API_ENV_SHAPE = {
   ...LLM_ENV_SHAPE,
   ...API_ONLY_ENV_SHAPE,
 } as const;
-
 /** The API's configuration (AAP 0.6.2). */
 export type ApiEnv = CommonEnv & {
   readonly API_PORT: number;
@@ -90,11 +82,7 @@ export type ApiEnv = CommonEnv & {
   readonly RATE_LIMIT_IP_PER_MIN: number;
   readonly TERMS_VERSION: string;
   readonly VOICE_RELAY_MAX_SESSIONS: number;
-  /**
-   * How many live chat sockets one account may hold on one API instance (AAP 0.3.2, 0.5.4): the
-   * socket that would exceed it is refused before it is attached, and the allowance is released as
-   * a socket closes.
-   */
+  /** How many live chat sockets one account may hold on one API instance (AAP 0.3.2, 0.5.4): the socket that would exceed it is refused before it is attached, and the allowance is released as a socket closes. */
   readonly CHAT_MAX_SOCKETS_PER_USER: number;
   readonly PILOT_LOCK_RATE_THRESHOLD: number;
   readonly PILOT_COMPLETION_THRESHOLD: number;
@@ -102,12 +90,10 @@ export type ApiEnv = CommonEnv & {
   readonly telephony: EnvTelephonyConfig;
   readonly llm: EnvLlmConfig;
 };
-
 function basisPoints(text: string): number {
   const [whole = '0', fraction = ''] = text.split('.');
   return Number(whole) * 10_000 + Number(`${fraction}0000`.slice(0, 4));
 }
-
 /** Validate and load the API's environment (AAP 0.6.2, 0.11.2). */
 export function loadApiEnv(raw: RawEnv = process.env): ApiEnv {
   return loadEnvironment(

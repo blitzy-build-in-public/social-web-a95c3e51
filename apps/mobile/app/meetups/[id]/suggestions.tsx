@@ -154,8 +154,7 @@ const LinkText = ({ label, name, onPress, testID }: TextLinkProps): ReactElement
       accessibilityLabel={name === undefined ? label : `${label}: ${name}`}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
-      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      // Hover is a web state: React Native declares the pair on `PressableProps` and react-native-web forwards it to its hover hook, while iOS and Android never fire it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={onPress}
@@ -195,8 +194,7 @@ function DisclosureToggle({ expanded, panelId, onPress, registerRef }: TogglePro
       accessibilityState={{ expanded }}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
-      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      // Hover is a web state: React Native declares the pair on `PressableProps` and react-native-web forwards it to its hover hook, while iOS and Android never fire it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={onPress}
@@ -298,8 +296,7 @@ export default function SuggestionsScreen(): ReactElement {
   const [budgetError, setBudgetError] = useState<string | null>(null);
   const [expandedPlaceId, setExpandedPlaceId] = useState<string | null>(null);
   const openedPlaces = useRef<Set<string>>(new Set());
-  // The route writes state, so it is read once per applied budget: a refocus or a reconnect would
-  // spend a rate-limited write on an answer that cannot have changed (AAP 0.5.4).
+  // The route writes state, so it is read once per applied budget: a refocus or a reconnect would spend a rate-limited write on an answer that cannot have changed.
   const suggestions = useQuery({
     queryKey: queryKeys.suggestions(meetupId, appliedBudget ?? undefined),
     queryFn: () => apiClient.getSuggestions(meetupId, appliedBudget ?? undefined),
@@ -347,10 +344,7 @@ export default function SuggestionsScreen(): ReactElement {
   };
   const emptyMessage =
     emptyReason === undefined ? SUGGESTIONS_EMPTY.no_priced_places : SUGGESTIONS_EMPTY[emptyReason];
-  // Retryable: the two failures a second attempt can answer differently — a suggestion service that
-  // was briefly unavailable, and a request that never reached the API. The terminal codes (the meetup
-  // not locked, not found, or not the caller's) keep the banner without one, because the same request
-  // would be refused again.
+  // Retryable are the two failures a second attempt can answer differently — a suggestion service that was briefly unavailable and a request that never reached the API; the terminal codes keep the banner without one.
   const showRetry =
     isApiError(suggestions.error) &&
     (suggestions.error.code === 'suggestions_unavailable' ||
@@ -406,9 +400,7 @@ const styles = StyleSheet.create({
   linkFocused: { borderColor: colors.focusRing },
   linkHovered: { backgroundColor: colors.surface },
   linkPressed: { backgroundColor: colors.surface },
-  // Reserved focus ring, the treatment the attribution page's external link uses: the 2px band is
-  // painted in the fill the text sits on until the link takes keyboard focus, so revealing the ring
-  // never moves the label, and the reset above leaves that band as the ring a keyboard user sees.
+  // Reserved focus ring, the treatment the attribution page's external link uses: the 2px band is painted in the fill the text sits on until the link takes keyboard focus, so revealing the ring never moves the label.
   linkTarget: {
     alignSelf: 'flex-start',
     borderColor: colors.background,

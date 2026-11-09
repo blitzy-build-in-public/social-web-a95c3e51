@@ -1,28 +1,20 @@
 /**
- * The itinerary circuit's adversarial suite: one change at a time away from an honest witness, and the
- * circuit must refuse every one of them (AAP 0.5.5 "Adversarial circuit tests", AAP 0.12.2 "One booking backs
- * one proof"). Six classes of substitution are exercised:
+ * The itinerary circuit's adversarial suite: one change at a time away from an honest witness, and the circuit must
+ * refuse every one of them (AAP 0.5.5, AAP 0.12.2 "One booking backs one proof"). Six classes of substitution are
+ * exercised: the key that verified the signature is outside the published registry, or the registry leaf the path names
+ * holds a different modulus; any anchor, anchor length, terminator, charset or date format differs from the registered
+ * template, with the signed email untouched; the city alias, the city id, the leaf type domain tag or a Merkle path bit
+ * is substituted; an anchor index, a value length or the body window is moved by one step; an anchor occurs twice in
+ * the window, or only in the headers a body extraction never reads; and a date no calendar has, a second value length
+ * over one booking reference, or a non-zero byte written past a value's length.
  *
- *   - the key that verified the signature is outside the published registry, or the registry leaf the path
- *     names holds a different modulus;
- *   - any anchor, anchor length, terminator, charset or date format differs from the registered template, with
- *     the signed email untouched;
- *   - the city alias, the city id, the leaf type domain tag or a Merkle path bit is substituted;
- *   - an anchor index, a value length or the body window is moved by one step;
- *   - an anchor occurs twice in the window, or only in the headers a body extraction never reads;
- *   - a date no calendar has, a second value length over one booking reference, or a non-zero byte written
- *     past a value's length.
- *
- * Every body-changing case is DKIM-signed by `scripts/make-test-fixtures.ts` with the test issuer's key, and
- * each one's honest signature is asserted to verify first, so a refusal here demonstrates the extraction,
- * uniqueness, date or window constraint rather than a broken signature. Nothing here writes to the
- * repository: `build/` is only read, and the one temporary wrapper the padding case needs is compiled in an
- * `os.tmpdir()` directory removed in `afterAll`.
- *
- * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a
- * green suite over an unproved circuit. A witness of this circuit carries about 2.5 million constraints, so a
- * run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a test file cannot raise for
- * itself.
+ * Every body-changing case is DKIM-signed by `scripts/make-test-fixtures.ts` with the test issuer's key, and each one's
+ * honest signature is asserted to verify first, so a refusal here demonstrates the extraction, uniqueness, date or
+ * window constraint rather than a broken signature. Nothing here writes to the repository: `build/` is only read, and
+ * the one temporary wrapper the padding case needs is compiled in an `os.tmpdir()` directory removed in `afterAll`.
+ * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a green suite
+ * over an unproved circuit. A witness of this circuit carries about 2.5 million constraints, so a run wants a raised
+ * heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a test file cannot raise for itself.
  */
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
@@ -71,16 +63,12 @@ import type { TemplateParams } from '../src/registry/template-hash.ts';
 
 /* Paths, the compiler, and the one fixed salt these witnesses are built with (AAP 0.5.5, AAP 0.8.1). */
 
-/** This package's directory: this file sits one level below it, in `test/`. */
 const PKG_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-/** The repository root, two levels above the package. */
 const REPO_ROOT = path.resolve(PKG_DIR, '..', '..');
 
-/** The git-ignored build directory `pnpm circuits:compile` writes into. */
 const BUILD = path.join(PKG_DIR, 'build');
 
-/** The committed fixtures, signed by `scripts/make-test-fixtures.ts`. */
 const FIXTURE_DIR = path.join(PKG_DIR, 'fixtures', 'test-issuer');
 
 /** The circuit source `circom_tester` is pointed at; it never recompiles the main circuit here. */
@@ -89,14 +77,12 @@ const CIRCUIT_SOURCE = path.join(PKG_DIR, 'circuits', 'tablemate_itinerary.circo
 /** The library holding `FieldExtract`, the one template the padding case compiles on its own. */
 const ANCHOR_EXTRACT_LIB = path.join(PKG_DIR, 'circuits', 'lib', 'anchor_extract.circom');
 
-/* The compile's two artefacts, and the symbols of the main circuit this suite reads with them. */
 const CIRCUIT_WASM = path.join(BUILD, 'tablemate_itinerary_js', 'tablemate_itinerary.wasm');
 const CIRCUIT_SYMBOLS = path.join(BUILD, 'tablemate_itinerary.sym');
 
 /**
- * circom's include search path: the circuit library first, where `anchor_extract.circom` and its
- * siblings live, then both `node_modules` roots, because a hoisted install keeps `@zk-email/circuits`
- * and `circomlib` at the repository root while a package-local copy may hold either instead.
+ * circom's include search path: the circuit library first, then both `node_modules` roots, because a hoisted install
+ * keeps `@zk-email/circuits` and `circomlib` at the repository root while a package-local copy may hold either instead.
  */
 const INCLUDE = [
   path.join(PKG_DIR, 'circuits', 'lib'),
@@ -107,7 +93,6 @@ const INCLUDE = [
 /** The only circom line this circuit is built with: 2.2.x compiles a different constraint set. */
 const REQUIRED_CIRCOM = '2.1.9';
 
-/** Where 2.1.9 comes from, said once, in the message a missing compiler produces. */
 const CIRCOM_INSTALL = 'cargo install --locked --git https://github.com/iden3/circom --tag v2.1.9';
 
 /** The fixed public salt these witnesses are built with; the published one is asserted nowhere here. */
@@ -131,7 +116,6 @@ const TAMPER_BYTE = 0x41;
 /** A path bit `bit · (bit − 1) === 0` cannot admit: neither of the two children a node has. */
 const NON_BINARY_BIT = '2';
 
-/** One committed fixture, by its path below `fixtures/test-issuer/`. */
 type FixturePath =
   | 'valid.eml'
   | 'valid-second.eml'
@@ -144,22 +128,18 @@ type FixturePath =
 
 /* circom_tester 0.0.24: CommonJS, untyped, and loaded through `createRequire`. */
 
-/** The part of circom_tester's `WasmTester` this suite calls. */
 interface WasmCircuit {
   /** `sanityCheck` makes the generator assert every `===` constraint, which is what a rejection is. */
   calculateWitness(input: object, sanityCheck?: boolean): Promise<bigint[]>;
 
-  /** Reads the compiled `.sym` table; only the small wrapper below ever needs it. */
   loadSymbols(): Promise<void>;
 
-  /** Every signal of the compiled circuit, by the name the circuit writes it under. */
   symbols: Record<string, { varIdx: number }>;
 
   /** Evaluates the compiled R1CS against a given witness: how a tampered witness is refused. */
   checkConstraints(witness: readonly bigint[]): Promise<void>;
 }
 
-/** `require('circom_tester').wasm`, narrowed to the options this file passes. */
 interface CircomTester {
   wasm(
     source: string,
@@ -169,8 +149,6 @@ interface CircomTester {
 
 /** The one shape that both typechecks and resolves under Node ESM, Vitest and tsx. */
 const circomTester = createRequire(import.meta.url)('circom_tester') as CircomTester;
-
-/* The committed configuration the honest witness is built from. */
 
 /**
  * The synthetic test issuer whose RSA-2048 key signed every fixture (AAP 0.5.5). The record itself, so
@@ -190,7 +168,6 @@ const params: TemplateParams = templateParams(templateOf(issuer));
 /** The registry's tree, rebuilt from its leaves: both paths of every case below come from it. */
 const registryTree = buildMerkleTree(registry.leaves.map((leaf) => BigInt(leaf)));
 
-/** Reads one committed configuration file with the schema the registry builder and the API share. */
 function readConfig<T>(relative: string, schema: { parse(value: unknown): T }): T {
   const text = readFileSync(path.join(REPO_ROOT, relative), 'utf8');
   return schema.parse(JSON.parse(text) as unknown);
@@ -376,13 +353,12 @@ function textOf(field: FieldLocation): string {
 const honestCity = cityEntryFor(textOf(honestField('city')));
 
 /**
- * Assembles a witness around the parts of a fixture the client generator refuses, which is what lets
- * the date, duplicate-anchor and header-field cases reach witness generation at all: `build-inputs.ts`
- * checks those rules off-circuit, and the circuit is the authority this file tests.
+ * Assembles a witness around the parts of a fixture the client generator refuses, which is what lets the date,
+ * duplicate-anchor and header-field cases reach witness generation at all: `build-inputs.ts` checks those rules
+ * off-circuit, and the circuit is the authority this file tests.
  *
- * Nothing is re-derived here. The registry paths, the two ids and the root are the caller's, the
- * template is the registered one, and the fields are whatever the caller located, so a refusal is the
- * mutation's doing rather than this helper's.
+ * Nothing is re-derived here: the registry paths, the two ids and the root are the caller's, the template is the
+ * registered one, and the fields are whatever the caller located, so a refusal is the mutation's doing.
  */
 function inputsFromParts(
   parts: EmailVerifierParts,
@@ -414,12 +390,11 @@ function inputsFromParts(
 }
 
 /**
- * One fixture's message, its EmailVerifier parts and the decoded window its extraction reads: the
- * half of a witness that needs no field, date or registry rule.
+ * One fixture's message, its EmailVerifier parts and the decoded window its extraction reads: the half of a witness
+ * that needs no field, date or registry rule.
  *
- * Kept apart from the located fields because two of the adversarial fixtures are built to break the
- * four-field extraction itself, so `locateFields` is a decision each case takes on its own rather than
- * something this helper takes for it.
+ * Kept apart from the located fields because two of the adversarial fixtures are built to break the four-field
+ * extraction itself, so `locateFields` is a decision each case takes on its own.
  */
 interface FixtureMessage {
   /** The message bytes, which every assertion about the signature reads. */
@@ -435,10 +410,9 @@ interface FixtureMessage {
 }
 
 /**
- * The parts of one adversarial fixture the client generator refuses, which is the only way these cases
- * reach the circuit: `buildEmailVerifierInputs` runs the DKIM, header and window half and no field or
- * date rule, so the parts are those of a validly signed message, and `locateFields` is then the
- * caller's decision — a `field_not_found` fixture can be handled field by field only if it is.
+ * The parts of one adversarial fixture the client generator refuses, which is the only way these cases reach the
+ * circuit: `buildEmailVerifierInputs` runs the DKIM, header and window half and no field or date rule, so the parts are
+ * those of a validly signed message, and `locateFields` is then the caller's decision.
  */
 function messageOf(file: FixturePath): FixtureMessage {
   const bytes = fixture(file);
@@ -458,14 +432,13 @@ function signatureOf(parsed: ParsedEml): DkimSignature {
 }
 
 /**
- * Asserts that a fixture's own DKIM signature is honest under `publicKey`, before any mutation is
- * applied to it: the RSA-SHA256 signature over the canonical signed header verifies, and the
- * canonicalized body hashes to the `bh=` the signature commits to.
+ * Asserts that a fixture's own DKIM signature is honest under `publicKey`, before any mutation is applied to it: the
+ * RSA-SHA256 signature over the canonical signed header verifies, and the canonicalized body hashes to the `bh=` the
+ * signature commits to.
  *
- * This is the canonicalization under test rather than a third-party one; `test/inputs.test.ts`
- * separately compares the generator's canonicalization with the `@zk-email/helpers` oracle. Without
- * this check, a refusal could equally be a signature that was broken on the way in, which is what
- * criterion 3's fixtures are built to keep apart.
+ * This is the canonicalization under test rather than a third-party one; `test/inputs.test.ts` separately compares the
+ * generator's canonicalization with the `@zk-email/helpers` oracle. Without this check, a refusal could equally be a
+ * signature that was broken on the way in.
  */
 function assertHonestSignature(bytes: Uint8Array, publicKey: KeyObject): void {
   const parsed = parseEml(bytes);
@@ -484,9 +457,9 @@ function assertHonestSignature(bytes: Uint8Array, publicKey: KeyObject): void {
 /* The two public keys: the registered one, and the one outside the registry (AAP 0.5.5). */
 
 /**
- * One RSA-2048 public key from the base64 modulus a fixture or a configuration carries, as the JWK
- * `createPublicKey` takes. The modulus is the only part of the key a DKIM record publishes, and the
- * fixtures are all signed with the exponent 65537.
+ * One RSA-2048 public key from the base64 modulus a fixture or a configuration carries, as the JWK `createPublicKey`
+ * takes: the modulus is the only part of the key a DKIM record publishes, and the fixtures are all signed with the
+ * exponent 65537.
  */
 function publicKeyOf(modulusBase64: string): KeyObject {
   return createPublicKey({
@@ -503,9 +476,9 @@ function publicKeyOf(modulusBase64: string): KeyObject {
 const testKey: KeyObject = publicKeyOf(at(issuer.keys, 0, 'the test issuer key').modulusBase64);
 
 /**
- * The modulus the outside-key fixture carries in its unsigned `X-Tablemate-Fixture-Key` header: the
- * key that signed it, which no registry holds. It is read from the fixture rather than written here,
- * because the key is generated afresh by `scripts/make-test-fixtures.ts` on every fixture build.
+ * The modulus the outside-key fixture carries in its unsigned `X-Tablemate-Fixture-Key` header: the key that signed it,
+ * which no registry holds. It is read from the fixture rather than written here, because the key is generated afresh by
+ * `scripts/make-test-fixtures.ts` on every fixture build.
  */
 function outsideModulusBase64(): string {
   const { headers } = parseEml(fixture('other-issuer.eml'));
@@ -521,11 +494,9 @@ function outsideModulusBase64(): string {
 }
 
 /**
- * The key outside the registry, as the issuer record that would hold it if it were allowlisted: the
- * fixture's own `d=` and `s=`, its own modulus, and the test issuer's id and template, so the only
- * thing that differs from a registered issuer is the key. Its status is `unverified`, which is what an
- * issuer whose samples have not passed the check is, and which no registry takes a production leaf for
- * (AAP 0.5.5).
+ * The key outside the registry, as the issuer record that would hold it if it were allowlisted: the fixture's own `d=`
+ * and `s=`, its own modulus, and the test issuer's id and template, so the only thing that differs from a registered
+ * issuer is the key. Its status is `unverified`, which no registry takes a production leaf for (AAP 0.5.5).
  */
 function rogueIssuer(): IssuerConfig {
   const sig = signatureOf(parseEml(fixture('other-issuer.eml')));
@@ -906,9 +877,9 @@ function slotWithOccurrences(decoded: Uint8Array, count: number): number {
 }
 
 /**
- * The value length `FieldExtract` reads at `start`: the bytes between the anchor and the first
- * terminator after it, which is what makes one position admit exactly one length. A terminator
- * immediately after the anchor answers zero, a boundary the circuit's own `valueLength` rejects.
+ * The value length `FieldExtract` reads at `start`: the bytes between the anchor and the first terminator after it,
+ * which is what makes one position admit exactly one length. A terminator immediately after the anchor answers zero, a
+ * boundary the circuit's own `valueLength` rejects.
  */
 function valueLengthAt(bytes: Uint8Array, slot: number, start: number, what: string): number {
   const terminator = at(params.terminator, slot, 'the terminators');

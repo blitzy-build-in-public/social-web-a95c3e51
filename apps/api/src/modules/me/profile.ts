@@ -1,19 +1,18 @@
 /**
- * Own-profile read and update: the body of `GET /me` and the write behind `PUT /me/profile`
- * (AAP 0.5.1, 0.5.2, 0.5.4).
+ * Own-profile read and update: the body of `GET /me` and the write behind `PUT /me/profile`.
  *
- * {@link buildMeDto} is the only place `MeDto` is assembled. The caller reads their own account, so
- * no disclosure tier applies: the whole ladder is present, the two tier-3 fields decrypted from
- * their AES-256-GCM ciphertext, and the photo represented by its presence alone — the WebP bytes are
- * served by `GET /users/:userId/photo` (AAP 0.5.2). Nothing on this path carries the account's
- * address: neither its ciphertext, nor its lookup hash, nor the Stripe customer id is selected.
+ * {@link buildMeDto} is the only place `MeDto` is assembled. The caller reads their own account, so no disclosure
+ * tier applies: the whole ladder is present, the two tier-3 fields decrypted from their AES-256-GCM ciphertext, and
+ * the photo represented by its presence alone — the WebP bytes are served by `GET /users/:userId/photo`. Nothing on
+ * this path carries the account's address: neither its ciphertext, nor its lookup hash, nor the Stripe customer id is
+ * selected.
  *
- * {@link updateProfile} writes only the keys the caller sent, in one transaction fenced against
- * account deletion, and answers the profile it wrote. Validation is the shared `ProfileUpdate`, so an
- * unknown key, a tag outside the interest vocabulary, more than three tags, a duplicate tag, a
- * mis-cased country code and a length over its limit are all `400 invalid_field` from the route's
- * validator before this module runs; the photo's refusals — `413 photo_too_large` above 5 MiB,
- * `400 invalid_field` for a format or payload the encoder cannot use — come from `processPhoto`.
+ * {@link updateProfile} writes only the keys the caller sent, in one transaction fenced against account deletion, and
+ * answers the profile it wrote. Validation is the shared `ProfileUpdate`, so an unknown key, a tag outside the
+ * interest vocabulary, more than three tags, a duplicate tag, a mis-cased country code and a length over its limit
+ * are all `400 invalid_field` from the route's validator before this module runs; the photo's refusals —
+ * `413 photo_too_large` above 5 MiB, `400 invalid_field` for a format or payload the encoder cannot use — come from
+ * `processPhoto`.
  */
 
 import { decryptField, encryptField, FieldDecryptionError } from '@tablemate/server-core';
@@ -42,7 +41,6 @@ import type { AppServices } from '../../app.ts';
  */
 export interface BuildMeDtoOptions {
   /**
-   *
    * A caller already holding a transaction passes its client, because a row written in that
    * transaction is not visible through the process's client yet: `auth/magic-link.ts` builds this
    * payload inside the transaction that creates the account, so the new `User` row reachable only

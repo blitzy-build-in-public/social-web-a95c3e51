@@ -33,11 +33,7 @@ import {
 import { primeFxTable } from '../../src/schedulers.ts';
 import type { WorkerContext } from '../../src/queues.ts';
 
-/**
- * One enqueue as the fake producer recorded it: the queue it went to, and the three arguments the
- * `add` call carried. `queue` is the string the registry was asked for rather than a `QueueName`, so
- * a prime that enqueued into the wrong queue fails the assertion instead of being typed away.
- */
+/** One enqueue as the fake producer recorded it: the queue it went to, and the three arguments the `add` call carried. `queue` is the string the registry was asked for rather than a `QueueName`, so a prime that enqueued into the wrong queue fails the assertion instead of being typed away. */
 interface Enqueue {
   readonly queue: string;
   readonly name: string;
@@ -45,20 +41,12 @@ interface Enqueue {
   readonly options: Record<string, unknown>;
 }
 
-/**
- * A context whose only collaborators are the two reads {@link primeFxTable} makes: `fxRows` is what
- * `db.fxRate.count()` answers, and the producer registry records every `add` into the returned list.
- * Nothing is connected, so the suite runs with no PostgreSQL and no Redis in sight (AAP 0.11.2).
- *
- * @param fxRows - how many `FxRate` rows the case's table holds: `0` for a stack no run has primed.
- * @returns the context to pass, and the enqueues it recorded.
- */
+/** A context whose only collaborators are the two reads {@link primeFxTable} makes: `fxRows` is what `db.fxRate.count()` answers, and the producer registry records every `add` into the returned list. Nothing is connected, so the suite runs with no PostgreSQL and no Redis in sight (AAP 0.11.2). @param fxRows - how many `FxRate` rows the case's table holds: `0` for a stack no run has primed. @returns the context to pass, and the enqueues it recorded. */
 function contextWith(fxRows: number): {
   readonly ctx: WorkerContext;
   readonly enqueued: Enqueue[];
 } {
   const enqueued: Enqueue[] = [];
-
   const ctx = {
     db: { fxRate: { count: (): Promise<number> => Promise.resolve(fxRows) } },
     queues: {
@@ -70,31 +58,21 @@ function contextWith(fxRows: number): {
       }),
     },
   } as unknown as WorkerContext;
-
   return { ctx, enqueued };
 }
 
 describe('primeFxTable', () => {
   it('enqueues exactly one fx-refresh run while the table is empty', async () => {
     const { ctx, enqueued } = contextWith(0);
-
     expect(await primeFxTable(ctx)).toBe(true);
-
     expect(enqueued).toHaveLength(1);
     const [job] = enqueued;
-
-    // The delivered job of the queue `fx-refresh` runs, under the name its own processor accepts:
-    // priming runs the pipeline that exists rather than a second way to write a rate (AAP 0.5.6).
+    // The delivered job of the queue `fx-refresh` runs, under the name its own processor accepts: priming runs the pipeline that exists rather than a second way to write a rate (AAP 0.5.6).
     expect(job?.queue).toBe(QUEUE.fxRefresh);
     expect(job?.name).toBe(JOB[QUEUE.fxRefresh].refresh);
-
-    // The data is the parse's own answer, so a payload the queue's schema refuses fails the start
-    // rather than a processor (AAP 0.5.6).
+    // The data is the parse's own answer, so a payload the queue's schema refuses fails the start rather than a processor (AAP 0.5.6).
     expect(job?.data).toEqual(parseJobData(QUEUE.fxRefresh, JOB[QUEUE.fxRefresh].refresh, {}));
-
-    // The id is the constant's — `fx-refresh-prime`, whose `-` is what BullMQ accepts in a custom id
-    // (AAP 0.3.2) — and the rest of the options are the queue's own policy, so a provider outage
-    // retries on the five tries and 10-minute backoff of AAP 0.5.6 like any other run of the job.
+    // The id is the constant's — `fx-refresh-prime`, whose `-` is what BullMQ accepts in a custom id (AAP 0.3.2) — and the rest of the options are the queue's own policy, so a provider outage retries on the five tries and 10-minute backoff of AAP 0.5.6 like any other run of the job.
     expect(job?.options).toEqual(
       jobOptionsFor(QUEUE.fxRefresh, { jobId: FX_REFRESH_PRIME_JOB_ID }),
     );
@@ -103,11 +81,8 @@ describe('primeFxTable', () => {
 
   it('enqueues nothing once the table holds a rate', async () => {
     const { ctx, enqueued } = contextWith(1);
-
     expect(await primeFxTable(ctx)).toBe(false);
-
-    // A table with a row already serves the conversion — the read `usdRateFor` makes takes the latest
-    // rate at or before the capture day — so a second provider call would be nothing but traffic.
+    // A table with a row already serves the conversion — the read `usdRateFor` makes takes the latest rate at or before the capture day — so a second provider call would be nothing but traffic.
     expect(enqueued).toHaveLength(0);
   });
 });

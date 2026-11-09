@@ -1,26 +1,20 @@
 /**
- * Filing a dispute on a meetup: the `POST /meetups/:id/dispute` handler (AAP 0.5.1, 0.5.3, 0.5.4).
+ * Filing a dispute on a meetup: the `POST /meetups/:id/dispute` handler.
  *
- * A dispute is the pair's way to say that a locked meetup did not happen as proposed — most often that the venue
- * could not witness a check-in. Filing changes **no** meetup status: the meetup stays `locked`, so both attendees
- * can still check in inside the window, while the open `Dispute` row gates the settlement that would otherwise run
- * at `startsAt + 45 min` (AAP 0.5.3). It is the operator's resolution that ends the meetup — `settle_by_checkins`
- * or, for a venue that could not witness, the penalty-free `no_fault` — and that resolution lives in
- * `admin/disputes.ts`, never here. The same applies to the two automatic resolutions: a block closes an open
- * dispute with the note `cancelled_by_block` and a lost hold with `hold_expired`, both in the transaction that ends
- * the meetup.
+ * A dispute is the pair's way to say that a locked meetup did not happen as proposed — most often that the venue could not
+ * witness a check-in. Filing changes **no** meetup status: the meetup stays `locked`, so both attendees can still check in
+ * inside the window, while the open `Dispute` row gates the settlement that would otherwise run at `startsAt + 45 min`. It is
+ * the operator's resolution that ends the meetup — `settle_by_checkins` or, for a venue that could not witness, the
+ * penalty-free `no_fault` — and that resolution lives in `admin/disputes.ts`, never here. The two automatic resolutions are the
+ * same: a block closes an open dispute with the note `cancelled_by_block` and a lost hold with `hold_expired`.
  *
- * What this file owns is the filing itself: the guards in the order AAP 0.5.4 lists them, the `Dispute` row with
- * its `deadlineAt`, the counterpart's notification, the `dispute_opened` event and the escalation timer that flags
- * the dispute in `/ops` a day before the operator's deadline (AAP 0.12.2 "Operator MUST resolve a dispute within 5
- * days"). The 60-second sweeper is the backstop should that timer never arrive.
+ * What this file owns is the filing itself: the guards in the order the contract lists them, the `Dispute` row with its
+ * `deadlineAt`, the counterpart's notification, the `dispute_opened` event and the escalation timer that flags the dispute in
+ * `/ops` a day before the operator's deadline. The 60-second sweeper is the backstop should that timer never arrive.
  *
- * Everything but the timer is written in one transaction: the row, the notification outbox row and the analytics
- * row commit together or not at all, and the timer — the one Redis call — is registered through `after`, so no
- * transaction holds a lock across a queue write (AAP 0.3.2).
- *
- * The reason text is never logged, rendered into an event or echoed anywhere but the row it belongs to: the log
- * line carries the meetup, the dispute and its kind alone (AAP 0.11.1, 0.12.2).
+ * Everything but the timer is written in one transaction; the timer — the one Redis call — is registered through `after`, so no
+ * transaction holds a lock across a queue write. The reason text is never logged, rendered into an event or echoed anywhere but
+ * the row it belongs to: the log line carries the meetup, the dispute and its kind alone.
  */
 
 import {
@@ -51,13 +45,11 @@ import { lockMeetup } from './state-machine.ts';
 import type { AppServices } from '../../app.ts';
 
 /**
- * The statuses a dispute may be filed on (AAP 0.5.3).
+ * The statuses a dispute may be filed on.
  *
- * A `proposed` meetup is not one of them: nothing has been committed yet, so there is nothing to dispute and the
- * route answers `409 not_locked`. The settled outcomes are, because the filing window runs to `startsAt + 24 h` and
- * settlement happens at `startsAt + 45 min`: a dispute filed after settlement reviews what was already applied —
- * `no_fault` on a `forfeited` meetup reverses the forfeit, while a `completed` or `unattended` one can only be
- * resolved `settle_by_checkins`, which changes nothing.
+ * A `proposed` meetup is not one of them: nothing has been committed yet, so the route answers `409 not_locked`. The settled
+ * outcomes are, because the filing window runs to `startsAt + 24 h` and settlement happens at `startsAt + 45 min`: a dispute
+ * filed after settlement reviews what was already applied.
  */
 const FILABLE_STATUSES: ReadonlySet<MeetupStatus> = new Set<MeetupStatus>([
   'locked',
@@ -67,28 +59,25 @@ const FILABLE_STATUSES: ReadonlySet<MeetupStatus> = new Set<MeetupStatus>([
 ]);
 
 /**
- * File a dispute on a meetup the caller is part of (AAP 0.5.4 `POST /meetups/:id/dispute`).
+ * File a dispute on a meetup the caller is part of.
  *
- * One transaction, with the account-deletion write fence, the meetup row lock, and the checks in the order the
- * route's contract lists them, so a caller who is refused for two reasons always receives the first of them:
+ * One transaction, with the account-deletion write fence, the meetup row lock, and the checks in the order the route's contract
+ * lists them, so a caller who is refused for two reasons always receives the first of them:
  *
  *  1. `404 meetup_not_found` — no meetup has that id.
- *  2. `403 not_participant` — the caller is not in the meetup, or is its recipient while the proposal is still
- *     invisible to them, which is what keeps the route from confirming a proposal the recipient has not been shown
- *     (AAP 0.5.3).
- *  3. `409 dispute_window_closed` — `now` is later than `startsAt + 24 h`. Filing is allowed **up to and
- *     including** that instant.
- *  4. `409 not_locked` — the status is not one of {@link FILABLE_STATUSES}, which is what answers `409 not_locked`
- *     for a meetup that is still `proposed`.
- *  5. `409 dispute_open` — a dispute is already open on the meetup. The pre-check covers every case but a race; the
- *     partial unique index `("meetup_id") WHERE status = 'open'` (`dispute_open_key`) is the authority, and a
- *     violation of it is answered with the same code.
+ *  2. `403 not_participant` — the caller is not in the meetup, or is its recipient while the proposal is still invisible to
+ *     them, which keeps the route from confirming a proposal the recipient has not been shown.
+ *  3. `409 dispute_window_closed` — `now` is later than `startsAt + 24 h`. Filing is allowed **up to and including** that
+ *     instant.
+ *  4. `409 not_locked` — the status is not one of {@link FILABLE_STATUSES}.
+ *  5. `409 dispute_open` — a dispute is already open on the meetup. The pre-check covers every case but a race; the partial
+ *     unique index `("meetup_id") WHERE status = 'open'` (`dispute_open_key`) is the authority, and a violation of it is
+ *     answered with the same code.
  *
- * On success it writes the dispute, requests the counterpart's notification and records the `dispute_opened` event
- * in the same transaction, then — after the commit — schedules the `dispute-escalate-<disputeId>` job at the
- * dispute's own deadline, which is where `settlement/timers.ts` subtracts the day that flags it in `/ops`.
+ * On success it writes the dispute, requests the counterpart's notification and records the `dispute_opened` event in the same
+ * transaction, then — after the commit — schedules the `dispute-escalate-<disputeId>` job at the dispute's own deadline.
  *
- * @throws AppError one of the five codes above.
+ * `@throws AppError one of the five codes above.
  */
 export async function fileDispute(
   services: AppServices,
@@ -153,27 +142,19 @@ export async function fileDispute(
   return { disputeId: filed.disputeId };
 }
 
-// ---------------------------------------------------------------------------------------------
-// The filing's helpers (AAP 0.5.2, 0.5.3)
-// ---------------------------------------------------------------------------------------------
-
-/**
- * The instant a dispute stops being filable: `startsAt + DISPUTE_FILING_WINDOW_HOURS` (AAP 0.5.3). Named so the
- * boundary is stated once: at that instant a filing is still accepted, one millisecond later the route answers
- * `409 dispute_window_closed`.
- */
+/** The instant a dispute stops being filable: `startsAt + DISPUTE_FILING_WINDOW_HOURS`, stated once, because at that instant a
+ * filing is still accepted and one millisecond later the route answers `409 dispute_window_closed`. */
 function filingClosesAt(meetup: MeetupRow): Date {
   return new Date(meetup.startsAt.getTime() + DISPUTE_FILING_WINDOW_HOURS * HOUR_MS);
 }
 
 /**
- * Insert the dispute and answer its id, mapping the one collision that can happen under a race (AAP 0.5.2).
+ * Insert the dispute and answer its id, mapping the one collision that can happen under a race.
  *
- * Two filings arriving together both pass {@link openDisputeId}; the partial unique index
- * `("meetup_id") WHERE status = 'open'` then refuses the second insert, and that refusal is answered as the same
- * `409 dispute_open` the pre-check answers. Any other failure propagates unchanged and rolls the transaction back.
+ * Two filings arriving together both pass {@link openDisputeId}; the partial unique index then refuses the second insert, and
+ * that refusal is answered as the same `409 dispute_open` the pre-check answers. Any other failure propagates unchanged.
  *
- * @throws AppError `dispute_open` when the index refuses the insert.
+ * `@throws AppError dispute_open` when the index refuses the insert.
  */
 async function insertDispute(
   tx: DbTx,
@@ -205,7 +186,6 @@ async function insertDispute(
   }
 }
 
-/** The id of the meetup's open dispute, or null when it holds none (AAP 0.5.2). */
 async function openDisputeId(tx: DbTx, meetupId: string): Promise<string | null> {
   const open = await tx.dispute.findFirst({
     where: { meetupId, status: 'open' },
@@ -214,16 +194,12 @@ async function openDisputeId(tx: DbTx, meetupId: string): Promise<string | null>
   return open?.id ?? null;
 }
 
-/**
- * The participant who is not the caller: the counterpart the notification is addressed to (AAP 0.5.3). Read off the
- * role {@link participantRole} answered rather than by comparing ids, so the two agree on the case-insensitive
- * comparison that function makes and a caller is never notified about their own filing.
- */
+/** The participant who is not the caller: the counterpart the notification is addressed to, read off the role
+ * {@link participantRole} answered rather than by comparing ids, so a caller is never notified about their own filing. */
 function counterpartOf(meetup: MeetupRow, role: ParticipantRole): string {
   return role === 'initiator' ? meetup.recipientId : meetup.initiatorId;
 }
 
-/** The venue's city slug, for the analytics row's column (AAP 0.5.7). */
 async function venueCityId(tx: DbTx, venueId: string): Promise<string | undefined> {
   const venue = await tx.venue.findUnique({ where: { id: venueId }, select: { cityId: true } });
   return venue?.cityId;

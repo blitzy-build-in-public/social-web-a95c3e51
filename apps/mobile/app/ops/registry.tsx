@@ -1,7 +1,4 @@
-/** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
- * venue and lodging onboarding, console secrets and price jobs. The lodging list is the registry's one
- * paged read: its city filter and search run on the server and its rows continue with the read's own
- * cursor, so a registry holding more rows than one page shows is still reachable (AAP 0.5.4). */
+/** Operator registry, route `/ops/registry`: venue and lodging onboarding, console secrets and price jobs. The lodging list is the registry's one paged read: its city filter and search run on the server and its rows continue with the read's own cursor. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { ViewStyle } from 'react-native';
@@ -64,12 +61,9 @@ const FIXTURE_BADGE = 'Fixture';
 const SECRET_COPIED = 'Secret copied.';
 const LODGINGS_EMPTY = 'No lodgings in this city. Add one below, or wait for the weekly refresh.';
 const LODGINGS_SEARCH_LABEL = 'Search by name';
-// How long typing pauses before the search term is sent to the server, so one search reads one page
-// rather than one per keystroke (the call-task queue waits the same 300 ms).
+// How long typing pauses before the search term is sent to the server, so one search reads one page rather than one per keystroke (the call-task queue waits the same 300 ms).
 const LODGINGS_SEARCH_DEBOUNCE_MS = 300;
-// The most a search term may carry, which is the bound the contract's own schema puts on `q`. A
-// lodging's name runs to 120 characters, so a term is cut here rather than answered with `400
-// invalid_field`; the cut term is a prefix of the name, which matches the same row.
+// The most a search term may carry, which is the bound the contract's own schema puts on `q`: a lodging's name runs to 120 characters, so a term is cut here rather than answered with `400 invalid_field`, and the cut term is a prefix of the name, which matches the same row.
 const LODGINGS_SEARCH_MAX = 80;
 const LODGINGS_MORE = { label: 'Load more lodgings', variant: 'secondary' } as const;
 const SECRET_COPY_FAILED = 'Copy failed. Select the text and copy it yourself.';
@@ -81,17 +75,12 @@ const LODGING_SECRET_HINT =
   'Issuing a console secret makes this lodging a partner and adds nearby places to the price pipeline.';
 const LODGING_KIND_LABEL = { guesthouse: 'Guest house', hostel: 'Hostel', hotel: 'Hotel' };
 const SECTION_HEADING = { 'aria-level': 2, role: 'heading' } as const;
-/** A card fills the cell it sits in: inside a wrapping row the cell is as tall as the row's tallest
- * one, so every card on that row ends where its neighbours do (QA qa8b-24). */
+/** A card fills the cell it sits in: inside a wrapping row the cell is as tall as the row's tallest one, so every card on that row ends where its neighbours do. */
 const FILL_SLOT: ViewStyle = { flexGrow: 1 };
 const BLANK_DRAFT = { address: '', cityId: '', lat: '', lng: '', name: '' };
 const EMPTY_VENUE_DRAFT: VenueDraft = { ...BLANK_DRAFT, isActivePartner: true };
 const EMPTY_LODGING_DRAFT: LodgingDraft = { ...BLANK_DRAFT, kind: 'hostel', phone: '' };
-// The caps the admin schemas impose on the two text fields, read from the schemas themselves so a
-// hint, a rejection and an input's `maxLength` can never drift from the rule the API enforces
-// (AAP 0.11.1: one schema per shape, imported where used and never redeclared). The edit form
-// validates with `UpdateVenueRequest`, which carries the same cap inside an optional, so all three
-// schemas must agree on it.
+// The caps the admin schemas impose on the two text fields, read from the schemas themselves so a hint, a rejection and an input's `maxLength` can never drift from the rule the API enforces. All three schemas must agree on the cap.
 const NAME_MAX = cappedAt(
   CreateVenueRequest.shape.name,
   CreateLodgingRequest.shape.name,
@@ -107,8 +96,7 @@ const ADDRESS_HINT = `Up to ${ADDRESS_MAX} characters.`;
 const LATITUDE_RANGE = between(Latitude);
 const LONGITUDE_RANGE = between(Longitude);
 type TextRule = Readonly<{ cap: number; empty: string; over: (limit: number) => string }>;
-/** What a rejected text field says (QA qa8b-25): what to enter while it is empty, and the sentence
- * for a value over the schema's own cap. */
+/** What a rejected text field says: what to enter while it is empty, and the sentence for a value over the schema's own cap. */
 const TEXT_RULES: Readonly<Record<'address' | 'name', TextRule>> = {
   address: {
     cap: ADDRESS_MAX,
@@ -121,8 +109,7 @@ const TEXT_RULES: Readonly<Record<'address' | 'name', TextRule>> = {
     over: (limit) => `Use ${limit} characters or fewer in the name.`,
   },
 };
-/** The range each coordinate states. An empty or unparsable value fails before Zod checks a bound,
- * so both bounds come from the schema rather than from the issue, which carries at most one. */
+/** The range each coordinate states: an empty or unparsable value fails before Zod checks a bound, so both bounds come from the schema rather than from the issue, which carries at most one. */
 const COORDINATE_MESSAGES = {
   lat: `Enter a latitude between ${LATITUDE_RANGE[0]} and ${LATITUDE_RANGE[1]}.`,
   lng: `Enter a longitude between ${LONGITUDE_RANGE[0]} and ${LONGITUDE_RANGE[1]}.`,
@@ -166,8 +153,7 @@ const CHIP_GROUPS = {
   venueNew: { label: CITY_LABEL, prefix: 'ops-venue-new-city' },
 } as const;
 
-// A pending grid shows a few card-sized surfaces, tall enough to read as the cards that follow; the
-// count is fixed and never a count of the data, and the height is a multiple of the touch target.
+// A pending grid shows a few card-sized surfaces, tall enough to read as the cards that follow; the count is fixed and never a count of the data, and the height is a multiple of the touch target.
 const PENDING_SLOTS = [0, 1, 2] as const;
 const PENDING_CARD_MIN_HEIGHT = MIN_TOUCH_TARGET * 5;
 
@@ -176,7 +162,6 @@ type ChipOption = { readonly id: string | null; readonly name: string };
 const ALL_CITIES: ChipOption = { id: null, name: 'All cities' };
 type FieldErrors = Readonly<Record<string, string>>;
 type FieldName = 'address' | 'lat' | 'lng' | 'name' | 'phone';
-/** The parts of a Zod issue this screen reads: which field failed, why, and any bound it carries. */
 type FieldIssue = Readonly<{
   code: string;
   maximum?: number | bigint;
@@ -207,17 +192,10 @@ function createCountFormatter(): Intl.NumberFormat | null {
   }
 }
 const COUNT_FORMATTER = createCountFormatter();
-/** A count as an operator reads it, grouped by the runtime's locale where it has number formats. */
 function formatCount(value: number): string {
   return COUNT_FORMATTER?.format(value) ?? String(value);
 }
-/**
- * The lodging registry's query string: only the filters that are actually set, because the route
- * validates the query with a strict schema and answers `400 invalid_field` for a value it cannot read,
- * and because `exactOptionalPropertyTypes` forbids handing it an empty one. `limit` is left out on
- * purpose: the read's own page of 200 is the page this screen has always shown, and the control below
- * the rows continues from it (AAP 0.5.4).
- */
+/** The lodging registry's query string: only the filters that are actually set, because the route validates the query with a strict schema and `exactOptionalPropertyTypes` forbids handing it an empty one. `limit` is left out on purpose: the read's own page of 200 is the page this screen has always shown. */
 function lodgingsQuery(cityId: string | null, term: string): AdminLodgingsQuery {
   const query: AdminLodgingsQuery = {};
 
@@ -231,12 +209,7 @@ function failFields(errors: FieldErrors, setErrors: (errors: FieldErrors) => voi
   announce('Check the highlighted fields.');
 }
 const isFieldKey = (key: PropertyKey | undefined): key is string => typeof key === 'string';
-/**
- * The character cap the given admin schemas put on one field, read from the schemas themselves so
- * no number is written twice in the app. A schema that stops carrying the cap, or two that disagree
- * about it, fails here — at import, in the test run — rather than showing an operator a limit the
- * API no longer enforces.
- */
+/** The character cap the given admin schemas put on one field, read from the schemas themselves: a schema that stops carrying the cap, or two that disagree about it, fails here at import rather than showing an operator a limit the API no longer enforces. */
 function cappedAt(...schemas: readonly { readonly maxLength?: number | null }[]): number {
   const caps = schemas.map((schema) => schema.maxLength);
   const cap = caps[0];
@@ -256,17 +229,11 @@ function between(schema: {
   }
   return [minValue, maxValue];
 }
-/** The bound a rejection states: the number Zod reports on the issue, or the schema's own cap when
- * the value failed before any bound was checked, as an empty one does. */
+/** The bound a rejection states: the number Zod reports on the issue, or the schema's own cap when the value failed before any bound was checked, as an empty one does. */
 function limitOf(issue: FieldIssue, cap: number): number {
   return typeof issue.maximum === 'number' ? issue.maximum : cap;
 }
-/**
- * What one rejected field shows (QA qa8b-25): the rule it broke and the limit that rule sets, in the
- * field's own terms — what to enter, how many characters are allowed, which range a coordinate takes,
- * which form a phone number takes. Anything else repeats the message the shared schema itself gives,
- * which is what its cross-field refinements say, such as "Supply `lat` and `lng` together."
- */
+/** What one rejected field shows: the rule it broke and the limit that rule sets, in the field's own terms. Anything else repeats the message the shared schema itself gives, which is what its cross-field refinements say. */
 function fieldMessage(issue: FieldIssue): string {
   const field = issue.path[0];
   if (field === 'name' || field === 'address') {
@@ -310,11 +277,7 @@ function clipboardWriter(): { writeText(text: string): Promise<void> } | null {
 }
 function ignoreText(): void {}
 type SwitchWiring = readonly [boolean, boolean, string, (next: boolean) => void, string];
-/**
- * What one registry switch takes: the state the row holds, the label the row shows, the setter the
- * mutation owns and the test handle the operator's own specs name. A busy mutation blocks the control
- * until it answers, which is what `disabled` carries.
- */
+/** What one registry switch takes: the state the row holds, the label the row shows, the setter the mutation owns and the test handle the operator's own specs name. A busy mutation blocks the control until it answers. */
 function switchProps([on, busy, label, set, id]: SwitchWiring): SwitchProps {
   return { accessibilityLabel: label, disabled: busy, onValueChange: set, testID: id, value: on };
 }
@@ -344,11 +307,7 @@ function lodgingPayload(draft: LodgingDraft): CreateLodgingRequest {
   const dial = phone.trim();
   return { ...trimmed, ...numbers, cityId, kind, phone: dial === '' ? null : dial };
 }
-/**
- * Writes one field of a draft and drops that field's rejection as it changes, so a message an
- * operator has just acted on does not sit under the field they are retyping (QA qa8b-25). Only the
- * field whose value changed can have stopped breaking its own rule; every other message stays.
- */
+/** Writes one field of a draft and drops that field's rejection as it changes, so a message an operator has just acted on does not sit under the field they are retyping: only the field whose value changed can have stopped breaking its own rule. */
 function fieldWriter<T extends object>(
   set: (update: (draft: T) => T) => void,
   clear: (field: string) => void,
@@ -475,17 +434,7 @@ function ReadState({ error, pending, retry, testID }: ReadProps): ReactElement {
 const errorBanner = (message: string | null, testID: string): ReactElement | null =>
   message === null ? null : <Banner message={message} testID={testID} tone="error" />;
 type PendingGridProps = Readonly<{ minHeight: number; testID: string; wide: boolean }>;
-/**
- * The room a card grid holds while its query is pending (QA qa8b-26). The grid is the tallest thing
- * on this screen — a few thousand pixels of venue cards on the web and one column of them four
- * times that on a phone — so a grid that renders nothing until its data lands pushes the create
- * form and every section after it down by that height, and the operator watches the page jump.
- * Reserving a viewport of space keeps everything below the grid below the fold until the cards
- * arrive, so nothing visible moves.
- *
- * The surfaces are the card's own tokens and carry nothing to read: `ReadState`'s "Loading…" line
- * stays the announced loading state, and no placeholder invents a name or a count.
- */
+/** The room a card grid holds while its query is pending: the grid is the tallest thing on this screen, so a grid that renders nothing until its data lands pushes every section below it down by that height. The surfaces are the card's own tokens and carry nothing to read; `ReadState`'s loading line stays the announced loading state and no placeholder invents a name or a count. */
 function PendingGrid({ minHeight, testID, wide }: PendingGridProps): ReactElement {
   const container = [styles.cards, wide ? styles.cardsRow : null, { minHeight }];
   return (
@@ -511,8 +460,7 @@ export default function OperatorRegistryScreen(): ReactElement {
   const [lodgingSearch, setLodgingSearch] = useState('');
   const [lodgingTerm, setLodgingTerm] = useState('');
   const pendingLodgingSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The filters travel to the server, so the city chips narrow the registry itself rather than a page
-  // of it: a page holds at most 200 rows, and a city past the first page was invisible before.
+  // The filters travel to the server, so the city chips narrow the registry itself rather than a page of it.
   const lodgingQuery = useMemo(
     () => lodgingsQuery(lodgingFilter, lodgingTerm),
     [lodgingFilter, lodgingTerm],
@@ -551,9 +499,7 @@ export default function OperatorRegistryScreen(): ReactElement {
   const venueShown = venueRows.filter((row) => venueFilter === null || row.cityId === venueFilter);
   const venuesEmpty = !venues.isPending && venues.error === null && venueShown.length === 0;
   const lodgingsEmpty = !lodgings.isPending && lodgings.error === null && lodgingRows.length === 0;
-  // What the page holds against what the filters match, which is what tells an operator that the list
-  // is one page of a larger registry rather than the whole of it (AAP 0.5.4). No line when the filters
-  // match a single lodging: it is on screen already, and the line would report one of one.
+  // What the page holds against what the filters match, which tells an operator that the list is one page of a larger registry. No line when the filters match a single lodging: it is on screen already.
   const lodgingsCountLine =
     lodgingTotal <= 1 ? null : (
       <Text style={styles.meta} testID="ops-lodgings-count">
@@ -567,7 +513,6 @@ export default function OperatorRegistryScreen(): ReactElement {
   };
   // The secret leaves with the screen's focus, whether the operator navigates away or the component unmounts (AAP 0.3.2).
   useFocusEffect(useCallback(() => () => setReveal(null), []));
-  // A pending search pause is dropped with the component, so no timer outlives the screen.
   useEffect(
     () => () => {
       if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
@@ -610,11 +555,7 @@ export default function OperatorRegistryScreen(): ReactElement {
   }
   const edited = (): void => succeed('Venue updated.', undefined, () => setEdit(null));
   const refetchLodgings = (): void => void lodgings.refetch();
-  /**
-   * The search term is applied from the change handler after a pause in typing, never from an effect,
-   * so one search reads one page rather than one per keystroke. Trimming here rather than at the
-   * request keeps the field as the operator typed it.
-   */
+  /** The search term is applied from the change handler after a pause in typing, never from an effect, so one search reads one page rather than one per keystroke; trimming here rather than at the request keeps the field as the operator typed it. */
   function changeLodgingSearch(text: string): void {
     setLodgingSearch(text);
     if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
@@ -623,13 +564,7 @@ export default function OperatorRegistryScreen(): ReactElement {
       setLodgingTerm(text.trim().slice(0, LODGINGS_SEARCH_MAX));
     }, LODGINGS_SEARCH_DEBOUNCE_MS);
   }
-  /**
-   * Puts one lodging on the screen. The registry is paged in (city, name, id) order, so the row an
-   * operator has just entered sits wherever its name falls among pages of the whole table: the city
-   * filter is dropped — the list's filter is not the city the form entered the row in — and the search
-   * is left naming that row, which is what makes the read answer it whatever the registry holds
-   * (AAP 0.5.4). A search pause still pending is dropped with the term it would have applied.
-   */
+  /** Puts one lodging on the screen: the registry is paged in (city, name, id) order, so the city filter is dropped and the search is left naming the new row, which is what makes the read answer it whatever the registry holds. A search pause still pending is dropped with the term it would have applied. */
   function showLodging(name: string): void {
     const term = name.trim().slice(0, LODGINGS_SEARCH_MAX);
 
@@ -940,10 +875,6 @@ const styles = StyleSheet.create({
   cards: { gap: spacing.lg },
   cardsRow: { flexDirection: 'row', flexWrap: 'wrap' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  // The card's own gap is `spacing.md`, so grouping these children with the same gap leaves the
-  // spacing between them as it was when there is no room to spare; when the card is stretched to a
-  // taller neighbour, `marginTop` takes that room and anchors the group to the card's bottom edge,
-  // which is what puts the switch line and the buttons on one line across a row (QA qa8b-24).
   footer: { gap: spacing.md, marginTop: 'auto' },
   meta: { ...typography.body, color: colors.textMuted },
   pendingCard: {

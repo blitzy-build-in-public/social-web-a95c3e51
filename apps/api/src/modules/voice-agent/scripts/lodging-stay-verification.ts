@@ -1,8 +1,8 @@
 /**
- * The `lodging_stay_verification` call script (AAP 0.5.6): one question — is a guest named
- * `<booking name>` staying `<stayFrom>` to `<stayTo>` — and the voice relay's only decryption of a
- * booking name (AAP 0.5.2). Nothing else about the user is ever spoken: no handle, no app account,
- * no booking reference, and both answers confirm the same way (AAP 0.5.6).
+ * The `lodging_stay_verification` call script: one question — is a guest named `<booking name>` staying
+ * `<stayFrom>` to `<stayTo>` — and the voice relay's only decryption of a booking name. Nothing else
+ * about the user is ever spoken: no handle, no app account, no booking reference, and both answers
+ * confirm the same way.
  */
 
 import { DateTime } from 'luxon';
@@ -21,14 +21,14 @@ import type {
   TemplateKey,
 } from '../dialogue.ts';
 
-/** What this call extracts: whether reception confirmed the guest's stay (AAP 0.5.6). */
+/** What this call extracts: whether reception confirmed the guest's stay. */
 export interface StayValue {
   answer: 'yes' | 'no';
 }
 
 /**
  * `@db.Date` values are read in UTC: a city's local zone would move a stay that begins on the 1st
- * into the previous month west of Greenwich. `th-TH` gives ICU's Buddhist calendar (AAP 0.5.6).
+ * into the previous month west of Greenwich. `th-TH` gives ICU's Buddhist calendar.
  */
 export function formatStayDate(date: Date | string, language: CallLanguage): string {
   const day =
@@ -41,7 +41,7 @@ export function formatStayDate(date: Date | string, language: CallLanguage): str
 /**
  * Every form of the booking name that must never reach the language model: the full name plus each
  * whitespace-separated part of two or more characters, longest first so the whole name is replaced
- * before its parts. A one-character part is left alone — it would blank ordinary words (AAP 0.5.2).
+ * before its parts. A one-character part is left alone — it would blank ordinary words.
  */
 export function nameRedactions(bookingName: string): readonly string[] {
   const name = bookingName.trim();
@@ -53,15 +53,15 @@ export function nameRedactions(bookingName: string): readonly string[] {
     .sort((a, b) => b.length - a.length);
 }
 
-/** The claim states whose booking name may be decrypted (AAP 0.5.2): a terminal claim has nothing left to verify. */
+/** The claim states whose booking name may be decrypted: a terminal claim has nothing left to verify. */
 const OPEN_CLAIM_STATUSES: readonly LodgingClaimStatus[] = ['pending_call', 'calling'];
 
 /**
  * Decrypts the booking name and builds the stay question's vars. Runs under five conditions at once:
  * a lodging-stay verification, a claim, an open claim status, unerased details and a ciphertext.
  * Anything else refuses the call before it is dialled, and a ciphertext this process cannot open ends
- * it the same way, recorded as a code and the attempt id and nothing else (AAP 0.11.1). The booking
- * reference is never decrypted, spoken or logged (AAP 0.5.2, AAP 0.5.6).
+ * it the same way, recorded as a code and the attempt id and nothing else. The booking reference is
+ * never decrypted, spoken or logged.
  */
 function prepare(services: AppServices, ctx: CallContext): Promise<ScriptContext | null> {
   // Every guard and the decryption are synchronous: the promise is returned, not declared `async`.
@@ -92,7 +92,7 @@ function prepare(services: AppServices, ctx: CallContext): Promise<ScriptContext
   });
 }
 
-/** Both keys must exist in every `../i18n/*.json` with the `{bookingName}`, `{stayFrom}` and `{stayTo}` vars (AAP 0.5.6). */
+/** Both keys must exist in every `../i18n/*.json` with the `{bookingName}`, `{stayFrom}` and `{stayTo}` vars. */
 const ASK_KEY: TemplateKey = 'ask.stay';
 const READBACK_KEY: TemplateKey = 'readback.stay';
 
@@ -117,14 +117,14 @@ const stayStep = {
   }),
 } satisfies ScriptStep<StayValue>;
 
-/** What the engine records for this script: {@link ScriptDefinition}'s own result shape (AAP 0.5.3). */
+/** What the engine records for this script: {@link ScriptDefinition}'s own result shape. */
 type StayScriptResult = ReturnType<ScriptDefinition<StayValue>['result']>;
 
 /**
  * `no_answer` while nothing was collected, so the task is retried while its two attempts last;
  * `completed`/`high` once reception's answer was confirmed on read-back, and `needs_review`/`low`
  * otherwise, which sends the claim to the operator queue. The summary and the extracted fields carry
- * the answer and nothing else: never the booking name, never the dates (AAP 0.5.3, AAP 0.5.6).
+ * the answer and nothing else: never the booking name, never the dates.
  */
 function result(
   collected: ReadonlyMap<string, { value: StayValue; confirmed: boolean }>,
@@ -151,7 +151,7 @@ function result(
   };
 }
 
-/** The `lodging_stay_verification` script as the dialogue engine consumes it (AAP 0.5.6). */
+/** The `lodging_stay_verification` script as the dialogue engine consumes it. */
 export const lodgingStayVerificationScript = {
   kind: 'lodging_stay_verification',
   prepare,

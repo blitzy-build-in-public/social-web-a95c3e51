@@ -1,7 +1,4 @@
-/**
- * Criterion 11 menu-extraction evaluation: the labeled fixture set read end to end through the real
- * menu pipeline (AAP 0.8.1, 0.11.2, 0.12.1).
- */
+/** Criterion 11 menu-extraction evaluation: the labeled fixture set read end to end through the real menu pipeline (AAP 0.8.1, 0.11.2, 0.12.1). */
 
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -52,9 +49,7 @@ import { SafeFetchError, createFetchBudget, createSafeFetch } from '../src/menus
 import type { SafeFetch } from '../src/menus/safe-fetch.ts';
 import { gateItems, normalizeWhitespace } from '../src/menus/source-gate.ts';
 import type { GatedMenuItem } from '../src/menus/source-gate.ts';
-// Imported for `normalizeItemName` alone — the label key the pipeline stores as
-// `PriceRecord.normalizedName`. That module value-imports `@tablemate/db`, so the Prisma client must
-// be generated before this file loads; nothing here opens a database connection.
+// Imported for `normalizeItemName` alone — the label key the pipeline stores as `PriceRecord.normalizedName`. That module value-imports `@tablemate/db`, so the Prisma client must be generated before this file loads; nothing here opens a database connection.
 import { normalizeItemName } from '../src/jobs/menu-ingest.ts';
 
 const REPO_ROOT = findRepoRoot();
@@ -62,7 +57,6 @@ const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const MENUS_DIR = join(EVAL_DIR, 'fixtures', 'menus');
 const MANIFEST_FILE = join(MENUS_DIR, 'manifest.json');
 const DOC_FILE = join(REPO_ROOT, 'docs', 'menu-extraction.md');
-
 /** The document's generated-block markers and the status line it must always keep (AAP 0.12.3). */
 const STATUS_LINE = 'Unverified — fixture set only';
 const BEGIN_MARKER = '<!-- BEGIN menus-eval -->';
@@ -70,10 +64,8 @@ const END_MARKER = '<!-- END menus-eval -->';
 const RESULT_MARKER = '<!-- menus-eval:result -->';
 const PENDING_MARKER = '<!-- menus-eval:pending -->';
 const DOC_HEADING = '# Menu extraction';
-
 const FIXTURE_HOST = '127.0.0.1';
 const FIXTURE_CONTACT_URL = 'http://127.0.0.1/menus-eval';
-
 const LANGUAGES = ['en', 'pt', 'es', 'th', 'id'] as const;
 const FORMATS = ['html', 'pdf', 'image'] as const;
 const OCR_LANGUAGES = ['eng', 'por', 'spa', 'tha', 'ind'] as const satisfies readonly OcrLanguage[];
@@ -92,34 +84,19 @@ const FORMAT_BY_EXTENSION: Readonly<Record<string, (typeof FORMATS)[number] | un
   '.png': 'image',
   '.jpg': 'image',
 };
-/**
- * The only shape a manifest entry's `file` may take, built from {@link LANGUAGES} and
- * {@link FORMAT_BY_EXTENSION} so that those two stay the single list of languages and extensions: one
- * language directory, one `/`, a name of `[a-z0-9]` groups joined by single `-`, and one known
- * extension. This is the invariant that makes the three `join(MENUS_DIR, menu.file)` call sites safe —
- * the value carries no `..` segment and no second separator, so it cannot name a file outside the
- * labeled set — and every other shape is rejected as the manifest loads, before any of them.
- */
+/** The only shape a manifest entry's `file` may take, built from {@link LANGUAGES} and {@link FORMAT_BY_EXTENSION} so that those two stay the single list of languages and extensions: one language directory, one `/`, a name of `[a-z0-9]` groups joined by single `-`, and one known extension. This is the invariant that makes the three `join(MENUS_DIR, menu.file)` call sites safe — the value carries no `..` segment and no second separator, so it cannot name a file outside the labeled set — and every other shape is rejected as the manifest loads, before any of them. */
 const MENU_FILE_PATTERN = new RegExp(
   `^(?:${LANGUAGES.join('|')})/[a-z0-9]+(?:-[a-z0-9]+)*(?:${Object.keys(FORMAT_BY_EXTENSION)
     .map((extension) => extension.replaceAll('.', '\\.'))
     .join('|')})$`,
 );
-
 const CITY_ID = 'eval';
 const DEFAULT_CAP_USD = 25;
 const EVALUATED_PROVIDER = 'openai';
-
 const MATCHED_THRESHOLD = 0.9;
 const PREFLIGHT_TIMEOUT_MS = 10_000;
-
 const execFileAsync = promisify(execFile);
-
-/**
- * One expected priced item: the label the extraction is scored against. `normalizedName` is
- * `normalizeItemName(name)` and `amountMinor` is `parsePrice(priceText, currency)`, both checked
- * below, so no label can be written that the pipeline's own rules could never produce.
- */
+/** One expected priced item: the label the extraction is scored against. `normalizedName` is `normalizeItemName(name)` and `amountMinor` is `parsePrice(priceText, currency)`, both checked below, so no label can be written that the pipeline's own rules could never produce. */
 const ManifestItem = z.strictObject({
   name: z.string().min(1),
   normalizedName: z.string().min(1),
@@ -129,7 +106,6 @@ const ManifestItem = z.strictObject({
   category: ItemCategory,
 });
 type ManifestItem = z.infer<typeof ManifestItem>;
-
 const ManifestMenu = z.strictObject({
   file: z
     .string()
@@ -145,10 +121,8 @@ const ManifestMenu = z.strictObject({
   items: z.array(ManifestItem).min(1),
 });
 type ManifestMenu = z.infer<typeof ManifestMenu>;
-
 /** The manifest itself: versioned, so a shape change fails loudly instead of scoring wrongly. */
 const Manifest = z.strictObject({ version: z.literal(1), menus: z.array(ManifestMenu) });
-
 /** One label as the report names it: normalized name and exact price text, never menu text. */
 interface LabelRef {
   readonly normalizedName: string;
@@ -161,29 +135,18 @@ function messageOf(error: unknown): string {
 
 function errorCode(error: unknown): string {
   const code: unknown = (error as { code?: unknown }).code;
-
   return typeof code === 'string' ? code : error instanceof Error ? error.name : 'unknown';
 }
 
-/**
- * The code a failure is recorded under, so the report says which stage rejected a menu without
- * carrying any of its text: a fetch refusal's own reason, a PDF or OCR reason, a language-model error
- * code, or the error's name for anything unexpected.
- */
+/** The code a failure is recorded under, so the report says which stage rejected a menu without carrying any of its text: a fetch refusal's own reason, a PDF or OCR reason, a language-model error code, or the error's name for anything unexpected. */
 function failureCode(error: unknown): string {
   if (error instanceof SafeFetchError) return `fetch_${error.reason}`;
   if (error instanceof PdfTextError) return `pdf_${error.reason}`;
   if (error instanceof OcrError) return `ocr_${error.reason}`;
-
   return errorCode(error);
 }
 
-/**
- * Load the labeled set and check it against the shape criterion 11 is measured on (AAP 0.12.1). Every
- * problem is collected and reported together, because a run that stopped at the first one would hide
- * the rest of a broken fixture set. A message names a file, an item index and a field, never menu text.
- * @returns The menus and every problem found; an empty `errors` means the set may be measured.
- */
+/** Load the labeled set and check it against the shape criterion 11 is measured on (AAP 0.12.1). Every problem is collected and reported together, because a run that stopped at the first one would hide the rest of a broken fixture set. A message names a file, an item index and a field, never menu text. @returns The menus and every problem found; an empty `errors` means the set may be measured. */
 function loadManifest(): { menus: ManifestMenu[]; errors: string[] } {
   let text: string;
   try {
@@ -217,7 +180,6 @@ function checkManifest(menus: readonly ManifestMenu[]): string[] {
   const seen = new Set<string>();
   const perLanguage = new Map<string, number>();
   const perFormat = new Map<(typeof FORMATS)[number], number>();
-
   if (menus.length !== EXPECTED_MENUS) {
     errors.push(`expected ${EXPECTED_MENUS} menus, found ${menus.length}`);
   }
@@ -270,7 +232,6 @@ function checkManifest(menus: readonly ManifestMenu[]): string[] {
 
 function checkItems(menu: ManifestMenu, errors: string[]): void {
   const seen = new Set<string>();
-
   menu.items.forEach((item, index) => {
     const where = `${menu.file} item ${index + 1}`;
     if (item.normalizedName !== normalizeItemName(item.name)) {
@@ -290,7 +251,6 @@ function checkItems(menu: ManifestMenu, errors: string[]): void {
 
 function readEnv(name: string): string | null {
   const value = process.env[name];
-
   return value === undefined || value.trim() === '' ? null : value.trim();
 }
 
@@ -305,10 +265,7 @@ type Mode =
   | { readonly kind: 'pending' }
   | { readonly kind: 'error'; readonly message: string }
   | { readonly kind: 'run'; readonly config: RunConfig };
-
-/**
- * Decide between a measured run, a pending run and a configuration error (AAP 0.5.6, 0.12.3).
- */
+/** Decide between a measured run, a pending run and a configuration error (AAP 0.5.6, 0.12.3). */
 function resolveMode(): Mode {
   const provider = readEnv('LLM_PROVIDER');
   if (provider !== null && provider !== 'fake' && provider !== 'openai') {
@@ -318,7 +275,6 @@ function resolveMode(): Mode {
     };
   }
   if (provider === null || provider === 'fake') return { kind: 'pending' };
-
   const model = readEnv('LLM_MODEL');
   if (model !== null && !isSupportedModel(model)) {
     return { kind: 'error', message: 'LLM_MODEL is not one of the supported models.' };
@@ -367,15 +323,10 @@ interface Preflight {
   readonly problems: readonly string[];
 }
 
-/**
- * Check the tools the documents need before any menu is read: Tesseract with the five OCR languages of
- * the labeled set, and `pdftoppm` for the one scanned PDF. Chromium is checked by launching it, which
- * the run does next, because a browser that cannot start is the same class of failure.
- */
+/** Check the tools the documents need before any menu is read: Tesseract with the five OCR languages of the labeled set, and `pdftoppm` for the one scanned PDF. Chromium is checked by launching it, which the run does next, because a browser that cannot start is the same class of failure. */
 async function preflightTools(): Promise<Preflight> {
   const problems: string[] = [];
   let tesseract = 'unknown';
-
   try {
     const banner = await execFileAsync('tesseract', ['--version'], {
       timeout: PREFLIGHT_TIMEOUT_MS,
@@ -412,11 +363,7 @@ async function preflightTools(): Promise<Preflight> {
   return { tesseract, problems };
 }
 
-/**
- * The day counter `createLlmSpend` reserves against, held in memory: the SQL store's own predicate —
- * `spent + reserved + micros <= capMicros` — over a map keyed by city and local day, so the whole
- * evaluation needs no database and is bounded by one `CAP_LLM_USD_PER_CITY_DAY`.
- */
+/** The day counter `createLlmSpend` reserves against, held in memory: the SQL store's own predicate — `spent + reserved + micros <= capMicros` — over a map keyed by city and local day, so the whole evaluation needs no database and is bounded by one `CAP_LLM_USD_PER_CITY_DAY`. */
 function createMemorySpendStore(): SpendStore & { spentMicros: () => number } {
   const days = new Map<string, { spent: number; reserved: number }>();
   const dayOf = (cityId: string, localDate: string): { spent: number; reserved: number } => {
@@ -427,7 +374,6 @@ function createMemorySpendStore(): SpendStore & { spentMicros: () => number } {
     days.set(key, created);
     return created;
   };
-
   return {
     tryReserve: ({ cityId, localDate, micros, capMicros }) => {
       const day = dayOf(cityId, localDate);
@@ -450,15 +396,10 @@ function createMemorySpendStore(): SpendStore & { spentMicros: () => number } {
   };
 }
 
-/**
- * The suspension flag, held in memory (AAP 0.5.6). A counted/reported mismatch suspends every city
- * through this store; the run notes it, records the failing evidence and clears it, so one bad request
- * does not hide the measurement of the menus behind it.
- */
+/** The suspension flag, held in memory (AAP 0.5.6). A counted/reported mismatch suspends every city through this store; the run notes it, records the failing evidence and clears it, so one bad request does not hide the measurement of the menus behind it. */
 function createMemorySuspensionStore(): SuspensionStore {
   let suspended = false;
   let mismatches = 0;
-
   return {
     isSuspended: () => Promise.resolve(suspended),
     suspend: () => {
@@ -485,24 +426,16 @@ interface TokenRecord {
   error: string | null;
 }
 
-/**
- * Whether the request's evidence holds: the provider reported exactly the input count that was reserved
- * for, over a payload identical to the one counted. Both halves matter — a count covering a different
- * payload would bound nothing — and a request that errored before answering fails, because it proves
- * nothing about the model's profile.
- */
+/** Whether the request's evidence holds: the provider reported exactly the input count that was reserved for, over a payload identical to the one counted. Both halves matter — a count covering a different payload would bound nothing — and a request that errored before answering fails, because it proves nothing about the model's profile. */
 function evidenceHolds(record: TokenRecord): boolean {
   return record.reportedInput === record.counted && record.samePayload === true;
 }
 
-/**
- * Wrap the provider so every request's count and reply are recorded (AAP 0.5.6).
- */
+/** Wrap the provider so every request's count and reply are recorded (AAP 0.5.6). */
 function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: string): LlmAdapter {
   const opened = new WeakMap<object, TokenRecord>();
   let lastOpened: TokenRecord | null = null;
   let chunk = 0;
-
   return {
     provider: inner.provider,
     model: inner.model,
@@ -550,12 +483,7 @@ function recordingAdapter(inner: LlmAdapter, records: TokenRecord[], menu: strin
   };
 }
 
-/**
- * This run's site-terms decisions, in memory: the fixture host is `allowed`, mirroring the
- * `overriddenBy = seed` rows the seed records for the local fixture hosts. `upsertProhibited` and
- * `insertUncertain` throw, because reaching either means the run asked about a host the labeled set
- * never names — a broken fixture rather than a decision to take here.
- */
+/** This run's site-terms decisions, in memory: the fixture host is `allowed`, mirroring the `overriddenBy = seed` rows the seed records for the local fixture hosts. `upsertProhibited` and `insertUncertain` throw, because reaching either means the run asked about a host the labeled set never names — a broken fixture rather than a decision to take here. */
 function createFixturePolicyStore(): CrawlPolicyStore {
   return {
     find: (domains) =>
@@ -576,12 +504,7 @@ interface FixtureServer {
   readonly stop: () => Promise<void>;
 }
 
-/**
- * Serve the labeled HTML menus over loopback, so the page path of the pipeline runs against a real
- * HTTP response (AAP 0.5.6). Only the manifest's HTML files are served, at `/<file>`; `/robots.txt`
- * and everything else answer 404, which RFC 9309 reads as "every path is allowed". The port is
- * ephemeral, so nothing on the host is reserved and no sibling agent can collide with it.
- */
+/** Serve the labeled HTML menus over loopback, so the page path of the pipeline runs against a real HTTP response (AAP 0.5.6). Only the manifest's HTML files are served, at `/<file>`; `/robots.txt` and everything else answer 404, which RFC 9309 reads as "every path is allowed". The port is ephemeral, so nothing on the host is reserved and no sibling agent can collide with it. */
 async function startFixtureServer(menus: readonly ManifestMenu[]): Promise<FixtureServer> {
   const files = new Set(menus.filter((menu) => menu.format === 'html').map((menu) => menu.file));
   const server: Server = createServer((request, response) => {
@@ -598,15 +521,12 @@ async function startFixtureServer(menus: readonly ManifestMenu[]): Promise<Fixtu
     });
     response.end(body);
   });
-
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, FIXTURE_HOST, resolve);
   });
-
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
-
   return {
     origin: `http://${FIXTURE_HOST}:${port}`,
     stop: () =>
@@ -655,13 +575,7 @@ function matchKey(normalizedName: string, amountMinor: number, currency: string)
   return `${normalizedName}|${amountMinor}|${currency.toUpperCase()}`;
 }
 
-/**
- * Score the kept items against the labels (AAP 0.12.1): a multiset match, so each kept item consumes at
- * most one label and a menu printing one dish twice cannot satisfy two labels with one price.
- * @param labels - The menu's expected items.
- * @param kept - The items that survived the source gate.
- * @returns How many labels matched, and those that did not, in manifest order.
- */
+/** Score the kept items against the labels (AAP 0.12.1): a multiset match, so each kept item consumes at most one label and a menu printing one dish twice cannot satisfy two labels with one price. @param labels - The menu's expected items. @param kept - The items that survived the source gate. @returns How many labels matched, and those that did not, in manifest order. */
 function scoreLabels(
   labels: readonly ManifestItem[],
   kept: readonly GatedMenuItem[],
@@ -674,7 +588,6 @@ function scoreLabels(
 
   const unmatched: LabelRef[] = [];
   let matched = 0;
-
   for (const label of labels) {
     const left = pool.get(matchKey(label.normalizedName, label.amountMinor, label.currency)) ?? 0;
     if (left > 0) {
@@ -692,14 +605,7 @@ function scoreLabels(
 type SourceOutcome =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'error'; readonly code: string };
-
-/**
- * Read one menu's source text the way `menu-ingest` does (AAP 0.5.6): a rendered page for HTML, a text
- * layer or a rasterize-and-OCR pass for a PDF, and OCR for an image. Everything is bounded by the
- * pipeline's own constants — a fresh per-place fetch budget, twenty PDF pages, the OCR timeout — and
- * every refusal becomes a code in the report rather than an exception, so one unusable document does
- * not stop the measurement of the others.
- */
+/** Read one menu's source text the way `menu-ingest` does (AAP 0.5.6): a rendered page for HTML, a text layer or a rasterize-and-OCR pass for a PDF, and OCR for an image. Everything is bounded by the pipeline's own constants — a fresh per-place fetch budget, twenty PDF pages, the OCR timeout — and every refusal becomes a code in the report rather than an exception, so one unusable document does not stop the measurement of the others. */
 async function readSource(menu: ManifestMenu, run: EvalRun): Promise<SourceOutcome> {
   try {
     if (menu.format === 'html') {
@@ -736,12 +642,7 @@ async function readSource(menu: ManifestMenu, run: EvalRun): Promise<SourceOutco
   }
 }
 
-/**
- * Read one menu end to end and score it (AAP 0.12.1): the source text, then the metered extraction —
- * `extractMenuItems` counts, reserves and sends through the shared spend meter, and the recording
- * adapter captures each request's evidence — then the source gate, the multiset score and the
- * source-text share of what was stored.
- */
+/** Read one menu end to end and score it (AAP 0.12.1): the source text, then the metered extraction — `extractMenuItems` counts, reserves and sends through the shared spend meter, and the recording adapter captures each request's evidence — then the source gate, the multiset score and the source-text share of what was stored. */
 async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
   const startedMs = systemClock.nowMs();
   const result: MenuRun = {
@@ -759,7 +660,6 @@ async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
     unmatched: allLabels(menu),
     durationMs: 0,
   };
-
   const source = await readSource(menu, run);
   if (source.kind === 'error') {
     result.error = source.code;
@@ -794,7 +694,6 @@ async function runMenu(menu: ManifestMenu, run: EvalRun): Promise<MenuRun> {
   }
 
   result.durationMs = systemClock.nowMs() - startedMs;
-
   if (await run.suspension.isSuspended()) {
     run.logger.warn({ event: 'menus_eval_suspended', menu: menu.file });
     await run.suspension.clear();
@@ -816,20 +715,13 @@ function sum(runs: readonly MenuRun[], pick: (run: MenuRun) => number): number {
   return runs.reduce((total, run) => total + pick(run), 0);
 }
 
-/**
- * One Markdown table, padded exactly as prettier pads one: every column as wide as its widest cell
- * (three characters at least, so the separator is valid), cells right-padded with spaces. The document
- * is generated rather than hand-written, so it has to satisfy `pnpm format:check` as it stands; the
- * tables hold paths, counts and status words only, all single-width, which is what keeps this padding
- * identical to prettier's own.
- */
+/** One Markdown table, padded exactly as prettier pads one: every column as wide as its widest cell (three characters at least, so the separator is valid), cells right-padded with spaces. The document is generated rather than hand-written, so it has to satisfy `pnpm format:check` as it stands; the tables hold paths, counts and status words only, all single-width, which is what keeps this padding identical to prettier's own. */
 function markdownTable(headers: readonly string[], rows: readonly (readonly string[])[]): string {
   const widths = headers.map((header, column) =>
     Math.max(3, header.length, ...rows.map((row) => (row[column] ?? '').length)),
   );
   const line = (cells: readonly string[]): string =>
     `| ${cells.map((cell, column) => cell.padEnd(widths[column] ?? 3)).join(' | ')} |`;
-
   return [line(headers), line(widths.map((width) => '-'.repeat(width))), ...rows.map(line)].join(
     '\n',
   );
@@ -862,9 +754,7 @@ interface Summary {
   readonly tesseract: string;
 }
 
-/**
- * Compute the two thresholds and the token evidence (AAP 0.12.1, 0.5.6).
- */
+/** Compute the two thresholds and the token evidence (AAP 0.12.1, 0.5.6). */
 function countOf(summary: Summary): Counts {
   const { runs, records } = summary;
   const labeled = sum(runs, (run) => run.labeled);
@@ -872,7 +762,6 @@ function countOf(summary: Summary): Counts {
   const kept = sum(runs, (run) => run.kept);
   const keptInSource = sum(runs, (run) => run.keptInSource);
   const mismatches = records.filter((record) => !evidenceHolds(record)).length;
-
   return {
     labeled,
     matched,
@@ -924,11 +813,7 @@ function evidenceRows(records: readonly TokenRecord[]): string[][] {
   ]);
 }
 
-/**
- * The results block: what criterion 11 measured, the per-language, per-format and per-menu tables, the
- * labels that did not match, and the token evidence for the spend cap (AAP 0.12.1, 0.5.6). Only label
- * names and price strings appear — never a menu's text, a prompt, a payload or a model answer.
- */
+/** The results block: what criterion 11 measured, the per-language, per-format and per-menu tables, the labels that did not match, and the token evidence for the spend cap (AAP 0.12.1, 0.5.6). Only label names and price strings appear — never a menu's text, a prompt, a payload or a model answer. */
 function resultsBody(summary: Summary, counts: Counts): string {
   const unmatched = summary.runs.flatMap((run) =>
     run.unmatched.map(
@@ -943,7 +828,6 @@ function resultsBody(summary: Summary, counts: Counts): string {
       : '';
   const failureNote =
     failureCodes.length > 0 ? `\n\nEvidence failures: ${failureCodes.join(', ')}.` : '';
-
   return `${RESULT_MARKER}
 
 Measured ${systemClock.now().toISOString()} by \`pnpm --filter @tablemate/workers eval:menus\` (commit ${summary.commit}, provider ${EVALUATED_PROVIDER}, model ${summary.model}).
@@ -1014,18 +898,12 @@ function replaceBlock(doc: string, body: string): string {
   const end = doc.indexOf(END_MARKER);
   const block = `${BEGIN_MARKER}\n${body}\n${END_MARKER}`;
   if (begin === -1 || end <= begin) return `${doc.trimEnd()}\n\n${block}`;
-
   return `${doc.slice(0, begin)}${block}${doc.slice(end + END_MARKER.length)}`;
 }
 
-/**
- * Keep the fixture-set-only status line (AAP 0.12.3): the accuracy of this pipeline on real launch-city
- * menus is unverified beyond the labeled set, and no run may drop that statement. The line is appended
- * after the block when it is missing, and never removed.
- */
+/** Keep the fixture-set-only status line (AAP 0.12.3): the accuracy of this pipeline on real launch-city menus is unverified beyond the labeled set, and no run may drop that statement. The line is appended after the block when it is missing, and never removed. */
 function ensureStatusLine(doc: string): string {
   const withLine = doc.includes(STATUS_LINE) ? doc : `${doc.trimEnd()}\n\n${STATUS_LINE}\n`;
-
   return withLine.endsWith('\n') ? withLine : `${withLine}\n`;
 }
 
@@ -1034,7 +912,6 @@ function saveDoc(doc: string): boolean {
   const current = existsSync(DOC_FILE) ? readFileSync(DOC_FILE, 'utf8') : null;
   if (current === doc) return false;
   writeFileSync(DOC_FILE, doc, 'utf8');
-
   return true;
 }
 
@@ -1057,11 +934,7 @@ async function shortCommit(): Promise<string> {
   }
 }
 
-/**
- * A run with no provider credentials (AAP 0.12.3): the fixture set has already been validated and the
- * document is marked pending, so nothing measured is claimed. A recorded measurement is never
- * overwritten by such a run — it is kept as it stands, and the run exits 0.
- */
+/** A run with no provider credentials (AAP 0.12.3): the fixture set has already been validated and the document is marked pending, so nothing measured is claimed. A recorded measurement is never overwritten by such a run — it is kept as it stands, and the run exits 0. */
 function pendingRun(menus: readonly ManifestMenu[]): number {
   const doc = readDoc();
   const kept = doc.includes(RESULT_MARKER);
@@ -1072,7 +945,6 @@ function pendingRun(menus: readonly ManifestMenu[]): number {
       ? 'menus-eval: pending — a recorded measurement is kept as it stands.'
       : `menus-eval: pending — provider credentials absent; the fixture set is valid (${menus.length} menus).`,
   );
-
   return 0;
 }
 
@@ -1080,7 +952,6 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
   const preflight = await preflightTools();
   for (const problem of preflight.problems) say('err', `menus-eval: ${problem}`);
   if (preflight.problems.length > 0) return 1;
-
   const browser = createBrowserProvider();
   try {
     await browser.get();
@@ -1104,9 +975,7 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
     const run: EvalRun = {
       origin: server.origin,
       browser,
-      // `appEnv: 'test'` with the loopback host exempt is AAP 0.5.6's test-environment exemption,
-      // passed directly instead of read from the environment. The no-op throttle is safe because
-      // every request goes to the one host this process serves itself.
+      // `appEnv: 'test'` with the loopback host exempt is AAP 0.5.6's test-environment exemption, passed directly instead of read from the environment. The no-op throttle is safe because every request goes to the one host this process serves itself.
       safeFetch: createSafeFetch({
         appEnv: 'test',
         allowPrivateHosts: [FIXTURE_HOST],
@@ -1187,13 +1056,10 @@ async function measuredRun(menus: readonly ManifestMenu[], config: RunConfig): P
   }
 }
 
-/**
- * The evaluator: validate the labeled set, then measure it or mark it pending (AAP 0.12.1, 0.12.3).
- */
+/** The evaluator: validate the labeled set, then measure it or mark it pending (AAP 0.12.1, 0.12.3). */
 async function main(): Promise<number> {
   const manifest = loadManifest();
   const mode = resolveMode();
-
   if (mode.kind === 'error') {
     say('err', `menus-eval: ${mode.message}`);
     return 1;
@@ -1204,7 +1070,6 @@ async function main(): Promise<number> {
   }
 
   if (mode.kind === 'pending') return pendingRun(manifest.menus);
-
   return await measuredRun(manifest.menus, mode.config);
 }
 

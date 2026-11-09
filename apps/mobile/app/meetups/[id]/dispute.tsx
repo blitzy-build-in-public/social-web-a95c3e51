@@ -1,8 +1,4 @@
-/**
- * Report a problem: the dispute screen of AAP 0.5.8's "Meetups -> meetup -> Report a problem",
- * which files a report through `POST /meetups/:id/dispute` with a reason of up to
- * REASON_MAX_CHARS (500) characters and a kind (AAP 0.5.4).
- */
+/** Report a problem: files a report through `POST /meetups/:id/dispute` with a reason of up to REASON_MAX_CHARS (500) characters and a kind. */
 import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -83,8 +79,7 @@ function KindOption({ kind, selected, onSelect }: KindOptionProps): ReactElement
       onPress={onSelect}
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
-      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      // Hover is a web state: React Native declares the pair on `PressableProps` and react-native-web forwards it to its hover hook, while iOS and Android never fire it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       testID={KIND_TEST_IDS[kind]}

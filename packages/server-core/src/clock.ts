@@ -1,5 +1,4 @@
 /** The injectable clock (AAP 0.11.1). */
-
 /** A source of the current time (AAP 0.11.1). */
 export interface Clock {
   /**
@@ -10,7 +9,6 @@ export interface Clock {
   /** The current instant as epoch milliseconds, the form timestamps are compared in. */
   nowMs(): number;
 }
-
 /**
  * The process clock: real time, every module's default, and frozen so no caller can replace its
  * methods.
@@ -23,10 +21,8 @@ export const systemClock: Clock = Object.freeze({
     return Date.now();
   },
 });
-
 /** How a `TestClock` tracks time. */
 export type TestClockMode = 'frozen' | 'flowing';
-
 /** A controllable clock: `set`, `advance` and `reset` move this instance alone (AAP 0.11.1). */
 export interface TestClock extends Clock {
   /** The mode given at creation; it never changes afterwards. */
@@ -46,12 +42,9 @@ export interface TestClock extends Clock {
   /** Restore the state this clock was created with. */
   reset(): void;
 }
-
 /** Where a frozen clock without an explicit `start` begins: 2026-11-04T12:00:00Z. */
 export const DEFAULT_TEST_CLOCK_START = '2026-11-04T12:00:00.000Z';
-
 const DEFAULT_TEST_CLOCK_START_MS = Date.parse(DEFAULT_TEST_CLOCK_START);
-
 /** Create a controllable clock (AAP 0.11.1). */
 export function createTestClock(options?: {
   start?: Date;
@@ -89,13 +82,11 @@ export function createTestClock(options?: {
   };
   return Object.freeze({ mode, nowMs, now: () => new Date(nowMs()), set, advance, reset });
 }
-
 /** Whether `clock` is controllable. */
 export function isTestClock(clock: Clock): clock is TestClock {
   const candidate: Partial<TestClock> = clock;
   return typeof candidate.set === 'function' && typeof candidate.advance === 'function';
 }
-
 function instantMs(at: Date, source: string): number {
   const ms = at.getTime();
   if (Number.isNaN(ms)) {
@@ -103,7 +94,6 @@ function instantMs(at: Date, source: string): number {
   }
   return ms;
 }
-
 function advanceMs(ms: number): number {
   if (!Number.isFinite(ms) || ms < 0) {
     throw new RangeError(

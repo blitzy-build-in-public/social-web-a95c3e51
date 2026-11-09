@@ -1,7 +1,4 @@
-/**
- * Integration tests for the fetch-to-stored-price pipeline of `apps/workers/src/jobs/menu-ingest.ts`
- * against the local fixture sites in `apps/workers/test/fixtures/sites/` (AAP 0.5.6, 0.11.2).
- */
+/** Integration tests for the fetch-to-stored-price pipeline of `apps/workers/src/jobs/menu-ingest.ts` against the local fixture sites in `apps/workers/test/fixtures/sites/` (AAP 0.5.6, 0.11.2). */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
@@ -48,39 +45,24 @@ import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../
 
 /** The launch city every case works in: configured, so `seedCities` writes its zone and currency. */
 const CITY = 'lisbon';
-
 const CITY_TZ = 'Europe/Lisbon';
-
-/**
- * The instant every case starts at: Lisbon midday on the harness's own day. Lisbon is on UTC+0 in
- * mid-November, so this literal is a Lisbon midday; `resetState` returns the clock here, and each
- * case states it so the dates the FX conversion reads line up visibly.
- */
+/** The instant every case starts at: Lisbon midday on the harness's own day. Lisbon is on UTC+0 in mid-November, so this literal is a Lisbon midday; `resetState` returns the clock here, and each case states it so the dates the FX conversion reads line up visibly. */
 const NOW = new Date(DEFAULT_TEST_NOW);
-
 const INGEST = JOB[QUEUE.menuIngest].ingest;
 const INGEST_CITY = JOB[QUEUE.menuIngest].ingestCity;
 const FX_REFRESH = JOB[QUEUE.fxRefresh].refresh;
-
 const MENU_PRICES = 'menu_prices';
-
 /** The three fixture host names besides the loopback literal, each a distinct registrable domain. */
 const ALLOWED_HOST = 'menus.allowed-fixture.test';
 const PROHIBITED_HOST = 'menus.prohibited-fixture.test';
 const UNCERTAIN_HOST = 'menus.uncertain-fixture.test';
-
-/**
- * Every host the crawler may reach inside this test's network (AAP 0.5.6). The exemption is what
- * keeps the address check out of the fixture rows' way: only the crawl policy, `robots.txt` and the
- * throttle may stop a fetch here.
- */
+/** Every host the crawler may reach inside this test's network (AAP 0.5.6). The exemption is what keeps the address check out of the fixture rows' way: only the crawl policy, `robots.txt` and the throttle may stop a fetch here. */
 const PRIVATE_HOSTS: readonly string[] = [
   '127.0.0.1',
   ALLOWED_HOST,
   PROHIBITED_HOST,
   UNCERTAIN_HOST,
 ];
-
 const SITES_DIR = fileURLToPath(new URL('../fixtures/sites/', import.meta.url));
 const FX_FIXTURE = fileURLToPath(new URL('../fixtures/fx/usd-latest.json', import.meta.url));
 const PDF_FIXTURE = fileURLToPath(
@@ -89,30 +71,21 @@ const PDF_FIXTURE = fileURLToPath(
 const MENU_MANIFEST = fileURLToPath(
   new URL('../../eval/fixtures/menus/manifest.json', import.meta.url),
 );
-
 const SITE_PAGES: ReadonlyMap<string, Buffer> = new Map<string, Buffer>([
   ['/menu-html/', readFileSync(join(SITES_DIR, 'menu-html', 'index.html'))],
   ['/menu-pdf-link/', readFileSync(join(SITES_DIR, 'menu-pdf-link', 'index.html'))],
   ['/activity-tickets/', readFileSync(join(SITES_DIR, 'activity-tickets', 'index.html'))],
   ['/login-wall/', readFileSync(join(SITES_DIR, 'login-wall', 'index.html'))],
 ]);
-
 const PDF_PATH = '/menu-pdf-link/menu.pdf';
 const EN_02_PDF = readFileSync(PDF_FIXTURE);
-
-/**
- * The site's own `robots.txt`: the disallowed prefix is the one path that proves the check ran, and
- * `/private/menu/` answers the `menu-html` page so that only `robots.txt` can stop it (AAP 0.5.6).
- */
+/** The site's own `robots.txt`: the disallowed prefix is the one path that proves the check ran, and `/private/menu/` answers the `menu-html` page so that only `robots.txt` can stop it (AAP 0.5.6). */
 const ROBOTS_PATH = '/robots.txt';
 const DISALLOWED_PREFIX = '/private/';
 const ROBOTS_BODY = `User-agent: *\nDisallow: ${DISALLOWED_PREFIX}\n`;
-
 const FX_TABLE = readFileSync(FX_FIXTURE, 'utf8');
 const FX_PATH = '/fx/usd-latest.json';
-
 const SITE_PATH = /^\/[a-z0-9-]+\/$/;
-
 interface FxFixture {
   readonly rates: Readonly<Record<string, number>>;
   readonly time_last_update_unix: number;
@@ -120,11 +93,9 @@ interface FxFixture {
 
 const FX_FIXTURE_JSON = JSON.parse(FX_TABLE) as FxFixture;
 const FX_RATES = FX_FIXTURE_JSON.rates;
-
 const FX_DAY = new Date(
   `${new Date(FX_FIXTURE_JSON.time_last_update_unix * 1_000).toISOString().slice(0, 10)}T00:00:00.000Z`,
 );
-
 interface ManifestItem {
   readonly name: string;
   readonly normalizedName: string;
@@ -144,11 +115,9 @@ interface Manifest {
 }
 
 const MANIFEST = JSON.parse(readFileSync(MENU_MANIFEST, 'utf8')) as Manifest;
-
 /** One menu of the labeled set, refused rather than read as `undefined`. */
 function menuOf(file: string): ManifestMenu {
   const found = MANIFEST.menus.find((menu) => menu.file === file);
-
   if (found === undefined) {
     throw new Error(`the labeled set holds no menu "${file}"`);
   }
@@ -157,11 +126,9 @@ function menuOf(file: string): ManifestMenu {
 }
 
 const PDF_MENU = menuOf('en/en-02.pdf');
-
 /** The first item's name, which is the text every chunk of that document's own text carries. */
 function firstItemName(menu: ManifestMenu): string {
   const first = menu.items[0];
-
   if (first === undefined) {
     throw new Error(`the labeled menu "${menu.file}" holds no items`);
   }
@@ -169,13 +136,9 @@ function firstItemName(menu: ManifestMenu): string {
   return first.name;
 }
 
-/**
- * The first domain of the committed blocklist, read from the file rather than written here: the
- * suite must never name a real site, and `config/crawl-blocklist.json` is what decides one (AAP 0.5.6).
- */
+/** The first domain of the committed blocklist, read from the file rather than written here: the suite must never name a real site, and `config/crawl-blocklist.json` is what decides one (AAP 0.5.6). */
 function firstBlockedDomain(): string {
   const [first] = [...loadBlocklist(findRepoRoot()).domains];
-
   if (first === undefined) {
     throw new Error('config/crawl-blocklist.json holds no domain');
   }
@@ -184,20 +147,14 @@ function firstBlockedDomain(): string {
 }
 
 const BLOCKED_DOMAIN = firstBlockedDomain();
-
-/**
- * What one unit of a currency is worth in USD, from the recorded table, which is what a stored
- * `priceUsdCents` converts through: the provider quotes units per USD, so the rate is its reciprocal.
- */
+/** What one unit of a currency is worth in USD, from the recorded table, which is what a stored `priceUsdCents` converts through: the provider quotes units per USD, so the rate is its reciprocal. */
 function expectedCents(localAmountMinor: number, currency: string): number {
   const perUsd = FX_RATES[currency];
-
   if (perUsd === undefined) {
     throw new Error(`the recorded FX table quotes no ${currency}`);
   }
 
-  // The pipeline's own conversion is a decimal one at this scale (`fx/open-er-api.ts`); every EUR
-  // product below is exact in binary, so this float rounding and that decimal rounding agree.
+  // The pipeline's own conversion is a decimal one at this scale (`fx/open-er-api.ts`); every EUR product below is exact in binary, so this float rounding and that decimal rounding agree.
   return Math.round(localAmountMinor / perUsd);
 }
 
@@ -228,10 +185,7 @@ function scripted(items: readonly ScriptedItem[], currency = 'EUR'): ExtractedMe
   return items.map((item) => scriptItem(item, currency));
 }
 
-/**
- * What the extractor answers for `menu-html`: its eight printed prices, and one dish the page never
- * printed, which the source gate must drop rather than store (AAP 0.5.6, 0.12.2).
- */
+/** What the extractor answers for `menu-html`: its eight printed prices, and one dish the page never printed, which the source gate must drop rather than store (AAP 0.5.6, 0.12.2). */
 const MENU_HTML_ITEMS = scripted([
   { name: 'Caldo verde', category: 'starter', priceText: '3,50 €' },
   { name: 'Bitoque', category: 'main', priceText: '12,50 €' },
@@ -243,18 +197,13 @@ const MENU_HTML_ITEMS = scripted([
   { name: 'Imperial', category: 'drink', priceText: '2,50 €', alcoholic: true },
   { name: 'Polvo à lagareiro', category: 'main', priceText: '11,00 €' },
 ]);
-
 /** What the extractor answers for the `menu-pdf-link` page: its two prices, and one it never printed. */
 const PDF_LINK_PAGE_ITEMS = scripted([
   { name: 'Prego no pão', category: 'main', priceText: '6,50 €' },
   { name: 'Imperial', category: 'drink', priceText: '2,50 €', alcoholic: true },
   { name: 'Sardinhas assadas', category: 'main', priceText: '9,00 €' },
 ]);
-
-/**
- * What the extractor answers for `activity-tickets`: its six admission prices with the two fields the
- * ticket rule requires, and one price the page never printed (AAP 0.5.6).
- */
+/** What the extractor answers for `activity-tickets`: its six admission prices with the two fields the ticket rule requires, and one price the page never printed (AAP 0.5.6). */
 const TICKET_ITEMS = scripted([
   {
     name: 'Adulto',
@@ -306,11 +255,7 @@ const TICKET_ITEMS = scripted([
     ticketType: 'group',
   },
 ]);
-
-/**
- * What the extractor answers for the PDF: every item the labeled set records for `en/en-02.pdf`,
- * rebuilt from that entry rather than restated, plus one price the document never printed.
- */
+/** What the extractor answers for the PDF: every item the labeled set records for `en/en-02.pdf`, rebuilt from that entry rather than restated, plus one price the document never printed. */
 const PDF_ITEMS: readonly ExtractedMenuItem[] = [
   ...PDF_MENU.items.map((item) =>
     scriptItem(
@@ -320,7 +265,6 @@ const PDF_ITEMS: readonly ExtractedMenuItem[] = [
   ),
   scriptItem({ name: 'Fish and chips', category: 'main', priceText: '€18.50' }),
 ];
-
 interface Script {
   readonly marker: string;
   readonly items: readonly ExtractedMenuItem[];
@@ -332,7 +276,6 @@ const SCRIPTS: readonly Script[] = [
   { marker: 'Fixture Cervejaria', items: PDF_LINK_PAGE_ITEMS },
   { marker: firstItemName(PDF_MENU), items: PDF_ITEMS },
 ];
-
 /** One request the fixture server answered, which every "never fetched" claim is read from. */
 interface Hit {
   /** The `Host` the request carried, keyed by `domainKey`: lower case and without its port. */
@@ -346,16 +289,12 @@ interface Hit {
 let testApp: TestApp;
 let ctx: WorkerContext;
 let fakeLlm: FakeLlmAdapter;
-
 let server: Server | undefined;
 let sitePort = 0;
-
 const hits: Hit[] = [];
 const lookups: string[] = [];
-
 /** Whether the PDF route answers `404`, which is how the too-few-items row is arranged. */
 let pdfMissing = false;
-
 function site(path: string): string {
   return `http://127.0.0.1:${sitePort}${path}`;
 }
@@ -370,7 +309,6 @@ function db(): DbClient {
 
 function hitsOn(host: string): Hit[] {
   const key = domainKey(host);
-
   return hits.filter((hit) => hit.host === key);
 }
 
@@ -407,7 +345,6 @@ const PRICE_COLUMNS = {
   isFixture: true,
   captureBatchId: true,
 } as const;
-
 async function priceRecords(placeId: string) {
   return await db().priceRecord.findMany({
     where: { placeId },
@@ -431,7 +368,6 @@ async function menuIngestJobs() {
 /** The gaps between consecutive arrivals, in milliseconds, which the throttle's rule is read from. */
 function gapsMs(times: readonly bigint[]): number[] {
   const gaps: number[] = [];
-
   for (let index = 1; index < times.length; index += 1) {
     const previous = times[index - 1];
     const current = times[index];
@@ -443,11 +379,7 @@ function gapsMs(times: readonly bigint[]): number[] {
   return gaps;
 }
 
-/**
- * One place the pipeline reads: a Lisbon place made through the harness factory with its fixture flag
- * cleared, because the ingestion copies the place's own flag onto every record it stores (AAP 0.5.2)
- * and the places of this suite stand for real ones.
- */
+/** One place the pipeline reads: a Lisbon place made through the harness factory with its fixture flag cleared, because the ingestion copies the place's own flag onto every record it stores (AAP 0.5.2) and the places of this suite stand for real ones. */
 async function makeIngestPlace(options: {
   readonly category: PlaceCategory;
   readonly website?: string;
@@ -459,18 +391,11 @@ async function makeIngestPlace(options: {
     ...(options.website === undefined ? {} : { website: options.website }),
     ...(options.menuUrl === undefined ? {} : { menuUrl: options.menuUrl }),
   });
-
   await db().place.update({ where: { id: place.id }, data: { isFixture: false } });
-
   return place;
 }
 
-/**
- * The site-terms rows every case starts from (AAP 0.5.6): the loopback fixture host and the allowed
- * fixture name are approved, and the prohibited name stands for a domain an operator refused. A
- * decision is read for the request host's chain, so the exact-host row of the allowed name is
- * honoured for it; the prohibited row is keyed at the registrable domain its subdomain resolves to.
- */
+/** The site-terms rows every case starts from (AAP 0.5.6): the loopback fixture host and the allowed fixture name are approved, and the prohibited name stands for a domain an operator refused. A decision is read for the request host's chain, so the exact-host row of the allowed name is honoured for it; the prohibited row is keyed at the registrable domain its subdomain resolves to. */
 async function recordPolicies(): Promise<void> {
   const checkedAt = ctx.clock.now();
   const rows = [
@@ -478,7 +403,6 @@ async function recordPolicies(): Promise<void> {
     { domain: ALLOWED_HOST, decision: 'allowed', reason: 'operator' },
     { domain: registrableDomain(PROHIBITED_HOST), decision: 'prohibited', reason: 'operator' },
   ] as const;
-
   for (const row of rows) {
     await db().crawlDomainPolicy.create({ data: { ...row, checkedAt } });
   }
@@ -489,11 +413,7 @@ function send(response: ServerResponse, status: number, type: string, body: Buff
   response.end(body);
 }
 
-/**
- * Start the server that plays every fixture site and the FX provider (AAP 0.5.6).
- * @returns the loopback base of the site server, without a trailing slash.
- * @throws Error when the server bound no TCP address.
- */
+/** Start the server that plays every fixture site and the FX provider (AAP 0.5.6). @returns the loopback base of the site server, without a trailing slash. @throws Error when the server bound no TCP address. */
 async function startSiteServer(): Promise<number> {
   const created = createServer((request, response) => {
     const path = request.url ?? '/';
@@ -530,14 +450,11 @@ async function startSiteServer(): Promise<number> {
     }
     send(response, 404, 'text/plain; charset=utf-8', 'not found');
   });
-
   await new Promise<void>((resolve) => {
     created.listen(0, '127.0.0.1', resolve);
   });
-
   server = created;
   const address = created.address();
-
   if (address === null || typeof address === 'string') {
     throw new Error('the fixture site server did not bind a port');
   }
@@ -545,39 +462,27 @@ async function startSiteServer(): Promise<number> {
   return address.port;
 }
 
-/**
- * The recording resolver (AAP 0.5.6): the three fixture host names answer the loopback address, so a
- * request to them reaches the site server, and no other name resolves at all — a hostname this suite
- * did not plan to reach means a row left the crawl policy behind, and `safe-fetch` reads the
- * rejection as `dns_failed` rather than reaching anything.
- */
+/** The recording resolver (AAP 0.5.6): the three fixture host names answer the loopback address, so a request to them reaches the site server, and no other name resolves at all — a hostname this suite did not plan to reach means a row left the crawl policy behind, and `safe-fetch` reads the rejection as `dns_failed` rather than reaching anything. */
 const RESOLVABLE_HOSTS: ReadonlySet<string> = new Set([
   ALLOWED_HOST,
   PROHIBITED_HOST,
   UNCERTAIN_HOST,
 ]);
-
 const lookup: LookupFn = (host) => {
   lookups.push(host);
-
   if (!RESOLVABLE_HOSTS.has(host)) {
     return Promise.reject(new Error(`unexpected lookup for ${host}`));
   }
 
   return Promise.resolve([{ address: '127.0.0.1', family: 4 }]);
 };
-
 function requestText(request: LlmRequest): string {
   return request.messages.map((message) => message.content).join('\n');
 }
 
-/**
- * The extractor's scripted answers: whichever fixture document's marker occurs in the request's own
- * text decides what it answers, so one adapter serves four documents without a per-place switch.
- */
+/** The extractor's scripted answers: whichever fixture document's marker occurs in the request's own text decides what it answers, so one adapter serves four documents without a per-place switch. */
 function respond(request: LlmRequest): unknown {
   const text = requestText(request);
-
   return {
     items: SCRIPTS.filter((script) => text.includes(script.marker)).flatMap((script) =>
       script.items.map((item) => ({ ...item })),
@@ -586,8 +491,7 @@ function respond(request: LlmRequest): unknown {
 }
 
 beforeAll(async () => {
-  // The renderer is Chromium: without it every priced page would fall back to a phone call, so a
-  // missing browser is a failure of this suite rather than a case that may be skipped.
+  // The renderer is Chromium: without it every priced page would fall back to a phone call, so a missing browser is a failure of this suite rather than a case that may be skipped.
   const executable = chromium.executablePath();
   if (!existsSync(executable)) {
     throw new Error(
@@ -598,10 +502,7 @@ beforeAll(async () => {
   sitePort = await startSiteServer();
   testApp = await createTestApp();
   fakeLlm = createFakeLlmAdapter({ respond });
-
-  // The context the jobs are called with: the harness's own clock — one clock for the suite, which is
-  // what makes the capture instant assertable (AAP 0.11.1) — its Redis for the producers and the
-  // throttle, the injected adapter, and a resolver that answers only the fixture names.
+  // The context the jobs are called with: the harness's own clock — one clock for the suite, which is what makes the capture instant assertable (AAP 0.11.1) — its Redis for the producers and the throttle, the injected adapter, and a resolver that answers only the fixture names.
   ctx = await createWorkerContext(
     loadWorkersEnv(
       testWorkersEnv({
@@ -612,11 +513,9 @@ beforeAll(async () => {
     { clock: testApp.clock, llm: fakeLlm, lookup },
   );
 }, 300_000);
-
 afterAll(async () => {
   await closeWorkerContext(ctx);
   await testApp.close();
-
   const running = server;
   if (running !== undefined) {
     running.closeAllConnections();
@@ -625,14 +524,12 @@ afterAll(async () => {
     });
   }
 });
-
 beforeEach(async () => {
   await testApp.resetState();
   await testApp.seedCities();
   testApp.time.at(NOW);
   await recordPolicies();
-  // The rates every stored price converts through, written by the job that writes them in production
-  // rather than inserted by hand, so the conversion the cases assert is the pipeline's own (AAP 0.5.6).
+  // The rates every stored price converts through, written by the job that writes them in production rather than inserted by hand, so the conversion the cases assert is the pipeline's own (AAP 0.5.6).
   await runFxRefresh({ name: FX_REFRESH, data: {} }, ctx);
   // Cleared after the refresh, so a case's own reads start from an empty record of what was fetched.
   hits.length = 0;
@@ -641,7 +538,6 @@ beforeEach(async () => {
   fakeLlm.calls.sent.length = 0;
   pdfMissing = false;
 });
-
 interface StoredItemCase {
   readonly itemName: string;
   readonly itemCategory: ItemCategory;
@@ -652,11 +548,7 @@ interface StoredItemCase {
   readonly alcoholic: boolean | null;
 }
 
-/**
- * The eight items `menu-html` prints, and what each becomes. The no-break space of `Bitoque` and the
- * newline inside the price of `Bacalhau à Brás` are in the source on purpose: the gate compares
- * whitespace-normalized strings, so both survive as the one normalized price below (AAP 0.5.6).
- */
+/** The eight items `menu-html` prints, and what each becomes. The no-break space of `Bitoque` and the newline inside the price of `Bacalhau à Brás` are in the source on purpose: the gate compares whitespace-normalized strings, so both survive as the one normalized price below (AAP 0.5.6). */
 const MENU_HTML_CASES: readonly StoredItemCase[] = [
   {
     itemName: 'Caldo verde',
@@ -731,7 +623,6 @@ const MENU_HTML_CASES: readonly StoredItemCase[] = [
     alcoholic: true,
   },
 ];
-
 interface TicketCase {
   readonly itemName: string;
   readonly priceText: string;
@@ -791,7 +682,6 @@ const TICKET_CASES: readonly TicketCase[] = [
     ticketType: 'group',
   },
 ];
-
 interface CaseState {
   readonly place: PlaceFixture;
   /** The language-model sends recorded before the run, which a refused wall must not change. */
@@ -829,8 +719,7 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
     build: () =>
       makeIngestPlace({ category: 'restaurant', website: site(`${DISALLOWED_PREFIX}menu/`) }),
     check: () => {
-      // The page stands at that path and answers anything asked of it, so the only thing that can
-      // have kept the request away is the disallowed path itself (AAP 0.5.6).
+      // The page stands at that path and answers anything asked of it, so the only thing that can have kept the request away is the disallowed path itself (AAP 0.5.6).
       expect(hits.filter((hit) => hit.path.startsWith(DISALLOWED_PREFIX))).toEqual([]);
       expect(hits.map((hit) => hit.path)).toContain(ROBOTS_PATH);
     },
@@ -870,8 +759,7 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
     check: async () => {
       expect(hits).toEqual([]);
       expect(lookupsFor(UNCERTAIN_HOST)).toEqual([]);
-      // The policy records the domain for review before it answers, so the operator queue holds it
-      // from the first attempt and no fetch can race past the decision (AAP 0.5.6).
+      // The policy records the domain for review before it answers, so the operator queue holds it from the first attempt and no fetch can race past the decision (AAP 0.5.6).
       expect(await policyRow(registrableDomain(UNCERTAIN_HOST))).toEqual({
         decision: 'uncertain',
         reason: 'awaiting_review',
@@ -929,11 +817,7 @@ const FALLBACK_CASES: readonly FallbackCase[] = [
     },
   },
 ];
-
-/*
- * The cases share one seeded city and one instant, and every case resets the state it reads, so the
- * order below carries no meaning: each one builds the places its own path needs (AAP 0.11.2).
- */
+/** The cases share one seeded city and one instant, and every case resets the state it reads, so the order below carries no meaning: each one builds the places its own path needs (AAP 0.11.2). */
 describe('menu-ingest', () => {
   it('stores the eight prices of the page as one batch and drops the item it never printed', async () => {
     const place = await makeIngestPlace({ category: 'restaurant', website: site('/menu-html/') });
@@ -947,8 +831,7 @@ describe('menu-ingest', () => {
     expect(byName(stored).map((row) => row.itemName)).toEqual(
       byName(MENU_HTML_CASES).map((row) => row.itemName),
     );
-    // The invented item: the page never printed this price, so storing it would be the invention
-    // the source gate exists to refuse (AAP 0.5.6, 0.12.2).
+    // The invented item: the page never printed this price, so storing it would be the invention the source gate exists to refuse (AAP 0.5.6, 0.12.2).
     expect(stored.filter((row) => row.priceText === '11,00 €')).toEqual([]);
     expect(await menuTasks(place.id)).toEqual([]);
   });
@@ -1077,8 +960,7 @@ describe('menu-ingest', () => {
     );
     await row.check(state);
     if (row.queuedCall) {
-      // A second attempt opens no second task: the fallback is keyed on the place's outstanding
-      // call, so the retry leaves exactly the one task it found (AAP 0.5.6).
+      // A second attempt opens no second task: the fallback is keyed on the place's outstanding call, so the retry leaves exactly the one task it found (AAP 0.5.6).
       await ingestPlace(ctx, place.id);
       expect(await menuTasks(place.id)).toHaveLength(1);
     }
@@ -1094,10 +976,7 @@ describe('menu-ingest', () => {
     await Promise.all([ingestPlace(ctx, first.id), ingestPlace(ctx, second.id)]);
     const times = arrivalTimesOn('127.0.0.1');
     expect(times.length).toBeGreaterThan(2);
-    // The slot is taken before the request is sent — `SET throttle:<domain> 1 NX PX 1000` — so an
-    // arrival lands about a second after the previous one; only the event loop's own jitter is
-    // left, which the 950 ms bound tolerates. With no throttle the gap is milliseconds, so this is
-    // the assertion that fails when the slot is dropped (AAP 0.5.6).
+    // The slot is taken before the request is sent — `SET throttle:<domain> 1 NX PX 1000` — so an arrival lands about a second after the previous one; only the event loop's own jitter is left, which the 950 ms bound tolerates. With no throttle the gap is milliseconds, so this is the assertion that fails when the slot is dropped (AAP 0.5.6).
     for (const gap of gapsMs(times)) {
       expect(gap).toBeGreaterThanOrEqual(950);
     }
@@ -1155,8 +1034,7 @@ describe('menu-ingest', () => {
       {
         name: INGEST,
         data: { placeId: stale.id },
-        // The last band, with no partner venue and no locked meetup near the place: the rule of
-        // AAP 0.5.7 gives `1 + 2 × 4 + 1`, and every job this queue adds carries it.
+        // The last band, with no partner venue and no locked meetup near the place: the rule of AAP 0.5.7 gives `1 + 2 × 4 + 1`, and every job this queue adds carries it.
         priority: 10,
         id: `menu-ingest-${stale.id}-${localDateKey(CITY_TZ, NOW)}`,
       },

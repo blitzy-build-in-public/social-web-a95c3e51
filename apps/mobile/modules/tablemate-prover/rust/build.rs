@@ -1,9 +1,5 @@
-//! Build script for the native prover module: transpiles the compiled circuit's WASM witness
-//! generator into native code linked into the app, so the module computes the circuit witness
-//! natively rather than interpreting WebAssembly under Hermes.
-//!
-//! The directory holding the generator arrives in `TABLEMATE_CIRCUIT_WASM_DIR`, which
-//! `packages/circuits/scripts/build-native.sh` exports before `mopro build`.
+//! Build script for the native prover module: transpiles the compiled circuit's WASM witness generator into native code linked into the app, so the module computes the circuit witness natively rather than interpreting WebAssembly under Hermes.
+//! The directory holding the generator arrives in `TABLEMATE_CIRCUIT_WASM_DIR`, which `packages/circuits/scripts/build-native.sh` exports before `mopro build`.
 
 use std::env;
 use std::path::PathBuf;
@@ -11,26 +7,21 @@ use std::path::PathBuf;
 /// Environment variable naming the directory holding the circuit's compiled witness generator.
 const WASM_DIR_VAR: &str = "TABLEMATE_CIRCUIT_WASM_DIR";
 
-/// The witness generator `packages/circuits/scripts/compile.sh` produces for this circuit.
-/// rust-witness derives the linked symbol from the file's basename with `_` and `-` removed, so
-/// `rust_witness::witness!(tablemateitinerary)` in `src/lib.rs` is the name this file yields.
+/// The witness generator `packages/circuits/scripts/compile.sh` produces: rust-witness derives the linked symbol from the file's basename with `_` and `-` removed, so `rust_witness::witness!(tablemateitinerary)` in `src/lib.rs` is the name this file yields.
 const WASM_FILE: &str = "tablemate_itinerary.wasm";
 
 fn main() {
-    // Printing any rerun-if-* directive replaces Cargo's default of watching every file in the
-    // package, so the script names itself as well as the variable and the file it reads.
+    // Printing any rerun-if-* directive replaces Cargo's default of watching every file in the package, so the script names itself as well as the variable and the file it reads.
     println!("cargo:rerun-if-env-changed={WASM_DIR_VAR}");
     println!("cargo:rerun-if-changed=build.rs");
 
-    // A value that is not valid UTF-8 is as unusable as an unset one, because the directory has to
-    // name a path: `env::var` reports it as an error, and both cases read as empty here.
+    // A value that is not valid UTF-8 is as unusable as an unset one, because the directory has to name a path: `env::var` reports it as an error, and both cases read as empty here.
     let configured = env::var(WASM_DIR_VAR).unwrap_or_default();
     let configured = configured.trim();
     let wasm_dir = resolve(configured);
     let wasm = wasm_dir.join(WASM_FILE);
 
-    // Checked here rather than left to the transpiler, which panics on a directory that does not
-    // exist: one message names the variable, the file and the commands that produce it.
+    // Checked here rather than left to the transpiler, which panics on a directory that does not exist: one message names the variable, the file and the commands that produce it.
     let problem = if configured.is_empty() {
         Some(format!(
             "is unset, empty or not valid UTF-8, so {WASM_FILE} cannot be located"
@@ -56,9 +47,7 @@ fn main() {
     rust_witness::transpile::transpile_wasm(wasm_dir.to_string_lossy().into_owned());
 }
 
-/// Resolves the configured directory: an absolute value as given, a relative one against the crate
-/// root Cargo reports, because a build script's working directory is the crate root only by
-/// convention. Outside Cargo the process working directory stands in.
+/// Resolves the configured directory: an absolute value as given, a relative one against the crate root Cargo reports, because a build script's working directory is the crate root only by convention; outside Cargo the process working directory stands in.
 fn resolve(configured: &str) -> PathBuf {
     let dir = PathBuf::from(configured);
     if configured.is_empty() || dir.is_absolute() {

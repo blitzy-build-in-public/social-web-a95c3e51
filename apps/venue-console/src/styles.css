@@ -15,18 +15,15 @@
  * CSS pixels. Text is painted only in pairs recorded in the tokens' CONTRAST_PAIRS; boundaries and
  * the focus ring only in NON_TEXT_CONTRAST_PAIRS.
  */
-
 *,
 *::before,
 *::after {
   box-sizing: border-box;
 }
-
 html {
   /* Every rem below resolves against the reader's system font size. */
   font-size: 100%;
 }
-
 body {
   margin: 0;
   background: var(--tm-color-background);
@@ -50,7 +47,6 @@ figcaption,
 form {
   margin: 0;
 }
-
 h1 {
   font-size: var(--tm-font-size-heading);
   line-height: var(--tm-line-height-heading);
@@ -58,7 +54,6 @@ h1 {
      token in it cannot widen the page past the viewport. */
   overflow-wrap: anywhere;
 }
-
 h2 {
   font-size: var(--tm-font-size-title);
   line-height: var(--tm-line-height-title);
@@ -75,7 +70,6 @@ main {
   padding-inline: var(--tm-space-lg);
   padding-block: var(--tm-space-xl);
 }
-
 header {
   display: flex;
   flex-wrap: wrap;
@@ -83,20 +77,17 @@ header {
   align-items: center;
   justify-content: space-between;
 }
-
 form {
   display: flex;
   flex-direction: column;
   gap: var(--tm-space-md);
 }
-
 label {
   display: block;
   font-size: var(--tm-font-size-label);
   line-height: var(--tm-line-height-label);
   font-weight: var(--tm-font-weight-medium);
 }
-
 input,
 button {
   min-height: var(--tm-touch-target);
@@ -107,14 +98,12 @@ button {
   line-height: var(--tm-line-height-label);
   font-weight: var(--tm-font-weight-medium);
 }
-
 input {
   width: 100%;
   background: var(--tm-color-background);
   color: var(--tm-color-text);
   border: var(--tm-border-edge) solid var(--tm-color-border);
 }
-
 button {
   min-width: var(--tm-touch-target);
   border: var(--tm-border-edge) solid transparent;
@@ -139,7 +128,6 @@ input:disabled {
   border-color: var(--tm-color-border);
   cursor: default;
 }
-
 button:disabled {
   pointer-events: none;
 }
@@ -153,11 +141,9 @@ button:disabled {
 main :not(header) button:hover {
   opacity: var(--tm-opacity-hover);
 }
-
 main :not(header) button:active {
   opacity: var(--tm-opacity-pressed);
 }
-
 header button:hover,
 header button:active {
   border-color: var(--tm-color-primary);
@@ -172,7 +158,6 @@ a:active {
   color: var(--tm-color-text);
   text-decoration: underline;
 }
-
 a {
   color: var(--tm-color-primary);
 }
@@ -228,7 +213,6 @@ input:focus-visible {
   text-align: center;
   margin-inline-end: 0.1em;
 }
-
 .code-digit:last-child {
   margin-inline-end: 0;
 }
@@ -257,11 +241,9 @@ input:focus-visible {
 .qr svg {
   display: block;
 }
-
 .qr-bg {
   fill: var(--tm-color-background);
 }
-
 .qr-modules {
   fill: var(--tm-color-text);
 }
@@ -276,12 +258,10 @@ input:focus-visible {
   background: var(--tm-color-surface);
   color: var(--tm-color-text);
 }
-
 .notice-error {
   background: var(--tm-color-danger);
   color: var(--tm-color-on-danger);
 }
-
 dl {
   display: flex;
   flex-wrap: wrap;
@@ -301,28 +281,23 @@ dl > div {
   align-items: baseline;
   gap: var(--tm-space-sm);
 }
-
 dt {
   color: var(--tm-color-text-muted);
   font-weight: var(--tm-font-weight-medium);
 }
-
 dd {
   flex: 1 1 auto;
 }
-
 .trend {
   display: flex;
   flex-direction: column;
   gap: var(--tm-space-sm);
 }
-
 .trend svg {
   display: block;
   width: 100%;
   height: auto;
 }
-
 .trend-bar {
   fill: var(--tm-color-primary);
 }
@@ -350,20 +325,16 @@ dd {
   font-size: var(--tm-font-size-caption);
   line-height: var(--tm-line-height-caption);
 }
-
 .trend-axis > span {
   white-space: nowrap;
 }
-
 .trend-axis > span:last-child {
   justify-self: end;
 }
-
 .trend-baseline {
   stroke: var(--tm-color-border);
   stroke-width: var(--tm-border-separator);
 }
-
 figcaption {
   color: var(--tm-color-text-muted);
   font-size: var(--tm-font-size-caption);

@@ -1,14 +1,13 @@
 /**
- * Saved-card setup: the Customer, the SetupIntent and the ephemeral key of `POST /me/payment-setup`
- * (AAP 0.5.1, 0.5.4).
+ * Saved-card setup: the Customer, the SetupIntent and the ephemeral key of `POST /me/payment-setup`.
  *
- * A commitment lock only works from a card the traveler saved earlier: the hold is confirmed on-session
- * from the customer's saved card, which is what gives it the 7-day window AAP 0.2.4 records — a
- * merchant-initiated hold lasts about 5 days and a meetup may start up to 5 days after the proposal.
+ * A commitment lock only works from a card the traveler saved earlier: the hold is confirmed on-session from that
+ * card, which is what gives it the 7-day window — a merchant-initiated hold lasts about 5 days and a meetup may start
+ * up to 5 days after the proposal.
  *
- * Stripe is reached only through `services.payments` (AAP 0.6.2), and no provider call sits inside a
- * transaction (AAP 0.3.2): the setup starts outside one, and the single write it may need happens
- * afterwards in `transact`, which also runs the account-deletion write fence (AAP 0.5.3).
+ * Stripe is reached only through `services.payments`, and no provider call sits inside a transaction: the setup starts
+ * outside one, and the single write it may need happens afterwards in `transact`, which also runs the account-deletion
+ * write fence.
  */
 import type { PaymentSetupResponse } from '@tablemate/shared';
 
@@ -21,17 +20,13 @@ import type { SetupResult } from '../payments/gateway.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
-/**
- * What a setup the provider could not start answers with: the fixed sentence of the envelope's
- * `503 payment_unavailable`, which repeats no value from the request or the provider (AAP 0.5.4).
- */
+/** What a setup the provider could not start answers with: the fixed sentence of `503 payment_unavailable`. */
 const SETUP_UNAVAILABLE_MESSAGE = 'Card setup is unavailable right now. Please try again.';
 
 /**
- * Starts a card setup for `customerId`, creating the customer when the account has none. Called from
- * outside any transaction, because a provider call held inside one would keep its locks for as long as
- * Stripe took; the response is never built here (AAP 0.5.4). Every failure the gateway raises becomes
- * `payment_unavailable`, with the gateway's failure as the cause of the log alone (AAP 0.11.1).
+ * Starts a card setup for `customerId`, creating the customer when the account has none. Called from outside any
+ * transaction, because a provider call held inside one would keep its locks for as long as Stripe took. Every failure
+ * the gateway raises becomes `payment_unavailable`, with the gateway's failure as the cause of the log alone.
  */
 async function startSetup(services: AppServices, customerId: string | null): Promise<SetupResult> {
   try {
@@ -45,8 +40,8 @@ async function startSetup(services: AppServices, customerId: string | null): Pro
 }
 
 /**
- * The response body, built field by field from the gateway's result, listed rather than spread so a
- * field added to the gateway's result can never reach a response it was not copied into (AAP 0.5.4).
+ * The response body, built field by field from the gateway's result — listed rather than spread, so a field added to
+ * that result can never reach a response it was not copied into.
  */
 function toResponse(result: SetupResult): PaymentSetupResponse {
   return {
@@ -57,14 +52,13 @@ function toResponse(result: SetupResult): PaymentSetupResponse {
 }
 
 /**
- * Prepares the caller's saved card: the Customer the holds will bill, a SetupIntent to confirm and the
- * ephemeral key the Stripe client components authenticate with (AAP 0.5.1, 0.5.4).
+ * Prepares the caller's saved card: the Customer the holds will bill, a SetupIntent to confirm and the ephemeral key
+ * the Stripe client components authenticate with.
  *
- * The account's customer is created once and then reused, and `stripe_customer_id IS NULL` is the
- * filter of the write that records one, so two concurrent first-time setups cannot both store a
- * customer: the one whose update matched nothing keeps the id the other stored, re-issues its response
- * against it and logs the customer it created as an orphan. An account whose row is gone or whose
- * deletion has been requested is refused with `token_invalid` (AAP 0.5.3).
+ * The account's customer is created once and then reused, and `stripe_customer_id IS NULL` is the filter of the write
+ * that records one, so two concurrent first-time setups cannot both store a customer: the one whose update matched
+ * nothing keeps the id the other stored, re-issues its response against it and logs the customer it created as an
+ * orphan. An account whose row is gone or whose deletion has been requested is refused with `token_invalid`.
  */
 export async function createPaymentSetup(
   services: AppServices,
@@ -75,8 +69,8 @@ export async function createPaymentSetup(
     select: { stripeCustomerId: true, deletionRequestedAt: true, deletedAt: true },
   });
   // The cheap half of the deletion write fence: refusing here costs one read instead of a transaction,
-  // and it is the state a request arriving after `DELETE /me` commits sees. The fenced transaction
-  // below is the authoritative half.
+  // and it is the state a request arriving after `DELETE /me` commits sees; the fenced transaction below
+  // is the authoritative half.
   if (account === null || account.deletionRequestedAt !== null || account.deletedAt !== null) {
     throw new AppError('token_invalid');
   }

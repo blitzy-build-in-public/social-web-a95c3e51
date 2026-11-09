@@ -1,14 +1,12 @@
 /**
- * Emits `docs/api/openapi.json` from the routes the API actually registers (AAP 0.4.1, 0.8.1, 0.8.2, 0.11.2).
+ * Emits `docs/api/openapi.json` from the routes the API actually registers.
  *
- * Run it with `pnpm --filter @tablemate/api openapi:emit`, or with `--check` for the drift check a release step
- * runs. The app is composed through `buildApp` with a placeholder environment built from the constants in this
- * file and never from `process.env`, so the document depends neither on the shell nor on any running service;
- * the placeholder secrets are generated per run and appear in no output.
+ * Run it with `pnpm --filter @tablemate/api openapi:emit`, or with `--check` for the drift check a release step runs. The app is
+ * composed through `buildApp` with a placeholder environment built from the constants in this file and never from `process.env`,
+ * so the document depends neither on the shell nor on any running service; the placeholder secrets are generated per run and
+ * appear in no output.
  *
  * The committed file is generated: never hand-edit it, and re-run this script after changing a route's schema.
- * `pnpm loc` and Prettier both exclude it (AAP 0.7.1), and `docs/api/README.md` is where the pilot's additions to
- * the contract are marked (AAP 0.5.4).
  */
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -28,19 +26,15 @@ const OUTPUT_FILE = 'docs/api/openapi.json';
 /** The version prefix every emitted document carries; anything else is not an OpenAPI 3 document. */
 const OPENAPI_VERSION_PREFIX = '3.';
 
-/**
- * The prefix the test-control routes carry. `APP_ENV=demo` keeps them unregistered (AAP 0.5.1), so a
- * path under it can only mean the placeholder environment drifted from `test`.
- */
+/** The prefix the test-control routes carry. `APP_ENV=demo` keeps them unregistered, so a path under it can only mean the
+ * placeholder environment drifted from `test`. */
 const TEST_PATH_PREFIX = '/v1/test/';
 
 /** How long the app is given to close before the process ends anyway: no client may hang the run. */
 const CLOSE_TIMEOUT_MS = 5_000;
 
-/**
- * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway (one second):
- * a consumer that never reads — a stopped `tee`, a detached log collector — must not hold the run open.
- */
+/** How long a drain may wait for the reader of stdout and stderr before the process is ended anyway (one second): a consumer
+ * that never reads must not hold the run open. */
 const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
 /** One route per contract group, whose absence means the document was collected too early (AAP 0.5.4). */
@@ -65,13 +59,9 @@ interface EmittedDocument {
 }
 
 /**
- * End the process with `code` once every byte already written to stdout and stderr has reached its consumer.
- *
- * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still queued — under
- * `| tee` or a CI log collector that is the last, machine-readable line this script exists to print. An empty
- * write queued behind the real ones calls back once they have been flushed, and a consumer that stopped reading
- * closes the pipe instead, which ends the drain the same way. {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that
- * never drains.
+ * End the process with `code` once every byte already written to stdout and stderr has reached its consumer: a write to a pipe is
+ * completed by the event loop, so `process.exit()` discards whatever is still queued — under `| tee` that is the last,
+ * machine-readable line this script exists to print. {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains.
  */
 function exitAfterFlush(code: number): void {
   process.exitCode = code;
@@ -103,9 +93,8 @@ function exitAfterFlush(code: number): void {
 }
 
 /**
- * The marker a refusal throws once its own line is written: every {@link fail} and the drift refusal in
- * {@link writeOrCheck}. Only the top-level handler can drain the streams before the process ends, and throwing is
- * what keeps `fail`'s `never` return type, which the callers rely on for the definite assignment of `env`.
+ * The marker a refusal throws once its own line is written: only the top-level handler can drain the streams before the process
+ * ends, and throwing is what keeps `fail`'s `never` return type, which the callers rely on for the definite assignment of `env`.
  */
 class RefusalError extends Error {
   constructor() {
@@ -114,15 +103,14 @@ class RefusalError extends Error {
   }
 }
 
-/** Write one refusal line, in the one-line form every failure takes: `emit-openapi: <step>: <reason>`. */
 function writeRefusal(step: string, reason: string): void {
   process.stderr.write(`emit-openapi: ${step}: ${reason}\n`);
 }
 
 /**
- * Refuse the run in the one-line form every failure takes, `emit-openapi: <step>: <reason>`: the line is written
- * where the failure is detected and the refusal is thrown rather than the process ended here, so the top-level
- * handler can drain the line first. Throws {@link RefusalError} always.
+ * Refuse the run in the one-line form every failure takes: the line is written where the failure is detected and the refusal is
+ * thrown rather than the process ended here, so the top-level handler can drain the line first. Throws {@link RefusalError}
+ * always.
  */
 function fail(step: string, reason: string): never {
   writeRefusal(step, reason);
@@ -140,11 +128,10 @@ function placeholderFieldKey(): string {
 }
 
 /**
- * The placeholder environment the app is composed with (AAP 0.6.2). Every value is a constant of this file, so two
- * runs on two machines emit the same bytes, and the combination reaches no provider: `STRIPE_MODE=mock` takes
- * server-core's own non-secret placeholders, `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` hold no credential, and
- * no test-only variable is set, because the loader refuses one outside `APP_ENV=test`. The service URLs name the
- * reserved `.invalid` TLD, which nothing resolves and nothing connects to.
+ * The placeholder environment the app is composed with. Every value is a constant of this file, so two runs on two machines emit
+ * the same bytes, and the combination reaches no provider: `STRIPE_MODE=mock` takes server-core's own non-secret placeholders,
+ * `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` hold no credential, and no test-only variable is set, because the loader refuses
+ * one outside `APP_ENV=test`. The service URLs name the reserved `.invalid` TLD.
  */
 function placeholderEnv(): Readonly<ApiEnv> {
   return loadApiEnv({
@@ -172,9 +159,8 @@ function placeholderEnv(): Readonly<ApiEnv> {
 }
 
 /**
- * The document `app.swagger()` returned, checked structurally: `@fastify/swagger` types that call as any OpenAPI
- * version, so the two members this script reads — the version and the path table — are narrowed rather than
- * asserted.
+ * The document `app.swagger()` returned, checked structurally: `@fastify/swagger` types that call as any OpenAPI version, so the
+ * two members this script reads are narrowed rather than asserted.
  */
 function readDocument(value: unknown): EmittedDocument {
   const candidate = value as Partial<EmittedDocument> | null;
@@ -191,10 +177,7 @@ function readDocument(value: unknown): EmittedDocument {
   return candidate as EmittedDocument;
 }
 
-/**
- * Require the document to hold the routes and the security schemes the contract names, and no
- * test-only path (AAP 0.5.4).
- */
+/** Require the document to hold the routes and the security schemes the contract names, and no test-only path. */
 function assertDocumentShape(doc: EmittedDocument): void {
   const missing = REQUIRED_PATHS.filter((route) => !(route in doc.paths));
   if (missing.length > 0) {
@@ -211,22 +194,18 @@ function assertDocumentShape(doc: EmittedDocument): void {
   }
 }
 
-/** Wait `ms` without holding the event loop open, so the race below cannot keep the process alive. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms).unref();
   });
 }
 
-/**
- * Close the app, bounded (AAP 0.6.2): a client built lazily but never connected must not be able to
- * hang the run, and the caller ends the process explicitly either way.
- */
+/** Close the app, bounded: a client built lazily but never connected must not be able to hang the run, and the caller ends the
+ * process explicitly either way. */
 async function closeWithin(app: App, timeoutMs: number): Promise<void> {
   await Promise.race([app.close(), sleep(timeoutMs)]);
 }
 
-/** The committed file's text, or `undefined` when it is absent. */
 async function readIfPresent(target: string): Promise<string | undefined> {
   try {
     return await readFile(target, 'utf8');
@@ -235,9 +214,7 @@ async function readIfPresent(target: string): Promise<string | undefined> {
   }
 }
 
-/**
- * Write the document, or compare it with the committed file (AAP 0.8.2).
- */
+/** Write the document, or compare it with the committed file; a mismatch refuses the run. */
 async function writeOrCheck(
   text: string,
   target: string,
@@ -257,7 +234,6 @@ async function writeOrCheck(
   process.stdout.write(`openapi: wrote ${OUTPUT_FILE} (${pathCount} paths)\n`);
 }
 
-/** The reason behind a failed run: the loader's own list, or an error's name and message. */
 function describeError(error: unknown): string {
   if (error instanceof EnvValidationError) {
     return error.message;
@@ -265,10 +241,8 @@ function describeError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : 'unknown failure';
 }
 
-/**
- * Emit the document (AAP 0.4.1, 0.8.2): load the placeholder environment, compose the app, read the
- * document back once every route is resolved, and write it or compare it.
- */
+/** Emit the document: load the placeholder environment, compose the app, read the document back once every route is resolved, and
+ * write it or compare it. */
 async function main(argv: readonly string[]): Promise<void> {
   const check = argv.includes('--check');
   let env: Readonly<ApiEnv>;

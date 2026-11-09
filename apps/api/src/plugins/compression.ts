@@ -1,46 +1,36 @@
 /**
- * Response compression on `node:zlib` (AAP 0.1.1, 0.11.2, 0.12.2).
+ * Response compression on `node:zlib`.
  *
- * The API answers JSON on a port `docker-compose` publishes directly, with no proxy between the
- * client and the process — `app.ts` sets `trustProxy: false` precisely because nothing in front of
- * it may describe the client (AAP 0.3.2) — so no other stage can compress an API body. The web
- * client's nginx gzips its static export; this plugin gives the API's own bodies the same treatment,
- * and at 50 requests a second those are the larger share of the bytes: the discovery page is 7,031
- * bytes and a page of 20 own meetups 17,828 bytes, against 676 bytes for `GET /me`.
+ * The API answers JSON on a port `docker-compose` publishes directly, with no proxy between the client and the process
+ * — `app.ts` sets `trustProxy: false` precisely because nothing in front of it may describe the client — so no other
+ * stage can compress an API body. The web client's nginx gzips its static export; this plugin gives the API's own
+ * bodies the same treatment, and at 50 requests a second those are the larger share of the bytes.
  *
- * **`node:zlib`, not a dependency.** The delivery installs one pinned dependency set with
- * `pnpm install --frozen-lockfile` (AAP 0.1.2), so a compression package would have to be added to
- * `apps/api/package.json`, to the root lockfile and to every image build that installs from it.
- * Node's own `zlib` already produces both codings an HTTP client asks for, so this stage is built on
- * it and the dependency set is left exactly as it is.
+ * **`node:zlib`, not a dependency.** The delivery installs one pinned dependency set with `pnpm install
+ * --frozen-lockfile`, so a compression package would have to be added to `apps/api/package.json`, to the root lockfile
+ * and to every image build that installs from it. Node's own `zlib` already produces both codings an HTTP client asks
+ * for, so this stage is built on it and the dependency set is left exactly as it is.
  *
- * **When a body is compressed.** Only when the client asked for it — `Accept-Encoding` naming gzip or
- * deflate, a `q=0` refusing that coding, `*` standing for every coding the header does not name, and
- * an absent or non-matching header meaning no compression at all — and only when the response is a
- * compressible one: a `string` or `Buffer` payload (a stream is written as it is read and is left
- * alone), a status that carries a body (not 1xx, 204 or 304), no `Content-Encoding` a route already
- * chose, a compressible media type, and at least {@link COMPRESSION_THRESHOLD_BYTES} bytes. Below
- * that threshold the framing costs more than the coding saves, and a body that is not text at all —
- * `image/webp`, `application/octet-stream`, a font — is sent exactly as the route produced it.
+ * **When a body is compressed.** Only when the client asked for it — `Accept-Encoding` naming gzip or deflate, a `q=0`
+ * refusing that coding, `*` standing for every coding the header does not name, and an absent or non-matching header
+ * meaning no compression at all — and only when the response is a compressible one: a `string` or `Buffer` payload (a
+ * stream is written as it is read and is left alone), a status that carries a body (not 1xx, 204 or 304), no
+ * `Content-Encoding` a route already chose, a compressible media type, and at least
+ * {@link COMPRESSION_THRESHOLD_BYTES} bytes. Below that threshold the framing costs more than the coding saves, and a
+ * body that is not text at all — `image/webp`, `application/octet-stream`, a font — is sent exactly as the route
+ * produced it.
  *
- * **`Vary`.** Every response this stage judged compressible carries `Accept-Encoding` in `Vary`,
- * whether or not it was actually compressed: a cache that stored the gzip body of one client must
- * never hand it to a client that asked for none. A value a route set itself (`@fastify/cors` sets
- * `Vary: Origin`) is extended, never replaced.
+ * **`Vary`.** Every response this stage judged compressible carries `Accept-Encoding` in `Vary`, whether or not it was
+ * actually compressed: a cache that stored the gzip body of one client must never hand it to a client that asked for
+ * none. A value a route set itself (`@fastify/cors` sets `Vary: Origin`) is extended, never replaced.
  *
- * **It fails open.** A `zlib` failure hands the caller the payload the route produced: an
- * uncompressed 200 beats a broken response, and a body the client can read in its plain form is a
- * legal answer to the request it made.
+ * **It fails open.** A `zlib` failure hands the caller the payload the route produced: an uncompressed 200 beats a
+ * broken response, and a body the client can read in its plain form is a legal answer to the request it made.
  *
- * **Responses only, and never a frame.** Nothing here decodes or re-encodes a request body, so the
- * bytes a parser sees are the bytes that arrived: `POST /v1/webhooks/stripe` still checks its
- * signature against exactly what Stripe sent (AAP 0.3.2). A WebSocket frame never reaches this hook
- * either — the socket is detached from the reply when it is hijacked, so the chat and voice-relay
- * connections carry nothing through `onSend`.
- *
- * @see AAP 0.5.1 for the plugin list this plugin joins, 0.11.1 for the comment and TSDoc rules it
- *   follows, 0.12.2 for the read and write latency targets it must not cost, and 0.1.2 for the one
- *   pinned dependency set it keeps.
+ * **Responses only, and never a frame.** Nothing here decodes or re-encodes a request body, so the bytes a parser sees
+ * are the bytes that arrived: `POST /v1/webhooks/stripe` still checks its signature against exactly what Stripe sent.
+ * A WebSocket frame never reaches this hook either — the socket is detached from the reply when it is hijacked, so the
+ * chat and voice-relay connections carry nothing through `onSend`.
  */
 
 import { deflate, gzip } from 'node:zlib';

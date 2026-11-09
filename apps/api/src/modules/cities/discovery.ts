@@ -1,25 +1,22 @@
 /**
- * Traveler discovery for one city: the keyset-paginated page of travelers a viewer may see (AAP
- * 0.5.1, 0.5.4, 0.5.7).
+ * Traveler discovery for one city: the keyset-paginated page of travelers a viewer may see.
  *
- * Discovery for city X lists the users holding a valid proof for X at the instant the caller passes —
- * a proof is valid from two local days before its arrival through the last instant of its departure
- * day in the city's own zone, both stored on the row by `proofValidity` — and excludes the caller and
- * every block in either direction. A user with no valid proof appears only to a viewer who already
- * completed a meetup with them, and then only in the city of that user's most recent proof, "the only
- * city such a pair can share"; a user with no proof at all appears in neither set (AAP 0.5.7, 0.7.3).
+ * Discovery for city X lists the users holding a valid proof for X at the instant the caller passes — a proof is
+ * valid from two local days before its arrival through the last instant of its departure day in the city's own zone
+ * — and excludes the caller and every block in either direction. A user with no valid proof appears only to a viewer
+ * who already completed a meetup with them, and then only in the city of that user's most recent proof; a user with
+ * no proof at all appears in neither set.
  *
- * Two candidate sets, one statement: the verified set is keyed by each user's latest proof valid for
- * this city, and its `city_id = … AND valid_to >= …` predicate is the shape the `(cityId, validTo)`
- * index serves (AAP 0.5.2); the shared-history set is driven from the viewer's own `pair_history` rows,
- * a handful where a city's valid proofs are thousands. The two are disjoint by construction, which is
- * what makes `UNION ALL` exact rather than merely likely, and the keyset predicate is applied in the
- * outer query, after the per-user `DISTINCT ON`: inside the first branch it would keep the older of a
- * user's two valid proofs and so hand that user back on a later page (AAP 0.5.1).
+ * Two candidate sets, one statement: the verified set is keyed by each user's latest proof valid for this city, and
+ * its `city_id = … AND valid_to >= …` predicate is the shape the `(cityId, validTo)` index serves; the
+ * shared-history set is driven from the viewer's own `pair_history` rows, a handful where a city's valid proofs are
+ * thousands. The two are disjoint by construction, which is what makes `UNION ALL` exact rather than merely likely,
+ * and the keyset predicate is applied in the outer query, after the per-user `DISTINCT ON`: inside the first branch
+ * it would keep the older of a user's two valid proofs and so hand that user back on a later page.
  *
- * Every traveler is a `Tier0Profile`, so `tier0Profiles` builds a whole page in four queries rather than
- * two per row. Nothing in this file writes, logs or opens a transaction, and the instant every window is
- * judged at arrives from the caller's injected clock (AAP 0.11.1).
+ * Every traveler is a `Tier0Profile`, so `tier0Profiles` builds a whole page in four queries rather than two per
+ * row. Nothing in this file writes, logs or opens a transaction, and the instant every window is judged at arrives
+ * from the caller's injected clock.
  */
 import { Prisma } from '@tablemate/db';
 import {
@@ -84,8 +81,6 @@ interface DiscoveryRow {
   readonly id: string;
 }
 
-/**
- */
 export async function listTravelers(
   services: AppServices,
   cityId: string,

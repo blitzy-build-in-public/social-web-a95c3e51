@@ -3,15 +3,13 @@
  * (AAP 0.3.4, AAP 0.5.1).
  *
  * Metro resolves an extensionless `./card-setup` here and to `card-setup.web.tsx` on the web, which types its exports
- * against this file's. This file imports `@stripe/stripe-react-native`, a native module no web bundle can hold, so only
- * the two halves may reach it.
- *
+ * against this file's. This file imports `@stripe/stripe-react-native`, a native module no web bundle can hold.
  * The card is entered inside Stripe's own PaymentSheet and nowhere else, so no card number, expiry or CVC reaches this
- * app's code, the API or a log line (AAP 0.12.2). The publishable key is the only Stripe credential the client holds
- * (AAP 0.3.2) and may legitimately be absent: the credential-free default stack runs `STRIPE_MODE=mock`, where the card
- * step says payments are not configured rather than pretending (AAP 0.6.2, 0.11.2), and no mocked payment adapter is
- * built. A saved card reaches the API only through Stripe's `setup_intent.succeeded` webhook (AAP 0.3.3), after which
- * the caller retries its hold through `POST /v1/meetups/:id/hold` or `.../accept` (AAP 0.5.4).
+ * app's code, the API or a log line. The publishable key is the only Stripe credential the client holds and may
+ * legitimately be absent: the credential-free default stack runs `STRIPE_MODE=mock`, where the card step says payments
+ * are not configured rather than pretending. A saved card reaches the API only through Stripe's
+ * `setup_intent.succeeded` webhook, after which the caller retries its hold through `POST /v1/meetups/:id/hold` or
+ * `.../accept`.
  */
 import { useCallback, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
@@ -21,100 +19,52 @@ import {
   initPaymentSheet,
   presentPaymentSheet,
 } from '@stripe/stripe-react-native';
-
 import type { PaymentSetupResponse } from '@tablemate/shared';
-
 import { apiClient } from '../api/client';
 import { isApiError, userMessageFor } from '../api/errors';
 import type { ClientErrorCode } from '../api/errors';
 import { CARD_PAYMENTS_UNAVAILABLE } from '../copy/strings';
 import { Banner, Button, announce } from '../ui';
-
-/**
- * `app.config.ts` sets the scheme `tablemate`, and `apps/mobile/app/+native-intent.tsx` answers nothing for
- * this exact URL, so Expo Router does not navigate away from the screen that started the flow when Stripe
- * hands the app back to itself (AAP 0.3.4).
- */
 export const STRIPE_RETURN_URL = 'tablemate://stripe-redirect';
-
-/** The label of the setup control. UI labels are not in the fixed-string table of AAP 0.5.8. */
 const ADD_CARD_LABEL = 'Add a card';
 
-/**
- * Read once, on the literal `process.env.EXPO_PUBLIC_*` reference alone, because `babel-preset-expo` inlines
- * only that form at build time. `app.config.ts` has already refused a secret key there.
- */
 function readPublishableKey(): string | null {
   const configured: unknown = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   const value = typeof configured === 'string' ? configured.trim() : '';
   return value === '' ? null : value;
 }
 
-/** This build's Stripe publishable key, or null. The only Stripe credential the client holds. */
 const PUBLISHABLE_KEY = readPublishableKey();
 
-/**
- * False on the credential-free default stack, where `STRIPE_MODE=mock` leaves the app without a publishable
- * key (AAP 0.6.2, 0.11.2). A screen that only wants to warn reads this instead of mounting a
- * {@link CardSetup}.
- */
 export function isPaymentsConfigured(): boolean {
   return PUBLISHABLE_KEY !== null;
 }
 
-/**
- * The codes this API client can hold ({@link ClientErrorCode}), plus the two only this flow raises:
- * `payments_unconfigured` is a build with no publishable key, and `stripe_failed` is Stripe's sheet refusing
- * to open, failing during card entry, or failing to save the card.
- */
 export type CardSetupErrorCode = ClientErrorCode | 'payments_unconfigured' | 'stripe_failed';
 
-/**
- * No card data, no client secret and no Stripe message, so a screen renders a sentence of this app's own for
- * `code` (AAP 0.12.2, AAP 0.11.1). `saved` means Stripe stored the card; the API learns of it from the
- * `setup_intent.succeeded` webhook, so a caller retries its hold instead of assuming the server knows
- * (AAP 0.3.3).
- */
 export type CardSetupResult =
   { status: 'saved' } | { status: 'cancelled' } | { status: 'failed'; code: CardSetupErrorCode };
 
-/** Props of {@link CardSetup}. */
 export interface CardSetupProps {
-  /** Called once with the outcome of the attempt the traveller started. */
   onDone: (result: CardSetupResult) => void;
-  /** Test id of the primary control. Defaults to `payment-setup`. */
   testID?: string;
 }
 
-/** Props of {@link PaymentsProvider}. */
 export interface PaymentsProviderProps {
   children: ReactNode;
 }
 
-/**
- * `configured` is false on a build with no publishable key, in which case `setupCard` resolves
- * `payments_unconfigured` without touching Stripe.
- */
 export interface UseCardSetupResult {
-  /** Runs one setup attempt, joining one already in flight instead of starting a second. */
   setupCard: () => Promise<CardSetupResult>;
   configured: boolean;
 }
 
-/**
- * A code the API client raised has its sentence in the shared map; `stripe_failed` and
- * `payments_unconfigured` have none and both leave the traveller where an unreachable payment route does,
- * which is what `payment_unavailable` says (AAP 0.5.8).
- */
 function messageFor(code: CardSetupErrorCode): string {
   return code === 'stripe_failed' || code === 'payments_unconfigured'
     ? userMessageFor('payment_unavailable')
     : userMessageFor(code);
 }
 
-/**
- * Never rejects: every failure comes back as a {@link CardSetupResult} (AAP 0.3.3, AAP 0.3.4).
- */
 async function runSetupCard(): Promise<CardSetupResult> {
   if (!isPaymentsConfigured()) return { status: 'failed', code: 'payments_unconfigured' };
   let setup: PaymentSetupResponse;
@@ -153,10 +103,6 @@ async function runSetupCard(): Promise<CardSetupResult> {
   }
 }
 
-/**
- * A second call while an attempt runs returns that attempt's promise, held in a ref, so a double press
- * cannot open two PaymentSheets or create two SetupIntents.
- */
 export function useCardSetup(): UseCardSetupResult {
   const inFlight = useRef<Promise<CardSetupResult> | null>(null);
   const setupCard = useCallback((): Promise<CardSetupResult> => {
@@ -172,11 +118,6 @@ export function useCardSetup(): UseCardSetupResult {
   return { setupCard, configured: isPaymentsConfigured() };
 }
 
-/**
- * Mounted once by `apps/mobile/app/_layout.tsx`, above every screen that can reach a setup or a hold. On a
- * build with no publishable key it renders its children unchanged — every screen that needs no card keeps
- * working and {@link CardSetup} explains the card step — so no screen has to guard it.
- */
 export function PaymentsProvider({ children }: PaymentsProviderProps): ReactElement {
   if (PUBLISHABLE_KEY === null) return <>{children}</>;
   return (
@@ -186,13 +127,6 @@ export function PaymentsProvider({ children }: PaymentsProviderProps): ReactElem
   );
 }
 
-/**
- * One primary control that opens Stripe's PaymentSheet in setup mode, and the app's own sentence for a
- * failure. Where the build has no publishable key the control is rendered disabled under the
- * `CARD_PAYMENTS_UNAVAILABLE` notice, so it stays discoverable without pretending a card can be added
- * (AAP 0.11.2). Roles, accessible names, the 44x44 pt target, the live region and the focus ring all come
- * from {@link Button} and {@link Banner} and are never overridden here.
- */
 export function CardSetup({ onDone, testID = 'payment-setup' }: CardSetupProps): ReactElement {
   const { setupCard, configured } = useCardSetup();
   const [busy, setBusy] = useState(false);

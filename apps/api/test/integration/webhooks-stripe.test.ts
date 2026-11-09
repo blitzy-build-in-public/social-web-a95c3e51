@@ -1,15 +1,9 @@
 /**
  * `POST /v1/webhooks/stripe`: the signature check, the idempotency, the ordering and the crash cases.
  *
- * The endpoint's contract is that one provider event is applied exactly once, and the rules the cases
- * break are the four things that guarantee it: the received bytes are what was signed, never a
- * re-serialized payload; `stripe_event.id` is the dedupe key, inserted `ON CONFLICT DO NOTHING` and
- * locked inside the transaction that applies the effect; a delivery that arrives out of order is
- * acknowledged and ignored, because a deposit moves forward only; and a crash inside the transaction
- * rolls its row and its effects back together, so the redelivery is what applies the event, once.
- *
- * The cases that need a 3-D Secure step completed or a hold expired come from the stateful proxy's
- * control routes and run in `mock` alone.
+ * The endpoint's contract is that one provider event is applied exactly once, and the rules the cases break are the four things that guarantee
+ * it: the received bytes are what was signed, never a re-serialized payload; `stripe_event.id` is the dedupe key, inserted `ON CONFLICT DO
+ * NOTHING`; events are never ordered by their own `created`; and the handler answers 2xx quickly and does its work after the commit.
  */
 import { randomBytes } from 'node:crypto';
 
@@ -98,10 +92,8 @@ function objectId(object: unknown): string | null {
 }
 
 /**
- * An event envelope around an object the provider returned. A `mock` case delivers the events the
- * proxy recorded for the resources it made; in `test` mode nothing records them, so the object is
- * retrieved from Stripe's test API and wrapped here. The fresh id is what makes two hand-built
- * envelopes two distinct deliveries.
+ * An event envelope around an object the provider returned. A `mock` case delivers the events the proxy recorded for the resources it made;
+ * in `test` mode nothing records them, so the object is retrieved from Stripe's test API and wrapped here.
  */
 function eventEnvelope(type: string, object: unknown): ProviderEvent {
   return {
@@ -138,9 +130,8 @@ async function eventForIntent(type: string, intentId: string): Promise<ProviderE
 }
 
 /**
- * Cancel a live hold at the provider with our own reason, and answer the event that reports it: the
- * cancellation is made where it can be observed, through the topology's own API, so every event a
- * case delivers is one the provider issued.
+ * Cancel a live hold at the provider with our own reason, and answer the event that reports it: the cancellation is made where it can be
+ * observed, through the topology's own API, so every event a case delivers is one the provider issued.
  */
 async function ourReleaseEvent(intentId: string): Promise<ProviderEvent> {
   await stripeApi(t).post(`/v1/payment_intents/${encodeURIComponent(intentId)}/cancel`, {
@@ -210,9 +201,8 @@ interface OpenProposal {
 }
 
 /**
- * A proposal whose initiator's hold is waiting on 3-D Secure: the deposit is `requires_action` and
- * the proposal is invisible until the customer's step completes, which the proxy performs and which
- * records the `amount_capturable_updated` event.
+ * A proposal whose initiator's hold is waiting on 3-D Secure: the deposit is `requires_action` and the proposal is invisible until the customer's
+ * step completes, which the proxy performs and which records the `amount_capturable_updated` event.
  */
 async function awaitingInitiation(): Promise<OpenProposal & { readonly deposit: DepositRow }> {
   const proposal = await proposeMeeting('3ds', 'visa');

@@ -9,12 +9,8 @@ applyKotlinExpoModulesCorePlugin()
 useCoreDependencies()
 useExpoPublishing()
 
-// The app's root project already puts com.android.tools.build:gradle on the build classpath at the version
-// React Native 0.76.9 expects, so this module declares no AGP classpath of its own.
+// The app's root project already puts com.android.tools.build:gradle on the build classpath at the version React Native 0.76.9 expects, so this module declares no AGP classpath of its own.
 
-// If you want to use the managed Android SDK versions from expo-modules-core, set this to true.
-// The Android SDK versions will be bumped from time to time in SDK releases and may introduce breaking changes in your module code.
-// Most of the time, you may like to manage the Android SDK versions yourself.
 def useManagedAndroidSdkVersions = false
 if (useManagedAndroidSdkVersions) {
   useDefaultAndroidSdkVersions()
@@ -47,15 +43,13 @@ android {
 }
 
 dependencies {
-  // The @aar carries libjnidispatch.so for every Android ABI the app packages, and the uniffi 0.32.0 Kotlin
-  // bindings generated from ../rust load it through com.sun.jna.Native. Kotlin stdlib and kotlinx-coroutines
-  // reach this module through useCoreDependencies() and expo-modules-core 2.2.3, so nothing else is declared.
+  // The @aar carries libjnidispatch.so for every Android ABI the app packages, and the uniffi 0.32.0 Kotlin bindings generated from ../rust load it through com.sun.jna.Native.
+  // Kotlin stdlib and kotlinx-coroutines reach this module through useCoreDependencies() and expo-modules-core 2.2.3, so nothing else is declared.
   implementation 'net.java.dev.jna:jna:5.17.0@aar'
 }
 
-// `pnpm circuits:native android` (packages/circuits/scripts/build-native.sh) writes the git-ignored prover
-// outputs checked below; without them the Kotlin sources fail with an unresolved uniffi.mopro reference. The
-// paths are resolved here, before the action runs, so the action itself never touches the project.
+// `pnpm circuits:native android` (packages/circuits/scripts/build-native.sh) writes the git-ignored prover outputs checked below; without them the Kotlin sources fail with an unresolved uniffi.mopro reference.
+// The paths are resolved here, before the action runs, so the action itself never touches the project.
 def moproKotlin = new File(projectDir, "src/main/java/uniffi/mopro/mopro.kt")
 def moproJniLibs = new File(projectDir, "src/main/jniLibs")
 def moproAbis = ["arm64-v8a", "x86_64"]
@@ -81,9 +75,6 @@ tasks.register("verifyMoproOutputs") {
   }
 }
 
-// Wired to preBuild, not evaluated at configuration time, so a checkout without the generated outputs still
-// configures while `./gradlew projects` or `clean` keeps working and a build fails with the message above.
-// Every Android development build of the app needs `pnpm circuits:native android` first, Maestro e2e builds
-// included, because the module is always autolinked. Release builds leave minification off, so no consumer
-// ProGuard rules ship here; if minify is ever enabled, com.sun.jna.** and uniffi.mopro.** need keep rules.
+// Wired to preBuild, not evaluated at configuration time, so a checkout without the generated outputs still configures while `./gradlew projects` or `clean` keeps working and a build fails with the message above.
+// Every Android development build of the app needs `pnpm circuits:native android` first, Maestro e2e builds included, because the module is always autolinked; release builds leave minification off, so no consumer ProGuard rules ship here, and enabling minify would need keep rules for com.sun.jna.** and uniffi.mopro.**.
 tasks.named('preBuild') { dependsOn 'verifyMoproOutputs' }

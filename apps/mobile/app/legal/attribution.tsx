@@ -1,6 +1,4 @@
-/**
- * Data sources — the attribution page (AAP 0.8.1; AAP 0.5.8's fixed attribution string).
- */
+/** Data sources — the attribution page. */
 import { useState, type ReactElement } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text } from 'react-native';
 import type { ViewStyle } from 'react-native';
@@ -46,8 +44,7 @@ function ExternalLink({ label, url, testID }: ExternalLinkProps): ReactElement {
       accessibilityLabel={label}
       accessibilityRole="link"
       {...{ onBlur: () => setFocused(false), onFocus: () => setFocused(true) }}
-      // Hover is a web state: React Native 0.76 declares the pair on `PressableProps` and
-      // react-native-web forwards it to its hover hook, while iOS and Android never fire it.
+      // Hover is a web state: React Native declares the pair on `PressableProps` and react-native-web forwards it to its hover hook, while iOS and Android never fire it.
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={() => openExternal(url)}
@@ -96,8 +93,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   linkFocused: { borderColor: colors.focusRing },
-  // The link's own fill is the lightest token, so the palette offers one pointer step for both
-  // states, and hover takes the same fill the press paints.
   linkHovered: { backgroundColor: colors.surface },
   linkPressed: { backgroundColor: colors.surface },
   linkLabel: {

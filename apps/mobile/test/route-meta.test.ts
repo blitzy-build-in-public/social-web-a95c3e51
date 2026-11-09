@@ -15,10 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { APP_NAME, routeMeta } from '../src/seo/route-meta.ts';
-
 /** A pinned row: the pathname a link spells, and the title and description that route answers with. */
 type MetaCase = readonly [pathname: string, title: string, description: string];
-
 /** The pinned rows: every tab, each kind of dynamic route, the operator and legal areas, and the
  * spellings of the same route a query or a trailing slash produces. */
 const CASES: readonly MetaCase[] = [
@@ -112,7 +110,6 @@ const CASES: readonly MetaCase[] = [
     'Messages with your meetup partner, once both deposits are locked.',
   ],
 ];
-
 /** What a pathname the app does not serve answers with: the app's name and what the app is. */
 const FALLBACK = {
   title: APP_NAME,
@@ -120,22 +117,16 @@ const FALLBACK = {
     'Tablemate is a social app for travelers: meet another verified traveler in your city at a ' +
     'partner venue, with a small refundable deposit holding the seat.',
 } as const;
-
 /** A pathname that matches no route: the probe the walk compares every screen's own answer against. */
 const UNMATCHED = '/not-a-route-in-this-app';
-
 /** The app directory: every screen Expo Router serves, resolved from this file's own location. */
 const APP_DIR = fileURLToPath(new URL('../app', import.meta.url));
-
 /** Expo Router's group parentheses around a segment that is not part of the path: `(tabs)/x.tsx`. */
 const GROUP = /^\(.+\)$/;
-
 /** Expo Router's brackets around a parameter: `[id]`, `[cityId]`, `[...rest]`. */
 const PARAMETER = /^\[.*\]$/;
-
 /** The value a parameter takes in a sample URL. */
 const SAMPLE_PARAM = 'sample-id';
-
 /** The files that hold a route: Expo Router's `_layout.tsx` and its `+`-prefixed platform files
  * (`+native-intent.tsx`) are not screens, and a route is a `.tsx` file under `app/`. */
 function routeFiles(): readonly string[] {
@@ -146,7 +137,6 @@ function routeFiles(): readonly string[] {
     .filter((entry) => !path.basename(entry).startsWith('+'))
     .sort();
 }
-
 /** The URL a route file answers on: groups dropped, a trailing `index` dropped, parameters sampled. */
 function sampleUrl(relativeFile: string): string {
   const directories = relativeFile
@@ -165,7 +155,6 @@ describe('routeMeta', () => {
       expect(routeMeta(pathname)).toEqual({ title, description });
     },
   );
-
   it.each([
     '/nope',
     '/meetups/sample-id/no-such-screen',
@@ -175,7 +164,6 @@ describe('routeMeta', () => {
   ])('falls back for the unknown pathname %s', (pathname) => {
     expect(routeMeta(pathname)).toEqual(FALLBACK);
   });
-
   it('reads a pathname that matches no route as the fallback the walk compares against', () => {
     expect(routeMeta(UNMATCHED)).toEqual(FALLBACK);
   });
@@ -183,13 +171,11 @@ describe('routeMeta', () => {
 
 describe('every screen under app/', () => {
   const FILES = routeFiles();
-
   it('finds the route files', () => {
     expect(FILES).toContain('(tabs)/discover.tsx');
     expect(FILES).toContain('meetups/[id]/chat.tsx');
     expect(FILES.length).toBeGreaterThan(20);
   });
-
   it.each(FILES)('answers %s with its own title and description', (file) => {
     expect(routeMeta(sampleUrl(file))).not.toEqual(FALLBACK);
   });

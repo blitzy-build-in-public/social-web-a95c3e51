@@ -5,15 +5,15 @@ include "circomlib/circuits/comparators.circom";
 include "@zk-email/circuits/utils/array.circom";
 
 /// @title BodyWindow
-/// @notice Fixes the body tail window `EmailVerifier` hashes, from the email's own length bytes: the
-///         longest 64-byte-aligned padded suffix it admits — the whole padded body when that fits in
-///         `maxWindow` bytes, otherwise exactly `maxWindow` bytes.
-/// @notice Without it the prover would choose the window, and with it which occurrence of every anchor
-///         the extraction can see. `maxWindow` is 960, the largest 64-byte multiple under the 1,024 bound.
+/// @notice Fixes the body tail window `EmailVerifier` hashes, from the email's own length bytes: the longest
+///         64-byte-aligned padded suffix it admits — the whole padded body when that fits in `maxWindow`
+///         bytes, otherwise exactly `maxWindow` bytes. Without it the prover would choose the window, and with
+///         it which occurrence of every anchor the extraction can see. `maxWindow` is 960, the largest 64-byte
+///         multiple under the 1,024 bound.
 /// @param maxBodyLength The body bound handed to `EmailVerifier`; the window is zero-padded to this size.
 /// @param maxWindow The largest window `EmailVerifier` admits for that bound.
-/// @input emailBody The padded body window as ASCII byte values, zero-padded to `maxBodyLength`.
-/// @input emailBodyLength The window length in bytes, a whole number of SHA-256 blocks.
+/// @input emailBody The padded body window as ASCII byte values, zero-padded to `maxBodyLength`;
+///         emailBodyLength the window length in bytes, a whole number of SHA-256 blocks.
 /// @input precomputedSHA SHA-256 state entering the window; the IV when the prefix is empty.
 template BodyWindow(maxBodyLength, maxWindow) {
     assert(maxWindow % 64 == 0);
@@ -30,10 +30,10 @@ template BodyWindow(maxBodyLength, maxWindow) {
         0x51, 0x0e, 0x52, 0x7f, 0x9b, 0x05, 0x68, 0x8c,
         0x1f, 0x83, 0xd9, 0xab, 0x5b, 0xe0, 0xcd, 0x19
     ];
-    // SHA-256 padding ends every padded message with its bit length, so the last eight bytes of the
-    // padded body — and of the window, a suffix of it under either rule below — are that field, which is
-    // part of the message whose digest is the `bh=` value the DKIM signature over the headers covers.
-    // The email, and not the prover, therefore fixes the window and the anchor occurrences inside it.
+    // SHA-256 padding ends every padded message with its bit length, so the last eight bytes of the padded body —
+    // and of the window, a suffix of it under either rule below — are that field, which is part of the message
+    // whose digest is the `bh=` value the DKIM signature over the headers covers. The email, and not the prover,
+    // therefore fixes the window and the anchor occurrences inside it.
     component lengthField = VarShiftLeft(maxBodyLength, 8);
     lengthField.in <== emailBody;
     lengthField.shift <== emailBodyLength - 8;
@@ -41,11 +41,9 @@ template BodyWindow(maxBodyLength, maxWindow) {
     for (var t = 0; t < 8; t++) {
         lengthBytes[t] <== lengthField.out[t];
     }
-    // The bit length is that big-endian integer, and its three low bits are zero because the field counts
-    // whole bytes, so the body's byte count is
-    // L = Σ_{t<7} len[t]·2^(8·(6−t)+5) + Σ_{b=3..7} bit_b·2^(b−3), formed as a linear combination.
-    // `Sha256BytesPartial` range-checks the seven high bytes in the full circuit; standing alone, the
-    // 58-bit quotient below is what already bounds L.
+    // The bit length is that big-endian integer, and its three low bits are zero because the field counts whole
+    // bytes, so the body's byte count is L = Σ_{t<7} len[t]·2^(8·(6−t)+5) + Σ_{b=3..7} bit_b·2^(b−3), formed as a
+    // linear combination. The 58-bit quotient below is what bounds L.
     component lastByteBits = Num2Bits(8);
     lastByteBits.in <== lengthBytes[7];
     for (var b = 0; b < 3; b++) {
@@ -60,9 +58,9 @@ template BodyWindow(maxBodyLength, maxWindow) {
     }
     signal byteLength;
     byteLength <== byteLengthSum;
-    // Minimal SHA-256 padding lands the L body bytes, a 0x80 marker, zeros and the 8 length bytes on the
-    // next 64-byte boundary, so with L + 8 = 64·q + r the padded length is 64·(q + 1), equal to
-    // 64·ceil((L + 9)/64) for every r in [0, 63]; q is constrained to 58 bits to keep it within 2^64.
+    // Minimal SHA-256 padding lands the L body bytes, a 0x80 marker, zeros and the 8 length bytes on the next
+    // 64-byte boundary, so with L + 8 = 64·q + r the padded length is 64·(q + 1); q is constrained to 58 bits to
+    // keep it within 2^64.
     signal quotient;
     signal remainder;
     quotient <-- (byteLength + 8) \ 64;
@@ -81,14 +79,14 @@ template BodyWindow(maxBodyLength, maxWindow) {
     fits.in[1] <== maxWindow;
     signal isFull;
     isFull <== fits.out;
-    // Window rule: the whole padded body when it fits, otherwise exactly maxWindow bytes, so the window
-    // is between 64 and 960 bytes — which keeps the length-field indexes below maxBodyLength and makes a
-    // 1,024-byte window impossible. `EmailVerifier` bounds it from the other side (Num2Bits(10) rejects
-    // 1,024) and `src/inputs/build-inputs.ts` cuts at max(0, paddedLen − 960), never emitting one.
+    // Window rule: the whole padded body when it fits, otherwise exactly maxWindow bytes, so the window is between
+    // 64 and 960 bytes — which keeps the length-field indexes below maxBodyLength and makes a 1,024-byte window
+    // impossible. `EmailVerifier` bounds it from the other side (Num2Bits(10) rejects 1,024) and
+    // `src/inputs/build-inputs.ts` cuts at max(0, paddedLen − 960), never emitting one.
     emailBodyLength === maxWindow + isFull * (totalPadded - maxWindow);
-    // Defence in depth for the whole-body case: with nothing precomputed the hash runs from block 0, so
-    // the state entering the window must be the IV — the prover cannot widen the window, but it could
-    // otherwise claim a prefix the padding does not allow.
+    // Defence in depth for the whole-body case: with nothing precomputed the hash runs from block 0, so the state
+    // entering the window must be the IV — the prover cannot widen the window, but it could otherwise claim a
+    // prefix the padding does not allow.
     for (var i = 0; i < 32; i++) {
         isFull * (precomputedSHA[i] - IV[i]) === 0;
     }

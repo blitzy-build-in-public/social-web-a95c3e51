@@ -1,11 +1,10 @@
 /**
- * The repository secret scan (AAP 0.8.1, `scripts/check-secrets.test.ts`): every credential shape
- * AAP 0.12.2 lists is caught, and every near miss it lists -- a bare prefix, a placeholder, a value
- * one character short of a shape, a digest, public material -- passes clean.
+ * The repository secret scan (AAP 0.8.1, `scripts/check-secrets.test.ts`): every credential shape AAP 0.12.2 lists
+ * is caught, and every near miss it lists -- a bare prefix, a placeholder, a value one character short of a shape,
+ * a digest, public material -- passes clean.
  *
- * Not one credential shape may be written into this file, because `pnpm lint` runs that scan over the
- * whole repository: every sample here is assembled at run time from fragments, and the last suite
- * enforces the property by scanning this file and `check-secrets.ts` with the unit under test.
+ * Not one credential shape may be written into this file, because `pnpm lint` runs that scan over the whole
+ * repository: every sample is assembled at run time from fragments, and the last suite enforces the property.
  */
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -67,12 +66,9 @@ const TOKEN_YAML = join(TOKEN, ': "');
 const TOKEN_JSON = join('"', TOKEN, '": "');
 const TOKEN_SPACED = join(TOKEN, ' = ');
 
-/**
- * One row per shape the scan must catch: the label Vitest prints (never the value), the pattern id,
- * the text scanned, the value behind the finding for the leak check, and the column the match starts
- * at. Every text is one line, and the match is the whole credential, so a row asserts exactly one
- * finding of exactly one pattern.
- */
+/** One row per shape the scan must catch: the label Vitest prints (never the value), the pattern id, the text
+ * scanned, the value behind the finding for the leak check, and the column the match starts at. Every text is one
+ * line and the match is the whole credential, so a row asserts exactly one finding. */
 const CAUGHT = [
   ['live secret key, 24 chars', 'stripe_secret_key', join('KEY=', K_LIVE), K_LIVE, 5],
   ['test secret key, YAML line', 'stripe_secret_key', join('KEY: ', K_TEST), K_TEST, 6],
@@ -95,11 +91,9 @@ const CAUGHT = [
   ['PEM, encrypted private key', 'pem_private_key', PEM_ENCRYPTED, PEM_ENCRYPTED, 1],
 ] as const satisfies readonly (readonly [string, string, string, string, number])[];
 
-/**
- * One row per near miss the scan must let through: the label and the text. The placeholders the
- * repository itself ships are here beside the boundaries and the public material, because a false
- * positive fails `pnpm lint` for every developer.
- */
+/** One row per near miss the scan must let through: the label and the text. The placeholders the repository itself
+ * ships are here beside the boundaries and the public material, because a false positive fails `pnpm lint` for
+ * every developer. */
 const MISSED = [
   ['bare test key prefix', join('sk', '_', 'test', '_')],
   ['bare live key prefix', join('sk', '_', 'live', '_')],
@@ -162,8 +156,8 @@ describe('scanText', () => {
   });
 
   it.each(NEWLINES)('reports line 3, column 7 with %s line endings', (_label, newline) => {
-    // `KEY = ` is six characters and ends in a space, which the look-behind needs: an alphanumeric
-    // there would read as the tail of a longer word and hide the key.
+    // `KEY = ` ends in a space, which the look-behind needs: an alphanumeric there would read as the tail
+    // of a longer word and hide the key.
     const text = join('# a comment', newline, 'host=example.test', newline, 'KEY = ', K_LIVE);
 
     expect(scanText(PATH, text)).toEqual([

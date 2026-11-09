@@ -4,24 +4,19 @@
  * Metro resolves the check-in screen's extensionless path to this file on iOS and Android and to
  * `venue-scanner.web.tsx` in the browser. On the two native platforms `expo-camera` 16.0.18 opens the camera, asks for
  * the foreground permission as the scanner mounts and reads the venue console's QR form of the same six digits the
- * manual field takes (AAP 0.3.1, 0.3.4); the web half renders no scanner, which is why a screen renders `VenueScanner`
- * unconditionally and never asks which platform it is running on, manual entry being the guaranteed path everywhere
- * (AAP 0.3.4).
- *
+ * manual field takes; the web half renders no scanner, which is why a screen renders `VenueScanner` unconditionally and
+ * never asks which platform it is running on, manual entry being the guaranteed path everywhere.
  * A scanned payload is a code and nothing else. A payload that is not exactly `CODE_DIGITS` digits is refused here with
  * the banner and the announcement the field's own copy uses, and a payload already seen is ignored, because a
- * viewfinder decodes the same code on every frame it is shown in; no frame, image or payload is stored or logged
- * (AAP 0.12.2). Permission is foreground only and its usage strings come from the `expo-camera` config plugin in
- * `app.config.ts`; a refusal is not a dead end, because the screen's manual field is always there.
+ * viewfinder decodes the same code on every frame it is shown in; no frame, image or payload is stored or logged.
+ * Permission is foreground only and its usage strings come from the `expo-camera` config plugin in `app.config.ts`.
  */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { BarcodeScanningResult, CameraViewProps } from 'expo-camera';
 import { CODE_DIGITS, colors, radii, spacing, typography } from '@tablemate/shared';
-
 import { Banner, Button, announce } from '../ui';
-
 /** The shape of a venue check-in code, built from the contract's `CODE_DIGITS` so the two agree. */
 const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
 const CAMERA_STARTING_NOTICE = 'Starting the camera…';
@@ -36,13 +31,11 @@ const CAMERA_PROPS: Partial<CameraViewProps> = {
   accessibilityLabel: 'Camera viewfinder',
   barcodeScannerSettings: { barcodeTypes: ['qr'] },
 };
-
 /**
  * Props of {@link VenueScanner}: what the screen does with a code it did not type. The pair's two
  * halves both implement the component below, so a screen reads the same on every platform.
  */
 export type VenueScannerProps = Readonly<{ onCode: (code: string) => void }>;
-
 /**
  * The shape of the pair's one export: a component that renders either the scan control or nothing
  * at all, which is what the browser half returns (`venue-scanner.web.tsx`). Both halves name this
@@ -50,10 +43,7 @@ export type VenueScannerProps = Readonly<{ onCode: (code: string) => void }>;
  * rather than at a call site that reads both platforms the same way (AAP 0.5.1).
  */
 export type VenueScannerComponent = (props: VenueScannerProps) => ReactElement | null;
-
-/** Props of the opened viewfinder, which the pair does not export: it exists only above. */
 type CameraScannerProps = Readonly<{ onCode: (code: string) => void; onClose: () => void }>;
-
 /**
  * The open viewfinder: the camera once the permission is granted, the permission request once the
  * scanner mounts, and the notice that explains a refusal instead of a control.

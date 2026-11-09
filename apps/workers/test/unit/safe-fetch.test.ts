@@ -1,6 +1,4 @@
-/**
- * Request safety, resource bounds and the sandboxed browser for the menu crawl (AAP 0.5.6, 0.12.2).
- */
+/** Request safety, resource bounds and the sandboxed browser for the menu crawl (AAP 0.5.6, 0.12.2). */
 
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -43,15 +41,11 @@ const clock = createTestClock({ start: new Date('2026-11-10T10:00:00.000Z'), mod
 const userAgent = crawlerUserAgent('https://example.test/contact');
 const FIXTURES = fileURLToPath(new URL('../fixtures/sites/', import.meta.url));
 const blocklist = loadBlocklist(findRepoRoot());
-
 /** A blocklisted domain, read from configuration rather than written here (AAP 0.5.6). */
 const BLOCKED_DOMAIN = [...blocklist.domains][0] ?? '';
-
 /** The suffix the fake site-terms policy leaves unreviewed, so it is never fetched (AAP 0.5.6). */
 const UNCERTAIN_SUFFIX = '.uncertain.fixture.test';
-
 const PRIVATE_HOSTS = ['127.0.0.1', 'site.fixture.test', 'rebind.fixture.test'];
-
 const SITE_FILES: Readonly<Record<string, string>> = {
   '/service-worker/': 'service-worker/index.html',
   '/service-worker/sw.js': 'service-worker/sw.js',
@@ -60,10 +54,8 @@ const SITE_FILES: Readonly<Record<string, string>> = {
   '/login-wall/': 'login-wall/index.html',
   '/activity-tickets/': 'activity-tickets/index.html',
 };
-
 /** The body of `/small`: 1 KiB, identifiable as this server's so address pinning is observable. */
 const SMALL_BODY = `server-a-small ${'s'.repeat(1000)}`;
-
 const MIXED_FRAMES_BODY = [
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture mixed</title></head>',
   '<body><h1>Fixture mixed frames</h1>',
@@ -71,12 +63,9 @@ const MIXED_FRAMES_BODY = [
   '<img src="http://img.uncertain.fixture.test/x.png" alt="">',
   '</body></html>',
 ].join('\n');
-
 /** One request the local server received, which is the evidence that a connection was opened. */
 type Hit = { readonly method: string; readonly path: string; readonly host: string };
-
 type LogLine = Record<string, unknown>;
-
 /** Every field a log line of this pipeline may carry — never a body, page text or a URL (AAP 0.11.1). */
 const ALLOWED_LOG_KEYS = new Set([
   'event',
@@ -92,17 +81,14 @@ const ALLOWED_LOG_KEYS = new Set([
   'images',
   'dropReason',
 ]);
-
 const hitsA: Hit[] = [];
 const hitsB: Hit[] = [];
 const upgrades: string[] = [];
-
 const lookups: string[] = [];
 const throttleSlots: string[] = [];
 let rebindAnswers = 0;
 const logs: LogLine[] = [];
 const allLogs: LogLine[] = [];
-
 /** Every URL a fetch was asked for, with the reason when it was refused (the render rows). */
 type Attempt = {
   readonly url: string;
@@ -110,25 +96,15 @@ type Attempt = {
   readonly reason: SafeFetchReason | null;
 };
 const attempts: Attempt[] = [];
-
 const ZERO_CHUNK = Buffer.alloc(64 * 1024);
-
 const REDIRECTS: Readonly<Record<string, string>> = {
   '/to-private': 'http://10.0.0.1/',
   '/to-blocked': `https://${BLOCKED_DOMAIN}/reviews`,
 };
-
-/**
- * Answer one request of the fixture server (AAP 0.5.6): the dynamic routes the bounds, redirect and
- * policy rows need, then the committed fixture sites.
- * @param target Where the hit is recorded.
- * @param req The request received.
- * @param res The response to answer.
- */
+/** Answer one request of the fixture server (AAP 0.5.6): the dynamic routes the bounds, redirect and policy rows need, then the committed fixture sites. @param target Where the hit is recorded. @param req The request received. @param res The response to answer. */
 async function handle(target: Hit[], req: IncomingMessage, res: ServerResponse): Promise<void> {
   const path = new URL(req.url ?? '/', 'http://fixture.invalid').pathname;
   target.push({ method: req.method ?? '', path, host: req.headers.host ?? '' });
-
   if (path === '/robots.txt') {
     // Allow-all, so every refusal in this suite belongs to the check under test and not to this file.
     send(res, 200, 'text/plain', 'User-agent: *\nAllow: /\n');
@@ -165,8 +141,7 @@ async function handle(target: Hit[], req: IncomingMessage, res: ServerResponse):
 
   const big = /^\/big\/(html|image|pdf)\/(\d+)$/.exec(path);
   if (big !== null) {
-    // The declared length is what `safeFetch` refuses before reading a byte; the stream is what it
-    // refuses while reading, once the kind's own limit is passed.
+    // The declared length is what `safeFetch` refuses before reading a byte; the stream is what it refuses while reading, once the kind's own limit is passed.
     const type =
       big[1] === 'pdf' ? 'application/pdf' : big[1] === 'image' ? 'image/png' : 'text/html';
     const size = Number(big[2]);
@@ -188,14 +163,9 @@ async function handle(target: Hit[], req: IncomingMessage, res: ServerResponse):
   );
 }
 
-/**
- * Write `bytes` zeros and end the response.
- * @param res The response to write to.
- * @param bytes How many zero bytes to send.
- */
+/** Write `bytes` zeros and end the response. @param res The response to write to. @param bytes How many zero bytes to send. */
 function writeZeros(res: ServerResponse, bytes: number): void {
   let written = 0;
-
   const next = (): void => {
     while (written < bytes) {
       const size = Math.min(ZERO_CHUNK.length, bytes - written);
@@ -207,18 +177,10 @@ function writeZeros(res: ServerResponse, bytes: number): void {
     }
     res.end();
   };
-
   next();
 }
 
-/**
- * Answer one response completely (AAP 0.5.6).
- * @param res The response to answer.
- * @param status The status to send.
- * @param type Its `Content-Type`.
- * @param body The body, a string or the bytes read from a fixture file.
- * @param headers Any further headers, such as the `Location` of a redirect.
- */
+/** Answer one response completely (AAP 0.5.6). @param res The response to answer. @param status The status to send. @param type Its `Content-Type`. @param body The body, a string or the bytes read from a fixture file. @param headers Any further headers, such as the `Location` of a redirect. */
 function send(
   res: ServerResponse,
   status: number,
@@ -234,17 +196,10 @@ function send(
   res.end(body);
 }
 
-/**
- * Build one fixture server: it records every request and every WebSocket upgrade attempt, and answers
- * from {@link handle}.
- * @param target Where its hits are recorded.
- * @param label The server's name, used when an upgrade is recorded.
- * @returns The server, not yet listening.
- */
+/** Build one fixture server: it records every request and every WebSocket upgrade attempt, and answers from {@link handle}. @param target Where its hits are recorded. @param label The server's name, used when an upgrade is recorded. @returns The server, not yet listening. */
 function fixtureServer(target: Hit[], label: string): Server {
   const server = createServer((req, res) => {
-    // A refused address never reads a body and the declared-length row drops the response as soon as
-    // it sees the header, so both halves are closed early; an unhandled socket error would crash.
+    // A refused address never reads a body and the declared-length row drops the response as soon as it sees the header, so both halves are closed early; an unhandled socket error would crash.
     req.on('error', () => undefined);
     res.on('error', () => undefined);
     void handle(target, req, res).catch(() => res.destroy());
@@ -254,17 +209,10 @@ function fixtureServer(target: Hit[], label: string): Server {
     upgrades.push(`${label} ${req.url ?? ''}`);
     socket.destroy();
   });
-
   return server;
 }
 
-/**
- * Start a server, resolving with the port it was given.
- * @param server The server to start.
- * @param host The address to bind, so server B can sit on the second loopback address.
- * @param port The port, `0` for any free one.
- * @returns The bound port.
- */
+/** Start a server, resolving with the port it was given. @param server The server to start. @param host The address to bind, so server B can sit on the second loopback address. @param port The port, `0` for any free one. @returns The bound port. */
 function listen(server: Server, host: string, port: number): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     server.once('error', reject);
@@ -278,10 +226,7 @@ function listen(server: Server, host: string, port: number): Promise<number> {
   });
 }
 
-/**
- * Stop a server, closing the sockets it still holds so the suite ends promptly.
- * @param server The server to stop, when one was started.
- */
+/** Stop a server, closing the sockets it still holds so the suite ends promptly. @param server The server to stop, when one was started. */
 async function stop(server: Server | null): Promise<void> {
   if (server === null) return;
   server.closeAllConnections();
@@ -295,18 +240,12 @@ let portA = 0;
 let serverA: Server | null = null;
 let serverB: Server | null = null;
 let hasSecondLoopback = false;
-
-/**
- * The recording resolver (AAP 0.5.6): every hostname is a `.test` name answered locally, so nothing
- * leaves the host, and the rebinding host answers a different address on its second call so a
- * connection that resolved twice would be observable.
- */
+/** The recording resolver (AAP 0.5.6): every hostname is a `.test` name answered locally, so nothing leaves the host, and the rebinding host answers a different address on its second call so a connection that resolved twice would be observable. */
 const lookup: LookupFn = (host) => {
   lookups.push(host);
   const answers = (address: string): { address: string; family: 4 | 6 }[] => [
     { address, family: 4 },
   ];
-
   switch (host) {
     case 'site.fixture.test':
     case '127.0.0.1':
@@ -326,37 +265,27 @@ const lookup: LookupFn = (host) => {
       return Promise.resolve(answers(rebindAnswers === 1 ? '127.0.0.1' : '127.0.0.2'));
     }
     default:
-      // A hostname this suite never planned to resolve means a row reached a host it did not intend
-      // to; the module turns the rejection into `dns_failed`.
+      // A hostname this suite never planned to resolve means a row reached a host it did not intend to; the module turns the rejection into `dns_failed`.
       return Promise.reject(new Error(`unexpected lookup for ${host}`));
   }
 };
-
-/**
- * The suite's site-terms decision (AAP 0.5.6): every host was approved by an operator except the ones
- * on the unreviewed suffix, which must be refused before anything is fetched or resolved.
- */
+/** The suite's site-terms decision (AAP 0.5.6): every host was approved by an operator except the ones on the unreviewed suffix, which must be refused before anything is fetched or resolved. */
 const policy = (host: string): Promise<CrawlDecision> =>
   Promise.resolve(host.endsWith(UNCERTAIN_SUFFIX) ? 'uncertain' : 'allowed');
-
 const throttle = (domain: string): Promise<void> => {
   throttleSlots.push(domain);
   return Promise.resolve();
 };
-
 const record = (line: LogLine): void => {
   logs.push(line);
   allLogs.push(line);
 };
-
 const logger = {
   debug: record,
   info: record,
   warn: record,
 } as unknown as SafeFetchDeps['logger'] & Parameters<typeof renderPage>[1]['logger'];
-
 const robotsCache = createMemoryRobotsCache();
-
 const safeFetch: SafeFetch = createSafeFetch({
   lookup,
   allowPrivateHosts: PRIVATE_HOSTS,
@@ -369,11 +298,7 @@ const safeFetch: SafeFetch = createSafeFetch({
   logger,
   clock,
 });
-
-/**
- * `safeFetch` with every call and its refusal recorded: a browser subrequest that is refused leaves
- * no other trace, because the same fetch refused it before any socket existed.
- */
+/** `safeFetch` with every call and its refusal recorded: a browser subrequest that is refused leaves no other trace, because the same fetch refused it before any socket existed. */
 const recordingFetch: SafeFetch = async (url, opts) => {
   try {
     const answer = await safeFetch(url, opts);
@@ -388,16 +313,8 @@ const recordingFetch: SafeFetch = async (url, opts) => {
     throw error;
   }
 };
-
 let browser: BrowserProvider | null = null;
-
-/**
- * Fetch `url` and answer with the reason it was refused, failing when it was permitted instead.
- * @param url The URL to fetch.
- * @param kind The kind of document, `html` when omitted.
- * @param budget The place's budget, a fresh one when omitted.
- * @returns The refusal's reason.
- */
+/** Fetch `url` and answer with the reason it was refused, failing when it was permitted instead. @param url The URL to fetch. @param kind The kind of document, `html` when omitted. @param budget The place's budget, a fresh one when omitted. @returns The refusal's reason. */
 async function reasonFor(
   url: string,
   kind: FetchKind = 'html',
@@ -415,7 +332,6 @@ async function reasonFor(
 
 /** One URL of a route on server A, reached by name rather than by its loopback literal. */
 const onSite = (path: string): string => `http://site.fixture.test:${portA}${path}`;
-
 const render = (url: string): Promise<RenderResult> =>
   renderPage(url, {
     browser: sharedBrowser(),
@@ -424,19 +340,13 @@ const render = (url: string): Promise<RenderResult> =>
     userAgent,
     logger,
   });
-
 /** The shared browser, which the suite's own `beforeAll` has started a provider for. */
 function sharedBrowser(): BrowserProvider {
   if (browser === null) throw new Error('the browser provider was never created');
   return browser;
 }
 
-/**
- * The reasons the recorded fetches were refused for, optionally only those whose URL contains
- * `filter`; a permitted request has no reason and is left out.
- * @param filter A substring every counted URL must carry.
- * @returns The reasons, in the order the fetches were made.
- */
+/** The reasons the recorded fetches were refused for, optionally only those whose URL contains `filter`; a permitted request has no reason and is left out. @param filter A substring every counted URL must carry. @returns The reasons, in the order the fetches were made. */
 function refusalReasons(filter?: string): SafeFetchReason[] {
   return attempts
     .filter((attempt) => filter === undefined || attempt.url.includes(filter))
@@ -444,17 +354,14 @@ function refusalReasons(filter?: string): SafeFetchReason[] {
 }
 
 beforeAll(async () => {
-  // A host without the browser is an environment failure rather than a pass: the render rows are the
-  // only evidence for the sandboxed browser, and they cannot be skipped quietly.
+  // A host without the browser is an environment failure rather than a pass: the render rows are the only evidence for the sandboxed browser, and they cannot be skipped quietly.
   if (!existsSync(chromium.executablePath())) {
     throw new Error('Run: pnpm --filter @tablemate/workers exec playwright install chromium');
   }
 
   serverA = fixtureServer(hitsA, 'A');
   portA = await listen(serverA, '127.0.0.1', 0);
-
-  // The second loopback address exists on Linux. Where it does not, the rebinding row still proves the
-  // single resolution, and the assertion about server B is skipped rather than faked.
+  // The second loopback address exists on Linux. Where it does not, the rebinding row still proves the single resolution, and the assertion about server B is skipped rather than faked.
   serverB = fixtureServer(hitsB, 'B');
   try {
     await listen(serverB, '127.0.0.2', portA);
@@ -463,24 +370,20 @@ beforeAll(async () => {
     hasSecondLoopback = false;
   }
 
-  // The rebinding row measures one hop, so the origin's robots.txt is served from the cache: a network
-  // fetch would be a hop of its own and would take the first answer the resolver gives.
+  // The rebinding row measures one hop, so the origin's robots.txt is served from the cache: a network fetch would be a hop of its own and would take the first answer the resolver gives.
   const warm = createRobotsChecker({
     cache: robotsCache,
     userAgent,
     fetchRobotsTxt: () => Promise.resolve({ status: 200, body: 'User-agent: *\nAllow: /\n' }),
   });
   await warm.isAllowed(new URL(`http://rebind.fixture.test:${portA}/small`));
-
   browser = createBrowserProvider();
 });
-
 afterAll(async () => {
   await browser?.close();
   await stop(serverB);
   await stop(serverA);
 });
-
 beforeEach(() => {
   hitsA.length = 0;
   hitsB.length = 0;
@@ -491,7 +394,6 @@ beforeEach(() => {
   throttleSlots.length = 0;
   rebindAnswers = 0;
 });
-
 /** Every address class the crawler may never connect to (AAP 0.5.6). */
 const BLOCKED_ADDRESSES = [
   '127.0.0.1',
@@ -509,7 +411,6 @@ const BLOCKED_ADDRESSES = [
   '::ffff:10.0.0.1', // an IPv4 address carried inside an IPv6 literal
   '::',
 ] as const;
-
 const PUBLIC_ADDRESSES = [
   '93.184.216.34',
   '8.8.8.8',
@@ -517,17 +418,14 @@ const PUBLIC_ADDRESSES = [
   '172.32.0.1',
   '100.128.0.1',
 ] as const;
-
 /** Values that are not addresses at all, which fail closed rather than open (AAP 0.5.6). */
 const NON_ADDRESSES = ['', 'not-an-address', '999.1.1.1', 'fe80::1%eth0'] as const;
-
 const HOSTILE_HOSTS = [
   'uncertain.fixture.test',
   '169.254.169.254',
   '10.255.0.1',
   '10.0.0.1',
 ] as const;
-
 /** The refusals that happen before a socket exists, the only kind a hostile URL may earn. */
 const PRE_CONNECTION_REFUSALS: ReadonlySet<SafeFetchReason> = new Set([
   'blocked_address',
@@ -537,19 +435,15 @@ const PRE_CONNECTION_REFUSALS: ReadonlySet<SafeFetchReason> = new Set([
   'scheme',
   'port',
 ]);
-
 const isHostile = (url: string): boolean => HOSTILE_HOSTS.some((host) => url.includes(host));
-
 /** A URL and the reason the chain refuses it before any connection is made (AAP 0.5.6). */
 type Refusal = readonly [url: string, reason: SafeFetchReason];
-
 /** Hosts that resolve to an address no request may reach, and the reason each earns. */
 const ADDRESS_REFUSALS: readonly Refusal[] = [
   ['http://private-name.fixture.test/', 'blocked_address'],
   ['http://127.0.0.1.nip.test/', 'blocked_address'],
   ['http://mixed.fixture.test/', 'blocked_address'],
 ];
-
 /** Schemes the crawler never follows. */
 const SCHEME_URLS = [
   'ftp://site.fixture.test/',

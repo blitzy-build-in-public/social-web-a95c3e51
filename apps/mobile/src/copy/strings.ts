@@ -1,15 +1,13 @@
 /**
- * Every fixed, user-facing English string the Tablemate client renders (AAP 0.5.8, 0.8.1).
+ * Every fixed, user-facing English string the client renders (AAP 0.5.8).
  *
- * A string that carries a rule's own number -- the deposit levels, the late-cancellation window,
- * the dispute windows -- is built from the shared constants rather than typed out, so the copy
- * cannot drift from what the API enforces. A string another module owns stays there: the framing
- * copy in `depositCopy`, the lock-loss copy in `LOCK_LOST_COPY` and the low guest count in
- * `GUEST_COUNT_BELOW_LABEL` are never repeated here. Every string AAP 0.5.8 states is copied
- * character for character from it, the announcements the plan does not enumerate are moved here
- * unchanged from the screens that speak them, and the two page-chrome strings at the foot of this
- * file come from its accessibility rules instead. No `Intl`, `Date`, React Native or Node API is used,
- * so the e2e support scripts and Vitest also load this module under plain Node.
+ * A string that carries a rule's own number — the deposit levels, the late-cancellation window, the dispute windows —
+ * is built from the shared constants rather than typed out, so the copy cannot drift from what the API enforces. A
+ * string another module owns stays there: the framing copy in `depositCopy`, the lock-loss copy in `LOCK_LOST_COPY`
+ * and the low guest count in `GUEST_COUNT_BELOW_LABEL` are never repeated here. Every string AAP 0.5.8 states is
+ * copied character for character from it, and the two page-chrome strings at the foot of the file come from its
+ * accessibility rules instead. No `Intl`, `Date`, React Native or Node API is used, so the e2e support scripts and
+ * Vitest also load this module under plain Node.
  */
 import {
   DEPOSIT_LEVELS_CENTS,
@@ -20,9 +18,6 @@ import {
 } from '@tablemate/shared';
 import type { GuestCount, SuggestionEmptyReason, Tier0Profile } from '@tablemate/shared';
 
-// --- Private helpers ---------------------------------------------------------------------------
-
-/** Joins items as an English list ending in `or`: `['5', '10', '20']` -> `'5, 10 or 20'`. */
 function joinWithOr(items: readonly string[]): string {
   if (items.length === 0) return '';
   const head = items.slice(0, -1).join(', ');
@@ -42,7 +37,6 @@ export const DEPOSIT_AMOUNTS_TEXT = joinWithOr(
   DEPOSIT_LEVELS_CENTS.map((cents) => String(cents / 100)),
 );
 
-/** English month names for {@link formatCalendarDate}: a fixed table, never `Intl` or the locale. */
 const ENGLISH_MONTHS = [
   'January',
   'February',
@@ -57,22 +51,11 @@ const ENGLISH_MONTHS = [
   'November',
   'December',
 ] as const;
-
-/** `YYYY-MM-DD` exactly: four digits, two digits, two digits, and nothing around them. */
 const CALENDAR_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-/** Stands where a booking name has not been typed yet, so {@link lodgingCallNotice} can render. */
 const BOOKING_NAME_FALLBACK = 'the name on your booking';
-
-// --- Safety: Propose, Accept and lock, app/legal/safety.tsx -------------------------------------
-
-/** Shown above the tips on Propose, Accept and lock: the hold is not a safety check (AAP 0.5.8). */
 export const SAFETY_NOTICE = 'Your deposit is not a safety guarantee.';
-
-/** The heading over {@link SAFETY_TIPS} on Propose, Accept and lock, and on the safety screen. */
 export const SAFETY_TIPS_TITLE = 'Basic safety tips';
 
-/** The five safety tips of AAP 0.5.8, in the request's order, shown under {@link SAFETY_NOTICE}. */
 export const SAFETY_TIPS = [
   'Meet only at the partner venue.',
   "Tell a friend where you'll be.",
@@ -80,21 +63,13 @@ export const SAFETY_TIPS = [
   'Leave if uncomfortable.',
   'Report problems.',
 ] as const;
-
-// --- Table Credit: settlement result, app/profile/credit.tsx, terms -----------------------------
-
 /**
  * What Table Credit is wherever it is granted or explained (AAP 0.5.8, 0.7.2): a forfeit becomes
  * credit, never cash, and no money is transmitted to a user or a venue.
  */
 export const TABLE_CREDIT_NOTICE =
   'Table Credit is in USD, redeemable at partner venues, and has no cash value.';
-
-// --- Age gate and terms: app/(auth)/age-gate.tsx, app/legal/terms.tsx ---------------------------
-
-/** The age-gate checkbox label on first sign-in, before any feature route works (AAP 0.12.2). */
 export const AGE_GATE_CONFIRM = 'I confirm I am 18 or older.';
-
 /**
  * The terms version a traveller accepts, sent as `termsVersion` in
  * `POST /v1/me/consents { adult: true, termsVersion }` (AAP 0.5.4). Bump it with
@@ -103,29 +78,17 @@ export const AGE_GATE_CONFIRM = 'I confirm I am 18 or older.';
  */
 export const TERMS_VERSION = '2026-11-04';
 
-/**
- * The three factual lines shown on the age gate under {@link AGE_GATE_CONFIRM} (AAP 0.5.8): what a
- * hold is, when one is released, and what Table Credit is. Neutral and identical for both
- * experiment variants, whose only variable is the framing copy on the deposit screens.
- */
 export const TERMS_SUMMARY = [
   `Each meetup places a refundable hold of ${DEPOSIT_AMOUNTS_TEXT} USD on both attendees' saved cards. Both holds are released when you both check in, when neither of you checks in, or when the meetup is cancelled at least ${LATE_CANCEL_WINDOW_HOURS} hours before it starts.`,
   `If only one of you checks in, the absent attendee's hold is captured. Cancelling less than ${LATE_CANCEL_WINDOW_HOURS} hours before the start counts as not showing up.`,
   TABLE_CREDIT_NOTICE,
 ] as const;
 
-/** One titled block of the terms screen: a heading and the paragraphs under it. */
 export interface TermsSection {
   readonly title: string;
   readonly paragraphs: readonly string[];
 }
 
-/**
- * The full terms shown on `app/legal/terms.tsx` (AAP 0.5.8): holds, forfeits and Table Credit in
- * the same neutral voice as {@link TERMS_SUMMARY}, plus the lost-hold, dispute and safety rules.
- * Every figure is a shared constant, so a window or a deposit change moves the API and this text
- * together.
- */
 export const TERMS_SECTIONS = [
   {
     title: 'Who can use Tablemate',
@@ -166,20 +129,8 @@ export const TERMS_SECTIONS = [
     paragraphs: [SAFETY_NOTICE],
   },
 ] as const satisfies readonly TermsSection[];
-
-/** Shown beside the terms in non-production builds, where the legal review has not happened. */
 export const TERMS_PENDING_REVIEW_NOTE = 'Pending legal review';
 
-// --- Lodging claim and visibility: app/lodgings/claim.tsx, app/profile/stay.tsx -----------------
-
-/**
- * Renders `YYYY-MM-DD` as `D Month YYYY`: `'2027-03-12'` -> `'12 March 2027'`.
- *
- * Stay dates are calendar dates with no time zone, so `Date` (which parses `YYYY-MM-DD` as UTC and
- * can print the previous day west of Greenwich) and `Intl` (which follows the device locale) are
- * both wrong here. Anything not exactly `YYYY-MM-DD` is returned unchanged, so a screen never
- * receives an exception from a value a traveller typed.
- */
 export function formatCalendarDate(date: string): string {
   const match = CALENDAR_DATE_PATTERN.exec(date);
   if (match === null) return date;
@@ -194,26 +145,13 @@ export function formatCalendarDate(date: string): string {
   return `${dayOfMonth} ${monthName} ${year}`;
 }
 
-/** The fields {@link lodgingCallNotice} names for the verification call. */
 export interface LodgingCallNoticeInput {
-  /** The lodging's name, as the directory lists it. */
   readonly lodging: string;
-  /** The booking name on the reservation; blank until the traveller fills the field. */
   readonly bookingName: string;
-  /** The stay's first night, `YYYY-MM-DD`. */
   readonly stayFrom: string;
-  /** The stay's last night, `YYYY-MM-DD`. */
   readonly stayTo: string;
 }
 
-/**
- * The lodging exception notice shown on `app/lodgings/claim.tsx` (AAP 0.5.8, 0.12.2). A
- * stay-verification call is the one place Tablemate's zero-knowledge principle is set aside, so the
- * traveller reads this before consent: the call names the booking and tells the lodging that a
- * guest with that name uses Tablemate. The screen renders the notice before
- * {@link LODGING_CALL_CONSENT_LABEL}'s checkbox becomes enabled, and a blank booking name becomes
- * `'the name on your booking'` so the notice reads in full while the field is still empty.
- */
 export function lodgingCallNotice({
   lodging,
   bookingName,
@@ -226,139 +164,51 @@ export function lodgingCallNotice({
   return `To verify your stay, an automated assistant will call ${lodging.trim()} and ask whether a guest named ${name === '' ? BOOKING_NAME_FALLBACK : name} is staying from ${from} to ${to}. The lodging will learn that a guest with this name uses Tablemate. This is an exception to Tablemate's zero-knowledge principle.`;
 }
 
-/** The visible label of the claim screen's consent checkbox, which gates the verification call. */
 export const LODGING_CALL_CONSENT_LABEL = 'I understand and agree to this call.';
 
-/**
- * The warning shown on `app/profile/stay.tsx` before `showStaying` can be turned on (AAP 0.5.8):
- * a guest list discloses where the traveller sleeps, so the switch stays off until this is read.
- */
 export function guestListWarning(city: string): string {
   return `Sharing where you sleep affects your safety. Verified travelers in ${city.trim()} will be able to see that you are staying here.`;
 }
 
-/** The label of the staying-visibility switch on `app/profile/stay.tsx`, which is off by default. */
 export const STAY_TOGGLE_LABEL = "Show that I'm staying here";
-
-/**
- * Re-exported so a screen can take its copy and this label from one module. The label belongs to
- * the shared package and the server alone applies the threshold -- a count under three never leaves
- * it as a number (AAP 0.5.4, 0.5.7) -- so nothing here computes or compares it.
- */
 export { GUEST_COUNT_BELOW_LABEL };
 
-/**
- * Renders a verified guest count for the lodging list, detail page and lodging console (AAP 0.5.8).
- * A number is always three or more; the label is printed verbatim.
- */
 export function guestCountText(count: GuestCount): string {
   return typeof count === 'number' ? String(count) : GUEST_COUNT_BELOW_LABEL;
 }
 
-// --- Attribution: suggestions, lodgings, app/legal/attribution.tsx ------------------------------
-
-/** OpenStreetMap's required credit, shown wherever place or lodging data appears (AAP 0.3.1). */
 export const OSM_ATTRIBUTION = '© OpenStreetMap contributors';
-
-/** Where {@link OSM_ATTRIBUTION} links on the suggestions screen and the attribution page. */
 export const OSM_COPYRIGHT_URL = 'https://www.openstreetmap.org/copyright';
 
-/** The licence the OpenStreetMap place and lodging data is used under (AAP 0.3.1). */
 export const OSM_LICENSE_NOTE =
   'Place data from OpenStreetMap is available under the Open Database License (ODbL).';
-
-/** ExchangeRate-API's required open-access credit for the daily FX table (AAP 0.3.1, 0.3.3). */
 export const FX_ATTRIBUTION = 'Rates By Exchange Rate API';
-
-/** Where {@link FX_ATTRIBUTION} links on the attribution page. */
 export const FX_ATTRIBUTION_URL = 'https://www.exchangerate-api.com';
-
-// --- Proof import: app/proof/{import,generate}.tsx, Discover banner, Propose button -------------
-
-/**
- * Shown before and during proving: it is literally true, because only `{ proof, publicSignals }`
- * leaves the device (AAP 0.5.8, 0.12.2).
- */
 export const EMAIL_STAYS_ON_DEVICE = 'Your email never leaves this device.';
 
-/** The Discover banner for a traveller with no valid proof, and the Propose button (AAP 0.5.8). */
 export const IMPORT_BANNER =
   'Import a booking confirmation to propose meetups and appear to other travelers.';
-
-/** Shown for an email whose DKIM domain matches no supported issuer (AAP 0.5.8, 0.5.5). */
 export const UNSUPPORTED_ISSUER = "This booking site isn't supported yet.";
 
-/**
- * The line under {@link UNSUPPORTED_ISSUER} naming the supported booking sites, or the registry's
- * empty line (AAP 0.5.5, 0.5.8). The names come from `GET /v1/zk/config`, which lists only verified
- * issuers; until samples arrive that list is empty.
- */
 export function supportedIssuersText(names: readonly string[]): string {
   return names.length === 0
     ? 'No booking sites are supported yet.'
     : `Supported booking sites: ${names.join(', ')}.`;
 }
 
-/**
- * The sentence naming the booking sites whose issuer the registry does not verify yet (AAP 0.5.5,
- * 0.5.8), for an email whose DKIM domain matches one of them: `app/proof/import.tsx` shows it as the
- * warning banner's message, and `app/proof/generate.tsx` composes it under
- * {@link supportedIssuersText}. The names come from `GET /v1/zk/config`, which lists an issuer this
- * way until its samples arrive and it receives a production leaf. Both screens render this one
- * sentence, so the two proof screens cannot drift from each other.
- */
 export function unsupportedIssuersText(names: readonly string[]): string {
   return `Not yet supported: ${names.join(', ')}.`;
 }
 
-// --- Check-in: app/meetups/[id]/{check-in,index}.tsx, app/(tabs)/meetups.tsx ---------------------
-
-/**
- * Confirms the caller's own check-in (AAP 0.5.7): the check-in screen's success card, and the line
- * that marks the caller as checked in on the meetup detail card and on the Meetups list row.
- */
 export const CHECKED_IN_NOTICE = "You're checked in.";
-
-/**
- * The pair-completion sentence shown under {@link CHECKED_IN_NOTICE} in the same success card
- * (AAP 0.5.7, 0.5.8): `CheckInResponse.bothCheckedIn` is true once the second pass check-in exists,
- * which is the meetup the headline completion rate counts.
- */
 export const BOTH_CHECKED_IN_NOTICE = "You're both checked in.";
-
-/**
- * The refusal a meetup that has already finished gets (AAP 0.5.3, 0.5.4). Every `MeetupStatus`
- * except `proposed` and `locked` is final, and the check-in route answers `409 not_locked` for all
- * of them alike, so the check-in screen resolves which one it is from `GET /meetups/:id` rather
- * than explaining a settled meetup as one that has not been locked yet. It is the terminal card's
- * title for a final status, and the sentence a `not_locked` refusal is announced with once a fresh
- * read reports one.
- */
 export const CHECK_IN_CLOSED_NOTICE = 'This meetup has finished, so check-in is closed.';
-
-/** Spoken on `app/meetups/[id]/check-in.tsx` when the scanner fills the code field. */
 export const VENUE_CODE_FILLED_NOTICE = 'Venue code filled in.';
 
-// --- Traveler list: app/(tabs)/discover.tsx, app/meetups/propose.tsx -----------------------------
-
-/** `1 witnessed meetup` for a single one, `N witnessed meetups` for every other count (AAP 0.5.7). */
 function witnessedMeetupsText(count: number): string {
   return count === 1 ? '1 witnessed meetup' : `${count} witnessed meetups`;
 }
 
-/**
- * The subtitle of a traveler row: witnessed meetups, interest tags, then the stay the proof covers,
- * joined with ` · ` (AAP 0.5.8).
- *
- * Every part comes from the `Tier0Profile` a traveler row carries (AAP 0.5.4), and each part is
- * optional: a traveler with no valid proof has `proofDates: null` and may have no tags, so the line
- * holds whichever parts exist and never a trailing or doubled separator. Tags are rendered as words
- * rather than `snake_case`, and the two stay dates go through {@link formatCalendarDate} for the same
- * reason they do there.
- *
- * The Discover list and the proposal form's "Meetup with" row show the same person, which is why this
- * line, rather than the row that renders it, lives here.
- */
 export function travelerSubtitle(profile: Tier0Profile): string {
   const parts = [witnessedMeetupsText(profile.reputation.witnessedMeetups)];
   const tags = profile.interestTags.map((tag) => tag.replace(/_/g, ' '));
@@ -371,29 +221,16 @@ export function travelerSubtitle(profile: Tier0Profile): string {
   return parts.join(' · ');
 }
 
-// --- Empty states (AAP 0.5.8, verbatim) ---------------------------------------------------------
-
-/** The Discover tab with no travelers holding a valid proof for the city (AAP 0.5.8). */
 export const DISCOVERY_EMPTY =
   'No travelers here yet. Check back later or plan your day at a partner venue.';
 
-/** The city page's partner-venue list when the city has no venues yet (AAP 0.5.8). */
 export const VENUES_EMPTY =
   "No partner venues in this city yet. We're adding them — check back soon.";
-
-/** Chat opened before either attendee has written anything (AAP 0.5.8). */
 export const MESSAGES_EMPTY = "Say hello — you can chat now that you've both held your seats.";
 
-/** The profile's reputation block before any witnessed meetup (AAP 0.5.8). */
 export const REPUTATION_EMPTY =
   'No witnessed meetups yet. Propose one at a partner venue to start.';
 
-/**
- * The message shown for each reason the suggestions route gave for an empty list (AAP 0.5.8),
- * keyed by `SuggestionEmptyReason`: a new reason fails the type check here rather than rendering an
- * undefined message. The API checks the reasons in that order, and the budget control sits beside
- * `budget_too_low`'s message.
- */
 export const SUGGESTIONS_EMPTY = {
   no_priced_places:
     "We don't have prices for places near this venue yet. Check back closer to your meetup.",
@@ -402,63 +239,15 @@ export const SUGGESTIONS_EMPTY = {
   budget_too_low:
     'Nothing nearby fits this budget. Raise the per-person budget to see more places.',
 } as const satisfies Record<SuggestionEmptyReason, string>;
-
-// --- Payments: apps/mobile/src/payments/* -------------------------------------------------------
-
-/**
- * Shown where a card would be entered when `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is absent (AAP
- * 0.11.2): the credential-free default stack runs with `STRIPE_MODE=mock`, so Stripe.js and
- * PaymentSheet have nothing to initialize. Card holds need a test-mode key.
- */
 export const CARD_PAYMENTS_UNAVAILABLE = 'Card payments are not configured in this environment.';
-
-// --- Report and dispute: app/report.tsx, app/meetups/[id]/dispute.tsx ---------------------------
-
-/**
- * The visible label of the free-text reason field both safety forms collect (AAP 0.5.8, 0.5.2):
- * `Report.reason` and `Dispute.reason` are one concept under one cap, so they carry one name. On
- * `app/meetups/[id]/dispute.tsx` the field sits under the kind radiogroup, whose own question is
- * "What happened?", and AAP 0.5.8 gives every control its own visible label, so the two names stay
- * distinct from each other.
- */
 export const REASON_FIELD_LABEL = 'Describe the problem';
 
-/**
- * The count left in a counted field, counted down from that field's own cap (AAP 0.5.8, 0.5.2):
- * `REASON_MAX_CHARS` (500) for both safety forms and `BIO_MAX_CHARS` for the profile bio, so every
- * counted field reads the same way.
- *
- * The count floors at zero. `maxLength` bounds what a traveller types or pastes, but a programmatic
- * fill -- a stored value reloaded into the form, an autofill or a browser extension -- can exceed
- * the cap, and a negative count would misstate what is left. One character remaining is singular.
- */
 export function remainingCharsText(value: string, maxLength: number): string {
   const remaining = Math.max(0, maxLength - value.length);
   return remaining === 1 ? '1 character left' : `${remaining} characters left`;
 }
 
-// --- Announcements: screen-reader notices for a change with no page load ------------------------
-
-/**
- * Spoken on `app/meetups/[id]/chat.tsx` when the chat header's More menu opens, because the menu
- * covers the block and report actions without a page change.
- */
 export const CHAT_MENU_ANNOUNCEMENT = 'More options: report or block.';
-
-/** Spoken on `app/settings/delete-account.tsx` when its confirmation step appears. */
 export const DELETE_CONFIRM_ANNOUNCEMENT = 'Press Permanently delete my account to confirm.';
-
-// --- Page chrome: apps/mobile/src/ui/Screen.tsx -------------------------------------------------
-
-/**
- * Names the `main` landmark that every screen's content region is (AAP 0.5.8, WCAG 2.4.1): a screen
- * reader user reaches the page's content from the landmark list, and {@link SKIP_TO_CONTENT} moves
- * keyboard focus into it.
- */
 export const MAIN_LANDMARK_LABEL = 'Main content';
-
-/**
- * The visible text of the skip link, and its accessible name (AAP 0.5.8, WCAG 2.4.1): the first Tab
- * stop of a screen's content, it moves focus past the navigation chrome every screen repeats.
- */
 export const SKIP_TO_CONTENT = 'Skip to content';

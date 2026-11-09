@@ -7,17 +7,13 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.security.MessageDigest
 
-// `cause` is null in both exceptions: Expo forwards the message and a chained cause across the bridge,
-// and a FileNotFoundException's text carries the path, which must never reach JS logs.
+// `cause` is null in both exceptions: Expo forwards the message and a chained cause across the bridge, and a FileNotFoundException's text carries the path, which must never reach JS logs.
 internal class FileMissingException : CodedException("ERR_FILE_MISSING", "The file to hash does not exist.", null)
 internal class HashFailedException : CodedException("ERR_HASH_FAILED", "The file could not be hashed.", null)
 
 /**
- * Incremental SHA-256 over a file on disk, used to check a downloaded proving key against the
- * `sha256` of the `zkey` entry in `artifacts.manifest.json`.
- *
- * A proving key runs from hundreds of megabytes to gigabytes, so the file is never read whole and
- * never memory-mapped: one fixed buffer is fed to the digest in turn.
+ * Incremental SHA-256 over a file on disk, used to check a downloaded proving key against the `sha256` of the `zkey` entry in `artifacts.manifest.json`.
+ * A proving key runs from hundreds of megabytes to gigabytes, so the file is never read whole and never memory-mapped: one fixed buffer is fed to the digest in turn.
  */
 internal object Sha256File {
   private const val BUFFER_SIZE = 1 shl 20

@@ -1,35 +1,32 @@
 /**
  * Witnessed check-in: the guarded evaluation of a venue's rotating code that records presence, and the distance
- * bucket it was made at (AAP 0.5.1, 0.5.4, 0.5.7, 0.12.2).
+ * bucket it was made at.
  *
  * `POST /meetups/:id/check-in` hands this file the submitted code and the device's coordinates, and
- * {@link checkIn} answers `{ status: 'locked', bothCheckedIn }` or throws the failure AAP 0.5.4 lists for that
- * route, in that row's order: `403 not_participant`, `409 not_locked`, `409 already_checked_in`,
- * `410 outside_window`, `422 invalid_code`, `422 outside_geofence`. Acceptance is the conjunction of AAP 0.5.7 —
- * a `locked` meetup, the window from `CHECK_IN_OPENS_BEFORE_MINUTES` (15) before the start to
- * `CHECK_IN_CLOSES_AFTER_MINUTES` (45) after it, a distance of at most `GEOFENCE_METERS` (150) metres from the
- * venue, and a code the venue displayed within `CODE_TOLERANCE_STEPS` (1) step of the server clock — and every
- * term is judged from the `now` the route stamped the request with. No device-supplied instant is read: the
- * console renders the code `consoles/routes.ts` derives, so a skewed device clock moves a countdown and never an
- * acceptance.
+ * {@link checkIn} answers `{ status: 'locked', bothCheckedIn }` or throws the failure the contract lists for that
+ * route, in that row's order: `403 not_participant`, `409 not_locked`, `409 already_checked_in`, `410 outside_window`,
+ * `422 invalid_code`, `422 outside_geofence`. Acceptance is the conjunction of four terms — a `locked` meetup, the
+ * window from `CHECK_IN_OPENS_BEFORE_MINUTES` (15) before the start to `CHECK_IN_CLOSES_AFTER_MINUTES` (45) after it,
+ * a distance of at most `GEOFENCE_METERS` (150) metres from the venue, and a code the venue displayed within
+ * `CODE_TOLERANCE_STEPS` (1) step of the server clock — and every term is judged from the `now` the route stamped
+ * the request with. No device-supplied instant is read: the console renders the code `consoles/routes.ts` derives, so
+ * a skewed device clock moves a countdown and never an acceptance.
  *
- * **The stored row holds no coordinates (AAP 0.5.2, 0.12.2).** `lat` and `lng` are bound parameters of the one
- * `ST_Distance` query `distanceFrom` runs, and that is all they are: never a column value, never part of an outbox
- * payload, an analytics prop or a notification, never a log field. What a check-in stores is its result, the
- * {@link distanceBucketFor} bucket and the failure code. The one log line per attempt carries the meetup, the
- * result and, on a refusal, the failure code.
+ * **The stored row holds no coordinates.** `lat` and `lng` are bound parameters of the one `ST_Distance` query
+ * `distanceFrom` runs, and that is all they are: never a column value, never part of an outbox payload, an analytics
+ * prop or a notification, never a log field. What a check-in stores is its result, the {@link distanceBucketFor}
+ * bucket and the failure code. The one log line per attempt carries the meetup, the result and, on a refusal, the
+ * failure code.
  *
- * **One transaction, fenced on the caller (AAP 0.3.2, 0.5.3).** The whole evaluation runs inside a single
- * `transact` with `fenceUserId`, so it serializes against `DELETE /me`, and inside it takes {@link lockMeetup}
- * first, which serializes it against settlement, a cancellation, a block, a dispute and the hold-loss webhook. The
- * transaction resolves with a {@link CheckInOutcome} value instead of throwing a refusal, because the two `422`s
- * below still write a `fail` row and a throw would roll it back; only a refusal that owes no row is thrown from
- * inside.
+ * **One transaction, fenced on the caller.** The whole evaluation runs inside a single `transact` with `fenceUserId`,
+ * so it serializes against `DELETE /me`, and inside it takes {@link lockMeetup} first, which serializes it against
+ * settlement, a cancellation, a block, a dispute and the hold-loss webhook. The transaction resolves with a
+ * {@link CheckInOutcome} value instead of throwing a refusal, because the two `422`s below still write a `fail` row
+ * and a throw would roll it back; only a refusal that owes no row is thrown from inside.
  *
- * **`bothCheckedIn` does not wait for settlement (AAP 0.5.7).** The transaction storing the second `pass` sets
+ * **`bothCheckedIn` does not wait for settlement.** The transaction storing the second `pass` sets
  * `Meetup.bothCheckedInAt` and emits the funnel stage `both_checked_in`, in the same transaction as the row it
- * counts, so a later dispute, a `no_fault` resolution or a hold loss neither delays nor removes it; settlement
- * reads the `pass` rows alone.
+ * counts, so a later dispute, a `no_fault` resolution or a hold loss neither delays nor removes it.
  *
  * A leaf of the module graph: it imports the meetup row lock and read helpers, the code and secret helpers, the
  * outbox, analytics and notification writers, and the shared constants — no handler, and nothing under `payments/`,
@@ -61,10 +58,6 @@ import type { MeetupRow } from './queries.ts';
 // erased at compile time, and nothing of that module is read here at runtime.
 import type { AppServices } from '../../app.ts';
 
-/*
- * Constants (AAP 0.5.2, 0.5.7, 0.11.1)
- */
-
 /**
  * The partial unique index that makes a second passing check-in a conflict: `UNIQUE (meetup_id, user_id) WHERE
  * result = 'pass'`, added by the init migration. `isUniqueViolation` names it, which is what turns the race two
@@ -74,10 +67,6 @@ const CHECK_IN_PASS_INDEX = 'check_in_pass_key';
 
 /** The event name every log line of this file carries (AAP 0.11.1). */
 const CHECK_IN_EVENT = 'check_in';
-
-/*
- * Outcomes (AAP 0.5.3, 0.5.4)
- */
 
 /** The two refusals that store a `fail` row, and the codes the route answers them with (AAP 0.5.4). */
 type CheckInRefusal = 'invalid_code' | 'outside_geofence';
@@ -104,10 +93,6 @@ interface CheckInPassOutcome {
  */
 type CheckInOutcome = CheckInPassOutcome | CheckInRefusalOutcome;
 
-/*
- * Pure helper (AAP 0.5.7)
- */
-
 /**
  * The bucket a check-in's distance falls in: `lt_50` under {@link DISTANCE_BUCKET_SPLIT_METERS} (50 m) and `m50_150`
  * from there up to the {@link GEOFENCE_METERS} (150 m) geofence (AAP 0.5.7).
@@ -118,10 +103,6 @@ type CheckInOutcome = CheckInPassOutcome | CheckInRefusalOutcome;
 export function distanceBucketFor(meters: number): DistanceBucket {
   return meters < DISTANCE_BUCKET_SPLIT_METERS ? 'lt_50' : 'm50_150';
 }
-
-/*
- * Helpers of the transaction (AAP 0.5.2, 0.5.4, 0.5.7)
- */
 
 /**
  * Stores a failing check-in and answers the refusal the route turns into its error reply.
@@ -169,10 +150,6 @@ async function emitBothCheckedIn(
     props: { variantPairing: meetup.variantPairing, depositCents: meetup.depositCents },
   });
 }
-
-/*
- * The route (AAP 0.5.4, 0.5.7)
- */
 
 /**
  * Evaluate one witnessed check-in and record it (AAP 0.5.4, 0.5.7).

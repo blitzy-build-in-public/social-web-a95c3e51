@@ -1,6 +1,4 @@
-/**
- * Operator queues (`/ops/queues`): the five queues of the operator area over one shared list.
- */
+/** Operator queues (`/ops/queues`): the five queues of the operator area over one shared list. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -155,7 +153,6 @@ function createCountFormatter(): Intl.NumberFormat | null {
   }
 }
 const COUNT_FORMATTER = createCountFormatter();
-/** A count as an operator reads it, grouped by the runtime's locale where it has number formats. */
 function formatCount(value: number): string {
   return COUNT_FORMATTER?.format(value) ?? String(value);
 }
@@ -170,8 +167,7 @@ const CODE_SENTENCES: readonly (readonly [string, string])[] = [
   ],
   ['not_found', 'This item no longer exists.'],
   ['claim_not_found', 'This item no longer exists.'],
-  // The queue decides through one `PATCH` per domain and the API allows 60 of them per minute per
-  // user (AAP 0.5.4), so the one answer an operator meets mid-review says what to do next.
+  // The queue decides through one `PATCH` per domain and the API allows 60 of them per minute per user, so the one answer an operator meets mid-review says what to do next.
   ['rate_limited', 'Too many decisions in the last minute. Wait a minute, then continue.'],
 ];
 const sentenceFor = (code: ClientErrorCode): string =>
@@ -324,16 +320,7 @@ interface QueueSpec<T> {
   readonly emptyText: string;
   readonly header?: (items: readonly T[]) => ReactNode;
 }
-/**
- * One queue's panel: the queue's own header — its overdue notice, its error banner and its loading or
- * empty line — over a virtualised list of one Card per row, which owns the scrolling the screen used to
- * do as a whole.
- *
- * The list keeps the framework's default window rather than a tight one on purpose: a row holds the
- * operator's own unsaved state — a half-typed price form, an armed confirmation, revealed booking
- * details — and a window of a couple of viewports would unmount a Card the operator had scrolled away
- * from and lose it.
- */
+/** One queue's panel: the queue's own header over a virtualised list of one Card per row. The list keeps the framework's default window on purpose: a row holds the operator's own unsaved state, and a tighter window would unmount a Card the operator had scrolled away from and lose it. */
 function QueuePanel<T>({ spec }: { readonly spec: QueueSpec<T> }): ReactElement {
   const query: UseQueryResult<{ readonly items: readonly T[] }, Error> = useQuery(spec);
   const items = query.data?.items ?? [];
@@ -811,9 +798,7 @@ const PROHIBIT_DOMAIN = { label: 'Prohibit', hint: 'Its places then take the pho
 
 interface CrawlDomainRowProps {
   readonly entry: AdminCrawlDomainDto;
-  /** Whether the row is part of the bulk run's selection. */
   readonly selected: boolean;
-  /** Adds or removes the row from the bulk selection. */
   readonly onToggle: () => void;
 }
 
@@ -888,17 +873,13 @@ const REPORTS_QUEUE: QueueSpec<AdminReportDto> = {
   },
 };
 
-/**
- * The Call tasks tab's own controls and copy (AAP 0.5.4, 0.5.8), with `LABELS` for the chip wording so
- * one status or kind reads the same here as it does on a row.
- */
+/** The Call tasks tab's own controls and copy, with `LABELS` for the chip wording so one status or kind reads the same here as it does on a row. */
 const CALL_TASKS_EMPTY_TEXT = 'No call tasks are waiting.';
 const CALL_TASKS_SEARCH_LABEL = 'Search by name';
 const CALL_TASKS_STATUS_LABEL = 'Status';
 const CALL_TASKS_KIND_LABEL = 'Kind';
 /** The page one read of the queue asks for, inside the contract's own 1 to 500 bound (AAP 0.5.4). */
 const CALL_TASKS_PAGE_SIZE = 100;
-/** How long typing pauses before the search term is applied, in milliseconds. */
 const CALL_TASKS_SEARCH_DEBOUNCE_MS = 300;
 /**
  * The most a search term may carry, the bound the contract's own schema puts on `q`: a longer term is
@@ -926,11 +907,7 @@ const CALL_TASKS_KIND_FILTERS: readonly {
   { value: 'lodging_stay_verification', label: LABELS.callKind.lodging_stay_verification },
 ];
 
-/**
- * The queue's query string: only the filters that are actually set, because the route validates the
- * query with a strict schema and answers `400 invalid_field` for a value it cannot read, and because
- * `exactOptionalPropertyTypes` forbids handing it an empty one.
- */
+/** The queue's query string: only the filters that are actually set, because the route validates the query with a strict schema and `exactOptionalPropertyTypes` forbids handing it an empty one. */
 function callTasksQuery(
   status: CallTaskStatusFilter,
   kind: CallTaskKindFilter,
@@ -945,17 +922,7 @@ function callTasksQuery(
   return query;
 }
 
-/**
- * The Call tasks tab (AAP 0.5.4, 0.5.8): the queue's own filters over one page at a time.
- *
- * The search term is applied from the change handler after a pause in typing, so one search reads one
- * page rather than one per keystroke, and never from an effect. Every filter change moves the read to
- * a new query key — the key stays under the one `queryKeys.adminCallTasks` prefix a resolution
- * invalidates — so a new filter starts a fresh page and drops the pages before it. The count line
- * says how many of the tasks the filters match are on screen, and the control below the rows loads
- * the next page while the answer still carries a cursor. The rows themselves, with their resolve
- * controls, are the ones the other queues render.
- */
+/** The Call tasks tab: the queue's own filters over one page at a time. The search term is applied after a pause in typing so one search reads one page, every filter change moves the read to a new query key under the one `queryKeys.adminCallTasks` prefix, and the rows and their resolve controls are the ones the other queues render. */
 function CallTasksPanel(): ReactElement {
   const [search, setSearch] = useState('');
   const [term, setTerm] = useState('');
@@ -1020,8 +987,6 @@ function CallTasksPanel(): ReactElement {
     busy: queue.isFetchingNextPage,
     onPress: () => void queue.fetchNextPage(),
   };
-  // No count when the filters match a single task: it is on screen already, and the line would report
-  // one of one.
   const countLine =
     total <= 1 ? null : (
       <Text style={styles.facts} testID="ops-call-tasks-count">
@@ -1077,18 +1042,11 @@ const LODGING_CLAIMS_QUEUE: QueueSpec<AdminLodgingClaimDto> = {
 type SelectionToggleProps = {
   /** The domain this control selects; it forms the rest of the control's accessible name. */
   readonly domain: string;
-  /** Whether the row is part of the bulk selection. */
   readonly selected: boolean;
-  /** Test id of the pressable, so a test can find the row's own selection control. */
   readonly testID: string;
-  /** Adds or removes the row from the bulk selection. */
   readonly onToggle: () => void;
 };
-/**
- * The per-row selection control the bulk decision reads (AAP 0.5.8): a real checkbox, at the 44x44
- * target `styles.control` carries, named for a screen reader with the domain it selects and showing
- * its state as text as well as by its border, because status is never colour alone.
- */
+/** The per-row selection control the bulk decision reads: a real checkbox at the 44x44 target `styles.control` carries, named for a screen reader with the domain it selects and showing its state as text as well as by its border, because status is never colour alone. */
 function SelectionToggle({
   domain,
   selected,
@@ -1116,16 +1074,12 @@ function SelectionToggle({
   );
 }
 
-/**
- * The Crawl domains tab's own controls and copy (AAP 0.5.4, 0.5.6, 0.5.8), with
- * `LABELS.crawlDecision` for the filter wording so a decision reads the same here as it does on a row.
- */
+/** The Crawl domains tab's own controls and copy, with `LABELS.crawlDecision` for the filter wording so a decision reads the same here as it does on a row. */
 const CRAWL_DOMAINS_EMPTY_TEXT = 'No domains are waiting for a site-terms decision.';
 const CRAWL_DOMAINS_NO_MATCH_TEXT = 'No domain matches the search and the decision filter.';
 const CRAWL_DOMAINS_SEARCH_LABEL = 'Search by domain';
 const CRAWL_DOMAINS_DECISION_LABEL = 'Decision';
 const CRAWL_DOMAINS_SORT_LABEL = 'Sort';
-/** How long typing pauses before the search term is applied, in milliseconds. */
 const CRAWL_DOMAINS_SEARCH_DEBOUNCE_MS = 300;
 type CrawlDecisionFilter = 'all' | CrawlDecision;
 type CrawlDomainOrder = 'queue' | 'domain';
@@ -1147,14 +1101,7 @@ const CRAWL_DOMAIN_ORDERS: readonly {
   { value: 'domain', label: 'Domain A to Z' },
 ];
 
-/**
- * The bulk decision over the rows on screen (AAP 0.5.4, 0.5.6): the most domains one run decides,
- * and the copy its controls and its run carry.
- *
- * One decision is one `PATCH`, and every mutating route is limited to 60 requests per minute per user
- * (AAP 0.5.4), so a run of {@link CRAWL_DOMAINS_BULK_LIMIT} leaves the operator room for their own
- * decisions inside the same minute; a larger selection is decided by running again.
- */
+/** The bulk decision over the rows on screen: the most domains one run decides. One decision is one `PATCH`, and every mutating route is limited to 60 requests per minute per user, so a run of {@link CRAWL_DOMAINS_BULK_LIMIT} leaves the operator room for their own decisions inside the same minute. */
 const CRAWL_DOMAINS_BULK_LIMIT = 50;
 const CRAWL_DOMAINS_BULK_LABEL = 'Decide in bulk';
 const CRAWL_DOMAINS_BULK_BOUND = `A run decides at most ${CRAWL_DOMAINS_BULK_LIMIT} domains; a larger selection is decided in successive runs.`;
@@ -1176,41 +1123,19 @@ const SELECTED_TOGGLE_TEXT = 'Selected';
 
 /** One bulk run, from the confirmation that started it to its last answered request. */
 interface BulkDecisionRun {
-  /** How many domains the run set out to decide, at most {@link CRAWL_DOMAINS_BULK_LIMIT}. */
   readonly total: number;
-  /** How many domains the run has decided so far. */
   readonly done: number;
-  /** True until the run's last request has answered. */
   readonly running: boolean;
-  /** True when the run ended before its last domain, through the cancel control or a failure. */
   readonly stopped: boolean;
 }
 
-/** What the run's own line says: its progress while it runs, and where it ended. */
 function bulkRunText(run: BulkDecisionRun): string {
   if (run.running) return `Decided ${run.done} of ${run.total}…`;
   if (run.stopped) return `Stopped after ${run.done} of ${run.total}`;
   return `Decided ${run.done} of ${run.total}`;
 }
 
-/**
- * The Crawl domains tab (AAP 0.5.4, 0.5.6, 0.5.8): the operator's site-terms review queue.
- *
- * A domain the crawler has not been allowed to fetch is never fetched (AAP 0.5.6), so this is the
- * one queue that arrives in the hundreds and holds the menu pipeline up until it is worked through:
- * the read returns the domains awaiting review first, capped at 500 rows, and carries no cursor and
- * no server-side filter. The tab therefore narrows what is on screen — a search over the domain, a
- * filter on the decision, and the queue's own order or domain A to Z — and says how many of the
- * loaded rows the filters leave.
- *
- * The same volume is what makes one row at a time impractical, so the rows on screen carry a
- * selection and the panel decides the whole selection in one run; {@link decideSelected} states the
- * bound that run works under. Every per-row control stays exactly as it was, for the single decision.
- *
- * The search term is applied from the change handler after a pause in typing, exactly as the Call
- * tasks tab applies its own, so a search filters the loaded list rather than the queue one request
- * per keystroke, and the read keeps the one query key a resolution invalidates.
- */
+/** The Crawl domains tab: the operator's site-terms review queue. A domain the crawler has not been allowed to fetch is never fetched, so this queue arrives in the hundreds and holds the menu pipeline up until it is worked through: the read returns the domains awaiting review first, capped at 500 rows, with no cursor and no server-side filter, so the tab narrows what is on screen and decides the rows on screen in bounded runs. */
 function CrawlDomainsPanel(): ReactElement {
   const [search, setSearch] = useState('');
   const [term, setTerm] = useState('');
@@ -1243,8 +1168,7 @@ function CrawlDomainsPanel(): ReactElement {
         (decision === 'all' || entry.decision === decision) &&
         (needle === '' || entry.domain.toLowerCase().includes(needle)),
     );
-    // Domain A to Z by code unit: a registrable domain is lower-case ASCII (AAP 0.5.2), so the order
-    // is the same on every runtime without reading a locale's collation.
+    // Domain A to Z by code unit: a registrable domain is lower-case ASCII, so the order is the same on every runtime without reading a locale's collation.
     return order === 'domain'
       ? [...matching].sort((left, right) =>
           left.domain < right.domain ? -1 : left.domain > right.domain ? 1 : 0,
@@ -1259,7 +1183,6 @@ function CrawlDomainsPanel(): ReactElement {
     announced.current = errorMessage;
   }, [errorMessage]);
 
-  // What a run would decide: the selected rows among those on screen, in the order they are shown.
   const targets = useMemo(
     () => shown.filter((entry) => selected.has(entry.domain)).map((entry) => entry.domain),
     [shown, selected],
@@ -1283,25 +1206,14 @@ function CrawlDomainsPanel(): ReactElement {
     });
   };
 
-  // "Select all shown" means the rows the filters leave, and nothing else: what a run decides is
-  // always the selection the operator can see.
+  // Select all shown means the rows the filters leave, and nothing else: what a run decides is always the selection the operator can see.
   const selectAllShown = (): void => setSelected(new Set(shown.map((entry) => entry.domain)));
   const clearSelection = (): void => setSelected(new Set<string>());
   const cancelRun = (): void => {
     cancelRequested.current = true;
   };
 
-  /**
-   * Decides the selected rows one request at a time (AAP 0.5.4, 0.5.6).
-   *
-   * The run is bounded by the contract rather than by taste: one `PATCH` per domain, one request in
-   * flight at a time, at most {@link CRAWL_DOMAINS_BULK_LIMIT} domains to a run, and no second run
-   * while one is in flight. It stops at the first failure and as soon as the operator cancels, and
-   * keeps what it has already recorded — those domains leave the selection, so the next run picks up
-   * the rest. A failure is reported through the sentence its code has, which is what tells an
-   * operator held by the rate limit to continue in a minute. The queue is invalidated on the way out,
-   * exactly as a row's own decision invalidates it, so what is on screen is what the server now holds.
-   */
+  /** Decides the selected rows one request at a time, bounded by the contract: one `PATCH` per domain, one request in flight at a time, at most {@link CRAWL_DOMAINS_BULK_LIMIT} domains to a run and no second run while one is in flight. It stops at the first failure and as soon as the operator cancels, keeps what it has recorded, and invalidates the queue on the way out, exactly as a row's own decision does. */
   const decideSelected = async (chosen: Exclude<CrawlDecision, 'uncertain'>): Promise<void> => {
     if (runInFlight.current) return;
     const planned = targets.slice(0, CRAWL_DOMAINS_BULK_LIMIT);
@@ -1350,8 +1262,7 @@ function CrawlDomainsPanel(): ReactElement {
   const showEmpty = loaded.length === 0 && errorMessage === null && !queue.isPending;
   const showNoMatch = loaded.length > 0 && shown.length === 0;
   const retry = { ...RETRY_ACTION, onPress: () => void queue.refetch() };
-  // The count says how many of the loaded rows the filters leave on screen. It counts the read's own
-  // items rather than a server total, because the route answers neither a total nor a cursor.
+  // The count says how many of the loaded rows the filters leave on screen, counting the read's own items, because the route answers neither a total nor a cursor.
   const countLine =
     loaded.length === 0 ? null : (
       <Text style={styles.facts} testID="ops-crawl-domains-count">
@@ -1384,14 +1295,11 @@ function CrawlDomainsPanel(): ReactElement {
     targets.length === 0
       ? CRAWL_DOMAINS_NO_SELECTION_TEXT
       : `Selected ${formatCount(targets.length)} of the ${formatCount(shown.length)} domains shown`;
-  // The bound again, against this selection, when one run cannot take all of it: an operator reading
-  // the confirm controls knows the run is one of several rather than the whole review.
+  // The bound again, against this selection, when one run cannot take all of it: an operator reading the confirm controls knows the run is one of several.
   const boundLine =
     targets.length > CRAWL_DOMAINS_BULK_LIMIT
       ? `This run decides the first ${CRAWL_DOMAINS_BULK_LIMIT} of them; run it again for the rest`
       : null;
-  // The bulk controls appear as soon as the read has rows: with an empty queue there is nothing to
-  // select, and the panel says so in the queue's own empty text.
   const bulkControls =
     loaded.length === 0 ? null : (
       <View style={styles.group}>
@@ -1424,8 +1332,7 @@ function CrawlDomainsPanel(): ReactElement {
         </View>
         {targets.length === 0 ? null : (
           <View style={styles.actions}>
-            {/* Keyed on the run, so starting one returns both to their unarmed shape: the next set
-                cannot be decided by a stray click on a control that is still armed. */}
+            {/* Keyed on the run, so starting one returns both to their unarmed shape: the next set cannot be decided by a stray click on a control that is still armed. */}
             <InlineConfirm
               key={`allow-${String(busy)}`}
               {...allowButton}
@@ -1591,12 +1498,8 @@ const styles = StyleSheet.create({
   controlFocused: { borderColor: colors.focusRing },
   controlLabel: { ...typography.label, color: colors.text },
   tabLabelSelected: { ...SELECTED_LABEL, textDecorationLine: 'underline' },
-  // Read by the crawl-domain row selection control, whose label shows its own state in words.
   controlLabelSelected: { ...SELECTED_LABEL },
-  // The active panel is the list that owns the scrolling, so it takes the height the tablist leaves.
   panel: { flex: 1 },
-  // The step the panel's own children kept when the screen scrolled as a whole: the list header's
-  // controls and the list's cells each carry it, and a row's own state keeps its Card.
   panelHeader: { gap: spacing.md },
   listContent: { gap: spacing.md },
   fill: { flex: 1 },

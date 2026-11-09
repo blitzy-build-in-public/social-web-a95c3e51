@@ -1,11 +1,4 @@
-/**
- * The itinerary-proof contract (AAP 0.5.5, AAP 0.8.1): what the device submits, what the API
- * answers, and the zero-knowledge configuration both sides agree on. `ProofSubmission` and every
- * configuration schema below is a `z.strictObject` at every nesting level, because an unknown key
- * must be a rejection (AAP 0.12.2), while the response DTOs drop unknown keys. The circuit's
- * numeric contracts — the public-signal order, the date-format and charset codes, the registry
- * depth and the issuer-id range — are written down once here and imported, never repeated.
- */
+/** The itinerary-proof contract (AAP 0.8.1): what the device submits, what the API answers, and the zero-knowledge configuration both sides agree on. `ProofSubmission` and every configuration schema below is a `z.strictObject` at every nesting level, because an unknown key must be a rejection, while the response DTOs drop unknown keys. The circuit's numeric contracts — the public-signal order, the date-format and charset codes, the registry depth and the issuer-id range — are written once here and imported, never repeated. */
 
 import { z } from 'zod';
 
@@ -18,13 +11,7 @@ import {
   Uuid,
   utf8ByteLength,
 } from './common.ts';
-
-/**
- * The seven public signals of `tablemate_itinerary.circom`, in the order snarkjs delivers them: the
- * outputs `cityId`, `arrivalDate`, `departureDate`, `issuerId` and `nullifier` first, then the
- * public inputs `registryRoot` and `nullifierSalt`. Position is part of the contract, and any other
- * count is the API's `400 proof_malformed` (AAP 0.5.4).
- */
+/** The seven public signals of `tablemate_itinerary.circom`, in the order snarkjs delivers them: the outputs `cityId`, `arrivalDate`, `departureDate`, `issuerId` and `nullifier` first, then the public inputs `registryRoot` and `nullifierSalt`. Position is part of the contract, and any other count is the API's `400 proof_malformed`. */
 export const PUBLIC_SIGNAL_NAMES = [
   'cityId',
   'arrivalDate',
@@ -34,29 +21,19 @@ export const PUBLIC_SIGNAL_NAMES = [
   'registryRoot',
   'nullifierSalt',
 ] as const;
-
-/** One public signal's name, in circuit order (AAP 0.5.5). */
+/** One public signal's name, in circuit order. */
 export type PublicSignalName = (typeof PUBLIC_SIGNAL_NAMES)[number];
-
 /** A G1 point of BN254 as snarkjs writes it, each coordinate a decimal field element. */
 export const G1Point = z.tuple([FieldElement, FieldElement, FieldElement]);
 export type G1Point = z.infer<typeof G1Point>;
-
-/**
- * A G2 point of BN254 as snarkjs writes it — `[[x0, x1], [y0, y1], [1, 0]]` (AAP 0.5.5); the inner
- * pairs are the Fp2 coefficients in the order snarkjs's verifier reads them.
- */
+/** A G2 point of BN254 as snarkjs writes it — `[[x0, x1], [y0, y1], [1, 0]]`; the inner pairs are the Fp2 coefficients in the order snarkjs's verifier reads them. */
 export const G2Point = z.tuple([
   z.tuple([FieldElement, FieldElement]),
   z.tuple([FieldElement, FieldElement]),
   z.tuple([FieldElement, FieldElement]),
 ]);
 export type G2Point = z.infer<typeof G2Point>;
-
-/**
- * A Groth16 proof over BN254 in the JSON shape `snarkjs.groth16.verify` consumes (AAP 0.5.5);
- * strict, so a proof carrying any other key is rejected before it is verified.
- */
+/** A Groth16 proof over BN254 in the JSON shape `snarkjs.groth16.verify` consumes; strict, so a proof carrying any other key is rejected before it is verified. */
 export const Groth16Proof = z.strictObject({
   pi_a: G1Point,
   pi_b: G2Point,
@@ -65,19 +42,12 @@ export const Groth16Proof = z.strictObject({
   curve: z.literal('bn128'),
 });
 export type Groth16Proof = z.infer<typeof Groth16Proof>;
-
-/**
- * The body of `POST /itinerary-proofs` — the only thing the server ever receives about the email
- * (AAP 0.5.4, AAP 0.12.2). Strict at both levels, and the signal count is fixed at seven; guest
- * name, booking reference, email text, address and price are private inputs and appear in neither
- * part (criterion 3).
- */
+/** The body of `POST /itinerary-proofs` — the only thing the server ever receives about the email. Strict at both levels, with the signal count fixed at seven; guest name, booking reference, email text, address and price are private inputs and appear in neither part. */
 export const ProofSubmission = z.strictObject({
   proof: Groth16Proof,
   publicSignals: z.array(FieldElement).length(PUBLIC_SIGNAL_NAMES.length),
 });
 export type ProofSubmission = z.infer<typeof ProofSubmission>;
-
 /** The `201` response of `POST /itinerary-proofs`: the stored proof's id and the stay it proves. */
 export const ProofAccepted = z.object({
   proofId: Uuid,
@@ -86,33 +56,19 @@ export const ProofAccepted = z.object({
   departureDate: DateOnly,
 });
 export type ProofAccepted = z.infer<typeof ProofAccepted>;
-
-/**
- * The date layouts `lib/date_parse.circom` can parse, selected per issuer template: `ISO_YMD`,
- * `D_MONTH_YYYY`, `MONTH_D_YYYY` and `DOW_D_MON_YYYY` (AAP 0.5.5).
- */
+/** The date layouts `lib/date_parse.circom` can parse, selected per issuer template: `ISO_YMD`, `D_MONTH_YYYY`, `MONTH_D_YYYY` and `DOW_D_MON_YYYY`. */
 export const DateFormat = z.enum(['ISO_YMD', 'D_MONTH_YYYY', 'MONTH_D_YYYY', 'DOW_D_MON_YYYY']);
 export type DateFormat = z.infer<typeof DateFormat>;
-
-/**
- * The code each date layout contributes to the template hash, matching `lib/date_parse.circom` and
- * `template-hash.ts`; a template differing in this code hashes to a value with no registry leaf.
- */
+/** The code each date layout contributes to the template hash, matching `lib/date_parse.circom` and `template-hash.ts`: a template differing in this code hashes to a value with no registry leaf. */
 export const DATE_FORMAT_CODE = {
   ISO_YMD: 1,
   D_MONTH_YYYY: 2,
   MONTH_D_YYYY: 3,
   DOW_D_MON_YYYY: 4,
 } as const satisfies Record<DateFormat, number>;
-
-/**
- * The byte set an extracted value may use: `digits` is `0`-`9`; `alnum` adds `A`-`Z`, `a`-`z` and
- * `-`; `date` adds the space and comma the English layouts need; `text` adds everything from `0x20`
- * to `0x7E` and at or above `0x80`, so an accented place name still extracts.
- */
+/** The byte set an extracted value may use: `digits` is `0`-`9`; `alnum` adds `A`-`Z`, `a`-`z` and `-`; `date` adds the space and comma the English layouts need; `text` adds `0x20`-`0x7E` and at or above `0x80`, so an accented place name still extracts. */
 export const CharsetName = z.enum(['digits', 'alnum', 'date', 'text']);
 export type CharsetName = z.infer<typeof CharsetName>;
-
 /** The code each charset contributes to the template hash. */
 export const CHARSET_CODE = {
   digits: 1,
@@ -120,13 +76,7 @@ export const CHARSET_CODE = {
   date: 3,
   text: 4,
 } as const satisfies Record<CharsetName, number>;
-
-/**
- * One extractable field of an issuer's confirmation email: `anchor` is the literal text preceding
- * the value in the decoded body, `terminator` the byte that ends it and `charset` the bytes the
- * value may contain (AAP 0.5.5). The anchor is 1-32 UTF-8 bytes and must occur exactly once in the
- * body window.
- */
+/** One extractable field of an issuer's confirmation email: `anchor` is the literal text preceding the value in the decoded body, `terminator` the byte that ends it and `charset` the bytes the value may contain. The anchor is 1-32 UTF-8 bytes and must occur exactly once in the body window. */
 export const TemplateField = z.strictObject({
   anchor: z.string().refine((s) => {
     const bytes = utf8ByteLength(s);
@@ -136,12 +86,7 @@ export const TemplateField = z.strictObject({
   charset: CharsetName,
 });
 export type TemplateField = z.infer<typeof TemplateField>;
-
-/**
- * The registered extraction template of one issuer: where each of the four fields sits and how its
- * dates are written; no field is read from the headers, because the statement places the stay in
- * the body (AAP 0.5.5).
- */
+/** The registered extraction template of one issuer: where each of the four fields sits and how its dates are written; no field is read from the headers, because the statement places the stay in the body. */
 export const IssuerTemplate = z.strictObject({
   fields: z.strictObject({
     city: TemplateField,
@@ -152,37 +97,20 @@ export const IssuerTemplate = z.strictObject({
   dateFormat: DateFormat,
 });
 export type IssuerTemplate = z.infer<typeof IssuerTemplate>;
-
-/**
- * One DKIM key record of an issuer (AAP 0.5.5); the records are filled from the `d=` and `s=` tags
- * of a real signed email, and the registry builder derives each `pubkeyHash` from the modulus.
- */
+/** One DKIM key record of an issuer; the records are filled from the `d=` and `s=` tags of a real signed email, and the registry builder derives each `pubkeyHash` from the modulus. */
 export const DkimKey = z.strictObject({
   domain: z.string().min(1),
   selector: z.string().min(1),
   modulusBase64: z.base64(),
 });
 export type DkimKey = z.infer<typeof DkimKey>;
-
-/**
- * The scalar fields the issuer configuration, the registry and the published ZK configuration
- * share, written once and referenced wherever they occur (AAP 0.11.1).
- */
-
+/** The scalar fields the issuer configuration, the registry and the published ZK configuration share. */
 const issuerIdField = z.number().int().min(1).max(4294967295);
-
 const circuitCityIdField = z.number().int().min(1);
-
 const leafIndexField = z.number().int().min(0).max(255);
-
-/**
- * How far an issuer's record has been taken: `awaiting_samples` — no real confirmation email
- * supplied, so no key and no leaf; `unverified` — records authored from samples but the check has
- * not passed; `verified` — the only state that receives a production leaf (AAP 0.5.5).
- */
+/** How far an issuer's record has been taken: `awaiting_samples` — no real confirmation email supplied, so no key and no leaf; `unverified` — records authored from samples but the check has not passed; `verified` — the only state that receives a production leaf. */
 export const IssuerVerificationStatus = z.enum(['awaiting_samples', 'unverified', 'verified']);
 export type IssuerVerificationStatus = z.infer<typeof IssuerVerificationStatus>;
-
 /** One record of `config/issuers/<issuer>.json` before its status rules are applied. */
 export const IssuerConfigBase = z.strictObject({
   issuerId: issuerIdField,
@@ -192,12 +120,7 @@ export const IssuerConfigBase = z.strictObject({
   template: IssuerTemplate.nullable(),
 });
 export type IssuerConfigBase = z.infer<typeof IssuerConfigBase>;
-
-/**
- * One issuer record with the status rules that keep an invented key or anchor out of the system: an
- * issuer awaiting samples records no key and no template, and one whose samples exist records at
- * least one of each (AAP 0.5.5).
- */
+/** One issuer record with the status rules that keep an invented key or anchor out of the system: an issuer awaiting samples records no key and no template, and one whose samples exist records at least one of each. */
 export const IssuerConfig = IssuerConfigBase.superRefine((value, ctx) => {
   const awaitingSamples = value.verificationStatus === 'awaiting_samples';
   const keyIssue = awaitingSamples
@@ -214,12 +137,7 @@ export const IssuerConfig = IssuerConfigBase.superRefine((value, ctx) => {
   }
 });
 export type IssuerConfig = z.infer<typeof IssuerConfig>;
-
-/**
- * One issuer key leaf of the registry: the issuer, the key the signature verified under and the
- * template the extraction used, as `Poseidon(1, issuerId, pubkeyHash, templateHash)` records them.
- * The leaf type is a domain tag, so an issuer leaf cannot stand in for a city leaf (AAP 0.5.5).
- */
+/** One issuer key leaf of the registry: the issuer, the key the signature verified under and the template the extraction used, as `Poseidon(1, issuerId, pubkeyHash, templateHash)` records them. The leaf type is a domain tag, so an issuer leaf cannot stand in for a city leaf. */
 export const RegistryIssuerEntry = z.strictObject({
   issuerId: issuerIdField,
   displayName: z.string().min(1),
@@ -230,11 +148,7 @@ export const RegistryIssuerEntry = z.strictObject({
   leafIndex: leafIndexField,
 });
 export type RegistryIssuerEntry = z.infer<typeof RegistryIssuerEntry>;
-
-/**
- * One city alias leaf: `Poseidon(2, cityId, cityAliasHash)`, over the alias exactly as it appears
- * in the decoded body, quoted-printable escapes included (AAP 0.5.5).
- */
+/** One city alias leaf: `Poseidon(2, cityId, cityAliasHash)`, over the alias exactly as it appears in the decoded body, quoted-printable escapes included. */
 export const RegistryCityEntry = z.strictObject({
   cityId: circuitCityIdField,
   slug: CitySlug,
@@ -243,12 +157,7 @@ export const RegistryCityEntry = z.strictObject({
   leafIndex: leafIndexField,
 });
 export type RegistryCityEntry = z.infer<typeof RegistryCityEntry>;
-
-/**
- * A generated registry file, `config/registry/{production,test}.json`: the leaves and root of the
- * commitment tree the circuit proves membership against, produced by `pnpm circuits:registry` and
- * never hand-edited (AAP 0.5.5).
- */
+/** A generated registry file, `config/registry/{production,test}.json`: the leaves and root of the commitment tree the circuit proves membership against, produced by `pnpm circuits:registry` and never hand-edited. */
 export const RegistryFile = z.strictObject({
   name: z.enum(['production', 'test']),
   depth: z.literal(8),
@@ -293,12 +202,7 @@ export const ArtifactsManifest = z.strictObject({
   }),
 });
 export type ArtifactsManifest = z.infer<typeof ArtifactsManifest>;
-
-/**
- * A downloadable proving artefact as the published configuration advertises it: where to fetch it
- * and what to expect, so the client hashes what it downloaded without a second round trip; the
- * verification key never leaves the server (AAP 0.5.5).
- */
+/** A downloadable proving artefact as the published configuration advertises it: where to fetch it and what to expect, so the client hashes what it downloaded without a second round trip; the verification key never leaves the server. */
 export const ArtifactLink = z.object({
   url: z.url(),
   size: z.number().int().positive(),

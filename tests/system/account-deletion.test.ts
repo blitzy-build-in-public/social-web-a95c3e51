@@ -1,11 +1,8 @@
 /**
- * Criterion 10 (AAP 0.12.1), with the two rules AAP 0.5.2 and 0.5.3 attach to it: what `DELETE /me`
- * and the `account-erasure` job remove, what they deliberately keep, and the two races the write
- * fence exists to decide.
+ * Criterion 10 (AAP 0.12.1), with the two rules AAP 0.5.2 and 0.5.3 attach to it: what `DELETE /me` and the
+ * `account-erasure` job remove, what they deliberately keep, and the two races the write fence exists to decide.
  */
-
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
 import { createTestApp, testWorkersEnv, type TestApp } from '@tablemate/api/test-support/app';
 import { settleNow } from '@tablemate/api/test-support/clock';
 import {
@@ -60,14 +57,10 @@ import {
   type ProcessorJob,
   type WorkerContext,
 } from '@tablemate/workers/queues';
-
 const CITY_ID = 'lisbon';
-
 const CITY_ZONE = 'Europe/Lisbon';
-
 const SUITE_DAY = '2026-11-17';
 const SUITE_HOUR = '10:00';
-
 const ME_PATH = '/v1/me';
 const PROFILE_PATH = '/v1/me/profile';
 const PUSH_TOKENS_PATH = '/v1/me/push-tokens';
@@ -80,9 +73,7 @@ const CHAT_PATH = '/v1/chat';
 /** The booking a claim carries: a fictional guest and reference, never a real person's. */
 const BOOKING_NAME = 'Fixture Guest Ana Lima';
 const BOOKING_REFERENCE = 'FIXTURE-REF-0001';
-
 const PUSH_TOKEN = 'ExponentPushToken[fixture-device-0001]';
-
 const RACE_BODY = 'Fixture race message';
 const PROBE_BODY = 'Fixture race probe';
 const RACE_BIO = 'Fixture race bio';
@@ -90,23 +81,18 @@ const RACE_BIO = 'Fixture race bio';
 /** The nickname and bio the main scenario stores, which the erasure has to remove. */
 const PROFILE_NICKNAME = 'Fixture Nick';
 const PROFILE_BIO = 'Fixture bio for the erasure case';
-
 const CASE_TIMEOUT_MS = 120_000;
 
 /** How long a socket wait may take before the case fails rather than hanging. */
 const FRAME_TIMEOUT_MS = 15_000;
-
 const CLOSE_NORMAL = 1000;
-
 const SESSION_CACHE_PREFIX = 'auth:session:';
 const LEADERBOARD_CACHE_PREFIX = 'leaderboard:';
-
 const PENDING_JOB_STATES = ['waiting', 'delayed', 'prioritized'] as const;
 
 /**
- * The metric groups the erasure must leave untouched, named rather than compared whole: the two
- * figures {@link MetricsDto} carries that are live snapshots — `activeProofsByCity` today and the
- * calls panels — are asserted on their own instead (AAP 0.5.7).
+ * The metric groups the erasure must leave untouched, named rather than compared whole: the two figures {@link MetricsDto}
+ * carries that are live snapshots — `activeProofsByCity` today and the calls panels — are asserted on their own (AAP 0.5.7).
  */
 const RETAINED_METRIC_FIELDS = [
   'completion',
@@ -118,34 +104,27 @@ const RETAINED_METRIC_FIELDS = [
   'lodgingClaims',
   'signups',
 ] as const;
-
 let t: TestApp;
 let ctx: WorkerContext;
 /** The address `t.listen()` answered, which the chat socket connects to. */
 let base: string;
 const openedSockets: ChatSocket[] = [];
 
-/**
- * The worker context's mailer: a capture that sends nothing, so no case opens an SMTP connection.
- */
+/** The worker context's mailer: a capture that sends nothing, so no case opens an SMTP connection. */
 const mailer: WorkerContext['mailer'] = {
   send(): Promise<void> {
     return Promise.resolve();
   },
 };
-
 beforeAll(async () => {
   t = await createTestApp();
 
-  // Delivery on the chat socket happens only through the Redis subscription: a publisher never hands
-  // a frame to its own local sockets, so without `start()` the sender's own confirmation never comes
-  // back (AAP 0.5.1). The readiness wait comes first, because a `client`-role connection rejects a
-  // command issued before its first `ready` and the module's retry is five seconds away.
+  // Delivery on the chat socket happens only through the Redis subscription: a publisher never hands a frame to its
+  // own local sockets, so `start()` must be awaited (AAP 0.5.1). The readiness wait comes first, because a `client`-role
+  // connection rejects a command issued before its first `ready`.
   await Promise.all([ready(t.services.redis.client), ready(t.services.redis.subscriber)]);
   await t.services.pubsub.start();
-
   base = await t.listen();
-
   ctx = await createWorkerContext(loadWorkersEnv(testWorkersEnv()), {
     clock: t.clock,
     llm: t.llm,
@@ -153,12 +132,10 @@ beforeAll(async () => {
     mailer,
   });
 });
-
 afterAll(async () => {
   await closeWorkerContext(ctx);
   await t.close();
 });
-
 beforeEach(async () => {
   await t.resetState();
   await t.seedCities();
@@ -173,7 +150,6 @@ afterEach(async () => {
     await socket.close();
   }
 });
-
 interface RedisReadiness {
   readonly status: string;
   once(event: 'ready', listener: () => void): unknown;
@@ -182,10 +158,8 @@ interface RedisReadiness {
 
 /** The longest a Redis connection may take to become ready before the hook fails. */
 const REDIS_READY_TIMEOUT_MS = 10_000;
-
 async function ready(connection: RedisReadiness): Promise<void> {
   if (connection.status === 'ready') return;
-
   await new Promise<void>((settle, fail) => {
     const onReady = (): void => {
       clearTimeout(timer);
@@ -198,22 +172,19 @@ async function ready(connection: RedisReadiness): Promise<void> {
     connection.once('ready', onReady);
   });
 }
-
 function processorJob(job: { id?: string; name: string; data: unknown }): ProcessorJob {
   return { name: job.name, data: job.data, ...(job.id === undefined ? {} : { id: job.id }) };
 }
 
 /**
  * Deliver every pending outbox row, then run every `account-erasure` job it carried.
- * @returns What each erasure job reported; a `sweep` job's own counts are not included, because this
+ * @returns What each erasure job reported; a `sweep` job's own counts are not included.
  */
 async function drainErasure(): Promise<readonly ErasureResult[]> {
   await t.services.outbox.runOnce();
-
   const queue = ctx.queues.get(QUEUE.accountErasure);
   const jobs = await queue.getJobs([...PENDING_JOB_STATES], 0, -1, true);
   const results: ErasureResult[] = [];
-
   for (const job of jobs) {
     const result = await accountErasure(processorJob(job), ctx);
     // `counts` is what an erasure reports and a sweep does not, so it is the discriminator.
@@ -222,14 +193,11 @@ async function drainErasure(): Promise<readonly ErasureResult[]> {
     }
     await job.remove();
   }
-
   return results;
 }
-
 function statusesOf(results: readonly ErasureResult[]): string[] {
   return results.map((result) => result.status);
 }
-
 function tokenFor(actor: ActorRef | UserFixture): Promise<string> {
   return t.tokenFor(actor);
 }
@@ -250,13 +218,11 @@ async function saveCard(actor: ActorRef | UserFixture): Promise<string> {
     200,
   );
   const { customerId } = PaymentSetupResponse.parse(setup.json());
-
   const proxy = t.stripe.proxy;
   if (proxy !== null) {
     await proxy.attachCard(customerId, TEST_CARDS.visa, { makeDefault: true });
     return customerId;
   }
-
   const api = stripeApi(t);
   const attached = await api.post<{ id?: unknown }>(
     `/v1/payment_methods/${encodeURIComponent(TEST_CARDS.visa)}/attach`,
@@ -266,13 +232,11 @@ async function saveCard(actor: ActorRef | UserFixture): Promise<string> {
   if (paymentMethodId === null) {
     throw new Error('stripe attached no payment method');
   }
-
   await api.post(`/v1/customers/${customerId}`, {
     'invoice_settings[default_payment_method]': paymentMethodId,
   });
   return customerId;
 }
-
 async function expectRoute(
   request: Parameters<typeof callRoute>[1],
   status: number,
@@ -284,7 +248,6 @@ async function expectRoute(
   ).toBe(status);
   return answer;
 }
-
 async function readMetrics(operator: ActorRef | UserFixture): Promise<MetricsDto> {
   const answer = await expectRoute(
     {
@@ -297,7 +260,6 @@ async function readMetrics(operator: ActorRef | UserFixture): Promise<MetricsDto
   );
   return MetricsDto.parse(answer.json());
 }
-
 function retainedMetrics(metrics: MetricsDto): Record<string, unknown> {
   const retained: Record<string, unknown> = {};
   for (const field of RETAINED_METRIC_FIELDS) {
@@ -305,11 +267,9 @@ function retainedMetrics(metrics: MetricsDto): Record<string, unknown> {
   }
   return retained;
 }
-
 function activeProofsOf(metrics: MetricsDto, cityId: string): number {
   return metrics.activeProofsByCity.find((entry) => entry.cityId === cityId)?.count ?? 0;
 }
-
 async function readLodgingStats(lodging: LodgingFixture): Promise<LodgingConsoleStats> {
   const answer = await expectRoute(
     {
@@ -321,7 +281,6 @@ async function readLodgingStats(lodging: LodgingFixture): Promise<LodgingConsole
   );
   return LodgingConsoleStats.parse(answer.json());
 }
-
 async function readLodgingDetail(
   lodging: LodgingFixture,
   viewer: ActorRef | UserFixture,
@@ -332,7 +291,6 @@ async function readLodgingDetail(
   );
   return LodgingDetail.parse(answer.json());
 }
-
 async function readTravelers(viewer: ActorRef | UserFixture): Promise<TravelersResponse> {
   const answer = await expectRoute(
     { method: 'GET', url: `/v1/cities/${CITY_ID}/travelers`, as: await tokenFor(viewer) },
@@ -342,9 +300,8 @@ async function readTravelers(viewer: ActorRef | UserFixture): Promise<TravelersR
 }
 
 /**
- * The leaderboard's cached board, dropped so a re-read recomputes it: `activityScore` comes from the
- * facts, but `rank` comes from a board cached for sixty seconds, and a stale board would hide a
- * change rather than show one (AAP 0.5.7).
+ * The leaderboard's cached board, dropped so a re-read recomputes it: `activityScore` comes from the facts, but `rank`
+ * comes from a board cached for sixty seconds, and a stale board would hide a change (AAP 0.5.7).
  */
 async function clearLeaderboardCache(): Promise<void> {
   const keys = await t.services.redis.client.keys(`${LEADERBOARD_CACHE_PREFIX}*`);
@@ -352,7 +309,6 @@ async function clearLeaderboardCache(): Promise<void> {
     await t.services.redis.client.del(...keys);
   }
 }
-
 async function readCachedSession(sessionId: string): Promise<string | null> {
   const key = `${SESSION_CACHE_PREFIX}${sessionId}`;
 
@@ -365,22 +321,19 @@ async function readCachedSession(sessionId: string): Promise<string | null> {
       setTimeout(resolve, 25);
     });
   }
-
   return null;
 }
-
 async function restoreCachedSession(sessionId: string, raw: string): Promise<void> {
   await t.services.redis.client.set(`${SESSION_CACHE_PREFIX}${sessionId}`, raw, 'PX', 30_000);
 }
 
 /**
- * What one socket wait produced: the frame the API sent, or the close it ended with. A refused write
- * is answered with an error frame before the close, so a case reads whichever arrives.
+ * What one socket wait produced: the frame the API sent, or the close it ended with. A refused write is answered with an
+ * error frame before the close, so a case reads whichever arrives.
  */
 type SocketOutcome =
   | { readonly kind: 'frame'; readonly frame: ServerFrame }
   | { readonly kind: 'closed'; readonly code: number };
-
 interface ChatSocket {
   /** Every frame received, in arrival order. */
   readonly frames: ServerFrame[];
@@ -393,17 +346,14 @@ interface ChatSocket {
   /** Close the socket and wait for the close to complete. */
   close(): Promise<void>;
 }
-
 function parseFrame(text: unknown): ServerFrame | null {
   if (typeof text !== 'string') return null;
-
   let decoded: unknown;
   try {
     decoded = JSON.parse(text) as unknown;
   } catch {
     return null;
   }
-
   const parsed = ServerFrame.safeParse(decoded);
   return parsed.success ? parsed.data : null;
 }
@@ -412,14 +362,13 @@ function parseFrame(text: unknown): ServerFrame | null {
  * Bind the frames and waits of one connection, and register it for `afterEach`.
  * @param token - The access token to open with.
  * @returns The socket, once its handshake completed.
- * @throws {Error} When the upgrade failed or the connection closed before it completed.
+ * @throws {Error} When the upgrade failed or the connection closed before that.
  */
 function openChatSocket(token: string): Promise<ChatSocket> {
   const socket = new WebSocket(`${base.replace(/^http/, 'ws')}${CHAT_PATH}`, [
     WS_BEARER_SUBPROTOCOL,
     token,
   ]);
-
   const frames: ServerFrame[] = [];
   const unreadable: string[] = [];
   const outcomes: SocketOutcome[] = [];
@@ -439,9 +388,8 @@ function openChatSocket(token: string): Promise<ChatSocket> {
     }
   }
 
-  // The event is annotated structurally rather than with the DOM's own type: the project compiles
-  // against `lib: ES2023`, so only Node's globals are in scope, and `data` is `unknown` here — which
-  // is exactly what a parsed frame needs to start from.
+  // The event is annotated structurally rather than with the DOM's own type: the project compiles against `lib: ES2023`,
+  // so only Node's globals are in scope and `data` is `unknown`, which is what a parsed frame starts from.
   socket.onmessage = (event: { readonly data: unknown }): void => {
     const frame = parseFrame(event.data);
     if (frame === null) {
@@ -451,7 +399,6 @@ function openChatSocket(token: string): Promise<ChatSocket> {
     frames.push(frame);
     push({ kind: 'frame', frame });
   };
-
   socket.onclose = (event: { readonly code: number }): void => {
     closedCode = event.code;
     push({ kind: 'closed', code: event.code });
@@ -460,11 +407,9 @@ function openChatSocket(token: string): Promise<ChatSocket> {
     }
     failHandshake?.(new Error('the socket closed before its handshake completed'));
   };
-
   socket.onerror = (): void => {
     failHandshake?.(new Error('the chat socket failed to connect'));
   };
-
   async function next(timeoutMs = FRAME_TIMEOUT_MS): Promise<SocketOutcome> {
     const claimed = outcomes.shift();
     if (claimed !== undefined) return claimed;
@@ -482,7 +427,6 @@ function openChatSocket(token: string): Promise<ChatSocket> {
       waiters.add(wake);
     });
   }
-
   async function close(): Promise<void> {
     if (closedCode !== null) return;
     await new Promise<void>((done) => {
@@ -490,7 +434,6 @@ function openChatSocket(token: string): Promise<ChatSocket> {
       socket.close(CLOSE_NORMAL);
     });
   }
-
   const handle: ChatSocket = {
     frames,
     unreadable,
@@ -506,31 +449,25 @@ function openChatSocket(token: string): Promise<ChatSocket> {
     next,
     close,
   };
-
   socket.onopen = (): void => {
     openedSockets.push(handle);
     settleHandshake?.(handle);
   };
-
   return new Promise<ChatSocket>((resolve, reject) => {
     settleHandshake = resolve;
     failHandshake = reject;
   });
 }
-
 function errorOutcome(outcome: SocketOutcome, code: ErrorCode): ServerFrame | null {
   if (outcome.kind !== 'frame') return null;
   return outcome.frame.type === 'error' && outcome.frame.code === code ? outcome.frame : null;
 }
-
 function messageOf(frame: ServerFrame | undefined): string | null {
   return frame !== undefined && frame.type === 'message' ? frame.message.body : null;
 }
-
 interface Actor extends ActorRef {
   readonly handle: string;
 }
-
 async function signUp(label: string): Promise<Actor> {
   const signedIn = await signIn(t, `fixture-${label}@example.test`);
   return { id: signedIn.userId, sessionId: signedIn.sessionId, handle: signedIn.user.handle };
@@ -555,7 +492,6 @@ interface Scenario {
   readonly assignmentId: string;
   readonly eventIds: readonly string[];
 }
-
 interface Aggregates {
   readonly metrics: MetricsDto;
   readonly stats: LodgingConsoleStats;
@@ -570,9 +506,8 @@ const TINY_WEBP = Buffer.from(
 );
 
 /**
- * Build the state criterion 10 deletes: two signed-in accounts with proofs and saved cards, a
- * verified lodging claim with its visibility on, a meetup locked, checked into and settled at a
- * partner venue, and the rows around them.
+ * Build the state criterion 10 deletes: two signed-in accounts with proofs and saved cards, a verified lodging claim
+ * with its visibility on, a meetup locked, checked into and settled at a partner venue, and the rows around them.
  * @returns The ids and handles every assertion in the criterion's case reads.
  */
 async function buildScenario(): Promise<Scenario> {
@@ -581,17 +516,13 @@ async function buildScenario(): Promise<Scenario> {
   const counterpart = await signUp('deletion-counterpart');
   const viewer = await signUp('deletion-viewer');
   const operator = await makeUser(t, { role: 'operator' });
-
   await saveCard(user);
   await saveCard(counterpart);
-
   const proof = await makeProof(t, user, { cityId: CITY_ID });
   await makeProof(t, counterpart, { cityId: CITY_ID });
   await makeProof(t, viewer, { cityId: CITY_ID });
-
   const venue = await makeVenue(t, { cityId: CITY_ID });
   const lodging = await makeLodging(t, { cityId: CITY_ID, withSecret: true });
-
   const submitted = await expectRoute(
     {
       method: 'POST',
@@ -627,7 +558,6 @@ async function buildScenario(): Promise<Scenario> {
     },
     200,
   );
-
   for (const label of ['guest-a', 'guest-b', 'guest-c']) {
     const guest = await makeUser(t, { email: `fixture-${label}@example.test` });
     await makeClaim(t, guest, lodging, {
@@ -636,7 +566,6 @@ async function buildScenario(): Promise<Scenario> {
       stayTo: proof.departureDate,
     });
   }
-
   const locked = await proposeAndLock(t, {
     initiator: user,
     recipient: counterpart,
@@ -646,23 +575,19 @@ async function buildScenario(): Promise<Scenario> {
     { method: 'GET', url: `/v1/meetups/${locked.meetupId}`, as: await tokenFor(counterpart) },
     200,
   );
-
   t.time.toMeetupPoint(locked, 'startsAt');
   const at = { id: locked.meetupId, venueId: venue.id };
   await checkIn(t, user, at, { venueSecret: secretOf(venue) });
   const together = await checkIn(t, counterpart, at, { venueSecret: secretOf(venue) });
   expect(together.bothCheckedIn, 'the second check-in completes the meetup').toBe(true);
-
   t.time.toMeetupPoint(locked, 'startsAt+45m');
   await settleNow(t.services);
-
   const settled = await db.meetup.findUniqueOrThrow({ where: { id: locked.meetupId } });
   expect(settled.status, 'the settled meetup is completed').toBe('completed');
   expect(
     await db.lodgingActivityFact.count({ where: { lodgingId: lodging.id } }),
     'the completed meetup credits the lodging the guest verified',
   ).toBe(1);
-
   const now = t.time.now();
   for (const body of ['Fixture message one', 'Fixture message two']) {
     await db.message.create({
@@ -672,7 +597,6 @@ async function buildScenario(): Promise<Scenario> {
       data: { meetupId: locked.meetupId, senderId: counterpart.id, body, createdAt: now },
     });
   }
-
   const stranger = await makeUser(t);
   await makeBlock(t, user, stranger);
   await makeBlock(t, stranger, user);
@@ -697,7 +621,6 @@ async function buildScenario(): Promise<Scenario> {
     },
     200,
   );
-
   const assignment = await db.experimentAssignment.findUniqueOrThrow({
     where: { userId: user.id },
     select: { assignmentId: true },
@@ -707,7 +630,6 @@ async function buildScenario(): Promise<Scenario> {
     select: { id: true },
     orderBy: { id: 'asc' },
   });
-
   return {
     user,
     counterpart,
@@ -721,7 +643,6 @@ async function buildScenario(): Promise<Scenario> {
     eventIds: events.map((event) => event.id),
   };
 }
-
 async function readAggregates(scenario: Scenario): Promise<Aggregates> {
   const metrics = await readMetrics(scenario.operator);
   const stats = await readLodgingStats(scenario.lodging);
@@ -732,7 +653,6 @@ async function readAggregates(scenario: Scenario): Promise<Aggregates> {
     { method: 'GET', url: ME_PATH, as: await tokenFor(scenario.counterpart) },
     200,
   );
-
   return { metrics, stats, facts, reputation: MeDto.parse(me.json()).reputation };
 }
 
@@ -740,7 +660,6 @@ async function readAggregates(scenario: Scenario): Promise<Aggregates> {
 async function deleteAccount(actor: ActorRef | UserFixture): Promise<void> {
   await expectRoute({ method: 'DELETE', url: ME_PATH, as: await tokenFor(actor) }, 202);
 }
-
 async function meetupState(meetupId: string) {
   return {
     meetup: await t.services.db.meetup.findUniqueOrThrow({ where: { id: meetupId } }),
@@ -751,20 +670,16 @@ async function meetupState(meetupId: string) {
     }),
   };
 }
-
 interface DeletionParty {
   readonly user: UserFixture;
   readonly counterpart: UserFixture;
   readonly venue: VenueFixture;
 }
-
 async function makeParty(): Promise<DeletionParty> {
   const [user, counterpart] = [await makeUser(t), await makeUser(t)];
   return { user, counterpart, venue: await makeVenue(t, { cityId: CITY_ID }) };
 }
-
 const MEASURE_PROPS = ['variantPairing', 'depositCents', 'outcome', 'resolveSeconds'];
-
 describe('account deletion (AAP 0.12.1 criterion 10)', { timeout: CASE_TIMEOUT_MS }, () => {
   it('erases the live state, keeps every retained aggregate and unlinks the analytics', async () => {
     const db = t.services.db;
@@ -903,7 +818,6 @@ describe('account deletion (AAP 0.12.1 criterion 10)', { timeout: CASE_TIMEOUT_M
     }
   });
 });
-
 describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT_MS }, () => {
   it('cancels a proposed meetup outright, releasing the hold it was waiting on', async () => {
     const { user, counterpart, venue } = await makeParty();
@@ -920,7 +834,6 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
     expect(state.meetup.cancelReason).toBe('account_deleted');
     expect(state.deposits).toEqual([{ ownerId: user.id, status: 'released' }]);
   });
-
   it('cancels a locked meetup exactly two hours before it starts, with no forfeit', async () => {
     const { user, counterpart, venue } = await makeParty();
     const meetup = await makeMeetup(t, {
@@ -939,7 +852,6 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
     expect(state.deposits.every((deposit) => deposit.status === 'released')).toBe(true);
     expect(await t.services.db.tableCreditEntry.count({ where: { meetupId: meetup.id } })).toBe(0);
   });
-
   it(`forfeits a cancellation one second past the boundary ${stripeModeLabel()}`, async () => {
     const db = t.services.db;
     const { user, counterpart, venue } = await makeParty();
@@ -980,7 +892,6 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
       { userId: counterpart.id, kind: 'grant', amountCents: DEFAULT_DEPOSIT_CENTS },
     ]);
   });
-
   it('leaves a disputed meetup to the operator, and finishes the erasure once it is resolved', async () => {
     const db = t.services.db;
     const operator = await makeUser(t, { role: 'operator' });
@@ -1035,7 +946,6 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
     expect((await db.user.findUniqueOrThrow({ where: { id: user.id } })).deletedAt).not.toBeNull();
     expect(await db.message.count({ where: { senderId: user.id } })).toBe(0);
   });
-
   it('deletes a claim a call is already working on, and cancels its verification', async () => {
     const db = t.services.db;
     const { user } = await makeParty();
@@ -1059,7 +969,6 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
       'the live call is superseded, which is how the relay is told to stop',
     ).toBe(true);
   });
-
   it("plans the Stripe customer's removal and carries it out once the money is settled", async () => {
     const db = t.services.db;
     const { user, counterpart, venue } = await makeParty();
@@ -1079,9 +988,7 @@ describe('what the deletion does to what is still open', { timeout: CASE_TIMEOUT
     ).toBeNull();
   });
 });
-
 type RaceOrder = 'write-then-delete' | 'delete-then-write' | 'simultaneous';
-
 interface RaceRow {
   readonly order: RaceOrder;
   readonly label: string;
@@ -1093,17 +1000,14 @@ const RACE_ORDERS: readonly RaceRow[] = rows([
   { order: 'delete-then-write', label: 'the deletion first' },
   { order: 'simultaneous', label: 'both at once' },
 ]);
-
 function tick(): Promise<void> {
   return new Promise((resolve) => {
     setImmediate(resolve);
   });
 }
-
 function bodyOf(outcome: SocketOutcome): string | null {
   return outcome.kind === 'frame' ? messageOf(outcome.frame) : null;
 }
-
 interface RaceState {
   readonly user: Actor;
   readonly counterpart: Actor;
@@ -1112,26 +1016,20 @@ interface RaceState {
   readonly socket: ChatSocket;
 }
 
-/**
- * Lock a meetup between two fresh accounts and open the initiator's chat socket on it.
- */
+/** Lock a meetup between two fresh accounts and open the initiator's chat socket on it. */
 async function openRaceState(label: string): Promise<RaceState> {
   const user = await signUp(`${label}-user`);
   const counterpart = await signUp(`${label}-counterpart`);
   await saveCard(user);
   await saveCard(counterpart);
-
   const venue = await makeVenue(t, { cityId: CITY_ID });
   const { meetupId } = await proposeAndLock(t, { initiator: user, recipient: counterpart, venue });
-
   const token = await tokenFor(user);
   const socket = await openChatSocket(token);
   socket.send({ meetupId, body: PROBE_BODY });
   expect(bodyOf(await socket.next())).toBe(PROBE_BODY);
-
   return { user, counterpart, meetupId, token, socket };
 }
-
 describe('a write racing the deletion (AAP 0.5.3)', { timeout: CASE_TIMEOUT_MS }, () => {
   it.each(RACE_ORDERS)('answers both writes with $label', async ({ order }) => {
     const db = t.services.db;
@@ -1207,7 +1105,6 @@ describe('a write racing the deletion (AAP 0.5.3)', { timeout: CASE_TIMEOUT_MS }
     expect(await db.disclosureProfile.count({ where: { userId: user.id } })).toBe(0);
     expect((await db.user.findUniqueOrThrow({ where: { id: user.id } })).deletedAt).not.toBeNull();
   });
-
   it('erases a write that committed before the deletion was requested', async () => {
     const db = t.services.db;
     const { user, meetupId, token, socket } = await openRaceState('settled-before');
@@ -1232,20 +1129,15 @@ describe('a write racing the deletion (AAP 0.5.3)', { timeout: CASE_TIMEOUT_MS }
 });
 
 /* The cached session the fence must not trust (AAP 0.3.2, 0.5.3) */
-
 describe('a write through a second API instance', { timeout: CASE_TIMEOUT_MS }, () => {
   let second: TestApp;
-
   beforeAll(async () => {
-    // The same database, Redis and memoized secrets, so a token signed by one app authenticates on
-    // the other — which is the whole point of the case (AAP 0.11.2).
+    // The same database, Redis and memoized secrets, so a token signed by one app authenticates on the other (AAP 0.11.2).
     second = await createTestApp();
   });
-
   afterAll(async () => {
     await second.close();
   });
-
   it('is refused even while the second instance holds a cached session for it', async () => {
     const db = t.services.db;
     const user = await signUp('second-instance');
@@ -1258,9 +1150,8 @@ describe('a write through a second API instance', { timeout: CASE_TIMEOUT_MS }, 
     }
     expect(cached).toContain(user.id);
     await deleteAccount(user);
-    // The deletion drops the shared entry. Putting it back is exactly the state an instance that
-    // missed the invalidation is in, and it is what makes this case about the fence rather than
-    // about the revocation: without it the write would be refused for the simpler reason.
+    // The deletion drops the shared entry; putting it back is exactly the state an instance that missed the
+    // invalidation is in, which makes this case about the fence rather than about the revocation.
     await restoreCachedSession(user.sessionId, cached);
     const served = await callRoute(second.app, {
       method: 'GET',
@@ -1268,8 +1159,6 @@ describe('a write through a second API instance', { timeout: CASE_TIMEOUT_MS }, 
       as: token,
     });
     expect(served.status, 'the restored entry still admits a read').toBe(200);
-    // The write is refused all the same: the fence reads PostgreSQL, which says the account asked
-    // for deletion, so no write can ride a cached session (AAP 0.5.3).
     expectError(
       await callRoute(second.app, {
         method: 'PUT',

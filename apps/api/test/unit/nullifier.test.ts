@@ -2,20 +2,17 @@
  * The itinerary-proof check order and the nullifier rule's unit suite (AAP 0.5.5, 0.8.1).
  *
  * `verifyItineraryProof` answers the only question `POST /itinerary-proofs` asks — is this
- * `{ proof, publicSignals }` a proof of a stay this API accepts — and AAP 0.5.5 fixes the order its
- * checks run in: canonical field elements, the Groth16 verification, the published nullifier salt, a
- * registry root this process publishes, the city and issuer that root's registry holds, the two dates
- * as calendar dates, and the 1-120 day stay bound. That order is what gives each refusal its own code
- * — a salt that is not the published one is `proof_invalid` while an unlisted root is
- * `issuer_not_allowlisted` — so every row below is one change from an otherwise accepted submission.
- * The verification itself and the key it is handed are injected, so this suite needs no circuit build:
- * everything a refusal is decided against — the environment loader, the logger, the committed city,
- * issuer and registry configuration — is real.
+ * `{ proof, publicSignals }` a proof of a stay this API accepts — and AAP 0.5.5 fixes the order its checks
+ * run in: canonical field elements, the Groth16 verification, the published nullifier salt, a registry root
+ * this process publishes, the city and issuer that root's registry holds, the two dates as calendar dates,
+ * and the 1-120 day stay bound. That order gives each refusal its own code, so every row below is one change
+ * from an otherwise accepted submission. The verification and the key it is handed are injected, so this
+ * suite needs no circuit build; everything a refusal is decided against is real.
  *
  * The second half covers the rule off the circuit, `nullifierOf` of `@tablemate/circuits`: hashing the
- * reference length with its zero-padded bytes is what makes one booking yield one nullifier however
- * the reference is laid out, which is the key `SpentNullifier` holds (AAP 0.12.2). The
- * `409 nullifier_used` that insert answers belongs to the route, and to `integration/proofs.test.ts`.
+ * reference length with its zero-padded bytes is what makes one booking yield one nullifier however the
+ * reference is laid out, which is the key `SpentNullifier` holds (AAP 0.12.2). The `409 nullifier_used` that
+ * insert answers belongs to the route, and to `integration/proofs.test.ts`.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -51,7 +48,6 @@ const STATUS = {
   stay_out_of_range: 422,
 } as const satisfies Partial<Record<ErrorCode, number>>;
 
-/** One of the four codes {@link STATUS} covers. */
 type RefusalCode = keyof typeof STATUS;
 
 /** The published nullifier salt: a short decimal field element, public by design. */
@@ -69,9 +65,9 @@ const STAY_MAX = 120;
 
 /**
  * The BN254 scalar field order `r`, written here as `verifier.ts` and `@tablemate/circuits`' `leaves.ts`
- * each write it — the package does not publish it from its entry point. It is the largest value a
- * public signal may carry and the bound a Poseidon output stays under: a signal at or above it is
- * `422 proof_invalid`, because the circuit would reduce it modulo `r` (AAP 0.5.5).
+ * each write it — the package does not publish it from its entry point. It is the largest value a public
+ * signal may carry: a signal at or above it is `422 proof_invalid`, because the circuit would reduce it
+ * modulo `r` (AAP 0.5.5).
  */
 const FIELD_ORDER = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
@@ -79,11 +75,10 @@ const FIELD_ORDER = 218882428718392752222464057452572750885483644004160343436982
 const ARRIVAL = '20261110';
 
 /**
- * The raw environment of an `api` process in `test`: the credential-free modes the automated suite
- * runs in — `STRIPE_MODE=mock` with the proxy's address and no key at all, `TELEPHONY_MODE=off`,
- * `LLM_PROVIDER=fake` — and secrets generated per run, so no key reaches tracked source
- * (AAP 0.6.2, 0.12.2). Read through the real loader, so a variable this suite forgets fails the way it
- * would fail a start.
+ * The raw environment of an `api` process in `test`: the credential-free modes the automated suite runs in —
+ * `STRIPE_MODE=mock` with the proxy's address and no key, `TELEPHONY_MODE=off`, `LLM_PROVIDER=fake` — and
+ * secrets generated per run, so no key reaches tracked source (AAP 0.6.2, 0.12.2). Read through the real
+ * loader, so a variable this suite forgets fails the way it would fail a start.
  */
 function rawEnv(): Record<string, string> {
   return {
@@ -119,8 +114,8 @@ const ENV = loadApiEnv(rawEnv());
 const ENV_WITHOUT_TEST_ISSUER = loadApiEnv({ ...rawEnv(), ZK_ALLOW_TEST_ISSUER: '' });
 
 /**
- * What the verifier reads of the app (AAP 0.5.1): the configuration, and the logger a rejection is
- * recorded in.
+ * What the verifier reads of the app (AAP 0.5.1): the configuration, and the logger a rejection is recorded
+ * in.
  */
 const SERVICES: VerifierServices = {
   env: ENV,
@@ -128,16 +123,16 @@ const SERVICES: VerifierServices = {
 };
 
 /**
- * The injectable Groth16 verification (AAP 0.5.5): what stands in for snarkjs, so this suite needs no
- * built circuit. `beforeEach` returns it to accepting every proof, and a row that wants a refusal makes
- * it answer `false`.
+ * The injectable Groth16 verification (AAP 0.5.5): what stands in for snarkjs, so this suite needs no built
+ * circuit. `beforeEach` returns it to accepting every proof, and a row that wants a refusal makes it answer
+ * `false`.
  */
 const verify = vi.fn<Groth16Verify>();
 
 /**
  * The key the injected verification is handed: a well-formed key rather than a placeholder cast, so the
- * accepted rows run against the same shape the mounted key has. That the process reads the real file,
- * and holds no proving key at all, is for `no-prover.test.ts` and the integration suite.
+ * accepted rows run against the same shape the mounted key has. That the process reads the real file, and
+ * holds no proving key at all, is for `no-prover.test.ts` and the integration suite.
  */
 const VERIFICATION_KEY: VerificationKey = {
   protocol: 'groth16',
@@ -176,7 +171,6 @@ const TEST_ISSUER = required(
 /** The registry the test-issuer environment accepts, and the one root it publishes. */
 const TEST_REGISTRY = readRegistryFile('test');
 
-/** One signal value of an accepted submission, by name. */
 type Signals = Readonly<Record<PublicSignalName, string>>;
 
 /** The signals of an accepted submission: Lisbon, the test issuer, its registry root and its salt. */
@@ -204,8 +198,8 @@ const PROOF: ProofSubmission['proof'] = {
 };
 
 /**
- * The accepted submission, or a copy of it with the named signals replaced. The signals are built by
- * walking `PUBLIC_SIGNAL_NAMES`, so every signal the contract fixes is present, in circuit order.
+ * The accepted submission, or a copy of it with the named signals replaced. The signals are built by walking
+ * `PUBLIC_SIGNAL_NAMES`, so every signal the contract fixes is present, in circuit order.
  */
 function submission(overrides: Partial<Signals> = {}): ProofSubmission {
   return {
@@ -230,9 +224,9 @@ function addDays(ymd: string, days: number): string {
 }
 
 /**
- * One refusal: the signals that differ from an accepted submission, the code it must answer,
- * whether the injected verification refuses it, how often that verification must have run — 0 when a
- * check before it already refused — and the configuration to check against.
+ * One refusal: the signals that differ from an accepted submission, the code it must answer, whether the
+ * injected verification refuses it, how often that verification must have run — 0 when a check before it
+ * already refused — and the configuration to check against.
  */
 interface RejectionRow {
   readonly name: string;

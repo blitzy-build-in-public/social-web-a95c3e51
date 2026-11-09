@@ -1,17 +1,15 @@
 /**
- * The registry builder, `pnpm circuits:registry` (AAP 0.5.5, AAP 0.8.1): builds the depth-8 Poseidon
- * registry from `config/issuers/*.json` and `config/cities.json` through
- * `../src/registry/merkle.ts`, and writes the committed `config/registry/{production,test}.json`
- * that the circuit proves membership against and the client reads its leaves from.
+ * The registry builder, `pnpm circuits:registry` (AAP 0.5.5): builds the depth-8 Poseidon registry from
+ * `config/issuers/*.json` and `config/cities.json` through `../src/registry/merkle.ts`, and writes the committed
+ * `config/registry/{production,test}.json` that the circuit proves membership against and the client reads its leaves
+ * from.
  *
- * Production takes the `verified` issuers and never `tablemate-test`, whatever status that record declares;
- * test adds that record, which the DKIM-signed fixture emails are proved against. An `awaiting_samples` or
- * `unverified` record records no leaf, so Booking.com and Airbnb stay out of both files until their samples
- * pass `pnpm circuits:samples`.
- *
+ * Production takes the `verified` issuers and never `tablemate-test`, whatever status that record declares; test adds
+ * that record, which the DKIM-signed fixture emails are proved against. An `awaiting_samples` or `unverified` record
+ * records no leaf, so Booking.com and Airbnb stay out of both files until their samples pass `pnpm circuits:samples`.
  * Both files are deterministic — no timestamp, and no ordering the configuration does not fix — so a rerun is
- * byte-identical, which `--check` and `test/registry.test.ts` rest on and which makes adding an issuer or a
- * city alias an edit to `config/` plus this rebuild, with no circuit change.
+ * byte-identical, which `--check` and `test/registry.test.ts` rest on and which makes adding an issuer or a city alias
+ * an edit to `config/` plus this rebuild, with no circuit change.
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -29,9 +27,8 @@ const FILE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PARENT_DIR = path.dirname(FILE_DIR);
 
 /**
- * The `packages/circuits` directory, the base of every path inside this package. Accounting for a
- * `dist` segment matters because the compiled entry is what `apps/api` reaches through
- * `@tablemate/circuits`, and a hop that counted from `scripts/` would land on `dist/` there.
+ * The `packages/circuits` directory, the base of every path inside this package. Accounting for a `dist` segment
+ * matters because the compiled entry is what `apps/api` reaches through `@tablemate/circuits`.
  */
 export const PKG_DIR = path.basename(PARENT_DIR) === 'dist' ? path.dirname(PARENT_DIR) : PARENT_DIR;
 
@@ -39,8 +36,8 @@ export const PKG_DIR = path.basename(PARENT_DIR) === 'dist' ? path.dirname(PAREN
 export const REPO_ROOT = path.join(PKG_DIR, '..', '..');
 
 /**
- * The file stem of the synthetic test issuer, `config/issuers/tablemate-test.json`: added to the test
- * registry and withheld from production by name, not by status.
+ * The file stem of the synthetic test issuer, `config/issuers/tablemate-test.json`: added to the test registry and
+ * withheld from production by name, not by status.
  */
 export const TEST_ISSUER_STEM = 'tablemate-test';
 
@@ -63,21 +60,18 @@ export interface LoadedIssuer {
    * `fetch-dkim-key.ts` select an issuer by, rather than its `issuerId`.
    */
   stem: string;
-  /** The record's path relative to the repository root, the only path an error message names. */
   path: string;
   /** The parsed record exactly as its file carries it, with no status rule applied. */
   config: IssuerConfig;
 }
 
 /**
- * Reads every issuer record in `config/issuers/*.json`, sorted by file name, and parses each with
- * {@link IssuerConfig}. No verification-status rule is applied, so a caller sees the configuration as
- * written.
+ * Reads every issuer record in `config/issuers/*.json`, sorted by file name, and parses each with {@link IssuerConfig}.
+ * No verification-status rule is applied, so a caller sees the configuration as written.
  *
- * @returns The loaded records, ordered by file name.
- * @throws {Error} When a file cannot be read or parsed as JSON, when a record fails its schema, or
- *   when two files carry the same `issuerId`. The message names the repository-relative path and the
- *   failing issue paths, both files for a repeated id, and never a field's value.
+ * @throws {Error} When a file cannot be read or parsed as JSON, when a record fails its schema, or when two files carry
+ *   the same `issuerId`. The message names the repository-relative path and the failing issue paths, both files for a
+ *   repeated id, and never a field's value.
  */
 export async function loadIssuers(): Promise<LoadedIssuer[]> {
   const names = (await readdir(ISSUERS_DIR)).filter((name) => name.endsWith('.json')).sort();
@@ -106,12 +100,11 @@ export async function loadIssuers(): Promise<LoadedIssuer[]> {
 }
 
 /**
- * Reads and parses the launch-city configuration, which contributes one leaf per city alias to both
- * registries (AAP 0.5.5).
+ * Reads and parses the launch-city configuration, which contributes one leaf per city alias to both registries
+ * (AAP 0.5.5).
  *
- * @returns The configured cities.
- * @throws {Error} When `config/cities.json` cannot be read or parsed as JSON, or fails its schema;
- *   the message names the repository-relative path and the failing issue paths.
+ * @throws {Error} When `config/cities.json` cannot be read or parsed as JSON, or fails its schema; the message names
+ *   the repository-relative path and the failing issue paths.
  */
 export async function loadCities(): Promise<CitiesFile> {
   const relativePath = 'config/cities.json';
@@ -125,15 +118,13 @@ export async function loadCities(): Promise<CitiesFile> {
 /**
  * Builds both registries from the committed configuration (AAP 0.5.5).
  *
- * @param sources - `testIssuer` stands in for the `config/issuers/tablemate-test.json` record that the
- *   test registry adds. `make-test-fixtures.ts` passes the record it has just generated, so it can
- *   compare the test root that key produces with its in-memory registry before it writes anything:
- *   that run's record is not on disk yet, and the one that is holds the previous run's modulus, which
- *   the test root is a function of.
- * @returns The two registries, each validated by {@link RegistryFile} and neither written anywhere.
- * @throws {Error} When the configuration cannot be loaded, when the `tablemate-test` record is missing
- *   and no `testIssuer` was supplied, or when a repeated issuer id, key, city id or alias makes the
- *   tree ambiguous — the builder's own `RangeError` then propagates.
+ * @param sources - `testIssuer` stands in for the `config/issuers/tablemate-test.json` record that the test registry
+ *   adds: `make-test-fixtures.ts` passes the record it has just generated, so it can compare the test root that key
+ *   produces with its in-memory registry before it writes anything — that run's record is not on disk yet, and the one
+ *   that is holds the previous run's modulus, which the test root is a function of.
+ * @throws {Error} When the configuration cannot be loaded, when the `tablemate-test` record is missing and no
+ *   `testIssuer` was supplied, or when a repeated issuer id, key, city id or alias makes the tree ambiguous — the
+ *   builder's own `RangeError` then propagates.
  */
 export async function buildRegistries(
   sources: { readonly testIssuer?: IssuerConfig } = {},
@@ -158,15 +149,12 @@ export async function buildRegistries(
 }
 
 /**
- * Rebuilds both registries and writes the files whose contents differ, or under `check` reports them
- * without touching anything (AAP 0.5.5).
+ * Rebuilds both registries and writes the files whose contents differ, or under `check` reports them without touching
+ * anything (AAP 0.5.5).
  *
- * A missing file counts as changed, an unchanged file is left alone so its modification time stays
- * put, and `changed` lists the stale files repository-relative. `make-test-fixtures.ts` calls this to
- * write the registries of the record it has just written, having compared their roots with its
- * in-memory registry beforehand.
- *
- * @param options - `check` reports the stale files instead of writing them.
+ * A missing file counts as changed, an unchanged file is left alone so its modification time stays put, and `changed`
+ * lists the stale files repository-relative. `make-test-fixtures.ts` calls this to write the registries of the record it
+ * has just written, having compared their roots with its in-memory registry beforehand.
  * @returns The built registries and the repository-relative paths of the files that differ.
  * @throws {Error} Whatever {@link buildRegistries} throws.
  */
@@ -197,10 +185,10 @@ function registryPath(name: RegistryFile['name']): string {
 }
 
 /**
- * The record with the key entries that carry no modulus dropped. An entry with an empty
- * `modulusBase64` states no key and so records no leaf — the rule the builder already applies to an
- * issuer carrying none. The synthetic test issuer carries that placeholder until
- * `make-test-fixtures.ts` writes the modulus generated for its fixtures; no other record has one.
+ * The record with the key entries that carry no modulus dropped. An entry with an empty `modulusBase64` states no key
+ * and so records no leaf — the rule the builder already applies to an issuer carrying none. The synthetic test issuer
+ * carries that placeholder until `make-test-fixtures.ts` writes the modulus generated for its fixtures; no other record
+ * has one.
  */
 function withUsableKeys(config: IssuerConfig): IssuerConfig {
   return { ...config, keys: config.keys.filter((key) => key.modulusBase64.trim() !== '') };
@@ -246,10 +234,9 @@ if (
 }
 
 /**
- * Runs the command line. `--check` prints the stale registries and exits 1 without writing; the
- * default mode writes them and prints one line per registry. Every failure is reported as
- * `build-registry: <message>` with exit code 1, and nothing prints a stack trace or a file's
- * contents.
+ * Runs the command line. `--check` prints the stale registries and exits 1 without writing; the default mode writes
+ * them and prints one line per registry. Every failure is reported as `build-registry: <message>` with exit code 1, and
+ * nothing prints a stack trace or a file's contents.
  */
 async function main(): Promise<void> {
   try {

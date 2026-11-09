@@ -4,27 +4,21 @@
  * ```sh
  * pnpm perf   # seeds the compose stack, then runs this profile in its `perf` k6 service
  * ```
- *
- * It measures the targets of AAP 0.1.1 on the full docker-compose stack: p95 ≤ 300 ms for reads and
- * p95 ≤ 800 ms for writes with Stripe time excluded, at 50 requests per second. One iteration issues
- * exactly one measured request, so the iteration rate is the request rate; the first minute only
- * opens connections and warms Prisma and the caches, and reaches no Trend.
- *
- * The seed `pnpm perf` writes (`.local/perf/seed.json`, mounted at `/results` as `SEED_FILE`) holds
- * 1,000 accounts with tokens, 200 meetups over distinct pairs and the console secrets of the locked
- * meetups' venues. This file writes `/results/summary.json` (`SUMMARY_FILE`) and prints one line per
- * target with its measured value and PASS or FAIL. A breach, a dropped iteration or a failure rate
- * at 1% or above gives k6 a non-zero exit.
- *
- * Three deliberate choices about what is measured: a write's latency has the API's own
- * `Server-Timing: stripe;dur=` value subtracted (AAP 0.12.2), so the card provider's round trip is
- * not charged to the API; a `409` is an expected answer under load (`already_checked_in`,
- * `meetup_exists`) and is counted on its own rather than as a failure; and the auxiliary
- * `GET /venue/check-in-code` fetch carries `phase: aux`, so it can enter neither latency Trend nor
- * any `phase: measure` threshold.
- *
- * The figures below mirror `packages/shared/src/constants.ts` and the shared route schemas; this
- * script cannot import TypeScript, so they are restated once, here.
+ * It measures the targets of AAP 0.1.1 on the full docker-compose stack: p95 ≤ 300 ms for reads and p95 ≤ 800 ms
+ * for writes with Stripe time excluded, at 50 requests per second. One iteration issues exactly one measured
+ * request, so the iteration rate is the request rate; the first minute only opens connections and warms Prisma
+ * and the caches, and reaches no Trend.
+ * The seed `pnpm perf` writes (`.local/perf/seed.json`, mounted at `/results` as `SEED_FILE`) holds 1,000 accounts
+ * with tokens, 200 meetups over distinct pairs and the console secrets of the locked meetups' venues. This file
+ * writes `/results/summary.json` (`SUMMARY_FILE`) and prints one line per target with its measured value and PASS
+ * or FAIL. A breach, a dropped iteration or a failure rate at 1% or above gives k6 a non-zero exit.
+ * Three deliberate choices: a write's latency has the API's own `Server-Timing: stripe;dur=` value subtracted
+ * (AAP 0.12.2), so the card provider's round trip is not charged to the API; a `409` is an expected answer under
+ * load (`already_checked_in`, `meetup_exists`) and is counted on its own; and the auxiliary
+ * `GET /venue/check-in-code` fetch carries `phase: aux`, so it can enter neither latency Trend nor any
+ * `phase: measure` threshold.
+ * The figures below mirror `packages/shared/src/constants.ts` and the shared route schemas; this script cannot
+ * import TypeScript, so they are restated once, here.
  */
 import exec from 'k6/execution';
 import http from 'k6/http';
@@ -36,9 +30,8 @@ const MEASURE = 'measure';
 const WARMUP_SECONDS = 60;
 const MEASURE_SECONDS = 300;
 const RUNNING_MS = (WARMUP_SECONDS + MEASURE_SECONDS + 60) * 1000;
-// The schedule's block, the slots the proposal and check-in streams each hold in a block, and the
-// caller rotation's stride. Both streams weigh 4, so one block asks for four proposals and four
-// check-ins.
+// The schedule's block, the slots the proposal and check-in streams each hold in a block, and the caller
+// rotation's stride. Both streams weigh 4, so one block asks for four proposals and four check-ins.
 const BLOCK = 100;
 const STREAM_SLOTS = 4;
 const CALLER_STRIDE = 7;
@@ -49,10 +42,6 @@ const DAY_MS = 86_400_000;
 const MAX_LOGGED_FAILURES = 20;
 const SEED_FILE = __ENV.SEED_FILE || '/results/seed.json';
 const SUMMARY_FILE = __ENV.SUMMARY_FILE || '/results/summary.json';
-
-/*
- * The seed, the API origin and the lookups every VU shares
- */
 
 let seed = {};
 try {
@@ -89,8 +78,8 @@ function groupBy(list, key) {
   return grouped;
 }
 
-// The caller of a plain request; the stride is coprime with the 1,000 accounts, so consecutive
-// iterations land on different accounts and no user approaches the 60-per-minute mutating limit.
+// The caller of a plain request; the stride is coprime with the 1,000 accounts, so consecutive iterations
+// land on different accounts and no user approaches the 60-per-minute mutating limit.
 const callerFor = (index) => at(USERS, index * CALLER_STRIDE);
 
 function meetupFor(index, pool) {
@@ -110,8 +99,7 @@ const USERS_BY_CITY = groupBy(USERS, (user) => user.cityId);
 const VENUES_BY_CITY = groupBy(VENUES, (venue) => venue.cityId);
 const CITY_IDS = [...USERS_BY_CITY.keys()];
 
-// The meetups this run may read, the pairs it must not propose again (`409 meetup_exists`), and
-// every locked meetup a check-in can reach — venue coordinates plus a console secret — by LOCKED index.
+// The meetups this run may read and every locked meetup a check-in can reach, by LOCKED index.
 const LOCKED = MEETUPS.filter((meetup) => meetup.status === 'locked');
 const CHATTY = MEETUPS.filter(
   (meetup) => meetup.status === 'locked' || meetup.status === 'completed',
@@ -124,11 +112,8 @@ const CHECK_IN_POOL = LOCKED.filter(
 // k6 accepts a status the callback names, so a 409 never enters `http_req_failed`.
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409));
 
-/*
- * The measured mix (AAP 0.12.2): 80% reads and 20% writes, weights out of 100. `budget_change` is the
- * state-writing read of AAP 0.5.4, so it belongs to the writes; `meetup_detail` and `suggestions` are
- * reads in the mix although the API limits them per user, which the rotation above is sized for.
- */
+/* The measured mix (AAP 0.12.2): 80% reads and 20% writes, weights out of 100. `budget_change` is the
+ * state-writing read of AAP 0.5.4, so it counts as a write. */
 const ENDPOINTS = [
   { name: 'discovery', kind: 'read', weight: 12, run: discovery },
   { name: 'venues', kind: 'read', weight: 8, run: venues },
@@ -145,12 +130,8 @@ const ENDPOINTS = [
   { name: 'budget_change', kind: 'write', weight: 4, run: budgetChange },
 ];
 
-/**
- * The 100 slots of one block: a weighted round robin that hands each slot to the endpoint furthest
- * below its share. It hits every weight exactly and interleaves the kinds, so an aligned window of
- * iterations keeps the ratio instead of asking for twelve discoveries in a row; `buildRanks` numbers
- * the proposals of each block.
- */
+/** The 100 slots of one block: a weighted round robin handing each slot to the endpoint furthest below its share,
+ * so it hits every weight exactly and interleaves the kinds; `buildRanks` numbers each block's proposals. */
 function buildSchedule(endpoints) {
   const counts = endpoints.map(() => 0);
   const slots = [];
@@ -232,10 +213,8 @@ export const options = {
   thresholds,
 };
 
-/*
- * The endpoints, one measured request each. Each body follows the strict shared schema of its route,
- * where an unknown key would answer `400 invalid_field` and count as a failure.
- */
+/* The endpoints, one measured request each, every body following the strict shared schema of its route: an
+ * unknown key would answer `400 invalid_field` and count as a failure. */
 function discovery(index) {
   const caller = callerFor(index);
   return http.get(`${BASE}/cities/${caller.cityId}/travelers`, params(caller, 'discovery', 'read'));
@@ -325,21 +304,13 @@ function budgetChange(index) {
   );
 }
 
-/**
- * The ordinal of one of a stream's {@link STREAM_SLOTS} slots in the run: the count the proposals and
- * the check-ins number themselves from. `iterationInTest` restarts in each scenario, so the block
- * comes from the global index instead, which puts both streams on one timeline.
- */
 function blockOrdinal(index, rank) {
   return Math.floor(index / BLOCK) * STREAM_SLOTS + rank;
 }
 
-/**
- * One proposal of the run: a pair from the city's pool past the seeded pairs, an active partner venue
- * of that city, and a start inside the five-day horizon (AAP 0.5.4). The pairs stay unique across the
- * run: the ordinal cycles the cities, and within one city the gap walks a fresh cyclic difference of
- * the pool, so no pair is proposed twice.
- */
+/** One proposal: a pair from the city's pool past the seeded pairs, an active partner venue of that city, and a
+ * start inside the five-day horizon (AAP 0.5.4). The pairs stay unique, the ordinal cycling the cities and the gap
+ * walking a fresh cyclic difference within one. */
 function proposalPlan(index, rank) {
   const ordinal = blockOrdinal(index, rank);
   const city = CITY_IDS[ordinal % CITY_IDS.length];
@@ -369,12 +340,8 @@ function proposalPlan(index, rank) {
 
 const codeCache = {};
 
-/**
- * The venue's current code, as auxiliary traffic: the console route is the only source, because a
- * code rotates every 60 seconds (AAP 0.5.7). The request is tagged `phase: aux`, so it reaches
- * neither latency Trend nor any `phase: measure` threshold, and a cached code is reused until the
- * step it belongs to ends — the API accepts the neighbouring steps as well.
- */
+/** The venue's current code, tagged `phase: aux` so it reaches no latency Trend nor any `phase: measure`
+ * threshold; a cached code is reused until its step ends, a code rotating every 60 seconds (AAP 0.5.7). */
 function currentCode(venueId) {
   const cached = codeCache[venueId];
   if (cached !== undefined && cached.expiresAt > Date.now()) return cached.code;
@@ -392,13 +359,9 @@ function currentCode(venueId) {
   return code;
 }
 
-/**
- * Validate the seed and pick the check-in targets. Every failure aborts with its reason and tells the
- * operator to re-run `pnpm perf`: the tokens live fifteen minutes and the locked meetups' check-in
- * windows are already open, so a stale seed measures 401s and 410s rather than latency. The returned
- * payload is ids and a timestamp only — k6 hands it to `handleSummary` as `setup_data`, and the
- * summary file is an artefact that must hold no token and no secret.
- */
+/** Validate the seed and pick the check-in targets. Every failure aborts and says to re-run `pnpm perf`: the
+ * tokens live fifteen minutes and the check-in windows are already open, so a stale seed measures 401s and
+ * 410s. The payload holds ids and a timestamp only, k6 handing it to `handleSummary` as `setup_data`. */
 export function setup() {
   const now = Date.now();
   const until = now + RUNNING_MS;
@@ -439,11 +402,7 @@ export function setup() {
   return { checkIn, startedAt: new Date(now).toISOString() };
 }
 
-/**
- * One iteration: exactly one measured request. Both scenarios name this function in their `exec`, and
- * the global index puts them on one timeline, which keeps the propose pairs and the caller rotation
- * unique across the run rather than per scenario.
- */
+/** One iteration: exactly one measured request. The global index puts both scenarios on one timeline. */
 export function run(data) {
   const index = globalIndex();
   const slot = index % BLOCK;
@@ -457,11 +416,8 @@ function globalIndex() {
     : exec.scenario.iterationInTest;
 }
 
-/**
- * Record one measured response. Nothing is recorded during the warm-up, which is why the Trends hold
- * the measured five minutes alone, and each sample names `phase: measure` itself, so the thresholds
- * select it whether or not a scenario's tags reach a custom metric.
- */
+/** Record one measured response; nothing during the warm-up, which is why the Trends hold the measured five
+ * minutes alone. Each sample names `phase: measure`, so the thresholds select it either way. */
 function record(endpoint, response) {
   if (exec.scenario.name !== MEASURE) return;
 
@@ -482,12 +438,9 @@ function record(endpoint, response) {
   }
 }
 
-/**
- * The milliseconds the API spent in Stripe for one request, from the `Server-Timing` header its
- * `onSend` hook sets on a mutating route. The header is absent when the route called Stripe not at
- * all, may repeat the metric, and k6 canonicalizes its name, so both spellings are read and an
- * absent or unparsable entry counts as zero (AAP 0.12.2).
- */
+/** The milliseconds the API spent in Stripe, from the `Server-Timing` header its `onSend` hook sets on a
+ * mutating route. The header is absent when Stripe was not called, may repeat the metric, and k6 canonicalizes
+ * its name, so both spellings are read and an unparsable entry counts as zero (AAP 0.12.2). */
 function stripeMs(response) {
   const header = response.headers['Server-Timing'] || response.headers['server-timing'] || '';
   let total = 0;
@@ -601,11 +554,8 @@ function value(data, selector, key, fallback) {
   return typeof found === 'number' ? found : fallback;
 }
 
-/**
- * A threshold's verdict in the summary data, or `null` when it carries none. k6 reports a metric's
- * thresholds as a map from expression to result; the array of one-key objects is read too, because
- * that layout has moved between releases.
- */
+/** A threshold's verdict in the summary data, or `null` when it carries none: k6 reports thresholds as a map
+ * from expression to result, and the array of one-key objects is read too, its layout having moved. */
 function thresholdOk(metric, expression) {
   const thresholds = metric === undefined ? undefined : metric.thresholds;
 

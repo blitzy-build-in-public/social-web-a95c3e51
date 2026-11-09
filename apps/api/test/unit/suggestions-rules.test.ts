@@ -104,8 +104,7 @@ interface ItemSpec {
 /**
  * One capture batch of `source` taken at one instant — one fetch, one phone call or one operator entry
  * (AAP 0.5.2) — holding a row per item listed. The batch id stands in for the time-ordered UUIDv7 of
- * production, and each row keeps the builder's own id, so the id tiebreak never decides a case by
- * accident.
+ * production, and each row keeps the builder's own id, so the id tiebreak never decides a case by accident.
  */
 function capture(
   captureBatchId: string,
@@ -548,9 +547,9 @@ describe('the budget filter and the ranking band', () => {
 
 describe('rankSuggestions', () => {
   /**
-   * Fourteen candidates against a 3,000-cent budget where the five partner venues are also the best
-   * ranking group: four restaurants (one of them the fourth of its category), a cafe, an activity, and
-   * non-partners both inside the band and cheaper than it, plus one candidate priced above the budget.
+   * Fourteen candidates against a 3,000-cent budget where the five partner venues are also the best ranking
+   * group: four restaurants (one of them the fourth of its category), a cafe, an activity, and non-partners
+   * both inside the band and cheaper than it, plus one candidate priced above the budget.
    */
   const CANDIDATE_CASES: readonly CandidateCase[] = [
     ['p-cafe-1', 'cafe', true, 200, 2600],

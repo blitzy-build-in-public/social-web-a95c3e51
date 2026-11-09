@@ -1,17 +1,11 @@
 /**
- * Proof validity and the shared proof reads (AAP 0.5.2, 0.5.3, 0.5.5, 0.5.7): the one answer to "does
- * this user hold a valid proof for this city now?". A proof is valid from two local days before its
- * arrival through the last instant of its departure day, both in the arrival city's own zone —
- * `ItineraryProof.validFrom` and `validTo`, derived by {@link proofValidity} once, when the proof is
- * stored (AAP 0.5.2, 0.5.7).
+ * Proof validity and the shared proof reads: the one answer to whether this user holds a valid proof for this city
+ * now — from two local days before arrival through the last instant of the departure day, in the arrival city's own
+ * zone, as `ItineraryProof.validFrom`/`validTo` derived by {@link proofValidity} when the proof is stored.
  *
- * Read-only: nothing here mutates, opens a transaction, reads the clock or decides a rule, and every
- * function takes the instant it reasons about from the caller — `services.clock.now()`,
- * `request.receivedAt`, or a test clock. Validity gates *new* proposals and appearances only: an expired
- * proof does not affect an existing `proposed` or `locked` meetup, and neither does deleting one
- * (AAP 0.5.3), so a caller wanting the stored proof regardless of validity asks {@link latestProof}.
- * Account erasure deletes a user's proofs while the `SpentNullifier` their booking produced survives, so
- * a deleted account cannot free it for reuse (AAP 0.5.2).
+ * Read-only, and every instant is passed in by the caller. Validity gates *new* proposals and appearances only: an
+ * expired proof does not affect an existing `proposed` or `locked` meetup. Account erasure deletes a user's proofs
+ * while the `SpentNullifier` their booking produced survives, so a deleted account cannot free it for reuse.
  */
 
 import { Prisma, type DbClient, type DbTx } from '@tablemate/db';
@@ -23,21 +17,14 @@ const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 /** An eight-digit `YYYYMMDD`, the form `lib/date_parse.circom` emits as a public signal. */
 const SIGNAL_DATE_RE = /^\d{8}$/;
 
-/**
- * Whether a UTC instant really is `day` of `month` of `year`: the round-trip that rejects an
- * overflowing date (`2026-02-30` lands on 2 March), a month outside 1-12 and a leading-zero year
- * (`0050` is read as 1950 by `Date.UTC`).
- */
+/** Whether a UTC instant really is that calendar date: the round-trip rejects an overflowing date, a month outside
+ * 1-12 and a leading-zero year (`Date.UTC` reads `0050` as 1950). */
 function isUtcDate(ms: number, year: number, month: number, day: number): boolean {
   const at = new Date(ms);
   return at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === day;
 }
 
-/**
- * The UTC midnight of a `YYYY-MM-DD` date, as epoch milliseconds.
- *
- * @throws RangeError when the date is malformed or is not a real calendar date.
- */
+/** The UTC midnight of a `YYYY-MM-DD` date; `@throws RangeError` for a malformed or unreal calendar date. */
 function utcMidnightMs(isoDate: string): number {
   const parts = ISO_DATE_RE.exec(isoDate);
   if (parts === null) {
@@ -54,18 +41,10 @@ function utcMidnightMs(isoDate: string): number {
 }
 
 /**
- * The instants a stay's proof is valid between, from the two calendar dates the circuit proved
- * (AAP 0.5.2, 0.5.7).
- *
- * `validFrom` is {@link PROOF_VALID_FROM_DAYS_BEFORE} local days before the arrival, so a traveler
- * can prove and propose shortly before getting there; `validTo` is the last millisecond of the
- * departure day *in the city's zone*, so a stay ending on a Lisbon evening is valid until Lisbon's
- * midnight rather than the prover's. The two are stored on the row and never recomputed, so a later
- * change to the zone or to the constant cannot move an accepted proof's window.
- *
- * @throws RangeError for a zone that is not IANA or a date that is not a real calendar date
- *   (`2026-02-30`), which the route's Zod schema has already rejected; the check itself lives in
- *   `packages/server-core/src/time/city-time.ts`.
+ * The instants a stay's proof is valid between: `PROOF_VALID_FROM_DAYS_BEFORE` local days before arrival, through the
+ * last millisecond of the departure day *in the city's zone*. Both are stored on the row and never recomputed, so a
+ * later change to a zone or to the constant cannot move an accepted proof's window. `@throws RangeError` for a zone
+ * that is not IANA or an unreal date, which the route's Zod schema has already rejected.
  */
 export function proofValidity(
   tz: string,
@@ -79,15 +58,8 @@ export function proofValidity(
 }
 
 /**
- * The `YYYY-MM-DD` date a circuit date signal denotes, or `null` when the signal is not a real
- * calendar date (AAP 0.5.5).
- *
- * The circuit proves the stay dates as the integers `YYYYMMDD` (`lib/date_parse.circom`), which
- * arrive as decimal strings from snarkjs and as `bigint`s in a unit test. Only a date whose month is
- * 1-12 and whose day exists in that month under the Gregorian leap rule converts: `20260230` and
- * `20250229` answer `null`, `20280229` answers `2028-02-29`. `verifier.ts` maps `null` to
- * `422 proof_invalid`, because a proof whose public signals are not dates proves no stay whatever
- * else verifies.
+ * The `YYYY-MM-DD` date a circuit date signal denotes, or `null` for a signal that is not a real calendar date
+ * (`20260230`, `20250229`), which `verifier.ts` maps to `422 proof_invalid`.
  */
 export function signalDateToIso(value: string | bigint): string | null {
   const text = value.toString();
@@ -104,56 +76,38 @@ export function signalDateToIso(value: string | bigint): string | null {
 }
 
 /**
- * The whole days between two calendar dates, `departure - arrival` (AAP 0.5.4, 0.5.5).
- *
- * `verifier.ts` requires `STAY_MIN_DAYS <= stayDays <= STAY_MAX_DAYS`, so a same-day stay (`0`), a
- * reversed pair (negative) and a stay longer than 120 days all become `422 stay_out_of_range`. The
- * difference of two UTC midnights carries no zone, no DST transition and no fractional day, so the
- * result is exactly the count of calendar days between the two dates.
- *
- * @throws RangeError when either date is malformed or not a real calendar date. Both reach here
- *   already validated, because each signal went through {@link signalDateToIso} first.
+ * The whole days between two calendar dates, `departure - arrival`. `verifier.ts` requires
+ * `STAY_MIN_DAYS <= stayDays <= STAY_MAX_DAYS`, so a same-day stay, a reversed pair and a stay longer than 120 days
+ * all become `422 stay_out_of_range`. `@throws RangeError` for a date that is not a real calendar date, which each
+ * signal has already been through {@link signalDateToIso} to rule out.
  */
 export function stayDays(arrivalDate: string, departureDate: string): number {
   return (utcMidnightMs(departureDate) - utcMidnightMs(arrivalDate)) / DAY_MS;
 }
 
-/**
- * Either database reader: the process's guarded client, or the client of the transaction a caller is
- * already in. These reads are safe inside a transaction, which is what a caller deciding disclosure
- * or creating a proposal needs.
- */
+/** Either database reader: the process's guarded client, or the client of the transaction a caller is already in;
+ * these reads are safe inside a transaction. */
 export type ProofReader = DbClient | DbTx;
 
 /**
- * A stored proof as every caller sees it (AAP 0.5.2).
- *
- * The two dates are the calendar dates the circuit proved; the two instants are the window
- * {@link proofValidity} derived from them. Deliberately absent: `nullifier` (the anti-reuse key,
- * compared through `SpentNullifier` rather than read) and `registryRoot` (the root the proof was
- * accepted against). Neither is needed outside `proofs/*`, and no response carries them
- * (AAP 0.5.4, 0.12.2).
+ * A stored proof as every caller sees it. `nullifier` and `registryRoot` are deliberately absent: neither is needed
+ * outside `proofs/*`, and no response carries them.
  */
 export interface ProofSummary {
   readonly id: string;
   readonly cityId: string;
   readonly arrivalDate: string;
   readonly departureDate: string;
-  /** The allowlisted issuer's integer id, read out of the `BigInt` column. */
   readonly issuerId: number;
   readonly validFrom: Date;
   readonly validTo: Date;
-  /** When the proof was stored; with the id, what makes "the latest proof" a total order. */
   readonly createdAt: Date;
 }
 
 /**
- * The columns of {@link ProofSummary}: the explicit `select` every read here uses, so a query loads
- * no column above what a caller receives.
- *
- * Prisma returns the `@db.Date` columns as `Date`s at UTC midnight and `issuer_id` as a `bigint`;
- * {@link toProofSummary} converts both. The `satisfies` keeps the names checked against the model,
- * so a renamed column fails the build instead of quietly dropping a field from a response.
+ * The columns of {@link ProofSummary}: the explicit `select` every read uses, so a query loads no column above what a
+ * caller receives, and `satisfies` keeps the names checked against the model. Prisma returns the `@db.Date` columns
+ * as `Date`s at UTC midnight and `issuer_id` as a `bigint`, which {@link toProofSummary} converts.
  */
 const PROOF_SUMMARY_SELECT = {
   id: true,
@@ -169,16 +123,13 @@ const PROOF_SUMMARY_SELECT = {
 type ProofRow = Prisma.ItineraryProofGetPayload<{ select: typeof PROOF_SUMMARY_SELECT }>;
 
 /**
- * Latest first, everywhere in this file (AAP 0.5.2): `createdAt`, then `id` as the tie-breaker, so a
- * user's latest proof is one total order and two proofs written in the same millisecond cannot make
- * a read ambiguous. Spread at each call site, because Prisma's `orderBy` takes a mutable array.
+ * Latest first, everywhere in this file: `createdAt`, then `id`, so "the latest proof" is one total order and two
+ * proofs written in the same millisecond cannot make a read ambiguous.
  */
 const LATEST_FIRST = [{ createdAt: 'desc' }, { id: 'desc' }] as const;
 
-/**
- * The validity predicate: `validFrom <= now <= validTo`, both bounds inclusive (AAP 0.5.7). Stated
- * once, so "at the boundary" means the same for every read.
- */
+/** The validity predicate: `validFrom <= now <= validTo`, both bounds inclusive, stated once so "at the boundary"
+ * means the same for every read. */
 function validAt(now: Date): Prisma.ItineraryProofWhereInput {
   return { validFrom: { lte: now }, validTo: { gte: now } };
 }
@@ -201,11 +152,8 @@ function toProofSummary(row: ProofRow): ProofSummary {
 }
 
 /**
- * The user's latest proof for one city that is valid at `now`, or `null` (AAP 0.5.7).
- *
- * The read discovery, the proposal guard (for both participants), lodging claims and the visibility
- * toggle base `403 no_valid_proof` on, and the one served by the `(cityId, validTo)` index
- * (AAP 0.5.2). A user holding several proofs for a city gets the most recently created valid one.
+ * The user's latest proof for one city that is valid at `now`, or `null`: the read discovery, the proposal guard for
+ * both participants, lodging claims and the visibility toggle base `403 no_valid_proof` on.
  */
 export async function activeProof(
   db: ProofReader,
@@ -221,12 +169,8 @@ export async function activeProof(
   return row === null ? null : toProofSummary(row);
 }
 
-/**
- * Whether the user holds a proof for this city that is valid at `now` (AAP 0.5.7).
- *
- * The yes/no form of {@link activeProof}, for the many callers that only gate on it. True at both
- * window boundaries and false a millisecond outside either.
- */
+/** Whether the user holds a proof for this city that is valid at `now`: the yes/no form of {@link activeProof}, true
+ * at both window boundaries and false a millisecond outside either. */
 export async function hasValidProof(
   db: ProofReader,
   userId: string,
@@ -237,12 +181,8 @@ export async function hasValidProof(
 }
 
 /**
- * The user's latest proof that is valid at `now` in any city, or `null` (AAP 0.5.7).
- *
- * For callers that do not fix the city first: a lodging claim resolves the city from the proof, and
- * a profile reports `currentCityId` and `proofDates` from it. A user travelling through two cities
- * with overlapping proofs gets the more recently created one, so the reported city is the one they
- * proved most recently, not the one that happens to sort first.
+ * The user's latest proof that is valid at `now` in any city, or `null`, for callers that do not fix the city first; a
+ * user with overlapping valid proofs gets the more recently created one.
  */
 export async function currentProof(
   db: ProofReader,
@@ -258,20 +198,12 @@ export async function currentProof(
 }
 
 /**
- * Every city the user holds a proof for that is valid at `now`, one entry per city, ascending
- * (AAP 0.5.4, 0.5.7).
- *
- * The set form of {@link currentProof}, and the entitlement set `GET /me` publishes as
- * `MeDto.validCityIds`. A traveler may hold overlapping valid proofs for several cities — a Lisbon
- * stay ending as a Chiang Mai one begins, or two bookings that overlap — so a client naming a single
- * city cannot tell which of them the caller may ask about: it would show the unverified state for a
- * city the caller is entitled to and never request that city's traveler list, although the list route
- * answers the same token (AAP 0.5.8). A user with two valid proofs for one city is named once, which
- * is what `GROUP BY` does at the database, and an empty result means no valid proof anywhere.
- *
- * The window is {@link validAt}, the same predicate every other read here applies, so both bounds are
- * inclusive exactly as {@link activeProof}'s are. The order is `city_id` ascending, so the payload is
- * identical between two reads of one state and a client may take its first entry as a default.
+ * Every city the user holds a proof for that is valid at `now`, one entry per city, ascending: the entitlement set
+ * `GET /me` publishes as `MeDto.validCityIds`. A traveler may hold overlapping valid proofs for several cities, so a
+ * client naming a single city cannot tell which the caller may ask about and would show the unverified state for a
+ * city they are entitled to; a user with two valid proofs for one city is named once, which is what `GROUP BY` does.
+ * The window is {@link validAt}, both bounds inclusive, and the order is `city_id` ascending, so two reads of one
+ * state give an identical payload.
  */
 export async function validCityIdsFor(
   db: ProofReader,
@@ -286,36 +218,17 @@ export async function validCityIdsFor(
   return rows.map((row) => row.cityId);
 }
 
-/**
- * One row of {@link PROOF_SUMMARY_SELECT}, with the owner {@link currentProofsFor} keys its map by.
- *
- * The statement there names its columns as this type spells them. Prisma delivers a `@db.Date`
- * column as a `Date` at UTC midnight and `issuer_id` as a `bigint` for a raw read exactly as it does
- * for a typed one, so {@link toProofSummary} reads this row as it reads a selected row.
- */
+/** One row of {@link PROOF_SUMMARY_SELECT}, with the owner {@link currentProofsFor} keys its map by. A raw read
+ * delivers a `@db.Date` column and a `bigint` exactly as a typed one does. */
 type ProofRowWithUser = ProofRow & { readonly userId: string };
 
 /**
- * The current valid proof of every requested user, in one query (AAP 0.5.7).
- *
- * Batches the `currentCityId` and `proofDates` of a whole page of `Tier0Profile`s — discovery pages
- * and lodging guest lists — so building twenty profiles costs one read rather than twenty (AAP
- * 0.5.4, whose traveler page holds 20 profiles). The read is one row per requested user at the
- * database level: `DISTINCT ON (p."user_id")` keeps each user's latest valid proof and returns
- * nothing else, so a user with several valid overlapping stays no longer multiplies the rows the
- * database sends. It is the same statement `cities/discovery.ts` runs for its page of travelers,
- * and Prisma's own `distinct` cannot replace it: that option reaches PostgreSQL as no `DISTINCT ON`
- * at all — the database still returns every matching row and the client de-duplicates them — which
- * is exactly the unbounded read this read is here to avoid.
- *
- * The `ORDER BY` leads with `user_id`, which `DISTINCT ON` requires of its expression, and the rest
- * of it is {@link LATEST_FIRST}; each user's first row under that order is therefore still their
- * latest proof, which is what the map holds. The window is the two inclusive bounds of
- * {@link validAt}, written out because the read is a statement. Duplicate ids are collapsed, and an
- * empty request queries nothing.
- *
- * A user with no valid proof is absent from the map rather than mapped to `null`: callers render an
- * unverified traveler by omitting those fields.
+ * The current valid proof of every requested user, in one query: it batches the `currentCityId` and `proofDates` of a
+ * whole page of `Tier0Profile`s, so twenty profiles cost one read rather than twenty. `DISTINCT ON (p."user_id")`
+ * keeps each user's latest valid proof at the database, which Prisma's own `distinct` cannot: that option reaches
+ * PostgreSQL as no `DISTINCT ON` at all, leaving every matching row to the client. The `ORDER BY` leads with
+ * `user_id`, which `DISTINCT ON` requires of its expression, then {@link LATEST_FIRST}. A user with no valid proof is
+ * absent from the map rather than mapped to `null`, and an empty request queries nothing.
  */
 export async function currentProofsFor(
   db: ProofReader,
@@ -355,13 +268,9 @@ export async function currentProofsFor(
 }
 
 /**
- * The user's most recent proof whatever its validity, or `null` (AAP 0.5.7).
- *
- * Two callers need exactly that. A profile reports proof status, including "expired" for a traveler
- * whose stay has ended. And discovery shows an unverified user only to viewers who already completed
- * a meetup with them, in the city of their most recent proof — the only city such a pair can share,
- * and one that may well be in the past. Neither call site is a validity question, so the window is
- * not applied; a caller that does mean validity asks {@link activeProof} or {@link currentProof}.
+ * The user's most recent proof whatever its validity, or `null`. A profile reports proof status, including "expired",
+ * and discovery shows an unverified user only to viewers who already met them, in the city of their most recent proof;
+ * neither is a validity question, so the window is not applied.
  */
 export async function latestProof(db: ProofReader, userId: string): Promise<ProofSummary | null> {
   const row = await db.itineraryProof.findFirst({

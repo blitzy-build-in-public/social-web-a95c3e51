@@ -1,16 +1,13 @@
 /**
  * Integration tests for the operator routes and the additive `POST /v1/events`.
  *
- * Seven groups, in the order `admin/routes.ts` registers its routes: the guard every `/admin/*` route
- * shares, the dashboard, the dispute queue, the call-task queue, the lodging-claim queue with its
- * audited booking-details read, the crawl-domain, onboarding, report and client-event routes, and the
- * operator's language-model re-enable.
- * Every assertion reads what a handler wrote, and every answer is parsed with the shared schema its
- * route declares, so a field the contract does not carry fails the case.
+ * Seven groups, in the order `admin/routes.ts` registers its routes: the guard every `/admin/*` route shares, the dashboard,
+ * the dispute queue, the call-task queue, the lodging-claim queue with its audited booking-details read, the crawl-domain,
+ * onboarding, report and client-event routes, and the operator's language-model re-enable. Every assertion reads what a handler
+ * wrote, and every answer is parsed with the shared schema its route declares.
  *
- * No case moves the clock: an hour-sized jump would expire the 15-minute access token, and the two
- * boundaries these routes judge are reachable by placing a meetup's `startsAt` relative to the
- * frozen instant.
+ * No case moves the clock: an hour-sized jump would expire the 15-minute access token, and the two boundaries these routes
+ * judge are reachable by placing a meetup's `startsAt` relative to the frozen instant.
  */
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
@@ -179,9 +176,8 @@ interface AdminRouteCase {
 }
 
 /**
- * Every route behind `role = operator`, the additive booking-details read included. The group guard
- * runs as an `onRequest` hook, before any parameter or body is validated, so the answer is the
- * guard's whatever a caller sends.
+ * Every route behind `role = operator`, the additive booking-details read included. The group guard runs as an `onRequest` hook,
+ * before any parameter or body is validated, so the answer is the guard's whatever a caller sends.
  */
 const ADMIN_ROUTES = rows<AdminRouteCase>([
   {
@@ -576,8 +572,8 @@ describe('the dispute queue (AAP 0.5.3, 0.5.4)', () => {
 });
 
 /**
- * A menu extraction in the shape the relay records it: a list of slot-tagged items, which
- * `admin/call-tasks.ts` flattens into the `<slot>.<field>` record the operator's form reads.
+ * A menu extraction in the shape the relay records it: a list of slot-tagged items, which `admin/call-tasks.ts` flattens into the
+ * `<slot>.<field>` record the operator's form reads.
  */
 const MENU_EXTRACTION = {
   kind: 'menu_prices',
@@ -602,9 +598,8 @@ const MENU_EXTRACTION = {
 } as const;
 
 /**
- * The prices an operator is told over the phone: a main course, a non-alcoholic drink, and one
- * standard per-person ticket — the one category whose two extra fields the contract requires,
- * because only a standard per-person ticket prices an activity.
+ * The prices an operator is told over the phone: a main course, a non-alcoholic drink, and one standard per-person ticket — the
+ * one category whose two extra fields the contract requires, because only a standard per-person ticket prices an activity.
  */
 const OPERATOR_PRICES = [
   {
@@ -640,9 +635,8 @@ const OPERATOR_PRICES = [
 ];
 
 /**
- * Write one attempt's extraction, which the builder's own option does not admit: it types the
- * payload as a flat record of scalars, while a menu call's extraction is a list of items. The cast
- * is the honest one — a JSON column Prisma types structurally rather than by the values it holds.
+ * Write one attempt's extraction, which the builder's own option does not admit: it types the payload as a flat record of scalars,
+ * while a menu call's extraction is a list of items.
  */
 function setExtraction(attemptId: string, payload: unknown): Promise<unknown> {
   return t.services.db.callAttempt.update({
@@ -656,8 +650,8 @@ function menuTask(status: CallTaskStatus): Promise<{ id: string }> {
 }
 
 /**
- * A menu-price call task on the fixture place that is carrying the `blockedReason` its own dial
- * hit: the state from which an operator resolves it by hand.
+ * A menu-price call task on the fixture place that is carrying the `blockedReason` its own dial hit: the state from which an
+ * operator resolves it by hand.
  */
 function blockedMenuTask(
   status: CallTaskStatus,
@@ -677,9 +671,8 @@ async function callTasks(query: Record<string, string> = {}): Promise<AdminCallT
 }
 
 /**
- * Queue one menu task per entry for a paging case, at the outcome instant that entry names: entries
- * sharing one instant exercise the id tie-break, and `null` is a task with no outcome yet, which
- * the queue's order places last.
+ * Queue one menu task per entry for a paging case, at the outcome instant that entry names: entries sharing one instant exercise
+ * the id tie-break, and `null` is a task with no outcome yet, which the queue's order places last.
  */
 async function queuedTasks(outcomeAts: readonly (Date | null)[]): Promise<string[]> {
   const ids: string[] = [];
@@ -702,8 +695,8 @@ interface QueueIds {
 }
 
 /**
- * The queue the filter cases narrow: two menu tasks on the fixture place — one awaiting review, one
- * unreachable for want of a number — and a lodging verification an operator also has to act on.
+ * The queue the filter cases narrow: two menu tasks on the fixture place — one awaiting review, one unreachable for want of a
+ * number — and a lodging verification an operator also has to act on.
  */
 async function filteringQueue(): Promise<QueueIds> {
   const review = await makeCallTask(t, {
@@ -727,9 +720,8 @@ async function filteringQueue(): Promise<QueueIds> {
 }
 
 /**
- * One filter over that same three-task queue: the query it sends and the rows that must come back.
- * The name filter is typed in lower case although every fixture name begins "Fixture", which is
- * what makes the row prove the match is case-insensitive rather than merely a prefix match.
+ * One filter over that same three-task queue: the query it sends and the rows that must come back. The name filter is typed in
+ * lower case although every fixture name begins "Fixture", which is what makes the row prove the match is case-insensitive.
  */
 const QUEUE_FILTERS = rows<{
   readonly name: string;
@@ -758,9 +750,8 @@ function cursorShaped(payload: Record<string, unknown>): string {
 }
 
 /**
- * Queries the read refuses before it runs: a cursor the codec cannot read — malformed text, a
- * millisecond instant and an id that is not an id — a page size outside the contract's own bound,
- * and a parameter the queue does not carry, which its strict schema answers rather than ignoring.
+ * Queries the read refuses before it runs: a cursor the codec cannot read, a page size outside the contract's own bound, and a
+ * parameter the queue does not carry, which its strict schema answers rather than ignoring.
  */
 const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<string, string> }>([
   { name: 'a cursor that is not the position a page ended on', query: { cursor: 'not-a-cursor' } },
@@ -777,12 +768,12 @@ const QUEUE_BAD_QUERIES = rows<{ readonly name: string; readonly query: Record<s
 ]);
 
 /**
- * One operator resolution of a task that was carrying a `blockedReason`: the status it waits in, the
- * reason its own dial hit, the outcome the operator records, and the body that outcome needs.
+ * One operator resolution of a task that was carrying a `blockedReason`: the status it waits in, the reason its own dial hit, the
+ * outcome the operator records, and the body that outcome needs.
  *
- * Three rows pair the reason with the status the lifecycle gives it — a dispatch that could not be
- * reconciled and a vendor that ran out of retries wait in `needs_review`, an invalid number is
- * `unreachable` — so the case proves the clearing from both statuses an operator resolves from.
+ * Three rows pair the reason with the status the lifecycle gives it — a dispatch that could not be reconciled and a vendor that
+ * ran out of retries wait in `needs_review`, an invalid number is `unreachable` — so the case proves the clearing from both
+ * statuses an operator resolves from.
  */
 const BLOCKED_RESOLUTIONS = rows<{
   readonly name: string;
@@ -1007,11 +998,9 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
   const MXN_USD_PER_UNIT = '0.05';
   const MXN_USD_CENTS = 425;
   /**
-   * A non-USD price entry before and after the FX table holds a rate for its currency (AAP 0.5.6):
-   * `rateDaysBefore` is how many days before the capture day the case's one `FxRate` row belongs to,
-   * so the conversion has to take the latest rate at or before that day, and `null` is a table no run
-   * has written yet. `code` is what the row proves: the code the answer carries, or `null` for the row
-   * whose entry is stored.
+   * A non-USD price entry before and after the FX table holds a rate for its currency (AAP 0.5.6): `rateDaysBefore` is how many
+   * days before the capture day the case's one `FxRate` row belongs to, so the conversion has to take the latest rate at or
+   * before that day; `code` is the code the answer carries, or `null` for the row whose entry is stored.
    */
   const FX_RESOLUTIONS = rows<{
     readonly name: string;
@@ -1674,8 +1663,8 @@ async function namedLodging(cityId: string, name: string): Promise<LodgingFixtur
 }
 
 /**
- * The registry the filter cases narrow: three named lodgings in Lisbon and one in Mexico City, whose
- * names fix the order the answer must come back in without any case reading an id back.
+ * The registry the filter cases narrow: three named lodgings in Lisbon and one in Mexico City, whose names fix the order the
+ * answer must come back in without any case reading an id back.
  */
 interface RegistryFixture {
   readonly central: LodgingFixture;
@@ -1717,10 +1706,9 @@ const REGISTRY_FILTERS = rows<{
 ]);
 
 /**
- * Queries the registry read refuses before it runs (AAP 0.5.4): a cursor this read did not write — the
- * queue read's own payload shape, an id that is not an id, and an id no lodging carries — a page size
- * outside the contract's own bound, and a parameter the registry does not carry, which its strict
- * schema answers rather than ignoring.
+ * Queries the registry read refuses before it runs (AAP 0.5.4): a cursor this read did not write — the queue read's own payload
+ * shape, an id that is not an id, and an id no lodging carries — a page size outside the contract's bound, and a parameter the
+ * registry does not carry.
  */
 const REGISTRY_BAD_QUERIES = rows<{
   readonly name: string;
@@ -1896,10 +1884,8 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     // One row of a later city, so the walk below crosses a city boundary and the city filter has two
     // cities to choose between.
     const elsewhere = await namedLodging(MEXICO_CITY, 'Hostal Roma Norte');
-    // The row the QA report could not reach: entered through the route an operator uses, with a long
-    // name that sorts after every fixture name, so it is the 201st Lisbon row and no first page holds
-    // it. The registry the report walked held 612 lodgings; one page more than the bound is what the
-    // defect needs to show itself.
+    // The row the QA report could not reach: entered through the route an operator uses, with a long name that sorts after every
+    // fixture name, so it is the 201st Lisbon row and no first page holds it.
     const entered = await asOperator('POST', '/v1/admin/lodgings', {
       body: {
         cityId: LISBON,
@@ -2059,14 +2045,12 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
 });
 
 /**
- * The re-enable AAP 0.5.6 requires and only an operator can make: a counted-versus-reported
- * input-token mismatch suspends language-model use in every city, and pressing the Calls panel's
- * control is what ends the suspension. The flag lives in the Redis the app and the suite share, so a
- * case sets it exactly as `SuspensionStore.suspend` does, then reads what the route left behind.
+ * The re-enable AAP 0.5.6 requires and only an operator can make: a counted-versus-reported input-token mismatch suspends
+ * language-model use in every city, and the Calls panel's control ends the suspension. The flag lives in the Redis the app and the
+ * suite share, so a case sets it exactly as `SuspensionStore.suspend` does, then reads what the route left behind.
  *
- * The route's own refusal, a `503 service_unavailable` when the flag's store cannot be answered, is
- * not staged here: a Redis that answers nothing is refused at the limiter first, so this suite could
- * only assert the limiter's refusal. `apps/api/test/unit/admin-llm-suspension.test.ts` covers it.
+ * The route's own `503 service_unavailable` refusal is not staged here: a Redis that answers nothing is refused at the limiter
+ * first. `apps/api/test/unit/admin-llm-suspension.test.ts` covers it.
  */
 describe('the language-model re-enable (AAP 0.5.6)', () => {
   const reEnableUrl = '/v1/admin/language-model/re-enable';

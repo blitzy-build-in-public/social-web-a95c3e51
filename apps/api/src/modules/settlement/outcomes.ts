@@ -1,22 +1,12 @@
 /**
- * The settlement outcome table (AAP 0.5.7): presence at `startsAt + 45 min` to the money decision
- * and the reputation decision that follow it, held in one readable plan.
+ * The settlement outcome table: presence at `startsAt + 45 min` to the money decision and the reputation decision
+ * that follow it, held in one readable plan, one row per presence combination, plus the late-cancellation plan whose
+ * outcome is already known.
  *
- * AAP 0.5.7 names this module as the home of the settlement outcome rule, stated once in the table
- * below, one row per presence combination. AAP 0.5.3 adds the fourth plan of this module, a late
- * cancellation: it forfeits through the same recoverable settlement, but its outcome is already
- * known, so it waits for no window. AAP 0.7.3 assumption 2 keeps the forfeit destination — Table
- * Credit for the attendee rather than platform revenue — a change to this file alone.
- *
- * Purity is deliberate (AAP 0.8.1): the module imports its types from `@tablemate/shared` and
- * nothing else, so it holds no database, clock, logger, Redis, Stripe or sibling-module
- * dependency. `settlement/settle.ts` computes the presence flags from `pass` check-ins only, calls
- * {@link settlementPlan} or {@link lateCancelPlan}, and applies the plan inside its transaction;
- * `reputation/counters.ts` and `admin/metrics.ts` read the flags the plan records.
- *
- * @see AAP 0.5.3 for the meetup and deposit transitions, 0.5.7 for the settlement, Table Credit,
- *   pair-history and lodging-activity rules, 0.3.2 for the settlement that applies a plan
- *   idempotently.
+ * Purity is deliberate: the module imports its types from `@tablemate/shared` and nothing else, so it holds no
+ * database, clock, logger, Redis, Stripe or sibling-module dependency. `settlement/settle.ts` computes the presence
+ * flags from `pass` check-ins only, calls {@link settlementPlan} or {@link lateCancelPlan}, and applies the plan
+ * inside its transaction; `reputation/counters.ts` and `admin/metrics.ts` read the flags the plan records.
  */
 import type {
   AnalyticsEventName,
@@ -25,10 +15,6 @@ import type {
   ParticipantRole,
   SettlementOutcome,
 } from '@tablemate/shared';
-
-// ---------------------------------------------------------------------------------------------
-// The plan (AAP 0.5.7)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The meetup statuses a settlement can reach (AAP 0.5.3): `completed`, `forfeited` — which covers
@@ -95,10 +81,6 @@ export interface Presence {
 
 /** The four presence combinations, the keys of {@link SETTLEMENT_TABLE}. */
 export type PresenceKey = 'both' | 'initiator_only' | 'recipient_only' | 'neither';
-
-// ---------------------------------------------------------------------------------------------
-// The table (AAP 0.5.7, 0.5.3)
-// ---------------------------------------------------------------------------------------------
 
 /**
  * The settlement outcome rule of AAP 0.5.7, one row per presence combination.

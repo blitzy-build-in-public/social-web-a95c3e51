@@ -1,12 +1,10 @@
 /**
  * Criterion 7 — the framing experiment's integrity.
  *
- * The rules the cases turn on: a thousand accounts created through the real magic-link routes land
- * in `ExperimentAssignment` once each with an `assignmentId` of their own, `social` for 45%-55% of
- * them; signing the same addresses in again, or after the configured split is replaced by the 100%
- * `social` fallback, leaves every stored `(variant, assignmentId, assignedAt)` as the first sign-in
- * wrote it; every funnel stage carries its actor's stored variant and pairing; and no stored event
- * reconnects to a person — `analytics_event` has no `user_id` column and no row contains a user id.
+ * The rules the cases turn on: a thousand accounts created through the real magic-link routes land in `ExperimentAssignment` once each with an
+ * `assignmentId` of their own, `social` for 45%-55% of them; signing the same addresses in again, or after the configured split is replaced by the
+ * 100% `social` fallback, leaves every stored `(variant, assignmentId, assignedAt)` as the first sign-in wrote it; every funnel stage carries its
+ * actor's stored variant and pairing; and no stored event reconnects to a person.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -87,8 +85,7 @@ async function rebuildApp(overrides: Record<string, string>): Promise<TestApp> {
 }
 
 /**
- * Sign every address in through the real routes, at most {@link SIGN_IN_CONCURRENCY} at a time, and
- * answer what each sign-in returned, keyed by address. The batches run one after another: a thousand
+ * Sign every address in through the real routes, at most {@link SIGN_IN_CONCURRENCY} at a time. The batches run one after another: a thousand
  * simultaneous sign-in transactions would exhaust the client's connections and the database's locks.
  */
 async function signInAll(
@@ -125,14 +122,9 @@ async function storedAssignments(target: TestApp): Promise<Map<string, StoredAss
 }
 
 /**
- * Walk the whole deposit funnel once, through the real routes: two accounts with saved visa cards
- * and a valid proof each, a partner venue, the proposal, the recipient's first read — the read that
- * records it and emits `proposal_viewed` — the acceptance that locks both holds, and both
- * check-ins. The clock stands on the start for both, the one instant where the code the console
- * shows is the code the route validates.
- *
- * @throws {AssertionError} When a step answers outside its success range, or the second check-in
- *   does not report the pair as both checked in.
+ * Walk the whole deposit funnel once, through the real routes: two accounts with saved visa cards and a valid proof each, a partner venue, the
+ * proposal, the recipient's first read — the read that records it and emits `proposal_viewed` — the acceptance that locks both holds, and both
+ * check-ins, the clock standing on the start where the code the console shows is the code the route validates.
  */
 async function walkFunnel(target: TestApp): Promise<{
   initiator: UserFixture;
@@ -175,14 +167,11 @@ function propsOf(props: unknown): Record<string, unknown> {
 }
 
 /**
- * Assert that no analytics row reconnects to a person: the table carries no `user_id` column, no
- * stored row contains any user id in either spelling — the raw uuid and the same 32 hex digits
- * without its dashes — and no `actorHash` is itself a user id.
+ * Assert that no analytics row reconnects to a person: the table carries no `user_id` column, no stored row contains any user id in either spelling
+ * — the raw uuid and the same 32 hex digits without its dashes — and no `actorHash` is itself a user id.
  *
- * Each row is serialized whole, every column and the whole `props` included, so a leak through a
- * column this scan does not name is found by the same comparison. The event id, the `assignmentId`
- * and the `meetupId` are ids of their own and name no account, which is the point: only a person's
- * id would.
+ * Each row is serialized whole, every column and the whole `props` included, so a leak through a column this scan does not name is found by the
+ * same comparison.
  */
 async function expectNoRawUserIds(target: TestApp): Promise<void> {
   const columns = await target.services.db.$queryRaw<{ column_name: string }[]>`

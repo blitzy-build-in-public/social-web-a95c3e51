@@ -36,21 +36,20 @@ function facts(overrides: Partial<PairFacts> = {}): PairFacts {
 }
 
 /**
- * A shared meetup in `locked` with both deposits `held`, which also opens messaging (tiers 1 and 2
- * of the table below). A meetup with an open dispute reaches these very facts: it stays `locked`
- * while the dispute stands, so `pairFacts` must not filter disputed meetups out of its
- * `shared_locked_both_held` test (AAP 0.5.3) — `integration/disclosure.test.ts` covers that SQL.
+ * A shared meetup in `locked` with both deposits `held`, which also opens messaging. A meetup with an
+ * open dispute reaches these very facts — it stays `locked` while the dispute stands — so `pairFacts`
+ * must not filter disputed meetups out of its `shared_locked_both_held` test (AAP 0.5.3), which
+ * `integration/disclosure.test.ts` covers.
  */
 const LOCKED_BOTH_HELD = facts({ sharedLockedBothHeld: true, messageable: true });
 
 /**
- * The rule of AAP 0.5.7, one row per case. Two properties are deliberately out of `tierFrom`'s
- * reach and are named here instead. `completedCount` counts every completed meetup whatever the
- * deposit and however closely the two are spaced, because the anti-farming rule limits the
- * reputation counters and the leaderboard only and never disclosure (AAP 0.7.3), so two completions
- * inside 30 days still reach tier 3 (criterion 5). And `PairFacts.blocked` carries no block
- * *direction*: it is true for a block in either direction, a property of `pairFacts`' SQL rather
- * than of this function, which `integration/disclosure.test.ts` covers.
+ * The rule of AAP 0.5.7, one row per case. Two properties are deliberately out of `tierFrom`'s reach and
+ * are named here instead: `completedCount` counts every completed meetup whatever the deposit and
+ * however closely the two are spaced, because the anti-farming rule limits the reputation counters and
+ * the leaderboard only and never disclosure (AAP 0.7.3); and `PairFacts.blocked` carries no block
+ * *direction* — true either way, a property of `pairFacts`' SQL rather than of this function, which
+ * `integration/disclosure.test.ts` covers.
  */
 const TIER_CASES: readonly TierCase[] = [
   // A stranger keeps the tier 0 allowlist.
@@ -61,7 +60,6 @@ const TIER_CASES: readonly TierCase[] = [
   { name: 'shared locked meetup, open dispute → 1', facts: LOCKED_BOTH_HELD, expected: 1 },
   // Locked but only one deposit held: messageable, and still below tier 1.
   { name: 'locked meetup, one deposit held → 0', facts: facts({ messageable: true }), expected: 0 },
-  // One completed meetup.
   { name: 'completedCount=1 → 2', facts: facts({ completedCount: 1 }), expected: 2 },
   // A completion with a locked meetup beside it: the higher tier wins.
   {

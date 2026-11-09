@@ -1,21 +1,18 @@
 /**
- * The operator dispute queue and one operator's resolution of a dispute in it (AAP 0.5.1
- * `admin/disputes.ts`, 0.5.4 `GET /admin/disputes` and `POST /admin/disputes/:id/resolve`, 0.5.3
- * "Dispute lifecycle").
+ * The operator dispute queue and one operator's resolution of a dispute in it.
  *
- * {@link listDisputes} answers what an operator has to act on — every open dispute, nearest deadline
- * first, and behind them the resolved ones newest first — and {@link resolveDispute} is the only
- * place a dispute becomes `resolved` with an outcome, through the table of {@link resolutionPlan}.
+ * {@link listDisputes} answers what an operator has to act on — every open dispute, nearest deadline first, and
+ * behind them the resolved ones newest first — and {@link resolveDispute} is the only place a dispute becomes
+ * `resolved` with an outcome, through the table of {@link resolutionPlan}.
  *
- * Three properties the money decision rests on: the meetup row lock comes first, so two operators
- * resolving one dispute, and an operator racing a settlement or a hold loss, are serialized and the
- * second sees the first one's result; no provider call runs inside the transaction, so a failure to
- * reach the provider after the commit is not the operator's error and the 60-second sweeper resumes
- * it (AAP 0.3.2); and an account deletion waiting on this dispute is unblocked here, because a
- * resolution is the instant such an account can finally be erased (AAP 0.5.3).
+ * Three properties the money decision rests on: the meetup row lock comes first, so two operators resolving one
+ * dispute, and an operator racing a settlement or a hold loss, are serialized and the second sees the first one's
+ * result; no provider call runs inside the transaction, so a failure to reach the provider after the commit is not
+ * the operator's error and the 60-second sweeper resumes it; and an account deletion waiting on this dispute is
+ * unblocked here, because a resolution is the instant such an account can finally be erased.
  *
- * No log line carries the filer's free text, and none carries a handle (AAP 0.11.1). Time arrives as
- * the `now` argument and never from a clock of this file's own.
+ * No log line carries the filer's free text, and none carries a handle. Time arrives as the `now` argument and never
+ * from a clock of this file's own.
  */
 
 import { Prisma, type DbTx } from '@tablemate/db';
@@ -54,13 +51,10 @@ import { settleDueAt } from '../settlement/timers.ts';
 import type { AppServices } from '../../app.ts';
 
 /**
- * An implementation choice, not a contract value: AAP 0.5.4 declares no cursor for
- * `GET /admin/disputes` and fixes no page size, and the operator's work is the open queue — the
- * open disputes are always returned in full, because they are the ones an operator must act on
- * within `deadlineAt`. A bound is still needed so one page stays bounded as the pilot runs, and the
- * resolved disputes are only there as context, so the newest fifty are enough to show how the last
- * dispute on a meetup ended. An operator who needs an older resolution reads the row in the
- * database.
+ * An implementation choice, not a contract value: AAP 0.5.4 declares no cursor for `GET /admin/disputes` and fixes no
+ * page size, and the operator's work is the open queue — the open disputes are always returned in full, because they
+ * are the ones an operator must act on within `deadlineAt`. A bound is still needed so one page stays bounded as the
+ * pilot runs, and the resolved disputes are only context, so the newest fifty are enough.
  */
 export const ADMIN_RESOLVED_DISPUTES_LIMIT = 50;
 
@@ -70,11 +64,7 @@ const DISPUTE_RESOLVED = 'dispute_resolved';
 /** The one log line a settlement that could not run yet writes (AAP 0.3.2). */
 const DISPUTE_SETTLE_DEFERRED = 'dispute_settle_deferred';
 
-/**
- * One row as {@link disputeSource} returns it: the columns of `Dispute`, the venue it concerns and
- * the two participants' handles and check-in results.
- *
- */
+/** One row as {@link disputeSource} returns it: the columns of `Dispute`, the venue it concerns and the two participants' handles and check-in results. */
 export interface DisputeQueueRow {
   readonly id: string;
   readonly meetupId: string;
@@ -98,19 +88,13 @@ export interface DisputeQueueRow {
 }
 
 /**
- * One queue row as the operator contract carries it (AAP 0.5.4), field by field and never spread, so
- * a column added to `Dispute`, `Meetup`, `Venue`, `User` or `CheckIn` cannot reach an operator
- * without a change here.
+ * One queue row as the operator contract carries it, field by field and never spread, so a column added to
+ * `Dispute`, `Meetup`, `Venue`, `User` or `CheckIn` cannot reach an operator without a change here.
  *
- * Two readings are decided here:
- *
- *  - `reason` is reported as null for an emptied text. `Dispute.reason` is `NOT NULL`, so the
- *    180-day purge of AAP 0.5.2 empties it rather than nulling it, and the nullable DTO field is
- *    what "the purge removed the text" means — the reading `admin/reports.ts` gives the same
- *    column.
- *  - `checkIns` carries the two participants in a fixed order, the initiator's entry first, because
- *    the shared schema fixes an array rather than a keyed pair and a stable order is what lets the
- *    console render the pair without a second read.
+ * `reason` is reported as null for an emptied text: `Dispute.reason` is `NOT NULL`, so the 180-day purge empties it
+ * rather than nulling it, and the nullable DTO field is what the purge removed the text means. `checkIns` carries the
+ * two participants in a fixed order, the initiator's entry first, because the shared schema fixes an array rather
+ * than a keyed pair and a stable order is what lets the console render the pair without a second read.
  */
 export function toAdminDisputeDto(row: DisputeQueueRow): AdminDisputeDto {
   return {
@@ -132,17 +116,11 @@ export function toAdminDisputeDto(row: DisputeQueueRow): AdminDisputeDto {
 }
 
 /**
- * One participant's check-in result for the dispute's meetup (AAP 0.5.4): `pass` when that
- * participant holds a passing check-in, `fail` when their check-ins only ever failed, and null when
- * they never checked in.
- *
- * A `check_in` row with `pass` is the venue's witness, which is exactly what a `settle_by_checkins`
- * resolution decides on, so the three-valued answer is what the operator needs: absent is not the
- * same as failed, and `bool_or` over the participant's own rows reads both without a join that would
- * multiply the dispute row.
- *
- * The participant's column is named from a code constant, never from caller input, so it is
- * interpolated as an identifier rather than bound as a parameter (AAP 0.11.2).
+ * One participant's check-in result for the dispute's meetup: `pass` when that participant holds a passing check-in,
+ * `fail` when their check-ins only ever failed, and null when they never checked in. A `check_in` row with `pass` is
+ * the venue's witness, which is exactly what a `settle_by_checkins` resolution decides on, so absent and failed are
+ * different answers. The participant's column is named from a code constant, never from caller input, so it is
+ * interpolated as an identifier rather than bound as a parameter.
  */
 function checkInResult(role: ParticipantRole): Prisma.Sql {
   const participant = Prisma.raw(
@@ -159,17 +137,14 @@ function checkInResult(role: ParticipantRole): Prisma.Sql {
 }
 
 /**
- * The one statement's source, shared by the queue read and the single-dispute read: the row columns
- * of {@link DisputeQueueRow}, over the dispute joined to its meetup and that meetup's venue, with a
- * `LEFT JOIN` per participant for the handle a tombstone no longer has (AAP 0.5.2).
+ * The one statement's source, shared by the queue read and the single-dispute read: the row columns of
+ * {@link DisputeQueueRow}, over the dispute joined to its meetup and that meetup's venue, with a `LEFT JOIN` per
+ * participant for the handle a tombstone no longer has.
  *
- * `overdue` is computed here rather than in the caller, from the same reading of `now` the whole
- * caller uses: an open dispute is overdue once its deadline has passed, and a dispute the
- * `dispute-escalate-<disputeId>` job has flagged stays flagged even before the deadline, which is
- * the banner AAP 0.12.2 asks for. `now` binds as a parameter cast to `timestamptz`.
- *
- * No column is selected that the DTO does not carry, and `reason` is read only to be mapped — never
- * logged (AAP 0.11.1).
+ * `overdue` is computed here from the same reading of `now` the whole caller uses: an open dispute is overdue once
+ * its deadline has passed, and a dispute the `dispute-escalate-<disputeId>` job has flagged stays flagged even
+ * before the deadline. `now` binds as a parameter cast to `timestamptz`. `reason` is read only to be mapped, never
+ * logged.
  */
 function disputeSource(now: Date): Prisma.Sql {
   return Prisma.sql`
@@ -198,19 +173,17 @@ function disputeSource(now: Date): Prisma.Sql {
 }
 
 /**
- * The operator's dispute queue (AAP 0.5.4 `GET /admin/disputes`): every open dispute, nearest
- * deadline first, followed by the {@link ADMIN_RESOLVED_DISPUTES_LIMIT} most recently resolved ones,
- * newest resolution first.
+ * The operator's dispute queue: every open dispute, nearest deadline first, followed by the
+ * {@link ADMIN_RESOLVED_DISPUTES_LIMIT} most recently resolved ones, newest resolution first.
  *
- * One statement and one round trip: the resolved bound is a subquery of the same statement rather
- * than a second read, so the two groups cannot be torn apart by a resolution landing between them.
- * The ordering is total — the open group by `deadline_at` ascending, the resolved group by
- * `resolved_at` descending with its id as the tie-break, because ids are UUIDv7 and therefore
- * time-ordered — so the same queue is returned in the same order on every read.
+ * One statement and one round trip: the resolved bound is a subquery of the same statement rather than a second read,
+ * so the two groups cannot be torn apart by a resolution landing between them. The ordering is total — the open group
+ * by `deadline_at` ascending, the resolved group by `resolved_at` descending with its id as the tie-break, because
+ * ids are UUIDv7 and therefore time-ordered — so the same queue is returned in the same order on every read.
  *
- * Read-only: no transaction, no row lock, and not one of the state-writing reads, so the
- * account-deletion write fence does not apply (AAP 0.5.3). `now` decides `overdue` alone and binds
- * as a parameter, so a test can cross a deadline by moving the clock (AAP 0.11.1).
+ * Read-only: no transaction, no row lock, and not one of the state-writing reads, so the account-deletion write fence
+ * does not apply. `now` decides `overdue` alone and binds as a parameter, so a test can cross a deadline by moving
+ * the clock.
  */
 export async function listDisputes(
   services: AppServices,
@@ -246,24 +219,19 @@ async function findDisputeRow(
 }
 
 /**
- * What one resolution does to the dispute's meetup, as the action {@link resolutionPlan} selects
- * (AAP 0.5.3).
- *
- * `close_only` closes the dispute and changes nothing else; `settle_by_checkins` closes it and has
- * the meetup settled on its check-ins — at once, or when the check-in window closes;
- * `no_fault` closes it and applies the `operator_no_fault` transition; `reverse_forfeit` closes it,
- * reverses the forfeit's money and applies that same transition; and `invalid` is the `422
- * invalid_outcome` of AAP 0.5.4.
+ * What one resolution does to the dispute's meetup, as the action {@link resolutionPlan} selects. `close_only` closes
+ * the dispute and changes nothing else; `settle_by_checkins` closes it and has the meetup settled on its check-ins —
+ * at once, or when the check-in window closes; `no_fault` closes it and applies the `operator_no_fault` transition;
+ * `reverse_forfeit` closes it, reverses the forfeit's money and applies that same transition; and `invalid` is the
+ * `422 invalid_outcome` of the contract.
  */
 export type DisputeResolutionAction =
   'close_only' | 'settle_by_checkins' | 'no_fault' | 'reverse_forfeit' | 'invalid';
 /**
- * What {@link resolutionPlan} decided, in the form {@link resolveDispute} applies (AAP 0.5.3).
- *
- * The three booleans are the plan's effects, spelled out so a caller cannot read one for another:
- * `settleNow` has the meetup settled after this transaction commits, `noFault` has it take the
- * `operator_no_fault` transition, and `reverseForfeit` has the absent party's captured deposit
- * reversed and the attendee's credit voided.
+ * What {@link resolutionPlan} decided: the three booleans are the plan's effects, spelled out so a caller cannot read
+ * one for another — `settleNow` settles the meetup after this transaction commits, `noFault` has it take the
+ * `operator_no_fault` transition, and `reverseForfeit` reverses the absent party's captured deposit and voids the
+ * attendee's credit.
  */
 export interface ResolutionPlan {
   readonly action: DisputeResolutionAction;
@@ -275,11 +243,10 @@ export interface ResolutionPlan {
 }
 
 /**
- * The plan of every meetup status that carries neither of the two resolutions AAP 0.5.3 gives the
- * money: `settle_by_checkins` closes the dispute and changes nothing, `no_fault` has no hold to
- * release and no capture to reverse — a `proposed`, `declined`, `lapsed`, `cancelled`, `lock_lost`
- * or `no_fault` meetup holds no settlement to undo — so it is refused with the contract's
- * `invalid_outcome`.
+ * The plan of every meetup status that carries neither of the two resolutions the money: `settle_by_checkins` closes
+ * the dispute and changes nothing, `no_fault` has no hold to release and no capture to reverse — a `proposed`,
+ * `declined`, `lapsed`, `cancelled`, `lock_lost` or `no_fault` meetup holds no settlement to undo — so it is refused
+ * with the contract's `invalid_outcome`.
  */
 const CLOSE_ONLY: Readonly<Record<DisputeOutcome, DisputeResolutionAction>> = {
   settle_by_checkins: 'close_only',
@@ -287,14 +254,13 @@ const CLOSE_ONLY: Readonly<Record<DisputeOutcome, DisputeResolutionAction>> = {
 };
 
 /**
- * The resolution decision table of AAP 0.5.3, one row per meetup status and one column per outcome.
+ * The resolution decision table, one row per meetup status and one column per outcome.
  *
- * `locked` is the open-dispute case: the meetup is still committed, so `settle_by_checkins` decides
- * its money and `no_fault` releases both holds. `forfeited` is the post-settlement case: the money
- * already moved at `startsAt + 45 min`, so `settle_by_checkins` leaves it alone and `no_fault`
- * reverses it — "the capture is fenced if not yet run, and a reversing `refund` operation depending
- * on it …; `void` Table Credit entry". Every other status takes the same close-and-change-nothing
- * path, and refuses `no_fault`.
+ * `locked` is the open-dispute case: the meetup is still committed, so `settle_by_checkins` decides its money and
+ * `no_fault` releases both holds. `forfeited` is the post-settlement case: the money already moved at
+ * `startsAt + 45 min`, so `settle_by_checkins` leaves it alone and `no_fault` reverses it — the capture is fenced if
+ * not yet run and a reversing `refund` operation depends on it, and the Table Credit entry is voided. Every other
+ * status takes the same close-and-change-nothing path, and refuses `no_fault`.
  */
 const RESOLUTION_ACTIONS: Readonly<
   Record<MeetupStatus, Readonly<Record<DisputeOutcome, DisputeResolutionAction>>>
@@ -312,12 +278,10 @@ const RESOLUTION_ACTIONS: Readonly<
 };
 
 /**
- * Pure, structural and free of I/O, so the whole table is exercised without a database. `settleDue`
- * is whether `now` has reached `settleDueAt(startsAt)`, the instant check-in closes; it changes one
- * row alone — a `locked` meetup resolved `settle_by_checkins` — because "an operator
- * `settle_by_checkins` resolution after `startsAt + 45 min` settles at once; one made earlier only
- * closes the dispute, leaves the meetup `locked` with check-in open, and the outcome waits for the
- * timer".
+ * Pure, structural and free of I/O, so the whole table is exercised without a database. `settleDue` is whether `now`
+ * has reached `settleDueAt(startsAt)`, the instant check-in closes; it changes one row alone — a `locked` meetup
+ * resolved `settle_by_checkins` — because a resolution after that instant settles at once, while one made earlier
+ * only closes the dispute, leaves the meetup `locked` with check-in open, and the outcome waits for the timer.
  */
 export function resolutionPlan(
   meetupStatus: MeetupStatus,
@@ -336,13 +300,10 @@ export function resolutionPlan(
 type LockedDispute = Pick<Dispute, 'id' | 'status'>;
 
 /**
- * Lock one dispute row for the rest of the transaction (AAP 0.5.3) and return the columns the
- * resolution decides on, or null when no such dispute exists.
- *
- * The meetup row lock is taken first, which is the order AAP 0.5.3 fixes, and this is the read that
- * makes the status check authoritative: a dispute another operator resolved while this request was
- * in flight is seen here, and the resolution is refused. Raw SQL, because Prisma has no equivalent
- * of `FOR UPDATE`; the id binds as a parameter cast to `uuid` (AAP 0.11.2).
+ * Lock one dispute row for the rest of the transaction and return the columns the resolution decides on, or null when
+ * no such dispute exists. The meetup row lock is taken first, which is the order the contract fixes, and this is the
+ * read that makes the status check authoritative: a dispute another operator resolved while this request was in
+ * flight is seen here, and the resolution is refused. Raw SQL, because Prisma has no equivalent of `FOR UPDATE`.
  */
 async function lockDispute(tx: DbTx, disputeId: string): Promise<LockedDispute | null> {
   const rows = await tx.$queryRaw<LockedDispute[]>(Prisma.sql`
@@ -364,13 +325,10 @@ function userIdOf(
 }
 
 /**
- * The side a `forfeited` settlement recorded absent, or null when its two flags do not name exactly
- * one (AAP 0.5.7).
- *
- * A forfeit is a no-show of one party or a late cancellation by one party, and `MeetupSettlement`
- * records which: `lateCancelPlan` writes the canceller absent, and the `no_show` rows of the
- * settlement table write the absent party and only them. The party whose flag is false is therefore
- * the one whose deposit was captured, and the other one is the attendee who was credited.
+ * The side a `forfeited` settlement recorded absent, or null when its two flags do not name exactly one. A forfeit is
+ * a no-show of one party or a late cancellation by one party, and `MeetupSettlement` records which: `lateCancelPlan`
+ * writes the canceller absent, and the `no_show` rows write the absent party and only them. The party whose flag is
+ * false is therefore the one whose deposit was captured, and the other is the attendee who was credited.
  */
 function absentRole(initiatorPresent: boolean, recipientPresent: boolean): ParticipantRole | null {
   if (initiatorPresent === recipientPresent) {
@@ -380,23 +338,19 @@ function absentRole(initiatorPresent: boolean, recipientPresent: boolean): Parti
 }
 
 /**
- * The decision AAP 0.5.3 gives the `forfeited → no_fault` row, in its order: the absent party's
- * capture is fenced first, so a capture that has not run cannot run afterwards; the reversal is
- * planned to depend on that capture, so a capture already `executing` — which cannot be fenced — is
- * waited for and the same rule then applies; and the attendee's Table Credit `grant` is voided,
- * which returns their balance to what it was. The `operator_no_fault` transition the reversal
- * accompanies is applied by the caller, after this returns: the counters derive the no-show from
- * the status alone, so the void entry and that status together remove it (AAP 0.5.3, 0.5.7).
+ * The decision the contract gives the `forfeited → no_fault` row, in its order: the absent party's capture is fenced
+ * first, so a capture that has not run cannot run afterwards; the reversal is planned to depend on that capture, so a
+ * capture already `executing` — which cannot be fenced — is waited for and the same rule then applies; and the
+ * attendee's Table Credit `grant` is voided, which returns their balance to what it was. The `operator_no_fault`
+ * transition the reversal accompanies is applied by the caller, after this returns.
  *
- * A deposit with no capture operation at all is not an error: the still-authorized hold is released
- * directly instead, exactly as the shared compensation of `settlement/settle.ts` does, so no
- * authorization is left outstanding at the processor. The one case refused is a `forfeited` meetup
- * whose settlement names no single absent party, because no deposit can then be attributed the money
- * the resolution has to reverse: the dispute stays open for a human rather than an outcome being
- * applied to money that was never identified.
+ * A deposit with no capture operation at all is not an error: the still-authorized hold is released directly instead,
+ * exactly as the shared compensation of `settlement/settle.ts` does, so no authorization is left outstanding at the
+ * processor. The one case refused is a `forfeited` meetup whose settlement names no single absent party, because no
+ * deposit can then be attributed the money the resolution has to reverse: the dispute stays open for a human.
  *
- * @throws AppError `invalid_outcome` when the settlement or the deposit the reversal needs cannot be
- *   identified; the caller has already refused every other unusable state.
+ * @throws AppError `invalid_outcome` when the settlement or the deposit the reversal needs cannot be identified; the
+ *   caller has already refused every other unusable state.
  */
 async function reverseForfeit(tx: DbTx, meetup: MeetupRow, now: Date): Promise<void> {
   const settlement = await tx.meetupSettlement.findUnique({ where: { meetupId: meetup.id } });
@@ -445,11 +399,9 @@ async function reverseForfeit(tx: DbTx, meetup: MeetupRow, now: Date): Promise<v
 }
 
 /**
- * Whether an account is a party to a meetup that still has an open dispute (AAP 0.5.3).
- *
- * Read inside the resolution's transaction, so the dispute it just resolved is already `resolved`
- * and only a real remainder is found. Both sides of a meetup are searched, because either one
- * leaving an open dispute keeps that account's holds and PaymentIntents in place.
+ * Whether an account is a party to a meetup that still has an open dispute. Read inside the resolution's transaction,
+ * so the dispute it just resolved is already `resolved` and only a real remainder is found. Both sides of a meetup
+ * are searched, because either one leaving an open dispute keeps that account's holds and PaymentIntents in place.
  */
 async function hasOpenDispute(tx: DbTx, userId: string): Promise<boolean> {
   const open = await tx.dispute.findFirst({
@@ -463,25 +415,19 @@ async function hasOpenDispute(tx: DbTx, userId: string): Promise<boolean> {
 }
 
 /**
- * Re-queue the erasure of each participant whose account deletion this resolution unblocks
- * (AAP 0.5.3).
+ * Re-queue the erasure of each participant whose account deletion this resolution unblocks.
  *
- * `account-erasure` is queued when `DELETE /me` runs and again "when the last open dispute resolves,
- * so it can erase the remaining data": a `locked` meetup with an open dispute is left to the
- * operator with its holds and its dispute, and this resolution is the instant such an account
- * becomes erasable. Only a participant with `deletionRequestedAt` set, and with no open dispute left
+ * `account-erasure` is queued when `DELETE /me` runs and again when the last open dispute resolves: a `locked` meetup
+ * with an open dispute is left to the operator with its holds and its dispute, and this resolution is the instant
+ * such an account becomes erasable. Only a participant with `deletionRequestedAt` set, and with no open dispute left
  * on any meetup they are a party to, gets the request.
  *
- * **Why it is written in this transaction rather than after the commit.** The erasure row is an
- * outbox row, and `writeOutbox` makes it durable with the resolution it belongs to: a process that
- * dies between the commit and an after-commit callback still leaves the request behind for the
- * two-second poll, where a callback that never ran would lose it. The write is therefore stronger
- * here than it would be after the commit, and the row is written through the same outbox the
- * deletion itself uses (AAP 0.3.2) — so this deliberately departs from the after-commit placement
- * the rest of the post-commit work has, and not from anything it decides.
- *
- * A second row for an account already queued is harmless: the job deletes by id and is idempotent,
- * and each row gets its own job id.
+ * **The row is written in this transaction rather than after the commit.** It is an outbox row, and `writeOutbox`
+ * makes it durable with the resolution it belongs to: a process that dies between the commit and an after-commit
+ * callback still leaves the request behind for the two-second poll, where a callback that never ran would lose it.
+ * This deliberately departs from the after-commit placement the rest of the post-commit work has, and not from
+ * anything it decides. A second row for an account already queued is harmless: the job deletes by id and is
+ * idempotent, and each row gets its own job id.
  */
 async function requeueErasures(tx: DbTx, participantIds: readonly string[]): Promise<void> {
   const users = await tx.user.findMany({
@@ -500,17 +446,14 @@ async function requeueErasures(tx: DbTx, participantIds: readonly string[]): Pro
 }
 
 /**
- * Settle a meetup this resolution just unblocked (AAP 0.5.3).
+ * Settle a meetup this resolution just unblocked. Called only when {@link resolutionPlan} says the check-in window has
+ * closed and the resolution was `settle_by_checkins`, in which case the settlement applies the outcome table on the
+ * check-ins recorded during the dispute. The settlement re-reads the meetup and refuses on its own if a racing action
+ * took the row first.
  *
- * Called only when {@link resolutionPlan} says the check-in window has closed and the resolution was
- * `settle_by_checkins`, in which case the settlement applies the outcome table of AAP 0.5.7 on the
- * check-ins recorded during the dispute. The settlement re-reads the meetup and refuses on its own
- * if a racing action took the row first, so nothing here has to re-check the status.
- *
- * A failure to reach the provider is not the operator's error and not a lost decision: the dispute
- * is resolved and durable, the meetup stays `locked` and the 60-second sweeper settles it on its
- * next pass (AAP 0.3.2). The failure is logged with the two ids and the failure's short code — its
- * `code`, else its name — and never its message, its stack or the filer's text (AAP 0.11.1).
+ * A failure to reach the provider is not the operator's error and not a lost decision: the dispute is resolved and
+ * durable, the meetup stays `locked` and the 60-second sweeper settles it on its next pass. The failure is logged
+ * with the two ids and the failure's short code, never its message, its stack or the filer's text.
  */
 async function settleAfterResolution(
   services: AppServices,
@@ -531,19 +474,13 @@ async function settleAfterResolution(
 const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 /**
- * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
- * class name (`SettlementReconcileError`), and never its message or stack (AAP 0.11.1).
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its class name
+ * (`SettlementReconcileError`), and never its message or stack. A Stripe or Prisma failure can quote what it concerns
+ * — the `PaymentIntent` id of the hold, or the filer's own text on the meetup — which the log lines of this module
+ * are forbidden to carry. A token that is not a plain short identifier becomes `Error`.
  *
- * pino writes a message and a stack as strings that key-based redaction cannot rewrite, and the
- * Stripe or Prisma failure `settleMeetup` raises can quote what it concerns — the `PaymentIntent` id
- * of the hold, or the filer's own text on the meetup — which the log lines of this module are
- * forbidden to carry. A token that is not a plain short identifier becomes `Error`, so nothing a
- * thrown value happens to say can reach a log through this path.
- *
- * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
- * modules its resolution work names (`../settlement/settle.ts`, `../meetups/state-machine.ts`,
- * `../outbox/write.ts`, `../payments/operations.ts`) — the same course `../settlement/timers.ts`
- * took with its own `errorTokenOf`.
+ * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the modules its
+ * resolution work names, the same course `../settlement/timers.ts` took with its own `errorTokenOf`.
  */
 function failureToken(error: unknown): string {
   if (typeof error !== 'object' || error === null) {
@@ -558,36 +495,30 @@ function failureToken(error: unknown): string {
 }
 
 /**
- * Record one operator outcome on an open dispute (AAP 0.5.3, 0.5.4
- * `POST /admin/disputes/:id/resolve`).
+ * Record one operator outcome on an open dispute.
  *
- * The refusals are checked in the order AAP 0.5.4 fixes, the outcome first so an unknown value can
- * never look up a dispute: an outcome outside `DisputeOutcome` is `422 invalid_outcome`, and an
- * unknown dispute id is `404 not_found`. A dispute that is already `resolved` is checked inside the
- * transaction, under its own row lock, and answered with the same `422 invalid_outcome` — a repeated
- * resolution and a resolution racing another operator's are both refused, and the second of two
- * operators sees the first one's result (AAP 0.5.3).
+ * The refusals are checked in the order the contract fixes, the outcome first so an unknown value can never look up a
+ * dispute: an outcome outside `DisputeOutcome` is `422 invalid_outcome`, and an unknown dispute id is `404
+ * not_found`. A dispute that is already `resolved` is checked inside the transaction, under its own row lock, and
+ * answered with the same `422 invalid_outcome` — a repeated resolution and one racing another operator's are both
+ * refused, and the second of two operators sees the first one's result.
  *
- * The transaction then applies {@link resolutionPlan}: the meetup is locked first through
- * `lockMeetup`, which serializes this resolution with check-in, settlement, cancellation, a block and
- * the hold-loss webhooks; a post-settlement `no_fault` reverses the forfeit's money and a
- * `no_fault` on a locked meetup takes the `operator_no_fault` transition, which releases both holds
- * and writes no reputation change; and the dispute is closed with the outcome, `resolvedAt = now`
- * and a null `resolutionNote`, because neither automatic note describes an operator's decision.
- * Then the two parties are notified with the dispute's outcome, the resolution is recorded as an
- * analytics event, and every account whose erasure this dispute was holding up is re-queued.
+ * The transaction then applies {@link resolutionPlan}: the meetup is locked first through `lockMeetup`, which
+ * serializes this resolution with check-in, settlement, cancellation, a block and the hold-loss webhooks; a
+ * post-settlement `no_fault` reverses the forfeit's money and a `no_fault` on a locked meetup takes the
+ * `operator_no_fault` transition, which releases both holds and writes no reputation change; and the dispute is closed
+ * with the outcome, `resolvedAt = now` and a null `resolutionNote`, because neither automatic note describes an
+ * operator's decision. Then the two parties are notified, the resolution is recorded as an analytics event, and every
+ * account whose erasure this dispute was holding up is re-queued.
  *
- * After the commit the plan's money work runs: the settlement of a `settle_by_checkins` resolution
- * whose window has closed, and then `runOperationsFor`, which carries out the release, capture and
- * refund operations this transaction planned. Both run outside it, because no Stripe call belongs
- * inside a transaction (AAP 0.3.2).
+ * After the commit the plan's money work runs: the settlement of a `settle_by_checkins` resolution whose window has
+ * closed, and then `runOperationsFor`, which carries out the release, capture and refund operations this transaction
+ * planned. Both run outside it, because no Stripe call belongs inside a transaction. Nothing here logs the dispute's
+ * reason text or a handle, and the log line is written after the commit, when the decision is durable.
  *
- * Nothing here logs the dispute's reason text or a handle, and the log line is written after the
- * commit, when the decision is durable (AAP 0.11.1).
- *
- * @throws AppError `invalid_outcome` (422) for an outcome outside the operator's two, for a dispute
- *   already resolved, and for a `no_fault` on a meetup with no hold or capture to decide — a
- *   `completed` or `unattended` one in particular; `not_found` (404) for an unknown dispute id.
+ * @throws AppError `invalid_outcome` (422) for an outcome outside the operator's two, for a dispute already resolved,
+ *   and for a `no_fault` on a meetup with no hold or capture to decide — a `completed` or `unattended` one in
+ *   particular; `not_found` (404) for an unknown dispute id.
  */
 export async function resolveDispute(
   services: AppServices,

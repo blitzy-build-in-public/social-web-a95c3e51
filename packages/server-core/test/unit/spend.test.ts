@@ -58,7 +58,6 @@ import type {
   SuspensionRedis,
   SuspensionStore,
 } from '../../src/llm/spend.ts';
-
 const ctor = vi.hoisted(() => vi.fn());
 
 vi.mock('openai', async (importOriginal) => {
@@ -71,19 +70,13 @@ vi.mock('openai', async (importOriginal) => {
   }
   return { ...actual, default: MockOpenAI, OpenAI: MockOpenAI };
 });
-
 /** A type-level check: a real ioredis client satisfies the contract the suspension store needs. */
 export type RedisSatisfiesSuspensionRedis = AssertAssignable<SuspensionRedis, Redis>;
-
 type AssertAssignable<Shape, Candidate extends Shape> = Candidate;
-
 const PRICES: LlmPrices = { inputUsdPerMTok: '0.40', outputUsdPerMTok: '1.60' };
 const UNIT_PRICES: LlmPrices = { inputUsdPerMTok: '1', outputUsdPerMTok: '1' };
-
 const CAP_MICROS = 25_000_000;
-
 const SECRET_TEXT = 'MENU-TEXT-THAT-MUST-NOT-BE-LOGGED';
-
 const TIMEZONES: Record<string, string> = {
   lisbon: 'Europe/Lisbon',
   'mexico-city': 'America/Mexico_City',
@@ -92,7 +85,6 @@ const TIMEZONES: Record<string, string> = {
   canggu: 'Asia/Makassar',
   auckland: 'Pacific/Auckland',
 };
-
 function timezoneFor(cityId: string): string {
   const zone = TIMEZONES[cityId];
   if (zone === undefined) {
@@ -100,11 +92,9 @@ function timezoneFor(cityId: string): string {
   }
   return zone;
 }
-
 function request(maxTokens = 100): LlmRequest {
   return { system: SECRET_TEXT, messages: [{ role: 'user', content: SECRET_TEXT }], maxTokens };
 }
-
 class MemorySpendStore implements SpendStore {
   readonly rows = new Map<string, { spent: number; reserved: number }>();
   /** The highest `spent + reserved` this store has ever held, which the cap bounds. */
@@ -119,9 +109,7 @@ class MemorySpendStore implements SpendStore {
     this.rows.set(key, created);
     return created;
   }
-  // The three mutators below answer with a promise without being `async`: their bodies run
-  // synchronously, which is what makes one reservation atomic, and an `async` method that awaited
-  // nothing would say the same thing less plainly.
+  // The three mutators below answer with a promise without being `async`: their bodies run synchronously, which is what makes one reservation atomic, and an `async` method that awaited nothing would say the same thing less plainly.
   tryReserve(args: {
     cityId: string;
     localDate: string;
@@ -129,8 +117,7 @@ class MemorySpendStore implements SpendStore {
     capMicros: number;
   }): Promise<boolean> {
     const row = this.row(args.cityId, args.localDate);
-    // Read and write in one synchronous step: the predicate is re-checked against the current row,
-    // exactly as PostgreSQL re-evaluates its own `WHERE` under the row lock.
+    // Read and write in one synchronous step: the predicate is re-checked against the current row, exactly as PostgreSQL re-evaluates its own `WHERE` under the row lock.
     if (row.spent + row.reserved + args.micros > args.capMicros) {
       return Promise.resolve(false);
     }
@@ -155,15 +142,13 @@ class MemorySpendStore implements SpendStore {
     this.maxObserved = Math.max(this.maxObserved, row.spent + row.reserved);
   }
 }
-
 class MemorySuspensionStore implements SuspensionStore {
   private suspended = false;
   private mismatches = 0;
   throwOnRead = false;
   isSuspended(): Promise<boolean> {
     if (this.throwOnRead) {
-      // Rejected rather than thrown, so this store answers as the Redis one does on a lost
-      // connection; the meter's fail-closed path never has to know which store it holds.
+      // Rejected rather than thrown, so this store answers as the Redis one does on a lost connection; the meter's fail-closed path never has to know which store it holds.
       return Promise.reject(new Error('redis is down'));
     }
     return Promise.resolve(this.suspended);
@@ -181,7 +166,6 @@ class MemorySuspensionStore implements SuspensionStore {
     return Promise.resolve(this.mismatches);
   }
 }
-
 interface AdapterScript {
   count: number;
   usage?: LlmUsage | null;
@@ -190,7 +174,6 @@ interface AdapterScript {
   /** Runs inside the count, so a suite can move the clock between a count and a send. */
   onCount?: () => void;
 }
-
 class ScriptedAdapter implements LlmAdapter {
   readonly provider = 'fake' as const;
   readonly model = 'scripted-1';
@@ -203,8 +186,7 @@ class ScriptedAdapter implements LlmAdapter {
   constructor(script: AdapterScript) {
     this.script = script;
   }
-  // Records what it was asked for, then answers synchronously as a promise: a scripted failure is
-  // rejected rather than thrown, so the adapter under test catches exactly what a provider returns.
+  // Records what it was asked for, then answers synchronously as a promise: a scripted failure is rejected rather than thrown, so the adapter under test catches exactly what a provider returns.
   countInputTokens(request: LlmRequest, options: LlmCallOptions): Promise<number> {
     this.counted.push(request);
     this.countSignals.push(options.signal);
@@ -222,13 +204,11 @@ class ScriptedAdapter implements LlmAdapter {
       : Promise.reject(failure);
   }
 }
-
 interface LogEntry {
   level: 'warn' | 'error';
   fields: Record<string, unknown>;
   message: string;
 }
-
 function createCaptureLogger(): { logger: Pick<Logger, 'warn' | 'error'>; entries: LogEntry[] } {
   const entries: LogEntry[] = [];
   const push = (level: 'warn' | 'error', args: unknown[]): void => {
@@ -251,7 +231,6 @@ function createCaptureLogger(): { logger: Pick<Logger, 'warn' | 'error'>; entrie
     },
   };
 }
-
 interface Harness {
   spend: LlmSpend;
   store: MemorySpendStore;
@@ -259,7 +238,6 @@ interface Harness {
   clock: TestClock;
   entries: LogEntry[];
 }
-
 function harness(options?: {
   prices?: LlmPrices;
   capMicros?: number;
@@ -321,9 +299,7 @@ describe('costMicros', () => {
     expect(costMicros(1000, 100, PRICES)).toBe(560);
     expect(boundMicros(1000, 100, PRICES)).toBe(560);
   });
-  // AAP 0.5.6: "the cost in micro-dollars is rounded up", which is one ceiling over the exact sum
-  // and not one per component — the 1-in/1-out row is 2 where rounding each part would give 3, and
-  // the sub-micro rows are 1 where truncating would give 0.
+  // AAP 0.5.6: "the cost in micro-dollars is rounded up", which is one ceiling over the exact sum and not one per component — the 1-in/1-out row is 2 where rounding each part would give 3, and the sub-micro rows are 1 where truncating would give 0.
   it.each([
     ['one input token', 1, 0, '0.4', '1.6', 1],
     ['ten input tokens', 10, 0, '0.4', '1.6', 4],
@@ -363,8 +339,7 @@ describe('createSqlSpendStore', () => {
   function recordingExecutor(rows: unknown[]): { sql: SpendSqlExecutor; statements: string[] } {
     const statements: string[] = [];
     const sql: SpendSqlExecutor = <T>(strings: TemplateStringsArray, ...values: unknown[]) => {
-      // Whitespace is collapsed, so an assertion is about the SQL and its parameter order rather
-      // than about the indentation the statement is written with.
+      // Whitespace is collapsed, so an assertion is about the SQL and its parameter order rather than about the indentation the statement is written with.
       statements.push(
         strings
           .reduce(
@@ -519,8 +494,7 @@ describe('createRedisSuspensionStore', () => {
     ).rejects.toThrow(LlmSuspendedError);
     expect(adapter.counted).toHaveLength(0);
     expect(adapter.sent).toHaveLength(0);
-    // The refused reservation and the refused turn each leave exactly one line naming the cause, so
-    // the outage is never silent and never mistaken for an operator suspension.
+    // The refused reservation and the refused turn each leave exactly one line naming the cause, so the outage is never silent and never mistaken for an operator suspension.
     expect(entries.map((entry) => entry.fields['event'])).toEqual([
       'llm_suspension_store_unavailable',
       'llm_suspension_store_unavailable',
@@ -554,8 +528,7 @@ describe('createLlmSpend', () => {
     const { spend, store } = harness();
     const lisbon = await spend.reserveLlm('lisbon', 700);
     const auckland = await spend.reserveLlm('auckland', 300);
-    // The frozen clock reads 2026-11-04T12:00:00Z, which is 2026-11-05 in Auckland: two cities are
-    // two counters on two days, not one shared total.
+    // The frozen clock reads 2026-11-04T12:00:00Z, which is 2026-11-05 in Auckland: two cities are two counters on two days, not one shared total.
     expect(lisbon).toEqual({ cityId: 'lisbon', localDate: '2026-11-04', micros: 700 });
     expect(auckland).toEqual({ cityId: 'auckland', localDate: '2026-11-05', micros: 300 });
     expect(store.row('lisbon', '2026-11-04').reserved).toBe(700);
@@ -605,7 +578,6 @@ describe('createLlmSpend', () => {
     await expect(spend.reserveLlm('lisbon', 1)).resolves.not.toBeNull();
   });
 });
-
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -614,7 +586,6 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   }
   throw new Error('expected the promise to reject');
 }
-
 async function grantedReservation(
   spend: LlmSpend,
   cityId: string,
@@ -1015,11 +986,8 @@ describe('reservation bookkeeping', () => {
     expect(() => spend.dialogueBudgetMicros(Number.MAX_SAFE_INTEGER, 2)).toThrow(RangeError);
   });
 });
-
 const STUB_API_KEY = 'stub-openai-key';
-
 const STUB_MODEL = 'gpt-4.1-mini';
-
 interface ProviderScript {
   /** The count endpoint's answer — `{ input_tokens: n }` — or any value that is not one. */
   count?: unknown;
@@ -1028,7 +996,6 @@ interface ProviderScript {
   response?: unknown;
   responseThrows?: Error;
 }
-
 class StubOpenAiClient implements OpenAiResponsesClient {
   readonly countBodies: unknown[] = [];
   readonly countDeadlines: (number | undefined)[] = [];
@@ -1062,14 +1029,12 @@ class StubOpenAiClient implements OpenAiResponsesClient {
     },
   };
 }
-
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {
     throw new Error('expected the stub client to have recorded a request body');
   }
   return value as Record<string, unknown>;
 }
-
 function provider(script: ProviderScript): { client: StubOpenAiClient; adapter: LlmAdapter } {
   const client = new StubOpenAiClient(script);
   return {
@@ -1086,8 +1051,7 @@ describe('createOpenAiAdapter', () => {
     });
     await adapter.countInputTokens(request(), { timeoutMs: 1000 });
     await adapter.complete(request(), { timeoutMs: 1000 });
-    // AAP 0.11.1: 3 s in a call and 60 s in extraction. The client's own deadline stands at that
-    // ceiling, and every call here passes its own, which overrides it.
+    // AAP 0.11.1: 3 s in a call and 60 s in extraction. The client's own deadline stands at that ceiling, and every call here passes its own, which overrides it.
     expect(OPENAI_DEFAULT_TIMEOUT_MS).toBe(60_000);
     expect(client.countDeadlines).toEqual([1000]);
     expect(client.sendDeadlines).toEqual([1000]);
@@ -1107,8 +1071,7 @@ describe('createOpenAiAdapter', () => {
     const result = await adapter.complete(request, { timeoutMs: 1000 });
     const counted = asRecord(client.countBodies[0]);
     const sent = asRecord(client.sendBodies[0]);
-    // AAP 0.5.6: every key the count endpoint saw is sent unchanged. A difference here is what
-    // `spend.ts` reads as a count mismatch and suspends every city for.
+    // AAP 0.5.6: every key the count endpoint saw is sent unchanged. A difference here is what `spend.ts` reads as a count mismatch and suspends every city for.
     for (const key of Object.keys(counted)) {
       expect(sent[key]).toStrictEqual(counted[key]);
     }
@@ -1133,8 +1096,7 @@ describe('createOpenAiAdapter', () => {
     expect(sent['max_output_tokens']).toBe(request.maxTokens);
     expect(sent['store']).toBe(false);
     expect(sent['tools']).toBeUndefined();
-    // The reported input count equals the count reserved for, which is what keeps the request off
-    // the mismatch path.
+    // The reported input count equals the count reserved for, which is what keeps the request off the mismatch path.
     expect(result.usage).toEqual({ inputTokens: 42, outputTokens: 7 });
     // One reservation covers exactly one sent request (AAP 0.5.6): no automatic retry is left on.
     expect(client.sendOptions[0]).toMatchObject({ maxRetries: 0 });
@@ -1144,8 +1106,7 @@ describe('createOpenAiAdapter', () => {
     const adapter = createOpenAiAdapter({ apiKey: STUB_API_KEY, model: SUPPORTED_MODELS[0] });
     expect(adapter.provider).toBe('openai');
     expect(ctor).toHaveBeenCalledTimes(1);
-    // The deadline is the ceiling AAP 0.11.1 sets, so a call that forgot its own cannot inherit the
-    // SDK's ten-minute default.
+    // The deadline is the ceiling AAP 0.11.1 sets, so a call that forgot its own cannot inherit the SDK's ten-minute default.
     expect(ctor.mock.calls[0]?.[0]).toMatchObject({
       apiKey: STUB_API_KEY,
       maxRetries: 0,
@@ -1268,8 +1229,7 @@ describe('the llm module graph', () => {
     const adapter = await import('../../src/llm/adapter.ts');
     const built = adapter.createLlmAdapter({ provider: 'fake' });
     expect(built.provider).toBe('fake');
-    // `LlmError` reaches this entry point as a re-export of `contract.ts`, and the providers throw
-    // it, so it must be constructible here.
+    // `LlmError` reaches this entry point as a re-export of `contract.ts`, and the providers throw it, so it must be constructible here.
     expect(typeof adapter.LlmError).toBe('function');
     expect(new adapter.LlmError('llm_suspended', 'llm_suspended').code).toBe('llm_suspended');
   });
@@ -1295,8 +1255,7 @@ describe('the llm module graph', () => {
   it('holds the shared vocabulary when contract.ts is the entry point', async () => {
     vi.resetModules();
     const contract = await import('../../src/llm/contract.ts');
-    // The leaf's own class and its own guard, with nothing else in the directory loaded: the fresh
-    // registry hands back a new class identity, so the assertion reads `code`.
+    // The leaf's own class and its own guard, with nothing else in the directory loaded: the fresh registry hands back a new class identity, so the assertion reads `code`.
     expect(typeof contract.LlmError).toBe('function');
     expect(new contract.LlmError('llm_suspended', 'llm_suspended').code).toBe('llm_suspended');
     expect(() => contract.assertLlmRequest(request())).not.toThrow();
@@ -1372,11 +1331,7 @@ describe('the fake provider under the city cap', () => {
     readonly sentBefore: number;
     readonly spentBefore: number;
   }
-  /**
-   * Run the rotating requests until one does not fit the cap. Each round records what the provider
-   * had been asked for before the call, so the refusal can be asserted on: the count grew by exactly
-   * one, the send never happened, and the day's spent figure was already too high for the bound.
-   */
+  /** Run the rotating requests until one does not fit the cap. Each round records what the provider had been asked for before the call, so the refusal can be asserted on: the count grew by exactly one, the send never happened, and the day's spent figure was already too high for the bound. */
   async function runToRefusal(
     spend: LlmSpend,
     store: MemorySpendStore,
@@ -1413,8 +1368,7 @@ describe('the fake provider under the city cap', () => {
     // Counted once, sent never.
     expect(fake.calls.counted).toHaveLength(refusal.countedBefore + 1);
     expect(fake.calls.sent).toHaveLength(refusal.sentBefore);
-    // And the counter itself never crossed the cap, at any point between a reservation and its
-    // charge: `maxObserved` is the highest total the store ever held.
+    // And the counter itself never crossed the cap, at any point between a reservation and its charge: `maxObserved` is the highest total the store ever held.
     expect(row.spent).toBeLessThanOrEqual(CAP_MICROS);
     expect(row.reserved).toBe(0);
     expect(store.maxObserved).toBeLessThanOrEqual(CAP_MICROS);
@@ -1446,8 +1400,7 @@ describe('the fake provider under the city cap', () => {
     // AAP 0.5.6: the payload the count endpoint is given is byte-identical to the one sent.
     expect(fake.calls.counted).toEqual([part]);
     expect(fake.calls.sent).toEqual([part]);
-    // And the reservation was the provider's own count plus `maxTokens`, charged at what the
-    // provider reported — the count it reserved for, and one output token.
+    // And the reservation was the provider's own count plus `maxTokens`, charged at what the provider reported — the count it reserved for, and one output token.
     const counted = countOf(request);
     expect(charge.countedInputTokens).toBe(counted);
     expect(charge.chargedMicros).toBe(costMicros(counted, 1, FAKE_LLM_PRICES));
@@ -1505,8 +1458,7 @@ describe('the fake provider under the city cap', () => {
   it('spends one voice turn inside the dialogue budget the call already holds', async () => {
     const { spend, store } = harness({ prices: FAKE_LLM_PRICES });
     const fake = createFakeLlmAdapter({});
-    // The classification template with a 2,000-byte conversation window, the turn `call-dispatch`
-    // reserves the largest of (AAP 0.5.6), with the provider's minimum output bound.
+    // The classification template with a 2,000-byte conversation window, the turn `call-dispatch` reserves the largest of (AAP 0.5.6), with the provider's minimum output bound.
     const turn = req('callee: '.concat('x'.repeat(2000)), { maxTokens: 16 });
     const counted = countOf(turn);
     const turnBound = boundMicros(counted, turn.maxTokens, FAKE_LLM_PRICES);
@@ -1550,8 +1502,7 @@ describe('the fake provider under the city cap', () => {
     const clock = createTestClock();
     clock.set(new Date('2026-11-04T17:30:00.000Z'));
     const { spend } = harness({ clock });
-    // Makassar and Bangkok are already on the 5th, Lisbon, Mexico City and Bogotá are still on the
-    // 4th: the counter is keyed by the city's own day, never by UTC.
+    // Makassar and Bangkok are already on the 5th, Lisbon, Mexico City and Bogotá are still on the 4th: the counter is keyed by the city's own day, never by UTC.
     expect(await spend.reserveLlm(cityId, 1)).toEqual({ cityId, localDate, micros: 1 });
   });
 });

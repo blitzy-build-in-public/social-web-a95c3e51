@@ -1,18 +1,13 @@
 /**
- * Settlement end to end: criterion 1, criterion 2, the idempotency, the crash case, the races and
- * the hold-loss compensation.
+ * Settlement end to end: criterion 1, criterion 2, the idempotency, the crash case, the races and the hold-loss compensation.
  *
- * The rules the cases turn on: `MeetupSettlement`'s primary key is the idempotency anchor, so a
- * settlement run twice captures once, grants once and credits once; a fault inside the settlement
- * transaction rolls every effect back and the next pass settles it exactly once; a cancel, a block
- * and a hold-loss webhook raised at the sweep's instant each end the meetup once, on the row lock
- * every one of them takes; and a lost hold never forfeits — one the settlement learns about
- * afterwards is compensated, the capture fenced or reversed, the Table Credit voided and the no-show
- * gone.
+ * The rules the cases turn on: `MeetupSettlement`'s primary key is the idempotency anchor, so a settlement run twice captures once,
+ * grants once and credits once; a fault inside the settlement transaction rolls every effect back and the next pass settles it
+ * exactly once; a cancel, a block and a hold-loss webhook raised at the sweep's instant each end the meetup once, on the row lock
+ * every one of them takes; and a lost hold never forfeits — one the settlement learns about afterwards is compensated.
  *
- * What only the stateful proxy can produce — an expired hold, a delayed capture — runs in `mock`,
- * while every database assertion runs in both topologies. Time comes from the injected clock and
- * tokens are re-signed after each jump, because an access token lives fifteen minutes of that clock.
+ * What only the stateful proxy can produce — an expired hold, a delayed capture — runs in `mock`, while every database assertion runs
+ * in both topologies.
  */
 
 import {
@@ -95,8 +90,7 @@ const HOLD_LOSS_TYPES: ReadonlySet<string> = new Set(['charge.expired', 'payment
 const CAPTURE_DELAY_MS = 3_000;
 
 /**
- * The bound one poll of the executor's own progress may run for: 100 waits of 100 ms, and no read of
- * the wall clock anywhere. A poll that exhausts it fails the case rather than hanging the suite.
+ * The bound one poll of the executor's own progress may run for: 100 waits of 100 ms, and no read of the wall clock anywhere.
  */
 const POLL_STEPS = 100;
 const POLL_INTERVAL_MS = 100;
@@ -130,8 +124,8 @@ beforeEach(async () => {
 });
 
 /**
- * The launch city a fixture proof names, asserting both fixtures prove the same one: a meetup needs a
- * city both sides hold a valid proof for, and the failure names the file to re-run.
+ * The launch city a fixture proof names, asserting both fixtures prove the same one: a meetup needs a city both sides hold a valid
+ * proof for.
  */
 function proofCity(): CityConfig {
   const first = fixtureStay(submissions.valid);
@@ -166,8 +160,8 @@ function submitProof(user: UserFixture, submission: ProofSubmission): Promise<Ro
 }
 
 /**
- * One seeded fixture venue of a city, with the console secret that derives its check-in code:
- * criterion 1 names a seeded venue, so this reads the seed's own summary rather than making one.
+ * One seeded fixture venue of a city, with the console secret that derives its check-in code: criterion 1 names a seeded venue, so
+ * this reads the seed's own summary rather than making one.
  */
 async function seededVenue(cityId: string): Promise<VenueFixture> {
   const summary = await t.seedFixtures();
@@ -309,9 +303,8 @@ function readIntent(value: unknown): IntentSnapshot {
 }
 
 /**
- * The authorization of one deposit as the provider holds it: the proxy in `mock`, asked by the
- * attempt's own metadata, or Stripe's test API for the id the deposit carries. Neither path imports
- * the Stripe SDK, which only `payments/stripe-gateway.ts` may.
+ * The authorization of one deposit as the provider holds it: the proxy in `mock`, asked by the attempt's own metadata, or Stripe's test
+ * API for the id the deposit carries. Neither path imports the Stripe SDK, which only `payments/stripe-gateway.ts` may.
  */
 async function intentOf(deposit: DepositRow): Promise<IntentSnapshot> {
   if (deposit.paymentIntentId === null) {
@@ -331,9 +324,8 @@ async function intentOf(deposit: DepositRow): Promise<IntentSnapshot> {
 }
 
 /**
- * Run settlement passes until the meetup's settlement closes, and fail when it never does: a
- * settlement only plans its provider calls, which the executor carries out after its commit, so the
- * row turns `complete` on the pass that finishes the last of them.
+ * Run settlement passes until the meetup's settlement closes, and fail when it never does: a settlement only plans its provider calls,
+ * which the executor carries out after its commit.
  */
 async function settleUntilComplete(meetupId: string): Promise<void> {
   await waitFor(async () => {
@@ -344,8 +336,8 @@ async function settleUntilComplete(meetupId: string): Promise<void> {
 }
 
 /**
- * Whether the provider recorded a refund of one deposit's charge, always false without the proxy: a
- * `charge.refunded` event names the charge, so the intent's own `latest_charge` is what it matches.
+ * Whether the provider recorded a refund of one deposit's charge, always false without the proxy: a `charge.refunded` event names the
+ * charge, so the intent's own `latest_charge` is what it matches.
  */
 async function chargeWasRefunded(deposit: DepositRow): Promise<boolean> {
   const control = t.stripe.proxy;
@@ -383,10 +375,8 @@ async function recordedEvents(type: string, paymentIntentId: string): Promise<Re
 }
 
 /**
- * Lose one deposit's authorization at the provider, without reporting it: `at` pins the proxy clock
- * first, which fixes Stripe's own `canceled_at` before or after the settlement's `appliedAt`, the
- * comparison the compensation rule turns on. A case that wants the loss reported calls
- * {@link reportHoldLoss}; one that wants the settlement's own reconciliation to find it does not.
+ * Lose one deposit's authorization at the provider, without reporting it: `at` pins the proxy clock first, which fixes Stripe's own
+ * `canceled_at` before or after the settlement's `appliedAt`, the comparison the compensation rule turns on.
  */
 async function expireAtProvider(deposit: DepositRow, at?: Date): Promise<void> {
   const control = proxy();
@@ -400,8 +390,8 @@ async function expireAtProvider(deposit: DepositRow, at?: Date): Promise<void> {
 }
 
 /**
- * Deliver the two events Stripe issued for one expired hold, and nothing else: the events the
- * fixtures' own hold creations recorded — which no suite delivers — never ride along.
+ * Deliver the two events Stripe issued for one expired hold, and nothing else: the events the fixtures' own hold creations recorded never
+ * ride along.
  */
 async function reportHoldLoss(deposit: DepositRow): Promise<WebhookResponse[]> {
   const control = proxy();
@@ -455,8 +445,8 @@ async function balanceOf(user: UserFixture): Promise<number> {
 }
 
 /**
- * A Table Credit grant and the `void` that reverses it: a compensation adds the void and never
- * removes the grant, because the balance is grants less voids.
+ * A Table Credit grant and the `void` that reverses it: a compensation adds the void and never removes the grant, because the balance
+ * is grants less voids.
  */
 function expectCreditReversed(entries: readonly { kind: string }[], userId: string): void {
   expect(entries).toEqual([
@@ -473,8 +463,8 @@ interface LockedFixture {
 }
 
 /**
- * One locked meetup between two fresh accounts at a fresh venue in the fixture city, with a real
- * authorization on each side, so the reconciliation, the capture and the releases are production's.
+ * One locked meetup between two fresh accounts at a fresh venue in the fixture city, with a real authorization on each side, so the
+ * reconciliation, the capture and the releases are production's.
  */
 async function lockedFixture(
   options: {
@@ -495,8 +485,8 @@ async function lockedFixture(
 }
 
 /**
- * Check one attendee in through the real route: the code is the one
- * `GET /v1/venue/check-in-code` derives, and the coordinates sit `distanceM` due north of the venue.
+ * Check one attendee in through the real route: the code is the one `GET /v1/venue/check-in-code` derives, and the coordinates sit
+ * `distanceM` due north of the venue.
  */
 function checkIn(user: UserFixture, meetupId: string, venue: VenueFixture, distanceM: number) {
   if (venue.secret === null) {
@@ -538,8 +528,8 @@ async function resolveDispute(
 }
 
 /**
- * Wait for one state, by polling the row the production code writes: a bounded number of waits rather
- * than a deadline read from a clock, and a state that never arrives fails the case.
+ * Wait for one state, by polling the row the production code writes: a bounded number of waits rather than a deadline read from a
+ * clock.
  */
 async function waitFor<T>(read: () => Promise<T | null>): Promise<T> {
   for (let step = 0; step < POLL_STEPS; step += 1) {
@@ -764,9 +754,8 @@ interface RaceCase {
 }
 
 /**
- * The three racers: a cancel inside the last two hours is the late-cancellation forfeit, a block
- * cancels the open meetup whenever it arrives, and a hold-loss webhook ends it `lock_lost`. Only
- * `mock` can lose a hold on demand.
+ * The three racers: a cancel inside the last two hours is the late-cancellation forfeit, a block cancels the open meetup whenever it
+ * arrives, and a hold-loss webhook ends it `lock_lost`. Only `mock` can lose a hold on demand.
  */
 const RACES: readonly RaceCase[] = [
   {
@@ -791,9 +780,8 @@ const RACES: readonly RaceCase[] = [
 ];
 
 /**
- * Expire the attendee's hold at the provider and report it, or report nothing when the settlement got
- * there first (AAP 0.3.2): the provider refuses to expire an authorization that is no longer
- * capturable, which is what a settlement that already released or captured it leaves behind.
+ * Expire the attendee's hold at the provider and report it, or report nothing when the settlement got there first (AAP 0.3.2): the
+ * provider refuses to expire an authorization that is no longer capturable.
  */
 async function loseAttendeeHold(fixture: LockedFixture): Promise<WebhookResponse[]> {
   const attendee = await depositFor(fixture.meetup.id, 'initiator');

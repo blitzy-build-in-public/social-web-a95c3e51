@@ -44,9 +44,7 @@ import {
   type SettlementPlan,
 } from '../../src/modules/settlement/outcomes.ts';
 
-// ---------------------------------------------------------------------------------------------
 // Fixtures: the events of the AAP 0.5.3 table (nothing here reaches a database)
-// ---------------------------------------------------------------------------------------------
 
 /** Stable ids for the events below; any uuid serves, because every unit under test is pure. */
 const MEETUP_ID = '11111111-1111-7111-8111-111111111111';
@@ -77,11 +75,8 @@ function settleEvent(outcome: SettlementOutcome): MeetupEvent {
 }
 
 /**
- * One event per {@link MeetupEventType}, with the payload its variant requires (AAP 0.5.3).
- *
- * The `Record` makes the factory total, so a variant added to {@link MeetupEvent} fails the build
- * here until it has an event. The `settle` entry carries `completed`; the other three outcomes are
- * rows of the settlement table below.
+ * One event per {@link MeetupEventType}, with the payload its variant requires (AAP 0.5.3). The
+ * `Record` makes the factory total, so a variant added to {@link MeetupEvent} fails the build here.
  */
 const EVENTS: Readonly<Record<MeetupEventType, MeetupEvent>> = {
   recipient_hold_held: { type: 'recipient_hold_held' },
@@ -107,9 +102,7 @@ function rowName(section: string, from: string, event: string, to: string, guard
   return `${section}: ${from} --${event}--> ${to}${condition}`;
 }
 
-// ---------------------------------------------------------------------------------------------
 // AAP 0.5.3, the meetup transition table
-// ---------------------------------------------------------------------------------------------
 
 /** One arrow of the meetup table: its source, its event, the guard the AAP states, and its target. */
 interface MeetupArrow {
@@ -126,14 +119,11 @@ interface MeetupRow extends MeetupArrow {
 }
 
 /**
- * Every arrow of AAP 0.5.3, one row each, in the order the AAP states them.
- *
- * `locked --settle-->` appears four times because a settlement's target comes from its outcome. The
- * two late rows the AAP names for `locked` — a cancellation and an account deletion inside the two
- * hours before the start — are deliberately **not** arrows of this table: it sends both to
- * `cancelled`, and `transition` refuses the pair once {@link isLateCancel} holds, after which
- * `settlement/settle.ts` applies the forfeit with `late_cancel` as its outcome. Both halves of that
- * arrangement are asserted below.
+ * Every arrow of AAP 0.5.3, one row each, in the order the AAP states them. `locked --settle-->` appears
+ * four times because a settlement's target comes from its outcome. The two late rows the AAP names for
+ * `locked` — a cancellation and an account deletion inside the two hours before the start — are
+ * deliberately **not** arrows of this table: it sends both to `cancelled`, and `transition` refuses the
+ * pair once {@link isLateCancel} holds, after which `settlement/settle.ts` applies the forfeit.
  */
 const MEETUP_ARROWS: readonly MeetupArrow[] = [
   {
@@ -181,7 +171,6 @@ const MEETUP_ARROWS: readonly MeetupArrow[] = [
   },
 ];
 
-/** {@link MEETUP_ARROWS} with the title each row prints. */
 const MEETUP_ROWS: readonly MeetupRow[] = MEETUP_ARROWS.map((arrow) => ({
   ...arrow,
   name: rowName('AAP 0.5.3 meetup', arrow.from, arrow.event.type, arrow.to, arrow.guard),
@@ -200,9 +189,9 @@ interface RefusedMeetupPair {
 }
 
 /**
- * The complement of {@link ALLOWED_PAIRS} in the `MeetupStatus` × `MeetupEventType` product, built
- * from the AAP's own arrows rather than from the table under test. Every final status contributes
- * its whole event row here, which is the property that makes it final.
+ * The complement of {@link ALLOWED_PAIRS} in the `MeetupStatus` × `MeetupEventType` product, built from
+ * the AAP's own arrows rather than from the table under test. Every final status contributes its whole
+ * event row here, which is the property that makes it final.
  */
 const REFUSED_MEETUP_PAIRS: readonly RefusedMeetupPair[] = MeetupStatus.options.flatMap((from) =>
   EVENT_TYPES.filter((eventType) => !ALLOWED_PAIRS.has(pairKey(from, eventType))).map(
@@ -302,9 +291,7 @@ describe('AAP 0.5.3 meetup transitions', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // AAP 0.5.3, the deposit lifecycle (forward only)
-// ---------------------------------------------------------------------------------------------
 
 /** One allowed deposit move, with the rule it comes from. */
 interface DepositMove {
@@ -320,12 +307,11 @@ interface DepositRow extends DepositMove {
 }
 
 /**
- * Every deposit move of AAP 0.5.3, one row each.
- *
- * `failed --released-->` is the row the late and orphan authorization rule adds: an authorization
- * that arrives for the attempt of a meetup which already reached a final status is released on the
- * spot, and its deposit has to be able to reach `released` from `failed` for the account-deletion
- * `delete_customer` operation to ever run — that one waits until every deposit of the user is final.
+ * Every deposit move of AAP 0.5.3, one row each. `failed --released-->` is the row the late and orphan
+ * authorization rule adds: an authorization that arrives for the attempt of a meetup already in a final
+ * status is released on the spot, and its deposit has to reach `released` from `failed` for the
+ * account-deletion `delete_customer` operation to ever run — that one waits until every deposit of the
+ * user is final.
  */
 const DEPOSIT_MOVES: readonly DepositMove[] = [
   { from: 'pending', to: 'held', note: 'the confirm answered requires_capture' },
@@ -343,7 +329,6 @@ const DEPOSIT_MOVES: readonly DepositMove[] = [
   { from: 'captured', to: 'refunded', note: 'a no_fault reversal' },
 ];
 
-/** {@link DEPOSIT_MOVES} with the title each row prints. */
 const DEPOSIT_ROWS: readonly DepositRow[] = DEPOSIT_MOVES.map((move) => ({
   ...move,
   name: `AAP 0.5.3 deposit: ${move.from} --> ${move.to} (${move.note})`,
@@ -362,10 +347,10 @@ interface RefusedDepositPair {
 }
 
 /**
- * The complement of {@link ALLOWED_DEPOSIT_MOVES} in the `DepositStatus` × `DepositStatus` product,
- * built from the AAP's own rows. It carries every backwards move a late or out-of-order provider
- * event would ask for — `held` back to `pending` or `requires_action`, `captured` back to `held`,
- * and anything out of `released`, `expired` or `refunded` — which is what "forward-only" means.
+ * The complement of {@link ALLOWED_DEPOSIT_MOVES} in the `DepositStatus` × `DepositStatus` product, built
+ * from the AAP's own rows. It carries every backwards move a late or out-of-order provider event would
+ * ask for — `held` back to `pending`, `captured` back to `held`, anything out of `released`, `expired` or
+ * `refunded` — which is what "forward-only" means.
  */
 const REFUSED_DEPOSIT_PAIRS: readonly RefusedDepositPair[] = DepositStatus.options.flatMap((from) =>
   DepositStatus.options
@@ -420,9 +405,7 @@ describe('AAP 0.5.3 deposit transitions', () => {
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // AAP 0.5.7, the settlement outcome table, and AAP 0.5.3's late cancellation
-// ---------------------------------------------------------------------------------------------
 
 /** Both sides of a meetup, for the rows that release both holds. */
 const BOTH_ROLES: readonly ParticipantRole[] = ['initiator', 'recipient'];
@@ -459,11 +442,10 @@ interface LateCancelRow extends PlanExpectation {
 }
 
 /**
- * The four rows of the AAP 0.5.7 outcome table. Both present completes the meetup and releases both
- * holds; one present captures the absent party's hold, releases the attendee's and credits the
- * attendee with Table Credit equal to the deposit; neither present releases both with no reputation
- * change. No forfeit row witnesses anything, because neither the pair nor the lodging witnessed a
- * meetup (AAP 0.5.7).
+ * The four rows of the AAP 0.5.7 outcome table. Both present completes the meetup and releases both holds;
+ * one present captures the absent party's hold, releases the attendee's and credits the attendee with
+ * Table Credit equal to the deposit; neither present releases both with no reputation change. No forfeit
+ * row witnesses anything, because neither the pair nor the lodging witnessed a meetup (AAP 0.5.7).
  */
 const PRESENCE_ROWS: readonly PresenceRow[] = [
   {
@@ -510,9 +492,9 @@ const PRESENCE_ROWS: readonly PresenceRow[] = [
 
 /**
  * The two late-cancellation rows of AAP 0.5.3. A cancellation inside the two hours before the start
- * forfeits the canceller's hold through the same recoverable settlement, and counts as a no-show by
- * the canceller (AAP 0.7.3), so the canceller is recorded absent and the counterpart present —
- * the convention `reputation/counters.ts` and `admin/metrics.ts` read.
+ * forfeits the canceller's hold through the same recoverable settlement and counts as a no-show by the
+ * canceller (AAP 0.7.3), so the canceller is recorded absent and the counterpart present — the convention
+ * `reputation/counters.ts` and `admin/metrics.ts` read.
  */
 const LATE_CANCEL_ROWS: readonly LateCancelRow[] = [
   {
@@ -546,9 +528,8 @@ const ALL_PLANS: readonly { readonly name: string; readonly plan: SettlementPlan
 ];
 
 /**
- * Asserts one plan field by field (AAP 0.5.7). Fields are asserted individually and `releaseRoles`
- * order-insensitively, never by comparing a spread of the plan, so a field the AAP does not name
- * cannot pass unnoticed.
+ * Asserts one plan field by field (AAP 0.5.7): fields individually and `releaseRoles` order-insensitively,
+ * never by comparing a spread of the plan, so a field the AAP does not name cannot pass unnoticed.
  */
 function expectPlan(plan: SettlementPlan, expected: PlanExpectation): void {
   const [witness, pairHistory, lodgingActivity] = expected.flags;
@@ -574,10 +555,9 @@ function expectedForfeitReason(outcome: SettlementOutcome): ForfeitReason | null
 }
 
 /**
- * The analytics events a settlement of one outcome writes, one entry per event, so the comparison
- * is a multiset: a completion and an unattended meetup write one event per participant, a no-show
- * writes one that names the absent party, and a late cancellation writes both of its events (AAP
- * 0.5.7).
+ * The analytics events a settlement of one outcome writes, one entry per event, so the comparison is a
+ * multiset: a completion and an unattended meetup write one event per participant, a no-show writes one
+ * that names the absent party, and a late cancellation writes both of its events (AAP 0.5.7).
  */
 function expectedEventNames(outcome: SettlementOutcome): readonly string[] {
   switch (outcome) {
@@ -656,9 +636,7 @@ describe('AAP 0.5.7 settlement outcomes and AAP 0.5.3 late cancellation', () => 
   });
 });
 
-// ---------------------------------------------------------------------------------------------
 // AAP 0.5.3 "Late and orphan authorizations"
-// ---------------------------------------------------------------------------------------------
 
 /** The statuses that end an operation's life (AAP 0.3.2 "Fencing"). */
 const TERMINAL_OPERATION_STATUSES: readonly PaymentOperationStatus[] = [
@@ -682,15 +660,14 @@ const OPERATION_STATUS_ROWS: readonly OperationStatusRow[] = PaymentOperationSta
 );
 
 /**
- * The `requires_capture` decision itself is not testable here: `payments/webhook.ts` takes it inside
- * its transaction, through `hasCaptureOrRelease`, `isCurrent` and `applyHoldOutcome`, and exports no
- * pure helper for it — so this suite adds no fake one, and the whole path is asserted against the
- * database by `apps/api/test/integration/payment-operations.test.ts` and `webhooks-stripe.test.ts`.
- * What is provable without a database are the invariants those rules rest on: a final meetup but
- * `forfeited` takes no event, so an orphan authorization can never move one back to `locked`; a key
- * names its attempt, so a superseded attempt never shares one with the current attempt; the statuses
- * that end an operation's life are the row `hasNoAuthorization` reads before it declares a deposit
- * released; and a hold whose create was handed to the operator is never treated as holding nothing.
+ * The `requires_capture` decision itself is not testable here: `payments/webhook.ts` takes it inside its
+ * transaction and exports no pure helper for it, so the whole path is asserted against the database by
+ * `integration/payment-operations.test.ts` and `webhooks-stripe.test.ts`. What is provable without one are
+ * the invariants those rules rest on: a final meetup but `forfeited` takes no event, so an orphan
+ * authorization can never move one back to `locked`; a key names its attempt, so a superseded attempt
+ * never shares one with the current; the statuses that end an operation's life are what
+ * `hasNoAuthorization` reads before it declares a deposit released; and a hold whose create was handed to
+ * the operator is never treated as holding nothing.
  */
 describe('AAP 0.5.3 late and orphan authorizations', () => {
   it('AAP 0.5.3: a final meetup takes no event, and forfeited takes only its two', () => {

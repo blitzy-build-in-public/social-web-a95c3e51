@@ -1,8 +1,4 @@
-/**
- * The call-and-menu priority rule's unit suite (AAP 0.5.7): the distance bands of
- * `nearest_partner_distance_m`, the BullMQ priority `menu-ingest` labels its jobs with, and the
- * `ORDER BY` fragment `call-dispatch` takes its call tasks in.
- */
+/** The call-and-menu priority rule's unit suite (AAP 0.5.7): the distance bands of `nearest_partner_distance_m`, the BullMQ priority `menu-ingest` labels its jobs with, and the `ORDER BY` fragment `call-dispatch` takes its call tasks in. */
 
 import type { Prisma } from '@tablemate/db';
 
@@ -11,25 +7,15 @@ import { describe, expect, it } from 'vitest';
 import { callTaskOrderSql, distanceBand, menuPriority } from '../../src/calls/priority.ts';
 
 const NOW = new Date('2026-11-10T10:00:00.000Z');
-
 const APP_ENV = 'test';
-
 const TASK_ALIAS = 't';
 const PLACE_ALIAS = 'p';
-
 const BAND_EDGES_M = [250, 500, 1000, 2000] as const;
 const NOT_NEAR_BAND = BAND_EDGES_M.length;
-
 const LOCKED_MEETUP_HORIZON_DAYS = 3;
-
 const MAX_PRIORITY = 1 + 2 * NOT_NEAR_BAND + 1;
-
 type BandCase = readonly [distanceM: number | null, band: number];
-
-/**
- * Each band edge and the metres either side of it (AAP 0.5.7). An edge is inclusive; a `null`
- * distance, and one that cannot be measured at all, is the last band.
- */
+/** Each band edge and the metres either side of it (AAP 0.5.7). An edge is inclusive; a `null` distance, and one that cannot be measured at all, is the last band. */
 const BAND_CASES: readonly BandCase[] = [
   [0, 0],
   [250, 0],
@@ -45,7 +31,6 @@ const BAND_CASES: readonly BandCase[] = [
   [Number.NaN, 4],
   [Number.POSITIVE_INFINITY, 4],
 ];
-
 type Candidate = readonly [
   name: string,
   distanceM: number | null,
@@ -53,12 +38,7 @@ type Candidate = readonly [
   lodgingOnly: boolean,
   priority: number,
 ];
-
-/**
- * Eight candidates, written out of order so the sort has to do the work (AAP 0.5.7): `a`-`f` are
- * venue-near, paired inside a band by the locked-meetup flag, and `h`/`g` are lodging-only, where the
- * band is the last one whatever the distance says, so only the flag separates them.
- */
+/** Eight candidates, written out of order so the sort has to do the work (AAP 0.5.7): `a`-`f` are venue-near, paired inside a band by the locked-meetup flag, and `h`/`g` are lodging-only, where the band is the last one whatever the distance says, so only the flag separates them. */
 const CANDIDATES: readonly Candidate[] = [
   ['f', 1800, false, false, 8],
   ['h', 50, true, true, 9],
@@ -69,23 +49,19 @@ const CANDIDATES: readonly Candidate[] = [
   ['e', 1800, true, false, 7],
   ['d', 400, false, false, 4],
 ];
-
 const RANKED = ['a', 'b', 'c', 'd', 'e', 'f', 'h', 'g'];
-
 const BOUNDARY_CASES: readonly (readonly [nearerM: number, fartherM: number])[] = [
   [250, 251],
   [500, 501],
   [1000, 1001],
   [2000, 2001],
 ];
-
 /** Aliases that would carry SQL of their own if they were quoted and sent (AAP 0.11.2). */
 const UNSAFE_ALIASES: readonly (readonly [string])[] = [
   ['t; DROP TABLE call_task'],
   ['p" OR TRUE'],
   [''],
 ];
-
 function priorityOf(
   nearestPartnerDistanceM: number | null,
   nearLockedMeetup: boolean,
@@ -106,8 +82,7 @@ describe('menuPriority', () => {
     (name, distanceM, nearLockedMeetup, lodgingOnly, priority) => {
       const value = priorityOf(distanceM, nearLockedMeetup, lodgingOnly);
       expect(value, name).toBe(priority);
-      // BullMQ runs a LOWER priority first and an unprioritized job before any of them, so every job
-      // carries a whole number of 1 or more, and none beyond the last band (AAP 0.5.6, 0.5.7).
+      // BullMQ runs a LOWER priority first and an unprioritized job before any of them, so every job carries a whole number of 1 or more, and none beyond the last band (AAP 0.5.6, 0.5.7).
       expect(Number.isInteger(value) && value >= 1 && value <= MAX_PRIORITY, name).toBe(true);
     },
   );
@@ -120,8 +95,7 @@ describe('menuPriority', () => {
       .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name))
       .map((place) => place.name);
     expect(ranked).toEqual(RANKED);
-    // The band outranks the flag: the last metre of a band still precedes the first metre of the next
-    // when only the farther place is near a locked meetup (AAP 0.5.7).
+    // The band outranks the flag: the last metre of a band still precedes the first metre of the next when only the farther place is near a locked meetup (AAP 0.5.7).
     for (const [nearerM, fartherM] of BOUNDARY_CASES) {
       expect(priorityOf(nearerM, false, false)).toBeLessThan(priorityOf(fartherM, true, false));
     }
@@ -139,8 +113,7 @@ describe('callTaskOrderSql', () => {
     expect(fragment.sql).toContain(`"${TASK_ALIAS}"."kind"`);
     expect(fragment.sql).toContain('lodging_stay_verification');
     expect(fragment.sql).toContain("'locked'");
-    // The band is the rule's primary key and the flag its tie-break inside one band, so the CASE has
-    // to be ordered before the EXISTS, and the deferred tasks after both (AAP 0.5.7).
+    // The band is the rule's primary key and the flag its tie-break inside one band, so the CASE has to be ordered before the EXISTS, and the deferred tasks after both (AAP 0.5.7).
     expect(fragment.sql.indexOf(`"${TASK_ALIAS}"."kind"`)).toBeLessThan(bandKey);
     expect(bandKey).toBeLessThan(lockedKey);
     expect(lockedKey).toBeLessThan(fragment.sql.indexOf(`"${TASK_ALIAS}"."next_attempt_at"`));

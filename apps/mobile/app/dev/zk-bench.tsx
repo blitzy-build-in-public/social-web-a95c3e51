@@ -1,7 +1,4 @@
-/**
- * The device proving benchmark and the native smoke check (`/dev/zk-bench`, AAP 0.5.5, AAP 0.8.2,
- * success criterion 4).
- */
+/** The device proving benchmark and the native smoke check (`/dev/zk-bench`, success criterion 4). */
 import { Asset } from 'expo-asset';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
@@ -101,9 +98,7 @@ async function loadFixtureBytes(): Promise<Uint8Array> {
     const encoded = await FileSystem.readAsStringAsync(asset.localUri ?? asset.uri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    // The decoder comes from the circuit API, never from a static import of the package: the bench
-    // route and the proving flow are two chunks, and a package both of them import is hoisted into the
-    // entry chunk they are both meant to stay out of.
+    // The decoder comes from the circuit API, never from a static import: a package these two chunks both import is hoisted into the entry chunk they are both meant to stay out of.
     const { base64ToBytes } = await loadCircuitApi();
     return base64ToBytes(encoded);
   } catch (error: unknown) {
@@ -254,10 +249,7 @@ function ZkBench(): ReactElement {
   }, [plan]);
   return (
     <Screen title="Proving benchmark" testID="zk-bench-screen">
-      {/* The three lines below change while the screen is open, so each one is a polite live region
-          (WCAG 4.1.3): react-native-web renders the prop as `aria-live="polite"` on web, Android
-          reads it as its live region, and iOS has no equivalent in React Native, which is why
-          `polite` is the right setting. */}
+      {/* The three lines below change while the screen is open, so each one is a polite live region (WCAG 4.1.3): react-native-web renders `aria-live="polite"` on web and Android reads its live region, while iOS has no equivalent in React Native. */}
       <Text
         testID="zk-bench-status"
         accessibilityLiveRegion="polite"

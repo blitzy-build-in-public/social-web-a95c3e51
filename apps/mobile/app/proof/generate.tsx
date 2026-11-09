@@ -1,15 +1,4 @@
-/**
- * Proof generation — the second half of the proof-import flow (`/proof/generate`, AAP 0.5.5, AAP
- * 0.5.8, criterion 3): the staged booking confirmation read on this device, the proving data it needs,
- * the proof with its progress and its Cancel, and the one state each outcome leaves the traveller in.
- *
- * The email never reaches a render: the file is taken once from the import screen into a ref,
- * `importAndProve` releases it on every path once it owns it, this screen releases it when the attempt
- * never starts, and only an error code, the proof's public stay outputs, a download fraction and the
- * artefact plan's own three fields enter state (AAP 0.5.5, AAP 0.12.2). Proving never moves to the
- * server either: this screen holds no proving call, and an engine the build lacks is stated as its own
- * state before any file is read (AAP 0.2.4, AAP 0.12.2).
- */
+/** Proof generation — the second half of the proof-import flow (`/proof/generate`): the staged booking confirmation read on this device, the proving data it needs, the proof with its progress and its Cancel. The email never reaches a render: the file is taken once from the import screen into a ref and released on every path once it owns it, and only an error code, the proof's public stay outputs, a download fraction and the artefact plan's own fields enter state. Proving never moves to the server: this screen holds no proving call, and an engine the build lacks is stated as its own state before any file is read. */
 import { useQuery } from '@tanstack/react-query';
 import { Redirect, Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
@@ -50,7 +39,6 @@ import type {
 const FLOW_TITLE = 'Verify my stay';
 const RUNNING_TITLE = 'Verifying your stay';
 
-/** The three safe-area edges claimed below the navigator header. */
 const SCREEN_EDGES = ['bottom', 'left', 'right'] as const;
 
 const PREPARING = 'Preparing verification…';
@@ -78,7 +66,6 @@ const PLAN_CACHED = 'Verification files are ready on this device.';
 /** 1 MB as AAP 0.5.5 counts it, so the size a traveller reads matches the download it describes. */
 const BYTES_PER_MEGABYTE = 1_000_000;
 
-/** The steps in which an attempt is running (AAP 0.5.5). */
 const RUNNING_STATUSES: readonly ProofFlowStatus[] = [
   'reading',
   'downloading',
@@ -86,12 +73,7 @@ const RUNNING_STATUSES: readonly ProofFlowStatus[] = [
   'submitting',
 ];
 
-/**
- * Every code this client raises for an attempt the API did not answer — the input generator's, the
- * proving flow's and the native module's — derived from `ProofErrorCode` rather than listed again, so
- * a code added there fails the exhaustiveness of {@link FLOW_MESSAGES} instead of reaching a
- * traveller as no sentence at all (AAP 0.5.8). The API's codes keep `userMessageFor` as their source.
- */
+/** Every code this client raises for an attempt the API did not answer — the input generator's, the proving flow's and the native module's — derived from `ProofErrorCode` rather than listed again, so a code added there fails the exhaustiveness of {@link FLOW_MESSAGES} instead of reaching a traveller as no sentence at all. The API's codes keep `userMessageFor` as their source. */
 type FlowErrorCode = Exclude<ProofErrorCode, ClientErrorCode> | 'unknown_error';
 
 /** The app's own sentence for a failure code, never the server's text (AAP 0.11.1). */
@@ -136,11 +118,7 @@ function failureMessage(code: ProofErrorCode | 'unknown_error'): string {
   return FLOW_MESSAGES_BY_CODE[code] ?? userMessageFor(code);
 }
 
-/**
- * The sentence the status line shows for one step of an attempt. Every status has one, so the line is
- * never empty and a test can wait on it in any state; the percentage is printed as text rather than
- * left to a bar or a colour (WCAG 1.4.1).
- */
+/** The sentence the status line shows for one step of an attempt: every status has one, so the line is never empty, and the percentage is printed as text rather than left to a bar or a colour (WCAG 1.4.1). */
 function statusText(status: ProofFlowStatus, progress: number | undefined): string {
   switch (status) {
     case 'idle':
@@ -172,7 +150,6 @@ function megabytes(bytes: number): string {
   return (bytes / BYTES_PER_MEGABYTE).toFixed(1);
 }
 
-/** What the artefact plan means for the traveller, before anything is downloaded (AAP 0.5.5). */
 function planText(plan: ArtifactPlan): string {
   if (plan.cached) return PLAN_CACHED;
   const keepOpen = Platform.OS === 'web' ? PLAN_KEEP_OPEN_WEB : PLAN_KEEP_OPEN_NATIVE;
@@ -193,22 +170,12 @@ function isRunning(status: ProofFlowStatus): boolean {
   return RUNNING_STATUSES.includes(status);
 }
 
-/**
- * Whether an attempt can still be stopped. `submitting` is not stoppable: the proof has left the
- * device and the API may already have spent its nullifier, so no control is offered that could not
- * change the outcome.
- */
+/** Whether an attempt can still be stopped: `submitting` is not stoppable, because the proof has left the device and the API may already have spent its nullifier, so no control is offered that could not change the outcome. */
 function isCancellable(status: ProofFlowStatus): boolean {
   return isRunning(status) && status !== 'submitting';
 }
 
-/**
- * The generate screen: `/proof/generate`.
- *
- * The staged file decides whether the screen stays at all — with none it redirects to
- * `/proof/import` — and the engine decides whether it can offer anything: a build without a prover
- * releases the file at once and says so, instead of failing after the email has been read.
- */
+/** The generate screen: `/proof/generate`. The staged file decides whether the screen stays at all — with none it redirects to `/proof/import` — and the engine decides whether it can offer anything: a build without a prover releases the file at once and says so, instead of failing after the email has been read. */
 export default function ProofGenerateScreen(): ReactElement {
   const proof = useProofState();
   const handleRef = useRef<EmlHandle | null>(null);
@@ -236,25 +203,15 @@ export default function ProofGenerateScreen(): ReactElement {
     enabled: verified !== null,
   });
 
-  /*
-   * Taking the staged file, once. The app root mounts no React StrictMode (`app/_layout.tsx`), so this
-   * effect runs a single time; if that ever changes the release below has to move to a microtask a
-   * remount cancels, or the development double-mount would drop the file the import screen staged. A
-   * build that cannot prove releases it here and now, holding nothing for an attempt that cannot run.
-   *
-   * Nothing below navigates: a cold load of this route reaches the picker through the `<Redirect>`
-   * the render draws instead, because expo-router refuses a navigation issued from a child screen's
-   * first effect, before its root layout has mounted (`assertIsReady`).
-   */
+  /* Taking the staged file, once: the app root mounts no React StrictMode, so this effect runs a single time, and a build that cannot prove releases the file here and now rather than holding it for an attempt that cannot run. */
+  /* Nothing below navigates: a cold load of this route reaches the picker through the `<Redirect>` the render draws instead, because expo-router refuses a navigation issued from a child screen's first effect. */
   useEffect(() => {
     if (tookRef.current) return;
     tookRef.current = true;
     resetProof();
     const handle = takePendingEml();
     if (handle === null) {
-      // Published from a microtask rather than the effect body, which React reserves for
-      // synchronising external systems: a synchronous setState would cascade a render before the
-      // first paint, and the staged file is the only external thing this effect reads.
+      // Published from a microtask rather than the effect body: a synchronous setState would cascade a render before the first paint, and the staged file is the only external thing this effect reads.
       void Promise.resolve().then(() => setEntry('absent'));
       return;
     }
@@ -270,11 +227,7 @@ export default function ProofGenerateScreen(): ReactElement {
     });
   }, []);
 
-  /*
-   * Leaving stops the attempt and releases a file no attempt ever took. Once `importAndProve` owns the
-   * handle it releases it on every path — success, failure and cancellation alike — so the ref is
-   * already empty by then (AAP 0.5.5).
-   */
+  /* Leaving stops the attempt and releases a file no attempt ever took; once `importAndProve` owns the handle it releases it on every path — success, failure and cancellation alike — so the ref is already empty by then. */
   useEffect(
     () => () => {
       controllerRef.current?.abort();
@@ -304,8 +257,7 @@ export default function ProofGenerateScreen(): ReactElement {
         if (active) setPlan(next);
       },
       () => {
-        // A store that cannot answer must not withhold the start: the attempt downloads for real and
-        // reports its own failure if that is what happens.
+        // A store that cannot answer must not withhold the start: the attempt downloads for real and reports its own failure if that is what happens.
         if (active) setPlanFailed(true);
       },
     );
@@ -318,8 +270,7 @@ export default function ProofGenerateScreen(): ReactElement {
     const handle = handleRef.current;
     const config = configRef.current;
     if (handle === null || config === null) return;
-    // Emptied first: from here `importAndProve` releases this handle on every path, and the unmount
-    // cleanup above must never release it a second time.
+    // Emptied first: from here `importAndProve` releases this handle on every path, and the unmount cleanup must never release it a second time.
     handleRef.current = null;
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -377,10 +328,7 @@ export default function ProofGenerateScreen(): ReactElement {
           verified.arrivalDate,
         )} to ${formatCalendarDate(verified.departureDate)} is verified.`;
 
-  /*
-   * Each distinct sentence is spoken once, and only the states that ask for attention: every error,
-   * the unsupported booking site included, plus the verified and stopped outcomes (AAP 0.5.8).
-   */
+  /* Each distinct sentence is spoken once, and only the states that ask for attention: every error, the unsupported booking site included, plus the verified and stopped outcomes. */
   const spoken =
     verified !== null
       ? 'Your stay is verified.'
@@ -395,7 +343,6 @@ export default function ProofGenerateScreen(): ReactElement {
     if (spoken !== null) announce(spoken);
   }, [spoken]);
 
-  /** Back to the picker: the file an attempt used has been released, so a retry starts from a choice. */
   const chooseAgain = (testID: string): ReactElement => (
     <Button label={CHOOSE_LABEL} hint={CHOOSE_HINT} onPress={goToImport} testID={testID} />
   );
@@ -487,8 +434,7 @@ export default function ProofGenerateScreen(): ReactElement {
   const stopped =
     cancelled && failure === null ? chooseAgain('proof-generate-choose-stopped') : null;
 
-  // One outcome at a time, in the order the flow reaches them, the attempt itself last: the status
-  // line above carries the step either way. Nothing shows before the hand-off has been read.
+  // One outcome at a time, in the order the flow reaches them, the attempt itself last: the status line above carries the step either way.
   const states = [unverifiable, unreadable, accepted, unsupportedIssuer, failed, stopped, attempt];
   const state = entry === 'present' ? (states.find((block) => block !== null) ?? null) : null;
   // One stable object: a fresh options literal on every render would re-issue `setOptions` each time.
@@ -519,7 +465,6 @@ export default function ProofGenerateScreen(): ReactElement {
   );
 }
 
-/** Back to the picker, where another booking confirmation can be chosen. */
 function goToImport(): void {
   router.replace('/proof/import');
 }

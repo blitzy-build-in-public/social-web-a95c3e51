@@ -1,14 +1,9 @@
 /**
  * Rate limits, and the Redis outage behind them.
  *
- * The rules the cases turn on: one account gets 60 writes a minute and one address its own
- * allowance, with the webhook routes at a higher one and a refusal `429 rate_limited` carrying
- * `Retry-After`; a refusal is a refusal, so each outage case asserts the state its route would have
- * written and not the status alone; and an unusable counter fails closed — every limited route turns
- * `503 service_unavailable` — while the sweeper still takes its settlement decision, which reads
- * PostgreSQL and Stripe alone. `pauseRedis` produces the outage in its honest form: the socket stays
- * open and nothing answers, so the store's own bound answers instead of a connection error. Every
- * pause is released in a `finally`, because the container is shared by the whole run.
+ * The rules the cases turn on: one account gets 60 writes a minute and one address its own allowance, with the webhook routes at a higher
+ * one and a refusal `429 rate_limited` carrying `Retry-After`; a refusal is a refusal, so each outage case asserts the state its route would
+ * have written had it gone through is unchanged; and the connection's own fail-fast contract is what a case waits out.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -45,9 +40,8 @@ const PLAIN_READS_PER_CASE = 100;
 const OUTAGE_CASE_TIMEOUT_MS = 30_000;
 
 /**
- * How long the pass a paused Redis holds up may take to finish once Redis answers, which is longer
- * than a refused request: it is bounded by BullMQ's own reconnect delays rather than by the rate
- * limiter's one-second bound.
+ * How long the pass a paused Redis holds up may take to finish once Redis answers, which is longer than a refused request: it is bounded by
+ * BullMQ's own reconnect delays rather than by the rate limiter's one-second bound.
  */
 const PASS_TIMEOUT_MS = 60_000;
 
@@ -92,9 +86,8 @@ function registerPushToken(
 }
 
 /**
- * One injected request from a caller-chosen address. `callRoute` does not forward the client
- * address, which is exactly what a per-IP case has to vary: Fastify reads `request.ip` from the
- * address `inject` was given, so this sends the same request its own way.
+ * One injected request from a caller-chosen address. `callRoute` does not forward the client address, which is exactly what a per-IP case has
+ * to vary: Fastify reads `request.ip` from the address `inject` was given.
  */
 async function fromAddress(
   harness: TestApp,
@@ -128,9 +121,8 @@ function lastAnswer(answers: readonly RouteResponse[]): RouteResponse {
 }
 
 /**
- * Spend one caller's whole allowance on `send`, and answer the refusal. Every allowed request must
- * answer `allowedStatus` and carry the allowance it was counted against — which is what tells a
- * counted route from an uncounted one — and the request after them must be the refusal.
+ * Spend one caller's whole allowance on `send`, and answer the refusal. Every allowed request must answer `allowedStatus` and carry the
+ * allowance it was counted against, which is what tells a counted route from an uncounted one.
  */
 async function exhaust(
   send: () => Promise<RouteResponse>,
@@ -148,8 +140,8 @@ async function exhaust(
 }
 
 /**
- * A locked meetup that has fallen due: it started an hour ago on the injected clock, so the
- * check-in window is past, both attendees checked in, and nothing has settled it.
+ * A locked meetup that has fallen due: it started an hour ago on the injected clock, so the check-in window is past, both attendees checked in,
+ * and nothing has settled it.
  */
 async function overdueMeetup(): Promise<{
   readonly meetupId: string;
@@ -200,10 +192,8 @@ interface Connection {
 }
 
 /**
- * Wait until `connection` is ready and answers a `PING`. Every connection the app builds is
- * fail-fast, so a command issued before the socket reached `ready` is refused rather than queued: a
- * fresh app's first counted request would read that as a store failure, and an outbox pass would
- * deliver nothing. This waits on infrastructure, not on a domain instant.
+ * Wait until `connection` is ready and answers a `PING`. Every connection the app builds is fail-fast, so a command issued before the socket
+ * reached `ready` is refused rather than queued: a fresh app's first counted request would read that as a store failure.
  */
 async function awaitAnswering(connection: Connection): Promise<void> {
   for (let attempt = 0; attempt < PRODUCER_READY_ATTEMPTS; attempt += 1) {
@@ -296,9 +286,8 @@ describe('the per-user and per-IP allowances', () => {
 });
 
 /**
- * The two reads that write, both limited per caller: the proposal detail records its recipient's
- * first view and the suggestion route stores a supplied budget. Each is marked `config.stateWritingRead`,
- * which is how the limiter knows the method alone cannot tell them from the plain reads.
+ * The two reads that write, both limited per caller: the proposal detail records its recipient's first view and the suggestion route stores a
+ * supplied budget. Each is marked `config.stateWritingRead`, which is how the limiter knows the method alone cannot tell them from plain reads.
  */
 const STATE_WRITING_READS: readonly (readonly [string, (meetupId: string) => string])[] = [
   ['GET /v1/meetups/:id', (meetupId) => `/v1/meetups/${meetupId}`],

@@ -1,35 +1,28 @@
 /**
- * The web proving Worker: artefact delivery from the origin private file system or the artefacts'
- * published URLs, and snarkjs Groth16 proving, off the main thread (AAP 0.3.4, AAP 0.5.5). One request per
- * message and exactly one reply — `ensured`, `proved`, or a single error code.
+ * The web proving Worker: artefact delivery from the origin private file system or the artefacts' published URLs, and
+ * snarkjs Groth16 proving, off the main thread (AAP 0.3.4, AAP 0.5.5). One request per message and exactly one reply —
+ * `ensured`, `proved`, or a single error code.
  *
- * `ensure` streams the circuit WASM and the proving key into the Origin Private File System, hashing each as
- * it arrives and refusing anything whose size or digest differs from the page's declaration, so a download
- * never holds a whole artefact in memory. Where that file system cannot be used, and no other store of the
- * browser is large enough for a gigabyte-scale key, the request is served from the published URLs instead,
- * because an engine whose origin private file system cannot be used must still prove locally (AAP 0.3.4). An
- * OPFS entry is re-verified by digest first — Chromium never advances a file's modification time on an
- * overwrite (measured, not assumed) — and either source ends in the shapes snarkjs 0.7.6 reads: the WASM
- * whole, in `mem` form, and the key as the 4 MiB page array of a fastfile `bigMem` file. The page terminates
- * this Worker after every attempt or cancellation, which keeps a cancel and a retry from overlapping
- * (AAP 0.5.5).
- *
- * It is a Metro entry of its own because Expo SDK 52's Metro does not bundle
- * `new Worker(new URL('./prover.worker.ts', import.meta.url))`: the file is a second entry point, served and
- * built separately, and `src/zk/artifacts.web.ts` owns its URL. The emitted script touches no `window` and no
- * `document` while loading and imports no Node built-in, so nginx serves it under `worker-src 'self' blob:`
- * with `wasm-unsafe-eval` and a `connect-src` that includes the artefact host (AAP 0.3.2,
- * `infra/nginx/web.conf`).
- *
- * The witness inputs arrive as a `postMessage` string, are parsed here, and are never stored, logged or sent
- * back; a failure leaves as a code and nothing else, because a message, stack, URL, file name, artefact byte
- * or input value could carry a piece of a booking confirmation (AAP 0.5.5, criterion 3).
+ * `ensure` streams the circuit WASM and the proving key into the Origin Private File System, hashing each as it arrives
+ * and refusing anything whose size or digest differs from the page's declaration, so a download never holds a whole
+ * artefact in memory. Where that file system cannot be used, the request is served from the published URLs instead,
+ * because an engine whose origin private file system cannot be used must still prove locally (AAP 0.3.4). An OPFS entry
+ * is re-verified by digest first — Chromium never advances a file's modification time on an overwrite — and either source
+ * ends in the shapes snarkjs 0.7.6 reads: the WASM whole, in `mem` form, and the key as the 4 MiB page array of a
+ * fastfile `bigMem` file. The page terminates this Worker after every attempt or cancellation, which keeps a cancel and a
+ * retry from overlapping.
+ * It is a Metro entry of its own, because Expo SDK 52's Metro does not bundle
+ * `new Worker(new URL('./prover.worker.ts', import.meta.url))`: the file is a second entry point, and
+ * `src/zk/artifacts.web.ts` owns its URL. The emitted script touches no `window` and no `document` while loading — nginx
+ * serves it under `worker-src 'self' blob:` with `wasm-unsafe-eval` and a `connect-src` that includes the artefact host.
+ * The witness inputs arrive as a `postMessage` string, are parsed here, and are never stored, logged or sent back; a
+ * failure leaves as a code and nothing else, because a message, stack, URL, file name, artefact byte or input value could
+ * carry a piece of a booking confirmation (criterion 3).
  */
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 // @ts-expect-error -- snarkjs 0.7.6 ships no type declarations; this file calls only the subset typed below.
 import * as snarkjs from 'snarkjs';
-
 import type { ResolvedArtifacts, ResolvedFile, ZkClientErrorCode } from './prover.ts';
 
 /**
@@ -44,7 +37,6 @@ export interface WorkerArtifactRef {
 
 export interface EnsureRequest {
   readonly type: 'ensure';
-  /** Echoed in every reply for this request; the page correlates the two by it, 0 included. */
   readonly id: number;
   readonly artifacts: { readonly wasm: WorkerArtifactRef; readonly zkey: WorkerArtifactRef };
   /** A different version invalidates the size and modification-time fast path, so the artefacts are re-hashed once after an app update. */
@@ -61,14 +53,8 @@ export interface ProveRequest {
 }
 
 export type WorkerRequest = EnsureRequest | ProveRequest;
-
 type WorkerPhase = 'download' | 'verify' | 'load' | 'prove';
 
-/**
- * Exactly one frame per request besides progress reports. `code` is a `snake_case` code the page maps to a
- * sentence, never free text, and `proof` and `publicSignals` stay `unknown` because the page validates them
- * with `ProofSubmission` before submitting.
- */
 export type WorkerResponse =
   | {
       readonly type: 'progress';
@@ -88,13 +74,11 @@ export type WorkerResponse =
     }
   | { readonly type: 'error'; readonly id: number; readonly code: string };
 
-/** Declared locally: the app's programme carries the DOM libraries and deliberately not `WebWorker`, because the two cannot coexist. */
 interface WorkerScope {
   postMessage(message: WorkerResponse): void;
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
 }
 
-/** Available inside a Worker only; declared here rather than taken from a library. */
 interface SyncAccessHandle {
   read(buffer: Uint8Array, options: { at: number }): number;
   write(buffer: Uint8Array, options: { at: number }): number;
@@ -107,26 +91,15 @@ interface SyncAccessHandle {
 type SyncFileHandle = FileSystemFileHandle & {
   createSyncAccessHandle(): Promise<SyncAccessHandle>;
 };
-
 const STORAGE_DIRECTORY = 'tablemate-zk';
-
-/**
- * This Worker's own local names, not the artefact file names: the digest is what identifies an artefact, so a
- * file is read only after its bytes were shown to hash to the declaration.
- */
 const WASM_FILE = 'tablemate_itinerary.wasm';
 const ZKEY_FILE = 'tablemate_itinerary.zkey';
 const META_SUFFIX = '.meta.json';
-
 /** Every page but the last must be exactly this many bytes, because fastfile derives the whole file's size from the last page's length. */
 const ZKEY_PAGE_BYTES = 1 << 22;
-
 const READ_CHUNK_BYTES = 1 << 22;
-
 const PROGRESS_STEP_BYTES = 1 << 20;
-
 const STORAGE_HEADROOM_BYTES = 64 << 20;
-
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 class WorkerError extends Error {
@@ -140,14 +113,8 @@ class WorkerError extends Error {
 }
 
 const QUOTA_ERROR_NAMES = ['QuotaExceededError', 'NS_ERROR_DOM_QUOTA_REACHED'];
-
 const STORAGE_ERROR_NAMES = ['SecurityError', 'NotAllowedError', 'InvalidStateError'];
 
-/**
- * A {@link WorkerError} keeps its own code; a full origin, an unusable OPFS, an aborted or failed fetch and an
- * allocation failure each map to theirs; anything else takes the phase's fallback. Only the code is ever
- * read from the error, never its message.
- */
 function codeForFailure(err: unknown, fallback: ZkClientErrorCode): ZkClientErrorCode {
   if (err instanceof WorkerError) return err.code;
   if (err instanceof DOMException) {
@@ -164,10 +131,6 @@ function isStorageUnavailable(err: unknown): boolean {
   return codeForFailure(err, 'worker_failed') === 'artifact_storage_unavailable';
 }
 
-/**
- * A size that is not a positive integer or a digest that is not a lowercase SHA-256 would send the re-hash
- * path after a file that cannot match it and delete a good cached artefact, so it is rejected up front.
- */
 function assertDeclared(ref: Pick<WorkerArtifactRef, 'size' | 'sha256'>): void {
   if (!Number.isSafeInteger(ref.size) || ref.size <= 0 || !SHA256_HEX.test(ref.sha256)) {
     throw new WorkerError('artifact_hash_mismatch');
@@ -175,7 +138,6 @@ function assertDeclared(ref: Pick<WorkerArtifactRef, 'size' | 'sha256'>): void {
 }
 
 const scope = self as unknown as WorkerScope;
-
 /** Monotonic, so a device clock change cannot distort a proving measurement; `Date.now()` is the fallback (AAP 0.11.1 does not apply to this client code). */
 function now(): number {
   const perf = globalThis.performance;
@@ -198,12 +160,6 @@ function progressReporter(
 
 type PhaseReporter = (phase: WorkerPhase, total: number) => (received: number) => void;
 
-/**
- * A browser without OPFS, or one that refuses it (Firefox private browsing, a sandboxed frame, and the WebKit
- * build measured on this host), is `artifact_storage_unavailable` rather than a crash — the one failure
- * `runEnsure` answers from the published URLs, so a browser that cannot store the artefacts still proves in
- * it (AAP 0.3.4).
- */
 async function storageDirectory(): Promise<FileSystemDirectoryHandle> {
   const storage: StorageManager | undefined = navigator.storage;
   if (typeof storage?.getDirectory !== 'function')
@@ -234,16 +190,12 @@ async function openSync(
   create = false,
 ): Promise<SyncAccessHandle> {
   try {
-    // The synchronous handle this file needs is the OPFS addition to the interface, so the widening
-    // to `SyncFileHandle` is a cast rather than an assignable subtype.
     const handle = (await directory.getFileHandle(name, { create })) as SyncFileHandle;
     if (typeof handle.createSyncAccessHandle !== 'function') {
       throw new WorkerError('artifact_storage_unavailable');
     }
     return await handle.createSyncAccessHandle();
   } catch (err) {
-    // The reading paths only ever open a file they found a moment earlier, so a file that has gone
-    // is the same failure as a digest that does not match: nothing verified can be loaded.
     if (!create && err instanceof DOMException && err.name === 'NotFoundError') {
       throw new WorkerError('artifact_hash_mismatch');
     }
@@ -336,16 +288,6 @@ async function hashStored(
   return bytesToHex(hasher.digest());
 }
 
-/**
- * `mode` decides how much of the check is done. `'metadata'` accepts the artefact on the recorded digest and
- * size, the file's own size and modification time and the app version, and re-hashes only when one of them
- * changed; answering the download question by hashing a gigabyte every time would cost more than the
- * download saves. `'digest'` always re-hashes, and is what `prove` asks for, because on the origin private
- * file system the modification time cannot be the whole rule — Chromium leaves `lastModified` at the file's
- * creation time through both a writable-stream overwrite and a Worker's synchronous write (measured, not
- * assumed) — and an artefact that fails the digest is deleted, file and record, so the next step is a
- * download rather than a proof (AAP 0.5.5).
- */
 async function verifyStored(
   directory: FileSystemDirectoryHandle,
   name: string,
@@ -396,12 +338,6 @@ function writeAll(handle: SyncAccessHandle, chunk: Uint8Array, at: number): numb
   return written;
 }
 
-/**
- * A streamed body is the point of this phase: a browser that cannot stream would have to hold the whole
- * proving key in memory, which is the risk AAP 0.3.4 names, so an unusable response is a download failure
- * rather than a fallback to buffering. A request the engine refuses or cannot make — a rejection, an
- * unreachable host, a status that is not ok, a response with no body — is the same code.
- */
 async function fetchArtifact(url: string): Promise<ReadableStream<Uint8Array>> {
   try {
     const response = await fetch(url, { cache: 'no-store' });
@@ -424,11 +360,6 @@ async function assertCapacity(neededBytes: number): Promise<void> {
   }
 }
 
-/**
- * `base` is what earlier artefacts of this transfer already fetched, so the phase reports one bar for the
- * pair. There is no resume: the incremental hash state lives in this call's memory and cannot be persisted,
- * so an interrupted download restarts from zero rather than re-hashing a fragment only to throw it away.
- */
 async function download(
   directory: FileSystemDirectoryHandle,
   name: string,
@@ -508,7 +439,6 @@ function isPublishedUrl(location: string): boolean {
 }
 
 const CONTENT_RANGE_TOTAL = /^bytes \d+-\d+\/(\d+)$/;
-
 /**
  * A range of one byte is what makes this cheap: a static file server answers `206` and states the whole
  * file's size in `Content-Range`, while a server that ignores the range answers `200` and states it in
@@ -544,11 +474,6 @@ function publishedFile(ref: WorkerArtifactRef): ResolvedFile {
   return { location: ref.url, sha256: ref.sha256, size: ref.size };
 }
 
-/**
- * Each is confirmed to be published at the declared size, and both are answered with their own URL as their
- * location — nothing is written anywhere, because an engine that could not create the proving key in its
- * origin private file system has nowhere else large enough to keep one.
- */
 async function publishedArtifacts(
   wasmRef: WorkerArtifactRef,
   zkeyRef: WorkerArtifactRef,
@@ -558,11 +483,6 @@ async function publishedArtifacts(
   return { wasm: publishedFile(wasmRef), zkey: publishedFile(zkeyRef) };
 }
 
-/**
- * An `artifact_storage_unavailable` from the OPFS source is the one failure the published-URL source answers
- * (AAP 0.3.4); every other failure keeps its own code, because a browser that can store the artefacts but has
- * no room for the key is a different answer from one that cannot store them at all.
- */
 async function runEnsure(request: EnsureRequest): Promise<void> {
   const { wasm: wasmRef, zkey: zkeyRef } = request.artifacts;
   assertDeclared(wasmRef);
@@ -630,11 +550,6 @@ async function loadWhole(
   }
 }
 
-/**
- * Two invariants hold here: the page size is fastfile 0.0.20's own `1 << 22` and every page but the last is
- * exactly that many bytes, because `bigMem` derives the file's total size from the last page's length; and the
- * whole key is resident in this Worker while it proves, and nowhere else (AAP 0.3.4, AAP 0.5.5).
- */
 async function loadPages(
   directory: FileSystemDirectoryHandle,
   name: string,
@@ -666,12 +581,6 @@ async function loadPages(
   }
 }
 
-/**
- * Typed locally because the package ships no declarations; this is exactly what `groth16.fullProve` does,
- * split only so the two component timings can be reported separately. `singleThread: true` keeps the
- * ffjavascript curve in this process: without it the engine spawns a nested Worker per hardware thread and
- * copies the proving key into each, which is the peak-memory risk the web path carries (AAP 0.3.4).
- */
 interface SnarkjsSubset {
   readonly wtns: {
     calculate(
@@ -693,12 +602,6 @@ interface SnarkjsSubset {
 
 const snark = snarkjs as unknown as SnarkjsSubset;
 
-/**
- * The body is refused as `artifact_download_failed` the moment it passes the declared size, and as
- * `artifact_hash_mismatch` when it ends short of the declaration or at the declared length with another
- * digest. `base` is what an earlier artefact of the same load already reported, so the phase draws one bar for
- * the pair, and the reader is released on every path.
- */
 async function streamArtifact(
   url: string,
   declared: Pick<WorkerArtifactRef, 'size' | 'sha256'>,
@@ -746,12 +649,6 @@ async function streamWhole(
   return bytes;
 }
 
-/**
- * The two invariants of {@link loadPages} hold here too, and the allocation makes them hold: no page exists
- * before the bytes that fill it arrive, and each page is sized to what the declaration leaves for it, so only
- * the last page can be short, which is exactly what `bigMem` reads the file's size off. Nothing but these
- * pages holds the key (AAP 0.3.4, AAP 0.5.5).
- */
 async function streamPages(
   file: ResolvedFile,
   base: number,
@@ -785,10 +682,6 @@ async function streamPages(
   return pages;
 }
 
-/**
- * A published URL is taken as the streaming pass will read it, which hashes it and checks its length and
- * digest as it arrives; an OPFS entry is re-verified by digest here, before a byte of it is loaded (AAP 0.5.5).
- */
 async function verifiedSource(
   file: ResolvedFile,
   appVersion: string,

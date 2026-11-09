@@ -1,5 +1,4 @@
-/** The Meetups tab (AAP 0.5.8, AAP 0.8.1): the caller's own meetups, newest first, and the entry
- * point to every meetup screen (proposal detail, accept and lock, check-in, chat, report, day plan). */
+/** The Meetups tab: the caller's own meetups, newest first, and the entry point to every meetup screen. */
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
@@ -22,11 +21,7 @@ import {
   useAppNoticeMessage,
 } from '../../src/ui';
 const CITIES_STALE_TIME_MS = 60 * 60 * 1000;
-/**
- * How many viewports of rows the tab keeps mounted: the rows on screen plus about half a screen either
- * side of them. The list grows with every page the reader loads, so the tab mounts a couple of screens
- * of it rather than every meetup loaded so far.
- */
+/** How many viewports of rows the tab keeps mounted: the rows on screen plus about half a screen either side. */
 const LIST_WINDOW_SIZE = 2;
 const START_TIME_FORMAT: Intl.DateTimeFormatOptions = {
   weekday: 'short',
@@ -79,10 +74,7 @@ export const MEETUP_FILTERS: Record<MeetupFilter, MeetupFilterSpec> = {
 const FILTER_ORDER: readonly MeetupFilter[] = ['all', 'proposed_to_me', 'mine'];
 const DISCOVER = { label: 'Find travelers on Discover', testID: 'meetups-discover' };
 const SHOW_MORE = { label: 'Show more meetups', testID: 'meetups-show-more' };
-/**
- * The name of the filter row, which is a `radiogroup`: axe's `aria-required-parent` rule requires
- * the radio chips to sit inside a named group, and VoiceOver and TalkBack announce it with them.
- */
+/** The filter row is a `radiogroup`: axe's `aria-required-parent` rule requires the radio chips to sit in a named group, and VoiceOver and TalkBack announce it with them. */
 const FILTER_GROUP_LABEL = 'Filter meetups';
 export function formatStart(iso: string, timeZone?: string): string {
   const start = new Date(iso);
@@ -144,9 +136,7 @@ export default function MeetupsScreen(): ReactElement {
   const items = meetups.data === undefined ? [] : meetupsInPages(meetups.data.pages);
   const errorMessage = meetups.isError ? messageFor(meetups.error) : null;
   const hasRows = items.length > 0;
-  // The session cannot be restored while the API is unreachable, so this read never runs and stays
-  // pending for as long as that lasts: the app notice above the screen already explains the failure,
-  // so the loading line yields to it instead of sitting under it for ever.
+  // While the API is unreachable the read stays pending, so the loading line yields to the app notice that already reports the failure.
   const showLoading =
     !hasRows && errorMessage === null && noticeMessage === null && meetups.isPending;
   const showEmpty = !hasRows && errorMessage === null && !meetups.isPending;
@@ -223,9 +213,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   fill: { flex: 1 },
-  // The screen's content container spaces its children by one `lg` step, and a FlatList's own
-  // container does not: the header and the list body each carry it so every block of the screen keeps
-  // the spacing it had when the screen scrolled as a whole.
   header: { gap: spacing.lg },
   listContent: { gap: spacing.lg },
 });

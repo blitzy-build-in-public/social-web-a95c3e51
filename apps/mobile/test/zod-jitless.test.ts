@@ -15,7 +15,6 @@
  * flag set after that has happened would leave Zod probing exactly as before.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 /** The object Zod shares through `globalThis.__zod_globalConfig`, as far as this test reads it. */
 interface ZodGlobalConfig {
   jitless?: boolean;
@@ -23,7 +22,6 @@ interface ZodGlobalConfig {
 }
 
 const globals = globalThis as typeof globalThis & { __zod_globalConfig?: ZodGlobalConfig };
-
 /** A configured city in the shape `CityDto` accepts. `CityDto` is a `z.object`, the schema kind whose
  * constructor reads the flag, and the second value differs only in its slug, so the pair covers the
  * accepted and the rejected parse in one place. */

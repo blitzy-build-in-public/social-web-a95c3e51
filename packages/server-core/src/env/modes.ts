@@ -14,44 +14,31 @@ import {
   type EnvTelephonyMode,
   type NormalizedEnv,
 } from './common.ts';
-
 /** The processes that hold a mode reaching a provider (AAP 0.3.2). */
 export type EnvProviderProcess = Exclude<EnvProcess, 'seed'>;
-
 const PRODUCTION: AppEnv = 'production';
-
 const REQUIRED_REASON = 'is required';
-
 const TEST_KEY_PREFIX = 'sk_test_';
-
 const MODEL_REASON = `must be one of ${SUPPORTED_MODELS.join('|')}`;
-
 const PRICE_REASON = 'must be a positive decimal with at most 6 fraction digits';
-
 const ALLOWLIST_REASON =
   'must list at least one operator-owned E.164 number when TELEPHONY_MODE=twilio outside production';
-
 const E164_REASON = 'must be an E.164 number';
-
 function hasValue(env: NormalizedEnv, variable: string): boolean {
   return env[variable] !== undefined;
 }
-
 function present(value: string | undefined, variable: string): string {
   if (value === undefined) {
     throw new RangeError(`${variable} ${REQUIRED_REASON}`);
   }
   return value;
 }
-
 function isE164Number(value: string): boolean {
   return E164.safeParse(value).success;
 }
-
 function hasAllowlistEntry(csv: string | undefined): boolean {
   return csv !== undefined && csv.split(',').some((entry) => entry.trim() !== '');
 }
-
 function isUsablePrice(value: string): boolean {
   try {
     parseUsdPerMTok(value);
@@ -63,23 +50,16 @@ function isUsablePrice(value: string): boolean {
     throw error;
   }
 }
-
 /** The `STRIPE_MODE` values the workspace supports, declared by `api` alone (AAP 0.6.2, 0.3.2). */
 export const ENV_STRIPE_MODES = ['mock', 'test', 'live'] as const;
-
 /** One of {@link ENV_STRIPE_MODES}; the discriminant of {@link EnvStripeConfig}. */
 export type EnvStripeMode = (typeof ENV_STRIPE_MODES)[number];
-
-/**
- * The fixed, non-secret values `mock` mode uses in place of keys (AAP 0.6.2: "the gateway uses
- * fixed non-secret placeholders and no real key").
- */
+/** The fixed, non-secret values `mock` mode uses in place of keys (AAP 0.6.2: "the gateway uses fixed non-secret placeholders and no real key"). */
 export const STRIPE_MOCK_PLACEHOLDERS = Object.freeze({
   secretKey: 'sk_test_mock',
   publishableKey: 'pk_test_mock',
   webhookSecret: 'whsec_mock',
 } as const);
-
 /** The Stripe variables `api` declares (AAP 0.6.2). */
 export const STRIPE_ENV_SHAPE = {
   STRIPE_MODE: envEnum(ENV_STRIPE_MODES),
@@ -88,7 +68,6 @@ export const STRIPE_ENV_SHAPE = {
   STRIPE_PUBLISHABLE_KEY: envString({ optional: true }),
   STRIPE_WEBHOOK_SECRET: envString({ optional: true }),
 } as const;
-
 /** The parsed Stripe variables {@link buildStripe} reads (AAP 0.6.2). */
 export interface StripeEnvValues {
   readonly STRIPE_MODE: EnvStripeMode;
@@ -97,13 +76,11 @@ export interface StripeEnvValues {
   readonly STRIPE_PUBLISHABLE_KEY?: string | undefined;
   readonly STRIPE_WEBHOOK_SECRET?: string | undefined;
 }
-
 const STRIPE_CREDENTIAL_VARIABLES = [
   'STRIPE_SECRET_KEY',
   'STRIPE_PUBLISHABLE_KEY',
   'STRIPE_WEBHOOK_SECRET',
 ] as const;
-
 /** Report what the configured `STRIPE_MODE` requires and forbids (AAP 0.6.2, 0.3.3, 0.12.2). */
 export function stripeIssues(env: NormalizedEnv): EnvIssue[] {
   const issues: EnvIssue[] = [];
@@ -148,12 +125,7 @@ export function stripeIssues(env: NormalizedEnv): EnvIssue[] {
   }
   return issues;
 }
-
-/**
- * What the API's payment gateway is configured with (AAP 0.6.2): the proxy URL and the placeholders
- * for `mock`, the three real-mode values for `test` and `live`, whose environment {@link
- * stripeIssues} has already accepted.
- */
+/** What the API's payment gateway is configured with (AAP 0.6.2): the proxy URL and the placeholders for `mock`, the three real-mode values for `test` and `live`, whose environment {@link stripeIssues} has already accepted. */
 export type EnvStripeConfig =
   | {
       readonly mode: 'mock';
@@ -168,7 +140,6 @@ export type EnvStripeConfig =
       readonly publishableKey: string;
       readonly webhookSecret: string;
     };
-
 /** Build the Stripe configuration `values.STRIPE_MODE` names (AAP 0.6.2). */
 export function buildStripe(values: StripeEnvValues): EnvStripeConfig {
   if (values.STRIPE_MODE === 'mock') {
@@ -187,12 +158,10 @@ export function buildStripe(values: StripeEnvValues): EnvStripeConfig {
     webhookSecret: present(values.STRIPE_WEBHOOK_SECRET, 'STRIPE_WEBHOOK_SECRET'),
   };
 }
-
 const API_TELEPHONY_ENV_SHAPE = {
   TWILIO_ACCOUNT_SID: envString({ optional: true }),
   TWILIO_AUTH_TOKEN: envString({ optional: true }),
 } as const;
-
 const WORKERS_TELEPHONY_ENV_SHAPE = {
   TWILIO_ACCOUNT_SID: envString({ optional: true }),
   TWILIO_AUTH_TOKEN: envString({ optional: true }),
@@ -202,13 +171,10 @@ const WORKERS_TELEPHONY_ENV_SHAPE = {
   }),
   VOICE_SIM_URL: envUrl({ protocols: ['http:', 'https:'], optional: true }),
 } as const;
-
 /** The API's telephony variable set, as {@link telephonyEnvShape} returns it for `'api'`. */
 export type ApiTelephonyEnvShape = typeof API_TELEPHONY_ENV_SHAPE;
-
 /** The workers' telephony variable set, as {@link telephonyEnvShape} returns it for `'workers'`. */
 export type WorkersTelephonyEnvShape = typeof WORKERS_TELEPHONY_ENV_SHAPE;
-
 /** The telephony variables one process declares (AAP 0.6.2). */
 export function telephonyEnvShape(process: 'api'): ApiTelephonyEnvShape;
 export function telephonyEnvShape(process: 'workers'): WorkersTelephonyEnvShape;
@@ -220,10 +186,7 @@ export function telephonyEnvShape(
 ): ApiTelephonyEnvShape | WorkersTelephonyEnvShape {
   return process === 'api' ? API_TELEPHONY_ENV_SHAPE : WORKERS_TELEPHONY_ENV_SHAPE;
 }
-
-/**
- * The parsed telephony variables {@link buildTelephony} reads, whichever set the process declared.
- */
+/** The parsed telephony variables {@link buildTelephony} reads, whichever set the process declared. */
 export interface TelephonyEnvValues {
   readonly TELEPHONY_MODE: EnvTelephonyMode;
   readonly TWILIO_ACCOUNT_SID?: string | undefined;
@@ -231,9 +194,7 @@ export interface TelephonyEnvValues {
   readonly TWILIO_FROM_NUMBER?: string | undefined;
   readonly VOICE_SIM_URL?: string | undefined;
 }
-
 const TWILIO_CREDENTIAL_VARIABLES = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN'] as const;
-
 /** Report what the configured `TELEPHONY_MODE` requires of `process` (AAP 0.6.2, 0.11.2). */
 export function telephonyIssues(env: NormalizedEnv, process: EnvProviderProcess): EnvIssue[] {
   const mode = env.TELEPHONY_MODE;
@@ -261,7 +222,6 @@ export function telephonyIssues(env: NormalizedEnv, process: EnvProviderProcess)
   }
   return issues;
 }
-
 /** What a process's telephony client is configured with (AAP 0.6.2). */
 export type EnvTelephonyConfig =
   | { readonly mode: 'off' }
@@ -278,7 +238,6 @@ export type EnvTelephonyConfig =
       readonly authToken: string;
       readonly fromNumber?: string;
     };
-
 /** Build the telephony configuration `values.TELEPHONY_MODE` names for `process` (AAP 0.6.2). */
 export function buildTelephony(
   values: TelephonyEnvValues,
@@ -309,18 +268,13 @@ export function buildTelephony(
       }
     : { mode: 'twilio', accountSid, authToken };
 }
-
-/**
- * The language-model variables both processes declare (AAP 0.6.2), every one optional here: the
- * `fake` provider needs none, and a real provider needs all four, as {@link llmIssues} states.
- */
+/** The language-model variables both processes declare (AAP 0.6.2), every one optional here: the `fake` provider needs none, and a real provider needs all four, as {@link llmIssues} states. */
 export const LLM_ENV_SHAPE = {
   LLM_API_KEY: envString({ optional: true }),
   LLM_MODEL: envString({ optional: true }),
   LLM_PRICE_INPUT_USD_PER_MTOK: envString({ optional: true }),
   LLM_PRICE_OUTPUT_USD_PER_MTOK: envString({ optional: true }),
 } as const;
-
 /** The parsed language-model variables {@link buildLlm} reads (AAP 0.6.2). */
 export interface LlmEnvValues {
   readonly LLM_PROVIDER: EnvLlmProvider;
@@ -329,19 +283,16 @@ export interface LlmEnvValues {
   readonly LLM_PRICE_INPUT_USD_PER_MTOK?: string | undefined;
   readonly LLM_PRICE_OUTPUT_USD_PER_MTOK?: string | undefined;
 }
-
 const LLM_VARIABLES = [
   'LLM_API_KEY',
   'LLM_MODEL',
   'LLM_PRICE_INPUT_USD_PER_MTOK',
   'LLM_PRICE_OUTPUT_USD_PER_MTOK',
 ] as const;
-
 const LLM_PRICE_VARIABLES = [
   'LLM_PRICE_INPUT_USD_PER_MTOK',
   'LLM_PRICE_OUTPUT_USD_PER_MTOK',
 ] as const;
-
 /** Report what the configured `LLM_PROVIDER` requires (AAP 0.5.6, 0.6.2). */
 export function llmIssues(env: NormalizedEnv): EnvIssue[] {
   if (env.LLM_PROVIDER !== 'openai') {
@@ -365,7 +316,6 @@ export function llmIssues(env: NormalizedEnv): EnvIssue[] {
   }
   return issues;
 }
-
 /** What the language-model adapter and the spend meter are configured with (AAP 0.5.6, 0.6.2). */
 export type EnvLlmConfig =
   | { readonly provider: 'fake'; readonly prices: LlmPrices }
@@ -375,7 +325,6 @@ export type EnvLlmConfig =
       readonly model: SupportedModel;
       readonly prices: LlmPrices;
     };
-
 /** Build the language-model configuration `values.LLM_PROVIDER` names (AAP 0.5.6, 0.6.2). */
 export function buildLlm(values: LlmEnvValues): EnvLlmConfig {
   if (values.LLM_PROVIDER === 'fake') {

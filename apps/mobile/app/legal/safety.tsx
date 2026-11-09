@@ -1,7 +1,4 @@
-/**
- * The safety page (`/legal/safety`): the notice that a deposit is not a safety guarantee, and the
- * five basic safety tips (AAP 0.5.8, AAP 0.12.2).
- */
+/** The safety page (`/legal/safety`): the notice that a deposit is not a safety guarantee, and the five basic safety tips. */
 import type { ReactElement } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import type { TextProps } from 'react-native';

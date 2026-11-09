@@ -1,31 +1,19 @@
-/**
- * The server-core barrel: the server-only utilities shared by `apps/api`, `apps/workers` and
- * `packages/db/seed` (AAP 0.3.2) — the injected clock, the redacting logger, city-local time, field
- * encryption and hashing, the queue names, payload schemas, connections and job defaults, the
- * Twilio client and its call allowlist, the language-model adapter with its spend reservation, and
- * the per-process environment schemas.
- */
-
+/** The server-core barrel: the server-only utilities shared by `apps/api`, `apps/workers` and `packages/db/seed` (AAP 0.3.2) — the injected clock, the redacting logger, city-local time, field encryption and hashing, the queue names, payload schemas, connections and job defaults, the Twilio client and its call allowlist, the language-model adapter with its spend reservation, and the per-process environment schemas. */
 export * from './clock.ts';
 export * from './logger.ts';
 export * from './time/city-time.ts';
-
 export * from './crypto/field-encryption.ts';
 export * from './crypto/hashing.ts';
-
 export * from './queues/names.ts';
 export * from './queues/payloads.ts';
 export * from './queues/connection.ts';
 export * from './queues/defaults.ts';
-
 export * from './telephony/twilio-client.ts';
 export * from './telephony/allowlist.ts';
-
 export * from './llm/adapter.ts';
 export * from './llm/openai.ts';
 export * from './llm/fake.ts';
 export * from './llm/spend.ts';
-
 export * from './env/common.ts';
 export * from './env/modes.ts';
 export * from './env/api.ts';

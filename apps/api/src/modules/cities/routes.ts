@@ -1,22 +1,17 @@
 /**
- * The three city routes (AAP 0.5.1, 0.5.4, 0.5.8): the configured city list, a city's partner venues,
- * and one page of traveler discovery.
+ * The three city routes: the configured city list, a city's partner venues, and one page of traveler discovery.
  *
- * The three differ in what they ask of a caller, and every difference is a rule of AAP 0.5.4 and 0.5.8
- * rather than a choice made here: the venue list requires no proof, so an unverified traveler browses
- * where a meetup may be held, while the traveler list keeps answering `403 no_valid_proof` and the
- * client shows its import banner in the list's place (AAP 0.5.8); discovery delegates its page to
- * `./discovery.ts`, which owns proof validity, the blocks in either direction, the unverified-reader
- * rule and the keyset cursor, and this file decides the two errors that precede that call in the order
- * AAP 0.5.4 lists them — `404 city_not_found`, then `403 no_valid_proof`; and all three carry the
- * traveler guard at route-group level and none is rate-limited, because AAP 0.5.4 limits the mutating
- * routes and the two state-writing reads alone.
+ * The three differ in what they ask of a caller, and every difference is a rule of the contract: the venue list requires no
+ * proof, so an unverified traveler browses where a meetup may be held, while the traveler list keeps answering
+ * `403 no_valid_proof`. Discovery delegates its page to `./discovery.ts`, which owns proof validity, the blocks in either
+ * direction, the unverified-reader rule and the keyset cursor, and this file decides the two errors that precede that call
+ * in the contract's order — `404 city_not_found`, then `403 no_valid_proof`. All three carry the traveler guard at
+ * route-group level, and none is rate-limited.
  *
- * Every response is built from an explicit field allowlist — a `CityDto` and a `VenueDto` are assembled
- * field by field and an ORM row is never spread — so `Venue.secretLookupHash` and
- * `Venue.secretCiphertext` cannot reach a response however the model grows (AAP 0.5.4). The instant a
- * request is judged at is read once, from the injected clock, so the proof check and the page it gates
- * cannot straddle the boundary of a proof's validity (AAP 0.11.1).
+ * Every response is built from an explicit field allowlist — an ORM row is never spread — so
+ * `Venue.secretLookupHash` and `Venue.secretCiphertext` cannot reach a response however the model grows. The instant a
+ * request is judged at is read once, so the proof check and the page it gates cannot straddle the boundary of a proof's
+ * validity.
  */
 
 import { readPoints } from '@tablemate/db';
@@ -49,28 +44,24 @@ type CityListServices = Pick<AppServices, 'db'>;
 type VenueListServices = Pick<AppServices, 'db' | 'env' | 'logger'>;
 
 /**
- * The bound on the venue list {@link cityVenues} answers, and the largest number of venue ids that
- * read therefore hands to `readPoints` as one `uuid[]` bind.
+ * The bound on the venue list {@link cityVenues} answers, and the largest number of venue ids that read therefore hands to
+ * `readPoints` as one `uuid[]` bind.
  *
- * AAP 0.5.4 fixes no cursor for `GET /cities/:cityId/venues` — the contract answers
- * `{ items: VenueDto[] }` and carries no page parameter — so this read is capped rather than paged:
- * the first {@link CITY_VENUES_LIMIT} venues in (name, id) order are answered, and a city holding
- * more is reported through `city_venues_truncated` instead of being answered as if the list were
- * complete. The growth of this list is operator-driven rather than ingestion-driven — venues are
- * onboarded and configured — so the same bound the admin registry reads use
- * (`ADMIN_REGISTRY_LIMIT` in `admin/onboarding.ts`) answers here.
+ * AAP 0.5.4 fixes no cursor for `GET /cities/:cityId/venues`, so this read is capped rather than paged: the first
+ * {@link CITY_VENUES_LIMIT} venues in (name, id) order are answered, and a city holding more is reported through
+ * `city_venues_truncated`. The list is operator-driven rather than ingestion-driven, so the bound the admin registry reads
+ * use (`ADMIN_REGISTRY_LIMIT`) answers here.
  */
 export const CITY_VENUES_LIMIT = 200;
 
 /**
- * A venue list that came back with more rows than the bound, logged under its own event so a
- * truncated list is visible rather than silently read as a complete one. The line carries the bound
- * and nothing else (AAP 0.11.1).
+ * A venue list that came back with more rows than the bound, logged under its own event so a truncated list is visible
+ * rather than silently read as a complete one. The line carries the bound and nothing else.
  */
 const CITY_VENUES_TRUNCATED = 'city_venues_truncated';
 
 /**
- * Every stored city, in the order `config/cities.json` lists them (AAP 0.5.2, 0.5.4).
+ * Every stored city, in the order `config/cities.json` lists them.
  *
  * The `City` rows are the source of truth for which cities exist — the seed loads them from that same
  * file — while the file fixes their order, so a city the configuration no longer lists sorts after
@@ -100,7 +91,6 @@ export async function cityList(services: CityListServices): Promise<CitiesRespon
   return { items };
 }
 
-/** The configuration's city order, as slug to position. Read from the cached configuration. */
 function cityOrder(): ReadonlyMap<string, number> {
   return new Map(
     readCitiesConfig().cities.map((city, index): [string, number] => [city.id, index]),
@@ -108,10 +98,9 @@ function cityOrder(): ReadonlyMap<string, number> {
 }
 
 /**
- * Orders two cities the way `GET /cities` answers them: configuration order first, then name, then
- * id, so the list is one total order whatever the database hands back (AAP 0.5.4). Names and ids are
- * compared by code unit rather than with `localeCompare`, which would make the order a function of
- * the host's locale data.
+ * Orders two cities the way `GET /cities` answers them: configuration order first, then name, then id, so the list is one
+ * total order whatever the database hands back. Names and ids are compared by code unit rather than with `localeCompare`,
+ * which would make the order a function of the host's locale data.
  */
 function compareCities(left: CityDto, right: CityDto, order: ReadonlyMap<string, number>): number {
   const leftAt = order.get(left.id);
@@ -135,24 +124,19 @@ function compareCities(left: CityDto, right: CityDto, order: ReadonlyMap<string,
 }
 
 /**
- * A city's active partner venues (AAP 0.5.4, 0.5.8).
+ * A city's active partner venues.
  *
- * No proof is required: an unverified traveler browses where a meetup may be held, and
- * `422 venue_not_partner` is what rejects a proposal at any other place — which is why only active
- * partners are listed.
+ * No proof is required: an unverified traveler browses where a meetup may be held, and `422 venue_not_partner` is what
+ * rejects a proposal at any other place, which is why only active partners are listed.
  *
- * The list is bounded rather than paged, because AAP 0.5.4 fixes no cursor for this route: the read
- * answers the first {@link CITY_VENUES_LIMIT} rows in (name, id) order, and a city holding more is
- * reported through `city_venues_truncated` rather than answered as if the list were complete. The id
- * breaks a same-name tie, so the capped read is one total order and two reads of the same city answer
- * the same rows. A city holding fewer venues than the bound answers exactly what it answered before
- * the bound existed (AAP 0.5.4, 0.11.1).
+ * The list is bounded rather than paged, because AAP 0.5.4 fixes no cursor for this route: the read answers the first
+ * {@link CITY_VENUES_LIMIT} rows in (name, id) order, and the id breaks a same-name tie, so the capped read is one total
+ * order and two reads of the same city answer the same rows.
  *
- * A venue whose `location` is NULL is left out of the list and logged: `VenueDto` carries the
- * coordinates the client maps the venue by and the 150 m check-in geofence is measured from
- * (AAP 0.5.7), and a null coordinate is not a shape the contract has.
+ * A venue whose `location` is NULL is left out of the list and logged: `VenueDto` carries the coordinates the client maps
+ * the venue by and the 150 m check-in geofence is measured from.
  *
- * @throws AppError `city_not_found` (404) when no configured city carries `cityId`.
+ * `@throws AppError city_not_found` (404) when no configured city carries `cityId`.
  */
 async function cityVenues(services: VenueListServices, cityId: string): Promise<VenuesResponse> {
   if (cityBySlug(cityId) === undefined) {
@@ -208,16 +192,15 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
 }
 
 /**
- * One page of travelers visible in a city (AAP 0.5.4, 0.5.7).
+ * One page of travelers visible in a city.
  *
- * This route's own part is the two guards, in the order AAP 0.5.4 lists them — `404 city_not_found`,
- * then `403 no_valid_proof` — and the single instant both the check and the page are judged at is
- * read once, so a proof reaching the end of its window cannot be rejected by one and accepted by the
- * other. The page, its keyset cursor and the block and unverified-reader rules belong to
- * `./discovery.ts`, which is also what refuses a malformed cursor as `400 invalid_field`.
+ * This route's own part is the two guards, in the order AAP 0.5.4 lists them — `404 city_not_found`, then
+ * `403 no_valid_proof` — and the single instant both the check and the page are judged at is read once, so a proof reaching
+ * the end of its window cannot be rejected by one and accepted by the other. The page, its keyset cursor and the block and
+ * unverified-reader rules belong to `./discovery.ts`.
  *
- * @throws AppError `city_not_found` (404), `no_valid_proof` (403) when the caller has no proof valid
- *   for this city now, and `invalid_field` (400) for a cursor this API did not write.
+ * `@throws AppError city_not_found` (404), `no_valid_proof` (403) and `invalid_field` (400) for a cursor this API did not
+ * write.
  */
 async function cityTravelers(
   services: AppServices,
@@ -236,13 +219,11 @@ async function cityTravelers(
 }
 
 /**
- * Registers the three city routes on the context `app.ts` mounts under `/v1` (AAP 0.5.1, 0.5.4).
+ * Registers the three city routes on the context `app.ts` mounts under `/v1`.
  *
- * The guard is installed here, at route-group level, so these three routes are the only ones it
- * covers and a route outside this context cannot inherit the age gate by accident (AAP 0.5.4).
- * Registration is synchronous, as in every plugin the composition root installs — `clock.ts`,
- * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts` and `websocket.ts` all
- * declare a `void` function — and the returned promise is what Fastify's plugin type expects.
+ * The guard is installed here, at route-group level, so these three routes are the only ones it covers and a route outside
+ * this context cannot inherit the age gate by accident. Registration is synchronous, as in every plugin the composition root
+ * installs, and the returned promise is what Fastify's plugin type expects.
  */
 export default function citiesRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);

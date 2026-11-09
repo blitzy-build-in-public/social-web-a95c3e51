@@ -1,26 +1,20 @@
 /**
- * The six lodging routes (AAP 0.5.1, 0.5.4, 0.5.7): a city's lodging directory, one lodging's detail page
- * with its opted-in guest list, the three routes of a stay claim, and the staying-visibility toggle.
+ * The six lodging routes: a city's lodging directory, one lodging's detail page with its opted-in guest list, the three routes of
+ * a stay claim, and the staying-visibility toggle.
  *
- * Every route here is a traveler feature route, so the whole plugin carries one guard:
- * `app.addHook('onRequest', requireTraveler)` admits a caller with a valid session *and* a recorded age
- * gate, and answers `401 token_invalid` or `403 age_gate_required` otherwise (AAP 0.5.4). The hook is
- * installed on this plugin's context, never globally, so `GET /me`, the public routes, the provider
- * webhooks, the console routes and `/admin/*` cannot inherit it.
+ * Every route here is a traveler feature route, so the whole plugin carries one guard: `app.addHook('onRequest', requireTraveler)`
+ * admits a caller with a valid session *and* a recorded age gate, and answers `401 token_invalid` or `403 age_gate_required`
+ * otherwise. The hook is installed on this plugin's context, never globally.
  *
- * Four invariants hold across the file: the caller's own proof gates the disclosure, so the directory,
- * the detail and a claim all require a proof valid for the city in question and answer
- * `403 no_valid_proof` otherwise (AAP 0.5.7, 0.5.8), while the claim's own proof rules live in
- * `claims.ts`; reads are unlimited and writes are counted, so the two GETs carry no counter and the POST,
- * DELETE and PUT spread `mutatingLimits(app)` (AAP 0.5.4); nothing above the caller's entitlement leaves
- * the server, because no DTO built here carries a console secret, a booking name or reference, another
- * traveler's stay dates or room number, or any user's coordinates (AAP 0.5.2, 0.5.4); and the writes are
- * not this file's — they happen inside `claims.ts` and `visibility.ts`, each in one `transact` behind the
- * account-deletion write fence (AAP 0.5.3), while this file opens no transaction, takes no lock and makes
- * no Redis call of its own.
+ * Four invariants hold across the file: the caller's own proof gates the disclosure, so the directory, the detail and a claim all
+ * require a proof valid for the city in question and answer `403 no_valid_proof` otherwise; reads are unlimited and writes are
+ * counted, so the two GETs carry no counter and the POST, DELETE and PUT spread `mutatingLimits(app)`; nothing above the caller's
+ * entitlement leaves the server, because no DTO built here carries a console secret, a booking name or reference, another
+ * traveler's stay dates or room number, or any user's coordinates; and the writes happen inside `claims.ts` and `visibility.ts`,
+ * each in one `transact` behind the account-deletion write fence, while this file opens no transaction, takes no lock and makes no
+ * Redis call of its own.
  *
- * The instant every window is judged at is `request.receivedAt`, set once per request by the root clock
- * hook, never `Date.now()` (AAP 0.11.1).
+ * The instant every window is judged at is `request.receivedAt`, set once per request by the root clock hook, never `Date.now()`.
  */
 
 import { z } from 'zod';
@@ -53,18 +47,14 @@ import { guestsFor, setVisibility } from './visibility.ts';
 import type { App } from '../../app.ts';
 import type { FastifyRequest } from 'fastify';
 
-/** The tag every route here groups under: a member of the document's own vocabulary. */
 const LODGINGS_TAG = 'lodgings' satisfies OpenApiTag;
 
 /**
- * The authenticated caller's id, or a refusal.
+ * The authenticated caller's id, or a refusal: the guard above admitted this request, but that is a property of the registration
+ * rather than of the handler, so a hook that were moved, removed or shadowed would otherwise leave a `TypeError` answered as
+ * `500 internal_error` where the contract requires `401 token_invalid`.
  *
- * The guard above admitted this request, so `request.auth` is set — but that is a property of the
- * registration, not of the handler: a hook that were moved, removed or shadowed would otherwise leave
- * a `TypeError` to be answered as `500 internal_error` where the contract requires `401
- * token_invalid`, and no compiler check would catch it.
- *
- * @throws AppError `token_invalid` (401) when no context is present.
+ * `@throws AppError token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
   if (request.auth === null) {
@@ -74,13 +64,10 @@ function callerId(request: FastifyRequest): string {
 }
 
 /**
- * Registers the six lodging routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1`
- * (AAP 0.5.1).
+ * Registers the six lodging routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1`.
  *
- * Registration is synchronous, as in every other plugin the composition root installs — `clock.ts`,
- * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts` and the sibling route
- * modules all declare a `void` function — so the returned promise is already resolved. The declared
- * `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
+ * Registration is synchronous, as in every other plugin the composition root installs, so the returned promise is already resolved;
+ * the declared `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
  */
 export default function lodgingRoutes(app: App): Promise<void> {
   app.addHook('onRequest', requireTraveler);

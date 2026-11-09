@@ -1,25 +1,22 @@
 /**
  * Root ESLint configuration for the Tablemate workspace (flat config, ESLint 10, ESM).
  *
- * Five invariants are enforced here that no compiler can express, each because a violation would
- * show up only on a platform or in a mode the build never exercised:
+ * Five invariants are enforced here that no compiler can express, each because a violation would show up
+ * only on a platform or in a mode the build never exercised:
  *
- *   - Client-safe code — `packages/circuits/src`, the mobile app's `app/` and `src/`, and the local
- *     prover module — imports no Node built-in, no `Buffer` and not `@zk-email/helpers`: it runs
- *     under Hermes and in browsers (AAP 0.5.5).
+ *   - Client-safe code — `packages/circuits/src`, the mobile app's `app/` and `src/`, and the local prover
+ *     module — imports no Node built-in, no `Buffer` and not `@zk-email/helpers` (AAP 0.5.5).
  *   - Only `apps/api/src/modules/payments/stripe-gateway.ts` imports the `stripe` SDK, and only
  *     `packages/server-core/src/telephony/twilio-client.ts` imports `twilio` (AAP 0.6.2, 0.11.1).
- *   - Server code reads the time from the injected clock, never `Date.now()` or an argument-less
- *     `new Date()` (AAP 0.11.1).
- *   - Server code logs through the logger, never `console`, so no line reaches stdout or stderr
- *     outside pino's redaction paths (AAP 0.3.2, 0.11.1).
+ *   - Server code reads the time from the injected clock, never `Date.now()` or a bare `new Date()`.
+ *   - Server code logs through the logger, never `console`, so no line reaches stdout or stderr outside
+ *     pino's redaction paths (AAP 0.3.2, 0.11.1).
  *   - Every React surface follows the Rules of React.
  *
  * Two orderings are load-bearing. A later object REPLACES an earlier one's options for the same rule
- * rather than merging with them, so the client-safe object follows the server objects (its own list
- * repeats the two server-only SDKs) and the three re-allowing overrides come last. And every
- * TypeScript file is matched by one workspace `tsconfig.json`, which is what lets `projectService`
- * resolve types for all of them.
+ * rather than merging with them, so the client-safe object follows the server objects and the three
+ * re-allowing overrides come last. And every TypeScript file is matched by one workspace `tsconfig.json`,
+ * which is what lets `projectService` resolve types for all of them.
  */
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
@@ -45,11 +42,9 @@ const NODE_BUILT_INS = [
   'zlib',
 ];
 
-/**
- * Everything the client bundle is built from. `apps/mobile/e2e`, `apps/mobile/test`, `app.config.ts`
- * and the `*.config.cjs` files are deliberately absent: Playwright, Vitest, Expo's config loader and
- * Metro run in Node, where `fs` and `path` are legitimate.
- */
+/** Everything the client bundle is built from. `apps/mobile/e2e`, `apps/mobile/test`, `app.config.ts` and the
+ * `*.config.cjs` files are deliberately absent: Playwright, Vitest, Expo's config loader and Metro run in Node,
+ * where `fs` and `path` are legitimate. */
 const CLIENT_SAFE_FILES = [
   'packages/circuits/src/**/*.ts',
   'apps/mobile/index.ts',
@@ -59,15 +54,12 @@ const CLIENT_SAFE_FILES = [
   'apps/mobile/modules/tablemate-prover/src/**/*.ts',
 ];
 
-/**
- * Server code, wherever it lives. Widening this to every app's and package's `src` also covers the
- * two client trees above, which the client-safe object below then narrows to its own list; nothing
- * is lost, because both lists ban the two SDKs.
- */
+/** Server code, wherever it lives. Widening this to every app's and package's `src` also covers the two client
+ * trees above, which the client-safe object below then narrows to its own list; nothing is lost, because both lists
+ * ban the two SDKs. */
 const SERVER_FILES = ['apps/**/src/**/*.{ts,tsx}', 'packages/**/src/**/*.{ts,tsx}'];
 
-/* The server trees, where time comes from the injected clock and output goes through the logger
- * (AAP 0.3.2, 0.11.1). */
+/* The server trees, where time comes from the injected clock and output goes through the logger. */
 const SERVER_TREES = [
   'apps/api/src/**/*.{ts,tsx}',
   'apps/workers/src/**/*.{ts,tsx}',
@@ -107,8 +99,8 @@ const TWILIO_SEAM = {
 };
 
 export default tseslint.config(
-  /* Generated, vendored and fixture content: Expo prebuild and cargo output, signed test emails,
-   * recorded Overpass responses and menu documents rather than project code. */
+  /* Generated, vendored and fixture content: Expo prebuild and cargo output, signed test emails, recorded
+   * Overpass responses and menu documents rather than project code. */
   {
     ignores: [
       '**/node_modules/**',
@@ -139,10 +131,9 @@ export default tseslint.config(
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
     rules: {
-      // verbatimModuleSyntax (tsconfig.base.json) means a type-only import must be written as one.
-      // Inline `typeof import('x')` annotations stay allowed: they emit nothing at runtime, and they
-      // are the only way to name the callable default of a CommonJS module under NodeNext, where a
-      // bare `import type` would name its namespace instead.
+      // verbatimModuleSyntax (tsconfig.base.json) means a type-only import must be written as one. Inline
+      // `typeof import('x')` annotations stay allowed: they emit nothing, and they are the only way to name
+      // a CommonJS module's callable default under NodeNext.
       '@typescript-eslint/consistent-type-imports': ['error', { disallowTypeAnnotations: false }],
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
@@ -153,9 +144,9 @@ export default tseslint.config(
     rules: { '@typescript-eslint/unbound-method': 'off' },
   },
 
-  /* JavaScript carries no type information. The plugin is registered here because the type-aware
-   * base above is scoped to TypeScript files, and a rule cannot be switched off by a config that has
-   * not loaded the plugin providing it. */
+  /* JavaScript carries no type information. The plugin is registered here because the type-aware base
+   * above is scoped to TypeScript files, and a config that has not loaded the plugin cannot switch a rule
+   * of it off. */
   {
     files: ['**/*.{js,cjs,mjs}'],
     extends: [tseslint.configs.disableTypeChecked],
@@ -198,11 +189,10 @@ export default tseslint.config(
     rules: { 'no-restricted-imports': ['error', { paths: [STRIPE_SEAM, TWILIO_SEAM] }] },
   },
 
-  /* Server invariants. Time comes from the injected clock, so the test clock can move it, and output
-   * goes through the logger rather than `console`, so no line reaches stdout or stderr outside pino's
-   * redaction paths (AAP 0.3.2, 0.11.1). The browser surfaces stay outside this set on purpose: the
-   * venue console's once-per-page unreadable-`Date` warning and the mobile app's client-side push and
-   * proof notices are the user's console, not the server's. */
+  /* Server invariants: time from the injected clock, so the test clock can move it, and output through the logger
+   * rather than `console` (AAP 0.3.2, 0.11.1). The browser surfaces stay outside this set on purpose: the venue
+   * console's unreadable-`Date` warning and the app's client-side notices are the user's console, not the
+   * server's. */
   {
     files: SERVER_TREES,
     rules: {
@@ -218,8 +208,8 @@ export default tseslint.config(
     },
   },
 
-  /* Client-safe code. Placed after the server objects on purpose: the later object replaces the
-   * import list for every file both patterns match, and this list covers the server-only SDKs too. */
+  /* Client-safe code, after the server objects on purpose: the later object replaces the import list for
+   * every file both patterns match, and this list covers the server-only SDKs too. */
   {
     files: CLIENT_SAFE_FILES,
     rules: {

@@ -1,15 +1,13 @@
 /**
- * The crawl-policy review queue and one operator's decision on a domain (AAP 0.5.1, 0.5.4, 0.5.6):
- * `GET /admin/crawl-domains` and `PATCH /admin/crawl-domains/:domain`.
+ * The crawl-policy review queue and one operator's decision on a domain: `GET /admin/crawl-domains` and
+ * `PATCH /admin/crawl-domains/:domain`.
  *
- * A domain the crawler meets for the first time is recorded `uncertain` / `awaiting_review` before its
- * first fetch and is never fetched while it stays there (AAP 0.5.6). This route is what releases a site
- * for the menu pipeline: an operator reads the site's terms and records `allowed` or `prohibited`, and
- * nothing reads terms pages automatically (AAP 0.7.2).
+ * A domain the crawler meets for the first time is recorded `uncertain` / `awaiting_review` before its first fetch
+ * and is never fetched while it stays there. This route is what releases a site for the menu pipeline: an operator
+ * reads the site's terms and records `allowed` or `prohibited`, and nothing reads terms pages automatically.
  *
- * The blocklist of `config/crawl-blocklist.json` outranks every row here, so an `allowed` row never
- * unlocks an aggregator, delivery or review site. The routes calling these two functions are `/admin/*`
- * routes, so `role = operator` and `403 operator_only` are their guard's business (AAP 0.5.4).
+ * The blocklist of `config/crawl-blocklist.json` outranks every row here, so an `allowed` row never unlocks an
+ * aggregator, delivery or review site.
  */
 
 import type { DbClient } from '@tablemate/db';
@@ -35,7 +33,6 @@ const REASON_OPERATOR_REVIEW = 'operator_review';
 const CRAWL_DOMAIN_DECIDED = 'crawl_domain_decided';
 
 /**
- *
  * Declared here rather than as `Pick<AppServices, …>`: the app's services type lives in `apps/api/src/app.ts`, a file
  * this module does not depend on, and `clock` and `outbox` are taken from `transact`'s own services type, so the
  * transaction call is typed exactly as that call requires them.

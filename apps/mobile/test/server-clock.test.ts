@@ -17,21 +17,16 @@ import {
   recordServerDate,
   serverNow,
 } from '../src/api/server-clock.ts';
-
 /** The server instant the offset samples are built around, 700 ms into its second deliberately: a `Date`
  * header carries whole seconds, so the header names the start of that second and the estimate inherits
  * the header's own resolution rather than the instant itself. */
 const HANDLED_AT_MS = Date.UTC(2026, 10, 4, 20, 17, 5, 700);
-
 /** Two hours: the skew the reported reproductions carry, and the one the window line must survive. */
 const SKEW_MS = 2 * 60 * 60 * 1000;
-
 /** A round trip of 200 ms, split evenly around the instant the server handled the request. */
 const ROUND_TRIP_MS = 200;
-
 /** A parser case: the header value and the epoch milliseconds it must yield, or `null`. */
 type HeaderCase = readonly [header: string | null | undefined, expected: number | null];
-
 /** An estimator case: the sample's three instants and the offset they must yield. */
 type OffsetCase = readonly [
   serverDateMs: number,
@@ -39,17 +34,14 @@ type OffsetCase = readonly [
   receivedAtMs: number,
   expected: number,
 ];
-
 /** A skew case: how far the device is from the server clock and how long its round trip is. */
 type SkewCase = readonly [skewMs: number, roundTripMs: number];
-
 /** One round trip as the device lived it, and the `Date` header the server answered with. */
 interface Trip {
   readonly header: string;
   readonly sentAtMs: number;
   readonly receivedAtMs: number;
 }
-
 /** Replays one round trip on a device running `skewMs` ahead of the server, which handled the request
  * at `handledAtMs` and stamped its answer from that instant truncated to the header's resolution. */
 function roundTrip(handledAtMs: number, skewMs: number, roundTripMs: number): Trip {

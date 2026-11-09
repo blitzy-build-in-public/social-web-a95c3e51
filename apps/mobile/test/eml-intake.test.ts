@@ -1,11 +1,10 @@
 /**
- * `.eml` intake cleanup and email-content privacy (AAP 0.5.5, criterion 3): every path of an attempt
- * runs through the real intake, proving flow and store, so an app-owned copy — cache, `Inbox/`, `tmp/`
- * or the share-intent App Group container — is deleted on success, on a failed read, on a failed input
- * generation, on a failed proof and on cancellation, and never twice, the traveller's own URI is never
- * deleted or written, and no snapshot, log line or surfaced error carries a byte of the email.
- * Thirty-four cases run as nine tables over that harness, the platform modules, the API client and the
- * engine being the only fakes.
+ * `.eml` intake cleanup and email-content privacy (AAP 0.5.5, criterion 3): every path of an attempt runs
+ * through the real intake, proving flow and store, proving an app-owned copy — cache, `Inbox/`, `tmp/` or the
+ * share-intent App Group container — is deleted on success, on a failed read, on a failed input generation, on a
+ * failed proof and on cancellation, and never twice, that the traveller's own URI is never deleted or written,
+ * and that no snapshot, log line or surfaced error carries a byte of the email. Thirty-four cases run as nine
+ * tables over that harness, the platform modules, the API client and the engine being the only fakes.
  */
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -16,7 +15,6 @@ import * as proof from '../src/state/proof-store.ts';
 import * as native from '../src/zk/eml-intake.native.ts';
 import * as web from '../src/zk/eml-intake.web.ts';
 import { importAndProve, type EngineOutput } from '../src/zk/prover.ts';
-
 /** One handle either intake hands over; `null` is the cancelled pick. */
 type Opened = Awaited<ReturnType<typeof native.pickEml>>;
 
@@ -165,7 +163,6 @@ const store = {
   plan: () => Promise.resolve({ cached: true, downloadBytes: 0, connection: 'wifi' as const }),
   ensureArtifacts: () => Promise.resolve({ zkey: ZKEY, wasm: null }),
 };
-
 /** Reads a repository file as latin1, so a fixture's CRLF bytes and its text agree. */
 function read(relativePath: string): string {
   const path = new URL(`../../../${relativePath}`, import.meta.url);
@@ -173,7 +170,6 @@ function read(relativePath: string): string {
     throw new Error(`Missing ${relativePath}; run \`pnpm circuits:fixtures\`.`);
   return readFileSync(path, 'latin1');
 }
-
 /** Every 12-character window of the email that is not only digits, whitespace or `" , : [ ] { }`. */
 const contentWindows = (text: string): string[] =>
   Array.from({ length: Math.max(0, text.length - 11) }, (_value, at) =>
@@ -191,7 +187,6 @@ const textOf = (args: readonly unknown[]): string =>
     .join(' ');
 /** The URIs the flow deleted, read back from the recorder so no second list can drift from it. */
 const deleted = (): string[] => fs.deleteAsync.mock.calls.map((call) => String(call[0]));
-
 /** Records an error the flow itself surfaced; the engine's injected error is excluded, by identity. */
 function recordRejection(error: unknown): void {
   if (error === state.injected || error === null) return;
@@ -206,7 +201,6 @@ function expectedState(outcome: Outcome): unknown {
   if (outcome === 'engine-failed') return { status: 'error', errorCode: 'unknown_error' };
   return { status: 'cancelled' };
 }
-
 /** Asserts that neither the state, the logs nor a surfaced error carries a byte of the email. */
 function assertPrivate(): void {
   const states = [...state.snapshots, JSON.stringify(proof.getProofSnapshot())];
@@ -226,7 +220,6 @@ function assertPrivate(): void {
   expect(haystack).not.toContain(fx.reference);
   expect(fx.runs.filter((run) => haystack.includes(run))).toEqual([]);
 }
-
 /** Arms one case: the reader's and the engine's failure, the cancel flag and the picker's answer. */
 function arm(outcome: Outcome, uri: string, file?: File): void {
   state.readError = outcome === 'read-failed' ? new Error(fx.reference) : null;
@@ -242,7 +235,6 @@ interface Attempt {
   readonly handle: Opened;
   readonly error: unknown;
 }
-
 /** Runs one attempt through `importAndProve`, aborting only once the engine is inside `generate`, so a
  * cancel is the abort the proof sees. */
 async function attempt(open: () => Promise<Opened>, outcome: Outcome): Promise<Attempt> {
@@ -274,7 +266,6 @@ async function drive(uri: string, outcome: Outcome, viaPicker: boolean): Promise
   const open = (): Promise<Opened> => (viaPicker ? native.pickEml() : native.fromShareIntent(uri));
   return await attempt(open, outcome);
 }
-
 /** One web attempt, on a blob URL this page must revoke and zero-fill before it returns. */
 async function driveWeb(outcome: Outcome): Promise<string> {
   const file = new File([bytes], 'booking.eml', { type: 'message/rfc822' });
@@ -285,7 +276,6 @@ async function driveWeb(outcome: Outcome): Promise<string> {
   for (const recorder of Object.values(fs)) expect(recorder).not.toHaveBeenCalled();
   return uri;
 }
-
 /** The four assertions every driven case shares, so no table repeats them. */
 async function assertOutcome(
   { handle, error }: Attempt,

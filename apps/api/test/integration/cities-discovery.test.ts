@@ -1,10 +1,8 @@
 /**
- * The city routes' integration suite: `GET /cities`, `GET /cities/:cityId/venues` and
- * `GET /cities/:cityId/travelers`.
+ * The city routes' integration suite: `GET /cities`, `GET /cities/:cityId/venues` and `GET /cities/:cityId/travelers`.
  *
- * Two rules the cases turn on: the traveler list answers its errors in the contract's order —
- * `404 city_not_found` before `403 no_valid_proof` before the cursor — and the expected cities come
- * from `config/cities.json` through the contract's own schema rather than from a hard-coded list.
+ * Two rules the cases turn on: the traveler list answers its errors in the contract's order — `404 city_not_found` before
+ * `403 no_valid_proof` before the cursor — and the expected cities come from `config/cities.json` through the contract's own schema.
  */
 import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
@@ -47,9 +45,8 @@ const CITIES_CONFIG_PATH = fileURLToPath(
 );
 
 /**
- * The launch cities as `config/cities.json` lists them, parsed by the contract's own schema: the
- * file's order is the contract `GET /cities` answers in, so a city added to the pilot changes what
- * this suite expects.
+ * The launch cities as `config/cities.json` lists them, parsed by the contract's own schema: the file's order is the contract
+ * `GET /cities` answers in.
  */
 const LAUNCH_CITIES: readonly CityConfig[] = CitiesFile.parse(
   JSON.parse(readFileSync(CITIES_CONFIG_PATH, 'utf8')) as unknown,
@@ -71,22 +68,20 @@ const OTHER_CITY = configuredCity('mexico-city');
 const UNKNOWN_CITY = 'atlantis';
 
 /**
- * Text a client could produce and this API could not: base64url of a JSON object that is not a
- * keyset cursor, so it clears the 200-character `Cursor` a route validates and reaches the decoder
- * that refuses it.
+ * Text a client could produce and this API could not: base64url of a JSON object that is not a keyset cursor, so it clears the
+ * 200-character `Cursor` a route validates and reaches the decoder that refuses it.
  */
 const GARBAGE_CURSOR = Buffer.from('{"not":"a cursor"}', 'utf8').toString('base64url');
 
 /**
- * How many travelers the pagination case adds beyond one full page, so its second page is short and
- * the case crosses both boundaries.
+ * How many travelers the pagination case adds beyond one full page, so its second page is short and the case crosses both
+ * boundaries.
  */
 const EXTRA_TRAVELERS = 5;
 
 /**
- * How many venues the overflow case stores beyond {@link CITY_VENUES_LIMIT}, so the row the venue
- * read takes as its sentinel exists and the bound is observable rather than merely equal to the
- * number of rows the case stored (AAP 0.5.4).
+ * How many venues the overflow case stores beyond {@link CITY_VENUES_LIMIT}, so the row the venue read takes as its sentinel exists
+ * and the bound is observable (AAP 0.5.4).
  */
 const VENUES_BEYOND_LIMIT = 5;
 
@@ -100,19 +95,13 @@ interface OverflowVenue {
 const OVERFLOW_ADDRESS = '1 Overflow Row';
 
 /**
- * The venues the overflow case stores, in the order `GET /cities/:cityId/venues` must answer them:
- * `name` ascending, with the id breaking a same-name tie (AAP 0.5.4).
+ * The venues the overflow case stores, in the order `GET /cities/:cityId/venues` must answer them: `name` ascending, with the id
+ * breaking a same-name tie (AAP 0.5.4).
  *
- * The names are zero-padded, so their order by code unit is the order of the numbers in them, and the
- * ids are lowercase uuids of one width, so Postgres's bytewise uuid order is this list's order inside
- * a shared name. The rows past the bound carry the highest names, so a read that answered the wrong
- * rows answers ones this case can name.
- *
- * The two rows around the bound share a name: they are the last venue inside the bound and the first
- * past it, so only the id decides which of the pair is answered, and a read ordering by name without
- * that tie-break cannot answer the pair in a defined order. This list is in the order the response is
- * expected in, while the statement below writes it reversed, so a read that applied no ordering — or
- * one ordering by id alone — answers the list backwards.
+ * The names are zero-padded, so their order by code unit is the order of the numbers in them, and the ids are lowercase uuids of
+ * one width. The two rows around the bound share a name — the last venue inside the bound and the first past it — so only the id
+ * decides which of the pair is answered. This list is the expected response order, while the statement below writes it reversed, so
+ * a read that applied no ordering — or one ordering by id alone — answers the list backwards.
  */
 const OVERFLOW_VENUES: readonly OverflowVenue[] = Array.from(
   { length: CITY_VENUES_LIMIT + VENUES_BEYOND_LIMIT },
@@ -148,8 +137,8 @@ afterAll(async () => {
 });
 
 /**
- * Inject a `GET` as `actor`. The token is signed per request, so a case that moved the test clock
- * still acts as the same account, and a case without a cursor sends no query string at all.
+ * Inject a `GET` as `actor`. The token is signed per request, so a case that moved the test clock still acts as the same account,
+ * and a case without a cursor sends no query string at all.
  */
 async function getAs(
   app: TestApp,
@@ -178,9 +167,9 @@ function onlyItem<T>(items: readonly T[]): T {
 }
 
 /**
- * A traveler holding a valid proof for `cityId` now: what discovery lists, unless the account is
- * tombstoned or fenced by a deletion request. No card is attached: a provider customer for each of
- * the twenty-six accounts of the pagination case would be traffic no assertion here observes.
+ * A traveler holding a valid proof for `cityId` now: what discovery lists, unless the account is tombstoned or fenced by a deletion
+ * request. No card is attached: a provider customer for each of the twenty-six accounts of the pagination case would be traffic no
+ * assertion here observes.
  */
 async function provenTraveler(
   app: TestApp,
@@ -318,10 +307,9 @@ describe('GET /cities/:cityId/venues', () => {
 });
 
 /**
- * One row of the traveler list's error table. The rows are ordered as the route checks them —
- * `404 city_not_found` before `403 no_valid_proof` before the cursor, and never a proof failure where
- * a city does not exist — which is why the first row asks for an unknown city as a caller holding no
- * proof at all.
+ * One row of the traveler list's error table, ordered as the route checks them — `404 city_not_found` before `403 no_valid_proof`
+ * before the cursor, and never a proof failure where a city does not exist — which is why the first row asks for an unknown city as a
+ * caller holding no proof at all.
  */
 interface TravelerErrorRow {
   readonly case: string;
@@ -380,8 +368,8 @@ const TRAVELER_ERROR_ROWS = rows<TravelerErrorRow>([
 ]);
 
 /**
- * The caller a row needs. An expired proof is a real row whose window closed: `validNow: false` puts
- * the stay thirty days back, so the caller holds a proof and none that is valid now (AAP 0.5.7).
+ * The caller a row needs. An expired proof is a real row whose window closed: `validNow: false` puts the stay thirty days back, so the
+ * caller holds a proof and none that is valid now (AAP 0.5.7).
  */
 async function callerFor(app: TestApp, kind: TravelerErrorRow['caller']): Promise<UserFixture> {
   if (kind === 'none') {
@@ -404,12 +392,9 @@ describe('GET /cities/:cityId/travelers: the errors', () => {
 });
 
 /**
- * The `created_at` instant of each account's valid proof for {@link PRIMARY_CITY}, in the order the
- * ids are given. `ItineraryProof.createdAt` is written by the database's own `now()`, so the
- * newest-proof-first order is asserted against the instants the rows carry rather than against the
- * order the fixtures were created in.
- *
- * @throws {Error} When an account holds no proof valid now, which would make the page a lie.
+ * The `created_at` instant of each account's valid proof for {@link PRIMARY_CITY}, in the order the ids are given. `ItineraryProof.createdAt`
+ * is written by the database's own `now()`, so the newest-proof-first order is asserted against the instants the rows carry rather than
+ * against the order the fixtures were created in.
  */
 async function proofInstants(app: TestApp, ids: readonly string[]): Promise<number[]> {
   const now = app.time.now();

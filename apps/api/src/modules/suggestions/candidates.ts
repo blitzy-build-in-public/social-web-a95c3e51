@@ -1,28 +1,17 @@
 /**
- * Candidate places, opening hours and the `suggest` orchestration behind `GET /meetups/:id/suggestions`
- * (AAP 0.5.1, 0.5.7).
+ * Candidate places, opening hours and the `suggest` orchestration behind `GET /meetups/:id/suggestions`.
  *
- * AAP 0.5.7 "Suggestion filtering" is the rule applied here. A candidate is a `restaurant`, `cafe`, `bar`
- * or `activity` place within `SUGGESTION_RADIUS_METERS` (2 km) of the meetup's venue, and it survives only
- * when its stored `PriceRecord` rows produce an estimate, when it is open at some point between
- * `SUGGESTION_OPEN_FROM_HOURS_AFTER_START` (1 h) after the start and `SUGGESTION_LOCAL_CUTOFF` (23:00) on
- * the meetup's city-local day, and when that estimate is at or under the pair's shared per-person budget.
- * The three counts that remain give the empty-state reason, in the order `no_priced_places`, `none_open`,
- * `budget_too_low`.
+ * A candidate is a `restaurant`, `cafe`, `bar` or `activity` place within `SUGGESTION_RADIUS_METERS` (2 km) of the
+ * meetup's venue, and it survives only when its stored `PriceRecord` rows produce an estimate, when it is open between
+ * `SUGGESTION_OPEN_FROM_HOURS_AFTER_START` (1 h) after the start and `SUGGESTION_LOCAL_CUTOFF` (23:00) on the meetup's
+ * city-local day, and when that estimate is at or under the pair's shared per-person budget. The counts that remain give
+ * the empty-state reason, in the order `no_priced_places`, `none_open`, `budget_too_low`.
  *
- * Read-only by design (AAP 0.5.1): one parameterized statement over `Place` and `PriceRecord`, no write,
- * no transaction, no external service, and no price is ever guessed. Per place it ships the rows of the
- * newest capture batch of each source rather than every in-window row — all the estimate can read from a
- * place — so the payload no longer grows with a place's weekly recaptures (AAP 0.5.7). A failure here
- * therefore reaches `routes.ts` alone, which answers `503 suggestions_unavailable` on that route while
- * proposing, locking, checking in and settling are untouched (AAP 0.3.2).
- *
- * Two conventions are load-bearing. Every identifier of the statement comes from a helper of
- * `@tablemate/db` — `fixturePredicate`, `geoColumn`, `withinMeters`, `distanceMeters` — and every value is
- * a bound parameter, so the read carries the fixture guard that `$queryRaw` does not add itself (AAP
- * 0.5.2, 0.11.2). And because `opening_hours` reads a `Date`'s *process-local* fields, every instant handed
- * to it is shifted into the city's own zone first, so a place is judged by its own wall-clock time
- * whatever the host's `TZ` is (AAP 0.11.1).
+ * Read-only by design: one parameterized statement over `Place` and `PriceRecord`, no price is ever guessed, and a
+ * failure here reaches `routes.ts` alone, which answers `503 suggestions_unavailable`. Two conventions are load-bearing:
+ * every identifier comes from a helper of `@tablemate/db` and every value is a bound parameter, so the read carries the
+ * fixture guard `$queryRaw` does not add itself; and because `opening_hours` reads a `Date`'s process-local fields, every
+ * instant handed to it is shifted into the city's own zone first, whatever the host's `TZ` is.
  */
 
 import { Prisma, distanceMeters, fixturePredicate, geoColumn, withinMeters } from '@tablemate/db';
@@ -54,9 +43,8 @@ import { emptyReasonFor, fitsBudget, rankSuggestions } from './rank.ts';
 import type { RankInput } from './rank.ts';
 
 /**
- * What {@link loadCandidates} and {@link suggest} need from the API's composition root: a narrowed declaration
- * rather than an import of the app's services type, so a suite can stand a client, an environment and a logger
- * in for the app. The app's own services object satisfies this shape structurally.
+ * What {@link loadCandidates} and {@link suggest} need from the composition root: a narrowed declaration rather than an
+ * import of the app's services type, so a suite can stand a client, an environment and a logger in for the app.
  */
 export interface SuggestionServices {
   /** The guarded Prisma client; only its raw, parameterized read surface is used (AAP 0.11.2). */
@@ -66,12 +54,9 @@ export interface SuggestionServices {
 }
 
 /**
- * One place within the suggestion radius of the meetup's venue, with the price rows its estimate is built from
- * (AAP 0.5.7).
- *
- * `cityId` is the meetup venue's city rather than the place's own: the opening window and the 23:00 cut-off are
- * wall-clock times of that city's zone, and the meetup day is that city's day. `isPartnerVenue` is true when an
- * active partner venue is linked to the place, which ranks it before every non-partner place.
+ * One place within the suggestion radius of the meetup's venue, with the price rows its estimate is built from. `cityId`
+ * is the meetup venue's city rather than the place's own, because the opening window and the 23:00 cut-off are wall-clock
+ * times of that city's zone; `isPartnerVenue` ranks a linked partner place before every non-partner place.
  */
 export interface CandidatePlace {
   readonly placeId: string;
@@ -82,46 +67,36 @@ export interface CandidatePlace {
   readonly distanceM: number;
   readonly openingHours: string | null;
   /**
-   * The rows of the place's newest capture batch per source among its approved rows inside the widest freshness
-   * window: the first stage of `currentSet`'s rule, which `estimatePlace` completes with the per-source window
-   * and the per-item dedupe (AAP 0.5.7).
+   * The rows of the place's newest capture batch per source among its approved rows inside the widest freshness window:
+   * the first stage of `currentSet`'s rule, which `estimatePlace` completes.
    */
   readonly prices: readonly PriceRow[];
 }
 
-/**
- * One ranked suggestion: a candidate that produced an estimate and is open in the meetup's window (AAP 0.5.7).
- * `estimateCents` mirrors `estimate.estimateCents`, because that is the figure `rankSuggestions` filters and
- * orders on, and `openingHoursToday` is the meetup day's known-open intervals in the city's time (AAP 0.5.8).
- */
+/** One ranked suggestion: a candidate that produced an estimate and is open in the meetup's window. `estimateCents`
+ * mirrors `estimate.estimateCents`, because that is the figure `rankSuggestions` filters and orders on. */
 export type SuggestedPlace = CandidatePlace &
   RankInput & {
     readonly estimate: PlaceEstimate;
     readonly estimateCents: number;
     readonly openingHoursToday: string | null;
   };
-/**
- * What {@link suggest} returns (AAP 0.5.1): the ranked places, and why the list is empty when it is.
- * `emptyReason` is present only when `items` is empty; the budget the list was ranked against is added by the
- * route, the only caller that knows the pair's stored budget (AAP 0.5.4).
- */
+/** What {@link suggest} returns: the ranked places, and why the list is empty when it is. `emptyReason` is present only
+ * when `items` is empty; the budget the list was ranked against is added by the route. */
 export interface SuggestResult {
   readonly items: SuggestedPlace[];
   readonly emptyReason?: SuggestionEmptyReason;
 }
 
 /**
- * The statement's freshness prefilter: `FRESHNESS_PHONE_OPERATOR_DAYS`, the widest window of any source. It
- * bounds both what the statement scans and what it aggregates, and it is still only a prefilter —
- * `estimatePlace` applies the exact per-source window (`isFresh`: 30 days online, 60 days for a phone quote or
- * an operator entry), which stays the one authoritative freshness rule.
+ * The statement's freshness prefilter: the widest window of any source, bounding what the statement scans and aggregates.
+ * It is still only a prefilter — `estimatePlace` applies the exact per-source window, the authoritative rule.
  */
 const WIDEST_FRESHNESS_DAYS = FRESHNESS_PHONE_OPERATOR_DAYS;
 
 /**
- * One price row as the statement's `json_build_object` renders it, which is also the shape {@link PriceRow}
- * wants once the capture instant is rebuilt from its epoch milliseconds. A row that does not match is our own
- * invariant violation — the statement builds these keys itself — so it is rejected rather than coerced.
+ * One price row as the statement's `json_build_object` renders it, which is {@link PriceRow} once the capture instant is
+ * rebuilt. A row that does not match is our own invariant violation, so it is rejected rather than coerced.
  */
 const AGGREGATED_PRICE_ROW = z.object({
   id: z.string(),
@@ -156,35 +131,24 @@ type AggregatedPriceRow = z.infer<typeof AGGREGATED_PRICE_ROW>;
 const CANDIDATE_ROW_MISMATCH = 'suggestions: a candidate row does not match the statement shape';
 
 /**
- * The candidate statement: every category-carrying place within the suggestion radius of the meetup's venue
- * that has at least one approved price row inside the widest freshness window, with the rows of that place's
- * newest capture batch per source aggregated into one array.
+ * The candidate statement: every category-carrying place within the suggestion radius of the meetup's venue that has at
+ * least one approved price row inside the widest freshness window, with the rows of that place's newest capture batch per
+ * source aggregated into one array.
  *
  * The 2 km test is `withinMeters(geoColumn('p', 'place'), geoColumn('v', 'venue'), …)`, so the GiST-indexed
- * `place.location` stands on the left and the venue row — reduced to one by its primary key — supplies the
- * right-hand point (AAP 0.2.1). The place must also belong to the venue's own city, which is what makes every
- * row carry one city: the one whose zone the opening window and the 23:00 cut-off are judged in. `opening_hours`
- * is deliberately not filtered here: a priced place with no hours, or with hours that do not parse, counts as
- * priced but not open, which is what makes `emptyReason` `none_open` rather than `no_priced_places`
- * (AAP 0.5.7).
+ * `place.location` stands on the left and the venue row supplies the right-hand point. The place must belong to the
+ * venue's own city, which is what makes every row carry the one city whose zone the window is judged in. `opening_hours`
+ * is deliberately not filtered here: a priced place with no hours counts as priced but not open, which is what makes
+ * `emptyReason` `none_open` rather than `no_priced_places`.
  *
- * The aggregate carries only what the estimate can read: inside the widest-window prefilter one capture batch
- * is kept per source — its own newest, ordered by the latest `capturedAt` of its rows and then by the larger
- * `capture_batch_id` — which is the first stage of `currentSet`'s rule (AAP 0.5.7).
+ * The aggregate keeps, per source, the batch ordered by the latest `capturedAt` of its rows and then by the larger
+ * `capture_batch_id` — the first stage of `currentSet`'s rule. Reducing any further in SQL would change the estimate: the
+ * second stage, the latest record per `(itemCategory, normalizedName)`, is not reproducible per place here, because the
+ * record it keeps for an item can come from another source while an older batch of the item's own source holds it too.
  *
- * Reducing any further in SQL would change the estimate. The second stage of that rule — the latest record per
- * `(itemCategory, normalizedName)` across the kept batches — is not reproducible per place here, because the
- * record it keeps for an item can come from another source while an older batch of the item's own source holds
- * it too; dropping such a row in SQL could drop the row `estimatePlace` would have chosen. The batch rule has
- * no such gap: a source has one freshness window and a batch is written with one capture instant, so the batch
- * kept here is the batch `currentSet` keeps. The per-item dedupe and the exact per-source window therefore stay
- * in `estimatePlace`, the one authoritative rule.
- *
- * `isPartnerVenue` asks whether any active partner venue is linked to the place, so the meetup's own venue
- * place — when that venue carries a `place_id` — is a candidate at 0 m that ranks first. Each of the three
- * fixture-bearing tables carries `fixturePredicate` for its own alias (AAP 0.5.2). A venue, or a place, with no
- * location is not a candidate: `ST_DWithin` is unknown for a null geography, and a distance that cannot be
- * measured does not qualify.
+ * `isPartnerVenue` asks whether any active partner venue is linked to the place, so the meetup's own venue place is a
+ * candidate at 0 m that ranks first. Each of the three fixture-bearing tables carries `fixturePredicate` for its own
+ * alias. A venue, or a place, with no location is not a candidate: `ST_DWithin` is unknown for a null geography.
  */
 function candidatesStatement(env: AppEnv, venueId: string, now: Date): Prisma.Sql {
   const widestCutoff = new Date(now.getTime() - WIDEST_FRESHNESS_DAYS * DAY_MS);
@@ -257,11 +221,9 @@ function candidatesStatement(env: AppEnv, venueId: string, now: Date): Prisma.Sq
 }
 
 /**
- * The candidate places of one meetup, read in a single statement (AAP 0.5.7).
- *
- * The read goes through `services.db.$queryRaw`, the surface the fixture guard leaves to its own
- * `fixturePredicate` and the one a test replaces to prove that a suggestions failure stays on this route
- * (AAP 0.3.2, 0.11.2). A row that does not match the shape the statement built raises.
+ * The candidate places of one meetup, read in a single statement. The read goes through `services.db.$queryRaw`, the
+ * surface the fixture guard leaves to its own `fixturePredicate` and the one a test replaces to prove that a suggestions
+ * failure stays on this route.
  */
 export async function loadCandidates(
   services: SuggestionServices,
@@ -296,10 +258,8 @@ function toPriceRow(row: AggregatedPriceRow): PriceRow {
   return { ...prices, capturedAt: new Date(capturedAtMs) };
 }
 
-/**
- * How many parsed `opening_hours` values one process keeps. The values are a handful per city, so the cap is
- * only a guard against a pathological sweep; reaching it clears the map.
- */
+/** How many parsed `opening_hours` values one process keeps: the values are a handful per city, so the cap only guards
+ * against a pathological sweep. */
 const HOURS_CACHE_LIMIT = 2000;
 
 const MIDNIGHT_WALL_TIME = '24:00';
@@ -311,19 +271,14 @@ const INTERVAL_DASH = '\u2013';
 const WALL_TIME_FORMAT = 'HH:mm';
 
 /**
- * The parsed `opening_hours` values of one process, keyed `<cityId>|<value>`, because a place's hours are a pure
- * function of the value and of the city the window is judged in (public holidays, sunrise and sunset need the
- * city's country and coordinates).
- *
- * A value that cannot be parsed is cached as `null` too, and the map is cleared rather than evicted when it
- * fills. It is a memo of immutable instances several requests use read-only (AAP 0.12.2).
+ * The parsed `opening_hours` values of one process, keyed `<cityId>|<value>`, because a place's hours are a pure function
+ * of the value and of the city the window is judged in. A value that cannot be parsed is cached as `null` too, and the map
+ * is cleared rather than evicted when it fills.
  */
 const hoursCache = new Map<string, OpeningHours | null>();
 
-/**
- * The library value of one place's hours, or `null` when the value cannot be parsed, which is the one way a
- * place with unusable hours stays out of the suggestions (AAP 0.5.7).
- */
+/** The library value of one place's hours, or `null` when the value cannot be parsed, the one way a place with unusable
+ * hours stays out of the suggestions. */
 function openingHoursFor(city: CityConfig, value: string): OpeningHours | null {
   const key = `${city.id}|${value}`;
   const cached = hoursCache.get(key);
@@ -338,11 +293,8 @@ function openingHoursFor(city: CityConfig, value: string): OpeningHours | null {
   return parsed;
 }
 
-/**
- * Parses one `opening_hours` value with the city's own context, or returns `null`. The library reports a value
- * it cannot parse by throwing a bare string rather than an `Error`, so the catch is value-less, and `suggest`
- * counts what it returns `null` for.
- */
+/** Parses one `opening_hours` value with the city's own context, or returns `null`; the library reports a value it cannot
+ * parse by throwing a bare string rather than an `Error`, so the catch is value-less. */
 function parseOpeningHours(city: CityConfig, value: string): OpeningHours | null {
   // The third constructor argument is left out on purpose: its `optional_conf` shape requires every key to
   // be present, and its `mode` default is `time_ranges` (0), which is what `getOpenIntervals` needs. Passing
@@ -359,11 +311,9 @@ function parseOpeningHours(city: CityConfig, value: string): OpeningHours | null
 }
 
 /**
- * An instant carrying `tz`'s wall-clock fields, for handing to the library, and its inverse below.
- *
- * `opening_hours` reads a `Date`'s *local* fields, so an instant built for Lisbon would be read as the process
- * zone's fields; writing the same fields in the process zone gives it exactly the fields it must read, whatever
- * `TZ` the process runs in.
+ * An instant carrying `tz`'s wall-clock fields, for handing to the library, and its inverse below: `opening_hours` reads a
+ * `Date`'s *local* fields, so writing the city's fields in the process zone gives it exactly the fields it must read,
+ * whatever `TZ` the process runs in.
  */
 function toCityWallClock(at: Date, tz: string): Date {
   return DateTime.fromJSDate(at, { zone: tz }).setZone('local', { keepLocalTime: true }).toJSDate();
@@ -373,10 +323,8 @@ function fromCityWallClock(at: Date, tz: string): Date {
   return DateTime.fromJSDate(at).setZone(tz, { keepLocalTime: true }).toJSDate();
 }
 
-/**
- * The known-open intervals of `oh` inside `from`–`to`, as instants in `tz`. An interval the library marks
- * `unknown` is dropped: "open, times to be confirmed" is not evidence that a place is open (AAP 0.5.7).
- */
+/** The known-open intervals of `oh` inside `from`–`to`, as instants in `tz`; an interval the library marks `unknown` is
+ * dropped, because "open, times to be confirmed" is not evidence that a place is open. */
 function openIntervals(
   oh: OpeningHours,
   tz: string,
@@ -396,11 +344,8 @@ function openIntervals(
   return intervals;
 }
 
-/**
- * Whether the place is open at some point between an hour after the meetup's start and 23:00 on the meetup's
- * city-local day (AAP 0.5.7). A meetup starting at 22:30 local leaves an empty window, and an empty window is
- * never open.
- */
+/** Whether the place is open at some point between an hour after the meetup's start and 23:00 on the meetup's city-local
+ * day; a meetup starting at 22:30 local leaves an empty window, and an empty window is never open. */
 function isOpenInWindow(oh: OpeningHours, tz: string, startsAt: Date): boolean {
   const from = new Date(startsAt.getTime() + SUGGESTION_OPEN_FROM_HOURS_AFTER_START * HOUR_MS);
   const to = localTimeOn(tz, localDateKey(tz, startsAt), SUGGESTION_LOCAL_CUTOFF);
@@ -410,11 +355,8 @@ function isOpenInWindow(oh: OpeningHours, tz: string, startsAt: Date): boolean {
   return openIntervals(oh, tz, from, to).length > 0;
 }
 
-/**
- * The meetup day's known-open intervals in city time, or `null` when the place is not known to be open that day at
- * all (AAP 0.5.7). The span is the meetup's own local day, and an interval reaching the end of it is written
- * `24:00`, which is how a value such as `Mo-Su 10:00-24:00` reads back.
- */
+/** The meetup day's known-open intervals in city time, or `null` when the place is not known to be open that day at all;
+ * an interval reaching the end of the span is written `24:00`, which is how `Mo-Su 10:00-24:00` reads back. */
 function formatOpeningHoursOn(oh: OpeningHours, tz: string, startsAt: Date): string | null {
   const day = localDateKey(tz, startsAt);
   const from = startOfLocalDay(tz, day);
@@ -436,17 +378,15 @@ function wallTime(tz: string, at: Date): string {
 }
 
 /**
- * The ranked day-plan suggestions of one meetup (AAP 0.5.1, 0.5.7).
+ * The ranked day-plan suggestions of one meetup.
  *
- * The three filters run in the order `emptyReason` reports them, and each count is kept so the reason names the
- * filter that stopped the flow: **priced** (the candidates whose rows produce an estimate, freshness included),
- * **open** (of those, the ones open between an hour after the start and 23:00 local on the meetup day — parsed
- * only for priced places, and a place with no hours or unreadable hours is not open), then **fitting**
+ * The three filters run in the order `emptyReason` reports them, and each count is kept so the reason names the filter
+ * that stopped the flow: **priced** (the candidates whose rows produce an estimate, freshness included), **open** (of
+ * those, the ones open between an hour after the start and 23:00 local on the meetup day), then **fitting**
  * (`rankSuggestions`, which applies the budget filter along with the ordering and both limits).
  *
- * Nothing is written and nothing outside PostgreSQL is read, so a failure here cannot reach the meetup flow; the
- * route answers `503 suggestions_unavailable` for this route alone (AAP 0.3.2). A statement row that does not
- * match its shape, or a venue in a city the configuration does not name, raises.
+ * Nothing is written and nothing outside PostgreSQL is read, so a failure here cannot reach the meetup flow; the route
+ * answers `503 suggestions_unavailable` for this route alone.
  */
 export async function suggest(
   services: SuggestionServices,
@@ -503,11 +443,9 @@ export async function suggest(
 }
 
 /**
- * The configured city a candidate's `cityId` names (AAP 0.5.5).
- *
- * A venue row whose city the configuration does not name is a configuration error rather than a data condition:
- * without the city's zone no opening window can be judged, and reporting every such place as closed would hide
- * the fault behind `none_open`. The message names no configured value.
+ * The configured city a candidate's `cityId` names. A venue row whose city the configuration does not name is a
+ * configuration error rather than a data condition: without the city's zone no opening window can be judged, and reporting
+ * every such place as closed would hide the fault behind `none_open`. The message names no configured value.
  */
 function cityOf(cityId: string): CityConfig {
   const city = cityBySlug(cityId);

@@ -1,10 +1,9 @@
 /**
- * The framing experiment's assignment rule (AAP 0.5.7, 0.8.1): `bucketFor` and `variantFromBucket`
- * decide, from the account id and `EXPERIMENT_SALT` alone, which of the two deposit framings a
- * traveler reads on every deposit screen, notification and funnel event. The suite recomputes the
- * request's own arithmetic over `node:crypto` — {@link oracleBucket} is the whole HMAC-SHA256 digest
- * under the salt read as one unsigned big-endian integer modulo the basis — instead of restating it, so
- * a digest that was truncated, read signed or keyed the other way round fails here.
+ * The framing experiment's assignment rule (AAP 0.5.7, 0.8.1): `bucketFor` and `variantFromBucket` decide,
+ * from the account id and `EXPERIMENT_SALT` alone, which of the two deposit framings a traveler reads on
+ * every deposit screen, notification and funnel event. The suite recomputes the request's own arithmetic
+ * over `node:crypto` rather than restating it, so a digest truncated, read signed or keyed the other way
+ * round fails here.
  */
 
 import { createHmac, randomUUID } from 'node:crypto';
@@ -50,8 +49,8 @@ const SPLIT_IDS = Array.from({ length: 2_000 }, () => randomUUID());
 const UUID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 
 /**
- * The rule, recomputed independently of the unit under test: every digest byte as one unsigned
- * big-endian integer, reduced modulo the basis the split is expressed in.
+ * The rule, recomputed independently of the unit under test: every digest byte as one unsigned big-endian
+ * integer, reduced modulo the basis the split is expressed in.
  */
 function oracleBucket(salt: string, userId: string): number {
   const digest = createHmac('sha256', salt).update(userId, 'utf8').digest('hex');

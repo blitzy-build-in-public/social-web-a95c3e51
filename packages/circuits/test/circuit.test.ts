@@ -1,25 +1,17 @@
 /**
- * The itinerary circuit's own suite: honest witnesses for both body-window cases, the seven public signals a
- * proof carries, the rejections the circuit exists to perform, and the date layouts (AAP 0.5.5, AAP 0.8.1,
- * AAP 0.12.1 criterion 3, AAP 0.12.2 "circuit public-signal count"). Four things are asserted:
+ * The itinerary circuit's own suite: honest witnesses for both body-window cases, the seven public signals a proof
+ * carries, the rejections the circuit exists to perform, and the date layouts (AAP 0.5.5, AAP 0.12.1 criterion 3).
  *
- *   - `valid.eml` and `valid-second.eml` build a witness satisfying every constraint, with the outputs the
- *     email itself holds — the city's circuit id, both dates as `YYYYMMDD`, the issuer's id and the
- *     reference's nullifier — computed from the signed bytes, never copied from the circuit (AAP 0.5.5
- *     "Boundary tests").
- *   - A proof carries exactly the seven signals of `PUBLIC_SIGNAL_NAMES`, in that order, each equal to what
- *     the witness computed; altering any single one makes verification fail (AAP 0.12.1 criterion 3,
- *     AAP 0.12.2).
- *   - `tampered.eml` is refused twice: by the input generator, as `body_hash_mismatch`, and by the circuit,
- *     when a witness is assembled by hand around its bytes. So is a 1,024-byte window, 64 bytes wider than
- *     `BodyWindow` admits (AAP 0.5.5).
- *   - `DateParse` accepts each of its four layouts and refuses the dates no calendar has.
- *
- * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a
- * green suite over an unproved file; the proof suite needs the trusted setup on top of the compile and fails
- * alone, naming the command that produces it. A witness of this circuit is a few million signals and the
- * proving key is far larger, so a run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a
- * test file cannot raise for itself.
+ * Four things are asserted: `valid.eml` and `valid-second.eml` build a witness satisfying every constraint, with the
+ * outputs the email itself holds — the city's circuit id, both dates as `YYYYMMDD`, the issuer's id and the reference's
+ * nullifier — computed from the signed bytes, never copied from the circuit; a proof carries exactly the seven signals
+ * of `PUBLIC_SIGNAL_NAMES`, in that order, each equal to what the witness computed, and altering any single one makes
+ * verification fail (AAP 0.12.2); `tampered.eml` is refused twice, by the input generator as `body_hash_mismatch` and
+ * by the circuit when a witness is assembled by hand around its bytes, as is a 1,024-byte window 64 bytes wider than
+ * `BodyWindow` admits; and `DateParse` accepts each of its four layouts and refuses the dates no calendar has.
+ * Prerequisites throw rather than skip, so a missing build or a circom outside 2.1.9 is visible instead of a green
+ * suite over an unproved file. A witness of this circuit is a few million signals and the proving key is far larger, so
+ * a run wants a raised heap (`NODE_OPTIONS=--max-old-space-size=8192`), which a test file cannot raise for itself.
  */
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
@@ -73,36 +65,27 @@ import {
 import { templateParams } from '../src/registry/template-hash.ts';
 import type { TemplateParams } from '../src/registry/template-hash.ts';
 
-/* Paths and constants (AAP 0.8.1, AAP 0.5.5). */
-
-/** This package's directory: this file sits one level below it, in `test/`. */
 const PKG_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-/** The repository root, two levels above the package. */
 const REPO_ROOT = path.resolve(PKG_DIR, '..', '..');
 
-/** The git-ignored build directory `pnpm circuits:compile` and `pnpm circuits:setup` write into. */
 const BUILD = path.join(PKG_DIR, 'build');
 
-/** The committed test-issuer fixtures, signed by `scripts/make-test-fixtures.ts`. */
 const FIXTURE_DIR = path.join(PKG_DIR, 'fixtures', 'test-issuer');
 
 /** The circuit source `circom_tester` is pointed at; it never recompiles it here. */
 const CIRCUIT_SOURCE = path.join(PKG_DIR, 'circuits', 'tablemate_itinerary.circom');
 
-/* The compile's two artefacts: the witness generator and the symbol table that names its signals. */
 const CIRCUIT_WASM = path.join(BUILD, 'tablemate_itinerary_js', 'tablemate_itinerary.wasm');
 const CIRCUIT_SYMBOLS = path.join(BUILD, 'tablemate_itinerary.sym');
 
-/* The setup's three artefacts: the flattened wasm snarkjs proves with, the key and the verification key. */
 const CIRCUIT_WASM_FLAT = path.join(BUILD, 'tablemate_itinerary.wasm');
 const CIRCUIT_ZKEY = path.join(BUILD, 'tablemate_itinerary.zkey');
 const VERIFICATION_KEY = path.join(BUILD, 'verification_key.json');
 
 /**
- * circom's include search path: the circuit library first, where `date_parse.circom` and its siblings
- * live, then both `node_modules` roots, because a hoisted install keeps `@zk-email/circuits` and
- * `circomlib` at the repository root while a package-local copy may hold either instead.
+ * circom's include search path: the circuit library first, then both `node_modules` roots, because a hoisted install
+ * keeps `@zk-email/circuits` and `circomlib` at the repository root while a package-local copy may hold either instead.
  */
 const INCLUDE = [
   path.join(PKG_DIR, 'circuits', 'lib'),
@@ -126,30 +109,24 @@ const CIRCUIT_TIMEOUT_MS = 10 * 60_000;
 const PROOF_TIMEOUT_MS = 20 * 60_000;
 
 /**
- * The SHA-256 initial state as 32 big-endian bytes, spelled out rather than imported: `BodyWindow`
- * requires exactly this state of `precomputedSHA` when the window starts at block 0, and the
- * assertion would be worth little if the expected value came from the module it checks.
+ * The SHA-256 initial state as 32 big-endian bytes, spelled out rather than imported: `BodyWindow` requires exactly
+ * this state of `precomputedSHA` when the window starts at block 0, and the assertion would be worth little if the
+ * expected value came from the module it checks.
  */
 const SHA256_IV_BYTES: readonly number[] = [
   0x6a, 0x09, 0xe6, 0x67, 0xbb, 0x67, 0xae, 0x85, 0x3c, 0x6e, 0xf3, 0x72, 0xa5, 0x4f, 0xf5, 0x3a,
   0x51, 0x0e, 0x52, 0x7f, 0x9b, 0x05, 0x68, 0x8c, 0x1f, 0x83, 0xd9, 0xab, 0x5b, 0xe0, 0xcd, 0x19,
 ];
 
-/** One committed fixture, by the stem of its file in `fixtures/test-issuer/`. */
 type FixtureStem = 'valid' | 'valid-second' | 'tampered';
 
-/* circom_tester 0.0.24 and snarkjs 0.7.6: CommonJS, untyped, loaded through `createRequire`. */
-
-/** The witness index of every signal a suite reads, keyed by the name the circuit writes it under. */
 type SignalIndex = ReadonlyMap<string, number>;
 
-/** The part of circom_tester's `WasmTester` this suite calls. */
 interface WasmCircuit {
   /** `sanityCheck` makes the generator assert every `===` constraint, which is what a rejection is. */
   calculateWitness(input: object, sanityCheck?: boolean): Promise<bigint[]>;
 }
 
-/** `require('circom_tester').wasm`, narrowed to the options this file passes. */
 interface CircomTester {
   wasm(
     source: string,
@@ -157,7 +134,6 @@ interface CircomTester {
   ): Promise<WasmCircuit>;
 }
 
-/** The two Groth16 entry points of snarkjs 0.7.6 this suite calls. */
 interface Snarkjs {
   readonly groth16: {
     fullProve(
@@ -177,8 +153,6 @@ interface Snarkjs {
 const circomTester = createRequire(import.meta.url)('circom_tester') as CircomTester;
 const snarkjs = createRequire(import.meta.url)('snarkjs') as Snarkjs;
 
-/* The committed configuration the witnesses are built from. */
-
 /** The synthetic test issuer whose RSA-2048 key signed every fixture (AAP 0.5.5). */
 const issuer: SupportedIssuer = readConfig('config/issuers/tablemate-test.json', IssuerConfig);
 
@@ -188,12 +162,11 @@ const registry = readConfig('config/registry/test.json', RegistryFile);
 /** The launch cities, whose aliases the registry's city leaves carry. */
 const cities = readConfig('config/cities.json', CitiesFile);
 
-/** The test issuer's registered template, as the circuit takes it. */
 const params: TemplateParams = templateParams(templateOf(issuer));
 
 /**
- * Reads one committed configuration file and parses it with the schema the registry builder, the
- * client and the API share, so this suite reads the same contract they do (AAP 0.11.1).
+ * Reads one committed configuration file and parses it with the schema the registry builder, the client and the API
+ * share, so this suite reads the same contract they do.
  */
 function readConfig<T>(relative: string, schema: { parse(value: unknown): T }): T {
   const text = readFileSync(path.join(REPO_ROOT, relative), 'utf8');
@@ -251,9 +224,9 @@ interface Expectations {
 }
 
 /**
- * Derives, from a fixture and the published configuration alone, every value the witness's outputs
- * must equal: the city the signed body names, the two dates it holds, the issuer, the nullifier of
- * its booking reference, and the two public inputs. Nothing is read back from the circuit.
+ * Derives, from a fixture and the published configuration alone, every value the witness's outputs must equal: the city
+ * the signed body names, the two dates it holds, the issuer, the nullifier of its booking reference, and the two public
+ * inputs. Nothing is read back from the circuit.
  */
 function expectationsFor(stem: FixtureStem): Expectations {
   const { inputs } = built(stem);
@@ -302,9 +275,8 @@ function fieldAt(
 }
 
 /**
- * A date field as the circuit's `YYYYMMDD` integer. The test template is `ISO_YMD`, so the value is
- * the ISO text with its dashes removed; the circuit's own parser reads it as well, and the two must
- * agree, which is what makes the expected number independent of how the layout is spelled.
+ * A date field as the circuit's `YYYYMMDD` integer. The test template is `ISO_YMD`, so the value is the ISO text with
+ * its dashes removed; the circuit's own parser reads it as well, and the two must agree.
  */
 function dateOf(field: FieldLocation, stem: FixtureStem): number {
   const parsed = parseDateValue(field.value, field.valueLength, params.dateFormat);
@@ -320,7 +292,6 @@ function dateOf(field: FieldLocation, stem: FixtureStem): number {
   return parsed;
 }
 
-/** A located field's ASCII text, over the `valueLength` bytes that carry it. */
 function latin1(field: FieldLocation): string {
   let text = '';
   for (let index = 0; index < field.valueLength; index += 1) {
@@ -330,8 +301,8 @@ function latin1(field: FieldLocation): string {
 }
 
 /**
- * Throws unless `condition` holds. Every prerequisite of this suite goes through it, so a missing
- * circuit build or compiler fails the run instead of silently skipping it.
+ * Throws unless `condition` holds. Every prerequisite of this suite goes through it, so a missing circuit build or
+ * compiler fails the run instead of silently skipping it.
  */
 function demand(condition: boolean, message: string): asserts condition {
   if (!condition) {
@@ -339,7 +310,6 @@ function demand(condition: boolean, message: string): asserts condition {
   }
 }
 
-/** One signal of a witness, by the name the circuit writes it under: `main.<name>`. */
 function signalOf(index: SignalIndex, witness: readonly bigint[], name: string): bigint {
   const varIdx = index.get(`main.${name}`);
   if (varIdx === undefined) {
@@ -359,15 +329,10 @@ const SYMBOL_BLOCK_BYTES = 64 * 1024 * 1024;
  * The witness index of each named signal, read from a compiled circuit's symbol table — the
  * `labelIdx,varIdx,componentIdx,name` lines of its `.sym` file.
  *
- * `circom_tester`'s own `loadSymbols()` is unusable for this circuit: it reads the whole table into
- * one JavaScript string, and the table is a gigabyte, past V8's maximum string length, so it fails
- * with `RangeError: Invalid string length` however large the heap is. This reads the same file in
- * blocks and keeps only the entries asked for, which is the whole of what
- * `symbols['main.<name>'].varIdx` would have given, and it stops as soon as every name is found.
- *
- * @param symbolFile - The compiled circuit's symbol table.
- * @param names - The signals to resolve, as the circuit writes them: `main.cityId`, and so on.
- * @returns Each name's index into the witness array.
+ * `circom_tester`'s own `loadSymbols()` is unusable for this circuit: it reads the whole table into one JavaScript
+ * string, and the table is a gigabyte, past V8's maximum string length, so it fails with
+ * `RangeError: Invalid string length` however large the heap is. This reads the same file in blocks, keeps only the
+ * entries asked for, and stops as soon as every name is found.
  * @throws {Error} When the table carries no line for one of the names.
  */
 async function signalIndexes(symbolFile: string, names: readonly string[]): Promise<SignalIndex> {
@@ -429,8 +394,6 @@ function circomVersion(): string {
   return result.status === 0 && typeof result.stdout === 'string' ? result.stdout : '';
 }
 
-/* The main circuit, loaded once for every witness suite below (AAP 0.5.5). */
-
 /** The signals the witness suites read: the seven public ones, plus the key hash the leaf commits to. */
 const MAIN_SIGNAL_NAMES: readonly string[] = [
   ...PUBLIC_SIGNAL_NAMES.map((name) => `main.${name}`),
@@ -449,10 +412,9 @@ beforeAll(async () => {
   );
   demand(existsSync(CIRCUIT_WASM), `${CIRCUIT_WASM} is missing: run pnpm circuits:compile`);
   demand(existsSync(CIRCUIT_SYMBOLS), `${CIRCUIT_SYMBOLS} is missing: run pnpm circuits:compile`);
-  // `recompile: false` reads the compile's own wasm, so nothing here depends on circom agreeing with
-  // the build's flags beyond the version checked above. The include array is copied because
-  // circom_tester appends the source's directory to whatever array it is handed. The library's
-  // `loadSymbols()` is never called: see `signalIndexes`.
+  // `recompile: false` reads the compile's own wasm, so nothing here depends on circom agreeing with the build's flags
+  // beyond the version checked above; the include array is copied because circom_tester appends to whatever it is
+  // handed, and `loadSymbols()` is never called (see `signalIndexes`).
   mainCircuit = await circomTester.wasm(CIRCUIT_SOURCE, {
     output: BUILD,
     recompile: false,
@@ -473,8 +435,6 @@ function index(): SignalIndex {
   return mainIndex;
 }
 
-/* The two window cases of AAP 0.5.5's boundary tests, and whether each fixture is cut. */
-
 const WINDOW_CASES: [FixtureStem, boolean][] = [
   ['valid', true],
   ['valid-second', false],
@@ -494,10 +454,9 @@ describe('a witness for an honest booking', () => {
         expect(expectations.windowBytes).toBe(MAX_BODY_WINDOW);
       }
       const witness = await circuit().calculateWitness(built(stem).inputs, true);
-      // Position first: the witness's first eight entries are the constant 1 followed by the outputs
-      // and public inputs in `PUBLIC_SIGNAL_NAMES` order, so a circuit that reordered them moves
-      // these values even before a proof is made (AAP 0.5.5). Then each signal by name, through the
-      // compiled symbol table.
+      // Position first: the witness's first eight entries are the constant 1 followed by the outputs and public inputs
+      // in `PUBLIC_SIGNAL_NAMES` order, so a circuit that reordered them moves these values even before a proof is
+      // made. Then each signal by name, through the compiled symbol table.
       expect(witness.slice(1, PUBLIC_SIGNAL_NAMES.length + 1)).toEqual(
         PUBLIC_SIGNAL_NAMES.map((name) => expectations.signals[name]),
       );
@@ -515,8 +474,6 @@ describe('a witness for an honest booking', () => {
     CIRCUIT_TIMEOUT_MS,
   );
 });
-
-/* One Groth16 proof, its seven signals, and what altering any one of them does (AAP 0.12.1-3). */
 
 const ALTERED_SIGNAL_CASES: [PublicSignalName, number][] = PUBLIC_SIGNAL_NAMES.map(
   (name, index): [PublicSignalName, number] => [name, index],
@@ -575,8 +532,6 @@ describe('a Groth16 proof of valid.eml', () => {
   );
 });
 
-/* The rejections: a tampered body, and a window 64 bytes wider than the circuit admits (AAP 0.5.5). */
-
 /** One body window, and the decoded form the field extraction reads. */
 interface BodyWindow {
   readonly emailBody: Uint8Array;
@@ -596,9 +551,9 @@ function canonicalBodyOf(stem: FixtureStem): Uint8Array {
 }
 
 /**
- * Pads, cuts and decodes one canonical body exactly as `build-inputs.ts` does, at a cut of the
- * caller's choosing. The two deliberate witnesses below differ from an honest one in nothing but
- * the window they hand the circuit, which is what makes their refusal demonstrate the window rules.
+ * Pads, cuts and decodes one canonical body exactly as `build-inputs.ts` does, at a cut of the caller's choosing: the
+ * two deliberate witnesses below differ from an honest one in nothing but the window they hand the circuit, which is
+ * what makes their refusal demonstrate the window rules.
  */
 function bodyWindowAt(canonicalBody: Uint8Array, cut: number): BodyWindow {
   // A body whose minimal padding is wider than the circuit's body bound needs a larger buffer to pad
@@ -631,9 +586,9 @@ function merklePath(
 }
 
 /**
- * Assembles a witness around `honest`'s header, signature, key, registry paths and template, with a
- * replaced body window. Every other signal is the honest fixture's own, so a refusal here is the
- * window's doing and not a signature, a registry path or a nullifier that was broken on the way in.
+ * Assembles a witness around `honest`'s header, signature, key, registry paths and template, with a replaced body
+ * window: every other signal is the honest fixture's own, so a refusal here is the window's doing and not a signature,
+ * a registry path or a nullifier that was broken on the way in.
  */
 function withWindow(honest: EmailVerifierParts, window: BodyWindow): CircuitInputs {
   const honestInputs = built('valid').inputs;
@@ -698,21 +653,19 @@ describe('a witness the circuit must refuse', () => {
       canonicalBodyOf('valid'),
       honest.precomputeCut + NARROWER_WINDOW_BYTES,
     );
-    // A narrower suffix still hashes to the body hash the signed header commits to, because the
-    // state entering it is the one the email's own bytes leave there, and the fields still extract
-    // from it. `BodyWindow` is therefore the only thing stopping a prover choosing its own window —
-    // and with it which occurrence of every anchor the extraction can reach (AAP 0.5.5).
+    // A narrower suffix still hashes to the body hash the signed header commits to, because the state entering it is
+    // the one the email's own bytes leave there, and the fields still extract from it. `BodyWindow` is therefore the
+    // only thing stopping a prover choosing its own window, and with it which occurrence of every anchor the
+    // extraction can reach.
     expect(window.emailBodyLength).toBe(MAX_BODY_WINDOW - NARROWER_WINDOW_BYTES);
     await expect(circuit().calculateWitness(withWindow(honest, window), true)).rejects.toThrow();
   });
 });
 
-/* DateParse, read through a wrapper of its own: four layouts and the dates no calendar has. */
-
 /**
- * The wrapper the date rules are exercised through: `DateParse` instantiated as `main`, so the
- * layout selection, the length rule and the calendar bounds compile and run on their own. No test
- * circuit is committed; the file is written into a temporary directory and removed afterwards.
+ * The wrapper the date rules are exercised through: `DateParse` instantiated as `main`, so the layout selection, the
+ * length rule and the calendar bounds compile and run on their own. No test circuit is committed; the file is written
+ * into a temporary directory and removed afterwards.
  */
 const DATE_PARSE_WRAPPER = [
   'pragma circom 2.1.9;',

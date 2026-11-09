@@ -1,33 +1,26 @@
 /**
- * The ConversationRelay TwiML an answered call is given, and the encapsulated voice-agent context every
- * Twilio URL is served from: `POST /v1/webhooks/voice/twiml?attemptId=` (AAP 0.3.3, 0.5.4, 0.5.6).
+ * The ConversationRelay TwiML an answered call is given, and the encapsulated voice-agent context every Twilio URL is
+ * served from: `POST /v1/webhooks/voice/twiml?attemptId=`.
  *
- * Twilio fetches this once a call is answered, form encoded, carrying the `CallAttempt` id in the query the
- * dispatcher built the URL with. The answer is either a `<Connect><ConversationRelay>` document that opens the socket
+ * Twilio fetches this once a call is answered, form encoded, carrying the `CallAttempt` id in the query the dispatcher
+ * built the URL with. The answer is either a `<Connect><ConversationRelay>` document that opens the socket
  * `./relay-ws.ts` serves, or a bare `<Hangup/>` for a call this API must not hold a conversation with. No Twilio REST
  * call is made here: dialing belongs to `apps/workers`.
  *
- * Three rules make the dialogue safe and the call traceable:
+ * Three rules make the dialogue safe and the call traceable: the disclosure comes first, in the callee's language, with
+ * `welcomeGreetingInterruptible="none"` and no recording and no `intelligenceService`, so no audio and no provider
+ * transcript of a call is stored; every speech provider and model is written out on the root and on each `<Language>`,
+ * because Twilio's root default for `transcriptionProvider` depends on the account's age; and a call with nobody to talk
+ * to hangs up and records `no_answer`.
  *
- *  - **The disclosure comes first, in the callee's language.** The `welcomeGreeting` is `./dialogue.ts`'s
- *    {@link disclosureFor}, and `welcomeGreetingInterruptible="none"` is what makes the callee hear all of it before
- *    anything is asked (AAP 0.5.6). No recording and no `intelligenceService` appears, so no audio and no provider
- *    transcript of a call is stored.
- *  - **Every speech provider and model is written out**, on the root and on each `<Language>`, because Twilio's own
- *    root default for `transcriptionProvider` depends on the account's age: the pairing a call runs in is a property
- *    of {@link SPEECH_PROVIDERS}, not of the dialling account (AAP 0.2.4, 0.5.6).
- *  - **A call with nobody to talk to hangs up and records `no_answer`** (AAP 0.5.3): an answering machine, a task
- *    that is no longer `in_progress`, and an attempt superseded mid-call.
+ * The attempt id ties the three surfaces of one call together — this route's query parameter, the `<Parameter>` the relay
+ * socket reads its attempt from, and the evidence that adopts a `dispatch_unknown` attempt — under `packages/shared`'s
+ * {@link VOICE_ATTEMPT_PARAMETER}.
  *
- * The attempt id ties the three surfaces of one call together — this route's query parameter, the `<Parameter>` the
- * relay socket reads its attempt from, and the evidence that adopts a `dispatch_unknown` attempt (AAP 0.3.2) — under
- * `packages/shared`'s {@link VOICE_ATTEMPT_PARAMETER}, one definition imported by both processes.
- *
- * A refusal is either the shared envelope — `400 bad_signature` from the signature hook, which runs before the
- * schemas so a wrongly signed body is never validated — or, for a reason only this file knows, `<Hangup/>` with
- * `200`, because Twilio has to be told what to do with a call it has already placed. The one line logged carries the
- * event, the attempt id and which answer was given, never a `CallSid`, a phone number or a posted field
- * (AAP 0.11.1).
+ * A refusal is either the shared envelope — `400 bad_signature` from the signature hook, which runs before the schemas —
+ * or, for a reason only this file knows, `<Hangup/>` with `200`, because Twilio has to be told what to do with a call it
+ * has already placed. The one log line carries the event, the attempt id and the answer given, never a `CallSid`, a phone
+ * number or a posted field.
  */
 
 import { z } from 'zod';
@@ -74,19 +67,15 @@ const VOICE_TAG = 'webhooks';
 /** The media type a TwiML document is served as, rather than the JSON every other route answers. */
 const TWIML_CONTENT_TYPE = 'text/xml; charset=utf-8';
 
-/**
- * That media type without its `charset` parameter, which is the form an OpenAPI content key carries:
- * the key this route's `200` is declared under in the emitted document (AAP 0.11.2).
- */
+/** That media type without its `charset` parameter, which is the form an OpenAPI content key carries for this route's
+ * `200`. */
 const TWIML_MEDIA_TYPE = TWIML_CONTENT_TYPE.replace(/;.*$/, '');
 
 /** The XML declaration every document here opens with, encoding included. */
 const DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>';
 
-/**
- * The five characters an attribute value may not carry literally. `'` is among them because the
- * disclosures contain it, and an unescaped value would be refused by the parser rather than spoken.
- */
+/** The five characters an attribute value may not carry literally; `'` is among them because the disclosures contain it
+ * and an unescaped value would be refused by the parser rather than spoken. */
 const XML_ESCAPES: Readonly<Record<string, string>> = {
   '&': '&amp;',
   '<': '&lt;',
@@ -95,36 +84,28 @@ const XML_ESCAPES: Readonly<Record<string, string>> = {
   "'": '&apos;',
 };
 
-/** The characters {@link xmlEscape} replaces. */
 const XML_ESCAPE_RE = /[&<>"']/g;
 
 /**
- * Escape one value for use inside an XML attribute (AAP 0.5.6).
- *
- * Every attribute this file writes goes through it, fixed values included: one rule for all of them
- * cannot be forgotten for the one that needed it.
+ * Escape one value for use inside an XML attribute. Every attribute this file writes goes through it, fixed values
+ * included: one rule for all of them cannot be forgotten for the one that needed it.
  */
 export function xmlEscape(value: string): string {
   return value.replace(XML_ESCAPE_RE, (character) => XML_ESCAPES[character] ?? character);
 }
 
-/** One speech pairing: the text-to-speech provider, the transcriber and its model (AAP 0.2.4). */
 export interface SpeechProvider {
   readonly ttsProvider: 'Google' | 'ElevenLabs';
   readonly transcriptionProvider: 'Deepgram';
-  /**
-   * The transcriber's model: `nova-3-general` is Deepgram's default and covers every launch language but
-   * Thai, which `nova-2-general` serves.
-   */
+  /** The transcriber's model: `nova-3-general` is Deepgram's default and covers every launch language but Thai, which
+   * `nova-2-general` serves. */
   readonly speechModel: 'nova-2-general' | 'nova-3-general';
 }
 
 /**
- * The speech pairing each call language opens in, confirmed against Twilio's ConversationRelay voice
- * configuration (AAP 0.2.4, 0.5.6).
- *
- * Which pairing a call opens in is the city's own property — `City.callLanguage`, loaded from
- * `config/cities.json` — and this table says only how that pairing is spoken and transcribed.
+ * The speech pairing each call language opens in, confirmed against Twilio's ConversationRelay voice configuration.
+ * Which pairing a call opens in is the city's own property — `City.callLanguage` — and this table says only how that
+ * pairing is spoken and transcribed.
  */
 export const SPEECH_PROVIDERS: Readonly<Record<CallLanguage, SpeechProvider>> = {
   'en-US': {
@@ -154,7 +135,6 @@ export const SPEECH_PROVIDERS: Readonly<Record<CallLanguage, SpeechProvider>> = 
   },
 };
 
-/** What {@link renderTwiml} needs: the socket to open, the language, the first line and the call. */
 export interface TwimlOptions {
   readonly relayUrl: string;
   readonly language: CallLanguage;
@@ -162,7 +142,6 @@ export interface TwimlOptions {
   readonly attemptId: string;
 }
 
-/** One `<Language>` entry, with its own provider and model so nothing is inherited (AAP 0.5.6). */
 function languageElement(code: CallLanguage, provider: SpeechProvider): string {
   return (
     `<Language code="${xmlEscape(code)}"` +
@@ -173,13 +152,10 @@ function languageElement(code: CallLanguage, provider: SpeechProvider): string {
 }
 
 /**
- * The TwiML that answers an answered call and opens the ConversationRelay dialogue (AAP 0.5.6).
- *
- * The document declares the city's pairing and `en-US` — the pairing the dialogue switches to when the
- * callee prefers English — and no more, so a session cannot be moved to a language this API holds no
- * templates for. `dtmfDetection="false"` states the default explicitly, because no keypad menu is served
- * and a `dtmf` frame would be ignored, and partial prompts are not enabled, so every prompt the socket
- * delivers is a final transcription of a whole utterance.
+ * The TwiML that answers an answered call and opens the ConversationRelay dialogue. The document declares the city's
+ * pairing and `en-US` — the pairing the dialogue switches to when the callee prefers English — and no more, so a session
+ * cannot be moved to a language this API holds no templates for. `dtmfDetection="false"` states the default explicitly,
+ * and partial prompts are not enabled, so every prompt the socket delivers is a final transcription.
  */
 export function renderTwiml(options: TwimlOptions): string {
   const { relayUrl, language, welcomeGreeting, attemptId } = options;
@@ -206,40 +182,28 @@ export function renderTwiml(options: TwimlOptions): string {
 }
 
 /**
- * The TwiML that ends a call this API will not converse with (AAP 0.5.3).
- *
- * `<Hangup/>` rather than an empty document: the call is answered, so Twilio expects a verb, and nothing
- * is spoken — a machine that was detected hears no question and learns nothing.
+ * The TwiML that ends a call this API will not converse with: `<Hangup/>` rather than an empty document, because the
+ * call is answered and Twilio expects a verb, and nothing is spoken.
  */
 export function renderHangup(): string {
   return `${DECLARATION}<Response><Hangup/></Response>`;
 }
 
 /**
- * The machine-detection rule this route hangs up by, re-exported unchanged so the file's public surface
- * stays what it was: it is `packages/shared`'s {@link isMachineAnswer}, whose TSDoc carries the AAP 0.5.3
- * rationale. It has one definition there because the workers' reconciliation reads the same verdicts on
- * the call it fetches and cannot import this process (AAP 0.8.1, AAP 0.11.1).
+ * Re-exported unchanged so the file's public surface stays what it was: `packages/shared`'s {@link isMachineAnswer} has
+ * the one definition, because the workers' reconciliation reads the same verdicts and cannot import this process.
  */
 export { isMachineAnswer };
 
-// ---------------------------------------------------------------------------------------------
-// The route (AAP 0.3.2, 0.3.3, 0.5.4)
-// ---------------------------------------------------------------------------------------------
-
-/** What the TwiML route decided: what to answer with, and which of the two answers it is. */
 interface TwimlDecision {
   readonly result: 'relay' | 'hangup';
   readonly xml: string;
 }
 
-/** The answer for every call this route will not hand to the dialogue (AAP 0.5.3). */
 const HANGUP: TwimlDecision = { result: 'hangup', xml: renderHangup() };
 
-/**
- * What an unanswered call produced (AAP 0.5.3): an outcome and no data, because nothing was asked —
- * `transcript: null` for the same reason a lodging call always stores none (AAP 0.5.2).
- */
+/** What an unanswered call produced: an outcome and no data, because nothing was asked — `transcript: null` for the same
+ * reason a lodging call always stores none. */
 const UNANSWERED: AttemptResult = {
   outcome: 'no_answer',
   confidence: null,
@@ -249,30 +213,25 @@ const UNANSWERED: AttemptResult = {
 };
 
 /**
- * The one route flag the composition root reads to let a route answer bytes rather than a serialized DTO.
- * It is set on the two routes that do — this one, whose XML no Zod schema describes, and the photo route
- * — and the flag belongs to the composition root, so it is passed as a context config here.
+ * The one route flag the composition root reads to let a route answer bytes rather than a serialized DTO; it is set on
+ * the two routes that do — this one, whose XML no Zod schema describes, and the photo route.
  */
 const RAW_XML_RESPONSE = { rawResponse: true } as FastifyContextConfig;
 
 /**
- * The state an attempt that adopted its `CallSid` on this signed fetch moves to (AAP 0.3.2): a TwiML fetch
- * is evidence that the call exists and was answered, which is what `dialing` says. Any other state stands:
- * a callback reporting `in-progress` reached the attempt first, and the state only ever moves forward
- * (AAP 0.5.3).
+ * The state an attempt that adopted its `CallSid` on this signed fetch moves to: a TwiML fetch is evidence that the call
+ * exists and was answered, which is what `dialing` says. Any other state stands, because the state only ever moves
+ * forward.
  */
 function adoptedState(state: CallAttemptState): CallAttemptState {
   return state === 'dispatching' || state === 'dispatch_unknown' ? 'dialing' : state;
 }
 
 /**
- * Registers the voice agent on the context `app.ts` mounts under `/v1` (AAP 0.5.1, 0.3.3).
- *
- * The order is load-bearing: `@fastify/formbody` comes first, because every Twilio callback arrives as
- * `application/x-www-form-urlencoded`, which Fastify 5 does not parse by default, and registering it on this instance
- * rather than the root scopes that parser, since it is built on `fastify-plugin` and no other `/v1` route begins
- * accepting a form body (AAP 0.3.3, 0.5.4). This function is deliberately not wrapped in `fastify-plugin`: its
- * encapsulation is what keeps these three routes out of every other module's context.
+ * Registers the voice agent on the context `app.ts` mounts under `/v1`. The order is load-bearing: `@fastify/formbody`
+ * comes first, because every Twilio callback arrives as `application/x-www-form-urlencoded`, which Fastify 5 does not
+ * parse by default, and registering it here rather than on the root scopes that parser. This function is deliberately not
+ * wrapped in `fastify-plugin`: its encapsulation is what keeps these three routes out of every other module's context.
  */
 export async function voiceAgentRoutes(app: App): Promise<void> {
   await app.register(formbody);
@@ -282,15 +241,14 @@ export async function voiceAgentRoutes(app: App): Promise<void> {
 }
 
 /**
- * Registers `POST /webhooks/voice/twiml?attemptId=` (AAP 0.3.3, 0.5.4).
+ * Registers `POST /webhooks/voice/twiml?attemptId=`.
  *
- * The route carries no bearer guard and no age gate: a provider signed it, so there is no caller to
- * authenticate. It takes the webhook per-IP counter alone, at the higher provider allowance, because the
- * requests arrive from a handful of Twilio addresses.
+ * The route carries no bearer guard and no age gate: a provider signed it, so there is no caller to authenticate. It
+ * takes the webhook per-IP counter alone, at the higher provider allowance, because the requests arrive from a handful of
+ * Twilio addresses.
  *
- * The signature is checked in `preValidation`, before the schemas: it covers every field Twilio posted,
- * including those a schema would rewrite, so it has to run over the parsed body rather than the validated
- * one, and a refusal is answered `400 bad_signature` through the shared envelope (AAP 0.3.3).
+ * The signature is checked in `preValidation`, before the schemas: it covers every field Twilio posted, including those a
+ * schema would rewrite, so it has to run over the parsed body rather than the validated one.
  */
 function registerTwimlRoute(app: App): void {
   app.post(
@@ -302,11 +260,9 @@ function registerTwimlRoute(app: App): void {
         tags: [VOICE_TAG],
         querystring: VoiceCallbackQuery,
         body: TwilioTwimlRequest,
-        // The document describes what this route answers (AAP 0.11.2): the `200` under the media
-        // type the reply carries, and the one refusal the signature hook raises before the schemas.
-        // The `200` is a content-typed entry — the shape that keeps the success answer in the
-        // document for a body no Zod schema describes — and it never touches the reply, which sends
-        // its XML string as it is. Naming only the `400` would drop the emitted `200` entirely.
+        // The document describes what this route answers: the `200` under the media type the reply carries — a
+        // content-typed entry, the shape that keeps a success answer for a body no Zod schema describes — and the `400`
+        // the signature hook raises before the schemas.
         response: {
           200: { content: { [TWIML_MEDIA_TYPE]: { schema: z.string() } } },
           400: ErrorEnvelope,
@@ -326,21 +282,20 @@ function registerTwimlRoute(app: App): void {
 }
 
 /**
- * Decide what Twilio's fetch is answered with, in one transaction (AAP 0.3.2, 0.5.3).
+ * Decide what Twilio's fetch is answered with, in one transaction.
  *
- *  1. **Lock the attempt** ({@link lockAttempt}), which serializes this fetch against the relay socket's own adoption
- *     of the same attempt, the status callbacks and the workers' reconciliation. An attempt that is gone, or whose
- *     call content was stripped, is answered `<Hangup/>` with nothing written (AAP 0.5.2).
+ *  1. **Lock the attempt** ({@link lockAttempt}), which serializes this fetch against the relay socket's own adoption of
+ *     the same attempt, the status callbacks and the workers' reconciliation. An attempt that is gone, or whose call
+ *     content was stripped, is answered `<Hangup/>` with nothing written.
  *  2. **Adopt the `CallSid`** ({@link adoptCallSid}), or refuse a fetch that is not this attempt's.
  *  3. **Read the call** ({@link loadCallContext}): a call missing its task, its target or its city has no language to
- *     speak in and no budget to release against, so it is answered `<Hangup/>` and the workers pick the attempt up
- *     as `needs_review`.
- *  4. **Hand the call to the relay, or hang up.** A machine answered, the task is no longer `in_progress`, or the
- *     attempt was superseded mid-call: all three record `no_answer` through {@link recordAttemptOutcome}, which
- *     writes the single `apply_call_result` row in this transaction and releases the unused dialogue budget after the
- *     commit.
+ *     speak in and no budget to release against, so it is answered `<Hangup/>` and the workers pick the attempt up as
+ *     `needs_review`.
+ *  4. **Hand the call to the relay, or hang up**: a machine answered, the task is no longer `in_progress`, or the attempt
+ *     was superseded mid-call — all three record `no_answer` through {@link recordAttemptOutcome}, which writes the single
+ *     `apply_call_result` row in this transaction and releases the unused dialogue budget after the commit.
  *
- * Nothing here ends the attempt: `endedAt` is Twilio's status callback's to stamp (AAP 0.5.3).
+ * Nothing here ends the attempt: `endedAt` is Twilio's status callback's to stamp.
  */
 async function decideTwiml(
   services: AppServices,
@@ -386,20 +341,15 @@ async function decideTwiml(
 }
 
 /**
- * Adopt this fetch's `CallSid` on the attempt, or refuse the fetch (AAP 0.3.2).
- *
- * Three answers, and only one of them lets the fetch open a dialogue:
- *
- *  - `'matches'` — the attempt already holds this `CallSid`, so nothing is adopted.
- *  - `'adopted'` — the attempt holds none. This signed fetch, carrying the attempt id the dispatcher put in the URL,
- *    is the evidence AAP 0.3.2 accepts for a dispatch whose outcome was uncertain, and it is also what
- *    `./relay-ws.ts` compares the socket's own `CallSid` against.
- *  - `'refused'` — the attempt holds a different `CallSid`, or another attempt already holds this one, so the fetch
- *    is answered `<Hangup/>` and nothing is written.
+ * Adopt this fetch's `CallSid` on the attempt, or refuse the fetch. Three answers, and only one of them lets the fetch
+ * open a dialogue: `'matches'` — the attempt already holds this `CallSid`; `'adopted'` — the attempt holds none, and this
+ * signed fetch is the evidence AAP 0.3.2 accepts for a dispatch whose outcome was uncertain and what `./relay-ws.ts`
+ * compares the socket's own `CallSid` against; `'refused'` — the attempt holds a different `CallSid`, or another attempt
+ * already holds this one, so the fetch is answered `<Hangup/>` and nothing is written.
  *
  * The current owner is looked up before the update rather than left to the unique index, because a unique violation
- * inside the transaction aborts it; the index is still the guarantee, since the catch below treats its violation as
- * the same refusal, so two fetches racing to adopt one `CallSid` cannot both succeed.
+ * inside the transaction aborts it; the index is still the guarantee, since the catch below treats its violation as the
+ * same refusal, so two fetches racing to adopt one `CallSid` cannot both succeed.
  */
 async function adoptCallSid(
   tx: DbTx,

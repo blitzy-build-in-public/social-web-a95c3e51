@@ -1,7 +1,4 @@
-/**
- * The terms screen at `/legal/terms` (AAP 0.5.8, AAP 0.8.1): what a card hold is, when a hold is
- * released, what a forfeit does, what Table Credit is, and the dispute and safety rules around them.
- */
+/** The terms screen at `/legal/terms`: what a card hold is, when a hold is released, what a forfeit does, and what Table Credit is. */
 import type { ReactElement } from 'react';
 import { StyleSheet, Text } from 'react-native';
 import type { TextProps } from 'react-native';

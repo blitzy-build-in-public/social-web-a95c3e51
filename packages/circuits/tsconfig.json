@@ -1,19 +1,14 @@
-// The TypeScript project for @tablemate/circuits (AAP 0.8.1). Everything tsconfig.base.json
-// carries -- the strict flags, NodeNext resolution, verbatimModuleSyntax,
-// rewriteRelativeImportExtensions and the load-bearing "tablemate-source" condition that resolves
-// @tablemate/shared to its TypeScript source -- applies here unchanged and is deliberately not
-// restated. Only what this workspace adds appears below.
+// The TypeScript project for @tablemate/circuits: everything tsconfig.base.json carries — the strict flags, NodeNext
+// resolution, verbatimModuleSyntax, rewriteRelativeImportExtensions and the load-bearing "tablemate-source" condition
+// that resolves @tablemate/shared to its TypeScript source — applies here unchanged and is deliberately not restated.
 //
-// rootDir stays "." so src/index.ts emits dist/src/index.js and dist/src/index.d.ts, the layout
-// package.json `exports` maps ("tablemate-source" -> src/index.ts, types/default -> dist/src/);
-// scripts/ and test/ emit under the same root. The build info lives under the git-ignored dist.
+// rootDir stays "." so src/index.ts emits dist/src/index.js, the layout package.json `exports` maps; scripts/ and test/
+// emit under the same root, and the build info lives under the git-ignored dist.
 //
-// types: ["node"] exists for scripts/*.ts and test/**, which use node:fs, node:crypto, node:dns,
-// node:child_process and node:module (createRequire, for the untyped snarkjs 0.7.6 and
-// circom_tester 0.0.24 -- neither ships declarations and no .d.ts is added for them). Node
-// globals are therefore visible to src/** too. Client safety does not rest on this tsconfig: it
-// rests on the root ESLint rule over packages/circuits/src/** (no Node built-ins, no Buffer, no
-// @zk-email/helpers) and on `expo export`, which fails on an unresolved built-in. lib is ES2023
+// types: ["node"] exists for scripts/*.ts and test/**, which use node:fs, node:crypto, node:dns, node:child_process and
+// node:module (createRequire, for the untyped snarkjs 0.7.6 and circom_tester 0.0.24). Node globals are therefore
+// visible to src/** too, and client safety rests instead on the root ESLint rule over packages/circuits/src/** (no Node
+// built-ins, no Buffer, no @zk-email/helpers) and on `expo export`, which fails on an unresolved built-in. lib is ES2023
 // with no DOM, so src/** may use only ECMAScript built-ins, Uint8Array and BigInt.
 {
   "extends": "../../tsconfig.base.json",
@@ -25,8 +20,8 @@
     "lib": ["ES2023"],
     "types": ["node"]
   },
-  // .circom, .sh and .eml files are not TypeScript, so they stay out of the project; every .ts
-  // file in the package is included, which is also what typescript-eslint's projectService needs.
+  // .circom, .sh and .eml files are not TypeScript, so they stay out of the project; every .ts file in the package is
+  // included, which is also what typescript-eslint's projectService needs.
   "include": ["src/**/*.ts", "scripts/*.ts", "test/**/*.ts"],
   "exclude": ["dist", "build", "samples", "node_modules"],
   "references": [{ "path": "../shared" }]

@@ -1,10 +1,9 @@
 /**
- * Cost estimation from real, fresh price records for the day-plan suggestions (AAP 0.5.7).
+ * Cost estimation from real, fresh price records for the day-plan suggestions.
  *
- * `estimatePlace` turns a place's stored `PriceRecord` rows into the per-person estimate, the range around it
- * and the provenance the suggestion reports, using only records that are real, fresh and approved. A price is
- * never invented or interpolated: a place that lacks the items its category needs is left out of the
- * suggestions rather than shown with a guess (request item 13).
+ * `estimatePlace` turns a place's stored `PriceRecord` rows into the per-person estimate, the range around it and the provenance the
+ * suggestion reports, using only records that are real, fresh and approved. A price is never invented or interpolated: a place that
+ * lacks the items its category needs is left out rather than shown with a guess.
  *
  * Pure by design — `now` is a parameter and nothing outside `@tablemate/shared` is imported.
  */
@@ -18,11 +17,8 @@ import type {
   TicketType,
 } from '@tablemate/shared';
 
-/**
- * One `PriceRecord` row as `candidates.ts` maps it from SQL, reduced to the fields the estimate reads
- * (AAP 0.5.2). Internal to the module, not a shared schema: the response carries the narrower
- * `SuggestionItemUsed` contract shape instead.
- */
+/** One `PriceRecord` row as `candidates.ts` maps it from SQL, reduced to the fields the estimate reads. Internal to the module: the
+ * response carries the narrower `SuggestionItemUsed` contract shape instead. */
 export interface PriceRow {
   readonly id: string;
   readonly captureBatchId: string;
@@ -41,10 +37,8 @@ export interface PriceRow {
   readonly capturedAt: Date;
 }
 
-/**
- * A place's per-person estimate for the meetup day (AAP 0.5.7): the typical `estimateCents`, the cheapest to most
- * expensive `lowCents`..`highCents`, and the provenance the response reports.
- */
+/** A place's per-person estimate for the meetup day: the typical `estimateCents`, the cheapest to most expensive
+ * `lowCents`..`highCents`, and the provenance the response reports. */
 export interface PlaceEstimate {
   readonly estimateCents: number;
   readonly lowCents: number;
@@ -57,9 +51,8 @@ export interface PlaceEstimate {
 }
 
 /**
- * Which source wins when two current records are otherwise equal: the AAP's tie order "operator_entry, then
- * phone_quote, then online_menu" (AAP 0.5.7). A lower number wins, and this one table serves both the record tie
- * in {@link currentSet} and the `priceSource` tie below.
+ * Which source wins when two current records are otherwise equal, in the AAP's tie order "operator_entry, then phone_quote, then
+ * online_menu": a lower number wins, and this one table serves both the record tie in {@link currentSet} and the `priceSource` tie.
  */
 export const SOURCE_PRIORITY: Readonly<Record<PriceSource, number>> = {
   operator_entry: 0,
@@ -67,7 +60,6 @@ export const SOURCE_PRIORITY: Readonly<Record<PriceSource, number>> = {
   online_menu: 2,
 };
 
-/** Days a price of each source stays fresh, from the AAP's 30 and 60 day windows (AAP 0.5.7). */
 const FRESHNESS_DAYS_BY_SOURCE: Readonly<Record<PriceSource, number>> = {
   online_menu: FRESHNESS_ONLINE_DAYS,
   phone_quote: FRESHNESS_PHONE_OPERATOR_DAYS,
@@ -75,28 +67,22 @@ const FRESHNESS_DAYS_BY_SOURCE: Readonly<Record<PriceSource, number>> = {
 };
 
 /**
- * Whether a price record is fresh enough to estimate from: at most 30 days old for an online menu, at most 60
- * days for a phone quote or an operator entry (AAP 0.5.7).
- *
- * The authoritative freshness rule: `candidates.ts` prefilters rows by the widest window and approval alone, so
- * the per-source limits live here. The bound is inclusive, and a `capturedAt` later than `now` counts as fresh
- * rather than as stale.
+ * Whether a price record is fresh enough to estimate from: at most 30 days old for an online menu, at most 60 days for a phone quote
+ * or an operator entry. The authoritative freshness rule — `candidates.ts` prefilters rows by the widest window and approval alone.
+ * The bound is inclusive, and a `capturedAt` later than `now` counts as fresh rather than as stale.
  */
 export function isFresh(source: PriceSource, capturedAt: Date, now: Date): boolean {
   return now.getTime() - capturedAt.getTime() <= FRESHNESS_DAYS_BY_SOURCE[source] * DAY_MS;
 }
 
 /**
- * A place's current price set (AAP 0.5.7): the approved, fresh records that survive both dedupe rules, ordered by
- * `itemCategory`, then price ascending, then `normalizedName`, then `id` — also the order `PlaceEstimate.itemsUsed`
- * reports them in.
+ * A place's current price set: the approved, fresh records that survive both dedupe rules, ordered by `itemCategory`, then price
+ * ascending, then `normalizedName`, then `id` — also the order `PlaceEstimate.itemsUsed` reports them in.
  *
- * Only the most recent capture batch of each source is kept, a batch being one fetch, one call or one operator
- * entry; then, across those batches, each `(itemCategory, normalizedName)` keeps only its latest record, so
- * repeated captures never double-weight an item. Two equally recent records of one item are separated by
- * `SOURCE_PRIORITY` and then the smallest `id`, so the result is deterministic whatever order the rows arrive in.
- * A record that is not `approved` is dropped here: a phone quote stored `needs_review` waits for an operator
- * (AAP 0.5.6).
+ * Only the most recent capture batch of each source is kept, a batch being one fetch, one call or one operator entry; then, across
+ * those batches, each `(itemCategory, normalizedName)` keeps only its latest record, so repeated captures never double-weight an item.
+ * Two equally recent records of one item are separated by `SOURCE_PRIORITY` and then the smallest `id`. A record that is not
+ * `approved` is dropped here: a phone quote stored `needs_review` waits for an operator.
  */
 export function currentSet(rows: readonly PriceRow[], now: Date): PriceRow[] {
   const usable = rows.filter(
@@ -170,7 +156,6 @@ function compareRows(left: PriceRow, right: PriceRow): number {
   );
 }
 
-/** A code-unit string comparison, so the ordering never depends on the host locale. */
 function compareText(left: string, right: string): number {
   if (left === right) {
     return 0;
@@ -179,9 +164,8 @@ function compareText(left: string, right: string): number {
 }
 
 /**
- * The median of `values` in integer USD cents, an even count taking the mean of the two middle values rounded half
- * up (AAP 0.5.7): `Math.floor((lower + upper + 1) / 2)` is exact for non-negative integers. Callers check the set
- * for emptiness first, so an empty input is a programming error rather than a data condition.
+ * The median of `values` in integer USD cents, an even count taking the mean of the two middle values rounded half up:
+ * `Math.floor((lower + upper + 1) / 2)` is exact for non-negative integers. Callers check the set for emptiness first.
  */
 export function medianHalfUp(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right);
@@ -210,9 +194,8 @@ interface CategoryEstimate {
 type CategoryRule = (set: readonly PriceRow[]) => CategoryEstimate | null;
 
 /**
- * A restaurant, cafe or bar: the median main course plus the median non-alcoholic drink (AAP 0.5.7). A drink whose
- * `alcoholic` flag is `true` or unknown is excluded, and when no non-alcoholic drink exists the main course alone
- * counts. Starters and desserts never enter.
+ * A restaurant, cafe or bar: the median main course plus the median non-alcoholic drink. A drink whose `alcoholic` flag is `true` or
+ * unknown is excluded, and when no non-alcoholic drink exists the main course alone counts. Starters and desserts never enter.
  */
 function estimateFoodAndDrink(set: readonly PriceRow[]): CategoryEstimate | null {
   const mainPrices = pricesOf(set, (row) => row.itemCategory === 'main');
@@ -232,9 +215,8 @@ function estimateFoodAndDrink(set: readonly PriceRow[]): CategoryEstimate | null
 }
 
 /**
- * An activity: its lowest listed standard per-person ticket (AAP 0.5.7). A concession or group admission is never
- * used, and neither is a price that does not admit one person, so an activity priced only that way is left out of
- * the suggestions (AAP 0.5.6).
+ * An activity: its lowest listed standard per-person ticket. A concession or group admission is never used, and neither is a price
+ * that does not admit one person, so an activity priced only that way is left out of the suggestions.
  */
 function estimateActivity(set: readonly PriceRow[]): CategoryEstimate | null {
   const tickets = set.filter(
@@ -254,7 +236,6 @@ function estimateActivity(set: readonly PriceRow[]): CategoryEstimate | null {
   };
 }
 
-/** The category-to-rule table; every `PlaceCategory` has exactly one rule (AAP 0.5.7). */
 const CATEGORY_RULES: Readonly<Record<PlaceCategory, CategoryRule>> = {
   restaurant: estimateFoodAndDrink,
   cafe: estimateFoodAndDrink,
@@ -263,12 +244,11 @@ const CATEGORY_RULES: Readonly<Record<PlaceCategory, CategoryRule>> = {
 };
 
 /**
- * A place's per-person cost estimate for the meetup day, or `null` when its current price set cannot produce one
- * (AAP 0.5.7).
+ * A place's per-person cost estimate for the meetup day, or `null` when its current price set cannot produce one.
  *
- * The estimate comes only from {@link currentSet}, deduped per batch and per item. `priceSource` is the source
- * contributing the most `itemsUsed`, ties by `SOURCE_PRIORITY`, and `priceVerifiedAt` is the oldest `capturedAt`
- * among them. Nothing is interpolated, so `null` means the place is left out, never shown with a guessed price.
+ * The estimate comes only from {@link currentSet}, deduped per batch and per item. `priceSource` is the source contributing the most
+ * `itemsUsed`, ties by `SOURCE_PRIORITY`, and `priceVerifiedAt` is the oldest `capturedAt` among them. Nothing is interpolated, so
+ * `null` means the place is left out, never shown with a guessed price.
  */
 export function estimatePlace(
   category: PlaceCategory,
@@ -290,7 +270,6 @@ function pricesOf(set: readonly PriceRow[], matches: (row: PriceRow) => boolean)
   return set.filter(matches).map((row) => row.priceUsdCents);
 }
 
-/** A drink the source states is non-alcoholic; an unknown flag excludes it (AAP 0.5.7). */
 function isNonAlcoholicDrink(row: PriceRow): boolean {
   return row.itemCategory === 'drink' && row.alcoholic === false;
 }

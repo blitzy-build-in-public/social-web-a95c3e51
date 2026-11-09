@@ -1,15 +1,12 @@
 /**
  * Pair messaging end to end: the history route and the chat socket.
  *
- * `GET /v1/meetups/:id/messages` and `WS /v1/chat` are one conversation seen twice: one gate decides
- * both, one `Message` DTO describes what each returns, and a message written on the socket is in the
- * history the route answers with. The rules the cases turn on: the gate's refusals answer in the
- * contract's order, with a completed meetup keeping the conversation open; the access token arrives
- * in the `Sec-WebSocket-Protocol: bearer, <token>` subprotocol, the only channel a browser
- * `WebSocket` can offer, and a refusal is plain HTTP on a connection that is never upgraded; and one
- * accepted send stores one message and reaches the pair through Redis, which is what lets a
- * stateless API fan out. Delivery happens only through the pub/sub subscription, so both apps are
- * subscribed before a socket opens.
+ * `GET /v1/meetups/:id/messages` and `WS /v1/chat` are one conversation seen twice: one gate decides both, one `Message` DTO describes what
+ * each returns, and a message written on the socket is in the history the route answers with. The rules the cases turn on: the gate's
+ * refusals answer in the contract's order, with a completed meetup keeping the conversation open; the access token arrives in the
+ * `Sec-WebSocket-Protocol: bearer, <token>` subprotocol, the only channel a browser `WebSocket` can offer, and a refusal is plain HTTP on a
+ * connection that is never upgraded; and one accepted send stores one message and reaches the pair through Redis. Delivery happens only
+ * through the pub/sub subscription, so both apps are subscribed before a socket opens.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
@@ -84,11 +81,9 @@ interface RedisReadiness {
 }
 
 /**
- * Resolve once a Redis connection can serve a command, or fail the hook with a clear message.
- *
- * `pubsub.start()` registers the patterns through these connections, and a `client`-role connection
- * rejects a command issued before its first `ready` — without the wait the first subscribe attempt
- * fails and the module's retry is five seconds away, which is longer than a case waits for a frame.
+ * Resolve once a Redis connection can serve a command, or fail the hook with a clear message. `pubsub.start()` registers the patterns through
+ * these connections, and a `client`-role connection rejects a command issued before its first `ready` — without the wait the first subscribe
+ * attempt fails and the module's retry is five seconds away, longer than a case waits for a frame.
  */
 async function ready(connection: RedisReadiness): Promise<void> {
   if (connection.status === 'ready') return;

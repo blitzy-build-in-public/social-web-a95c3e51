@@ -1,23 +1,17 @@
 /**
- * Crawl blocklist and host normalization (AAP 0.5.6): the aggregator, delivery and review sites
- * whose menus the price pipeline never fetches, the host key every crawl decision is taken on —
- * lower case, without a port, a trailing dot or IPv6 brackets — and the suffixes that let one entry
- * cover a host's subdomains without letting `notyelp.com` pass as `yelp.com`.
+ * Crawl blocklist and host normalization (AAP 0.5.6): the aggregator, delivery and review sites whose menus the price
+ * pipeline never fetches, the host key every crawl decision is taken on — lower case, without a port, a trailing dot or IPv6
+ * brackets — and the suffixes that let one entry cover a host's subdomains without letting `notyelp.com` pass as `yelp.com`.
  *
- * A blocklisted domain is recorded `prohibited` with reason `blocklist`, and its places take the
- * phone fallback instead, so no price is ever taken from a review site (AAP 0.5.6, 0.12.2). Every
- * request of the menu pipeline passes this check — the entry URL, each redirect target, each
- * followed menu link and each browser request — because an allowed page must not reach, through a
- * redirect or a subresource, a domain the pipeline refuses on its own (AAP 0.5.6,
- * `apps/workers/src/menus/safe-fetch.ts`).
+ * A blocklisted domain is recorded `prohibited` with reason `blocklist`, and its places take the phone fallback instead, so no
+ * price is ever taken from a review site (AAP 0.5.6, 0.12.2). Every request of the menu pipeline passes this check — the entry
+ * URL, each redirect target, each followed menu link and each browser request — because an allowed page must not reach,
+ * through a redirect or a subresource, a domain the pipeline refuses on its own.
  *
- * The host helpers live here rather than in `crawl-policy.ts`, which the folder brief names for
- * them: `crawl-policy.ts` imports this module, so defining `domainKey` there would make the two
- * files import each other. It re-exports both helpers instead, so `import { domainKey } from
- * './crawl-policy.ts'` keeps working for every consumer.
- *
- * The configuration is read from disk once, at startup: no clock, no network, no database, and
- * nothing per request beyond a set lookup over the host's suffixes.
+ * The host helpers live here rather than in `crawl-policy.ts`, which the folder brief names for them: `crawl-policy.ts`
+ * imports this module, so defining `domainKey` there would make the two files import each other; it re-exports both helpers
+ * instead, so `import { domainKey } from './crawl-policy.ts'` keeps working. The configuration is read from disk once, at
+ * startup: no clock, no network, no database.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
@@ -28,19 +22,12 @@ import { CrawlBlocklist } from '@tablemate/shared';
 
 /** The workspace marker identifying the repository root (AAP 0.6.1). */
 const WORKSPACE_MARKER = 'pnpm-workspace.yaml';
-
 /** The blocklist configuration, relative to the repository root (AAP 0.5.6). */
 const BLOCKLIST_FILE = 'config/crawl-blocklist.json';
-
 /** The directory this module was loaded from: the walk's default starting point (AAP 0.8.1). */
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-
-/**
- * The domains the menu pipeline never fetches (AAP 0.5.6), held as normalized host keys
- * ({@link domainKey}) so that a decision is a plain set lookup.
- */
+/** The domains the menu pipeline never fetches (AAP 0.5.6), held as normalized host keys ({@link domainKey}) so that a decision is a plain set lookup. */
 export type Blocklist = { readonly domains: ReadonlySet<string> };
-
 /**
  * A host with the port of a `host:port` spelling cut (AAP 0.5.6).
  *
@@ -94,15 +81,7 @@ export function domainKey(host: string): string {
   return key;
 }
 
-/**
- * Every label-wise suffix of a host that a blocklist entry may name (AAP 0.5.6), most specific
- * first: `a.b.example.co.uk` yields `a.b.example.co.uk`, `b.example.co.uk`, `example.co.uk` and
- * `co.uk`, so an entry covers a host and its subdomains.
- *
- * Suffixes are cut on label boundaries only, never as substrings, which is what keeps
- * `notyelp.com` from matching an entry for `yelp.com`. An IP literal and a single-label host yield
- * themselves alone, and a suffix never drops to a single label, so `com` is not matchable.
- */
+/** Every label-wise suffix of a host that a blocklist entry may name (AAP 0.5.6), most specific first: `a.b.example.co.uk` yields `a.b.example.co.uk`, `b.example.co.uk`, `example.co.uk` and `co.uk`, so an entry covers a host and its subdomains. Suffixes are cut on label boundaries only, never as substrings, which is what keeps `notyelp.com` from matching an entry for `yelp.com`. An IP literal and a single-label host yield themselves alone, and a suffix never drops to a single label, so `com` is not matchable. */
 export function domainSuffixes(host: string): string[] {
   const key = domainKey(host);
   if (isIP(key) !== 0) {
@@ -116,14 +95,7 @@ export function domainSuffixes(host: string): string[] {
   return suffixes.length > 0 ? suffixes : [key];
 }
 
-/**
- * The repository root: the nearest ancestor of `from` holding `pnpm-workspace.yaml` (AAP 0.6.1).
- *
- * Both locations this module is loaded from walk to the same root — `apps/workers/src/menus` for
- * the TypeScript source the `tablemate-source` condition resolves, `apps/workers/dist/src/menus`
- * for the compiled JavaScript the workers image runs, whose `/app` holds the marker beside
- * `config/crawl-blocklist.json` (AAP 0.8.1).
- */
+/** The repository root: the nearest ancestor of `from` holding `pnpm-workspace.yaml` (AAP 0.6.1). Both locations this module is loaded from walk to the same root — `apps/workers/src/menus` for the TypeScript source the `tablemate-source` condition resolves, `apps/workers/dist/src/menus` for the compiled JavaScript the workers image runs, whose `/app` holds the marker beside `config/crawl-blocklist.json` (AAP 0.8.1). */
 export function findRepoRoot(from: string = MODULE_DIR): string {
   const start = path.resolve(from);
   for (let dir = start; ; dir = path.dirname(dir)) {
@@ -153,15 +125,7 @@ function formatIssues(
     .join('\n');
 }
 
-/**
- * Loads the crawl blocklist (AAP 0.5.6): `config/crawl-blocklist.json`, validated against
- * {@link CrawlBlocklist}, which rejects an unknown key, a host that is not already lower case and a
- * repeated domain, so a mistyped entry fails loudly at startup instead of being crawled.
- *
- * The read is synchronous on purpose: it happens once, before the menu pipeline accepts work, and
- * the returned blocklist is the immutable value every later fetch consults. A failure names the
- * offending path and what is wrong with it, and never echoes the file's content.
- */
+/** Loads the crawl blocklist (AAP 0.5.6): `config/crawl-blocklist.json`, validated against {@link CrawlBlocklist}, which rejects an unknown key, a host that is not already lower case and a repeated domain, so a mistyped entry fails loudly at startup instead of being crawled. The read is synchronous on purpose: it happens once, before the menu pipeline accepts work, and the returned blocklist is the immutable value every later fetch consults. A failure names the offending path and what is wrong with it, and never echoes the file's content. */
 export function loadBlocklist(repoRoot: string): Blocklist {
   const file = path.join(repoRoot, BLOCKLIST_FILE);
   let text: string;
@@ -186,10 +150,7 @@ export function loadBlocklist(repoRoot: string): Blocklist {
   return Object.freeze({ domains });
 }
 
-/**
- * Whether a host is blocklisted (AAP 0.5.6): true when the host is a blocklisted domain or a
- * subdomain of one, which is what stops `m.tripadvisor.com` while `nottripadvisor.com` passes.
- */
+/** Whether a host is blocklisted (AAP 0.5.6): true when the host is a blocklisted domain or a subdomain of one, which is what stops `m.tripadvisor.com` while `nottripadvisor.com` passes. */
 export function isBlocklisted(host: string, list: Blocklist): boolean {
   return domainSuffixes(host).some((suffix) => list.domains.has(suffix));
 }

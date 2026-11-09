@@ -10,59 +10,32 @@ import type {
   LlmResult,
   LlmUsage,
 } from './contract.ts';
-
-/**
- * The models `LLM_MODEL` may name (AAP 0.5.6): each used text-only, billed per input and output
- * token, supporting `text.format` `json_schema` structured outputs and the `POST
- * /v1/responses/input_tokens` count this profile rests on.
- */
+/** The models `LLM_MODEL` may name: each used text-only, billed per input and output token, supporting `text.format` `json_schema` structured outputs and the `POST /v1/responses/input_tokens` count this profile rests on. */
 export const SUPPORTED_MODELS = ['gpt-4.1-mini', 'gpt-4.1', 'gpt-5-mini'] as const;
-
 /** A model `LLM_MODEL` may name (AAP 0.5.6). */
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number];
-
 /** Whether `model` is one of {@link SUPPORTED_MODELS}, narrowable to {@link SupportedModel}. */
 export function isSupportedModel(model: string): model is SupportedModel {
   return (SUPPORTED_MODELS as readonly string[]).includes(model);
 }
-
-/**
- * The provider's documented minimum for `max_output_tokens` on `POST /v1/responses` ("integer below
- * minimum value.
- */
+/** The provider's documented minimum for `max_output_tokens` on `POST /v1/responses`. */
 export const OPENAI_MIN_OUTPUT_TOKENS = 16;
-
-/**
- * The client's own deadline for any call that does not pass one, standing at the ceiling AAP 0.11.1
- * sets for the language model ("language model 3 s in calls and 60 s in extraction").
- */
+/** The client's own deadline for any call that does not pass one, standing at the ceiling for the language model: 3 s in calls and 60 s in extraction. */
 export const OPENAI_DEFAULT_TIMEOUT_MS = 60_000;
-
-/**
- * What every call to the client carries: the caller's deadline, its abort signal and the retry
- * bound.
- */
+/** What every call to the client carries: the caller's deadline, its abort signal and the retry bound. */
 export interface OpenAiCallOptions {
   timeout?: number;
   signal?: AbortSignal;
   maxRetries?: number;
 }
-
-/**
- * The parts of a response this file reads (AAP 0.5.6): `output_text` is absent only on a client
- * that reports no text at all.
- */
+/** The parts of a response this file reads: `output_text` is absent only on a client that reports no text at all. */
 export interface OpenAiResponseSummary {
   output_text?: string | null;
   usage?: { input_tokens: number; output_tokens: number } | null;
   status?: string | null;
   incomplete_details?: unknown;
 }
-
-/**
- * The minimal structural shape of the SDK client this file calls, so a suite can inject a stub that
- * touches no network (`packages/server-core/test/unit/spend.test.ts`).
- */
+/** The minimal structural shape of the SDK client this file calls, so a suite can inject a stub that touches no network. */
 export interface OpenAiResponsesClient {
   readonly responses: {
     create(
@@ -77,19 +50,10 @@ export interface OpenAiResponsesClient {
     };
   };
 }
-
 type AssertAssignable<Actual extends Expected, Expected> = Actual;
-
-/**
- * The assertion itself: it stops compiling the moment the SDK client no longer fits the shape
- * above.
- */
+/** The assertion itself: it stops compiling the moment the SDK client no longer fits the shape above. */
 export type OpenAiClientIsAssignable = AssertAssignable<OpenAI, OpenAiResponsesClient>;
-
-/**
- * The one payload both calls are built from (AAP 0.5.6), in the fixed key order `model`,
- * `instructions`, `input`, `text`.
- */
+/** The one payload both calls are built from (AAP 0.5.6), in the fixed key order `model`, `instructions`, `input`, `text`. */
 export interface OpenAiResponsesPayload {
   model: string;
   instructions: string;
@@ -98,12 +62,7 @@ export interface OpenAiResponsesPayload {
     format: { type: 'json_schema'; name: string; schema: Record<string, unknown>; strict: true };
   };
 }
-
-/**
- * Build the payload the provider counts and then sends (AAP 0.5.6): the count endpoint receives
- * this object unchanged and `create` receives it plus `max_output_tokens` and `store`, so the two
- * payloads differ in nothing else.
- */
+/** Build the payload the provider counts and then sends (AAP 0.5.6): the count endpoint receives this object unchanged and `create` receives it plus `max_output_tokens` and `store`, so the two payloads differ in nothing else. */
 export function buildResponsesInput(request: LlmRequest, model: string): OpenAiResponsesPayload {
   const input = request.messages.map((message) => ({
     role: message.role,
@@ -127,20 +86,13 @@ export function buildResponsesInput(request: LlmRequest, model: string): OpenAiR
     },
   };
 }
-
-/**
- * What {@link createOpenAiAdapter} is given; `client` exists so a suite can inject a stub (AAP
- * 0.11.2).
- */
+/** What {@link createOpenAiAdapter} is given; `client` exists so a suite can inject a stub (AAP 0.11.2). */
 export interface OpenAiAdapterOptions {
   apiKey: string;
   model: string;
   client?: OpenAiResponsesClient;
 }
-
-/**
- * Build the OpenAI adapter for `options.model` under the request profile (AAP 0.3.1, AAP 0.5.6).
- */
+/** Build the OpenAI adapter for `options.model` under the request profile (AAP 0.3.1, AAP 0.5.6). */
 export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
   const { model } = options;
   if (!isSupportedModel(model)) {
@@ -153,12 +105,7 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
       maxRetries: 0,
       timeout: OPENAI_DEFAULT_TIMEOUT_MS,
     });
-  /**
-   * The provider's own count for the payload `complete` would send (AAP 0.5.6); nothing is sent and
-   * nothing is reserved by this call. @throws RangeError when `request.maxTokens` is below the
-   * provider's minimum, and LlmCountError when the count fails, times out or is not a count, in
-   * which case the request must not be sent.
-   */
+  /** The provider's own count for the payload `complete` would send (AAP 0.5.6); nothing is sent and nothing is reserved by this call. @throws RangeError when `request.maxTokens` is below the provider's minimum, and LlmCountError when the count fails, times out or is not a count, in which case the request must not be sent. */
   async function countInputTokens(request: LlmRequest, call: LlmCallOptions): Promise<number> {
     assertLlmRequest(request);
     assertSendableOutputBound(request.maxTokens);
@@ -175,13 +122,7 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
     }
     return tokens;
   }
-  /**
-   * Send the request once and return its reply (AAP 0.5.6); with `store: false` and no tools, no
-   * response state outlives the call. @throws LlmTimeoutError when the deadline elapses or the
-   * caller aborts, and LlmProviderError on any other failure. An unreadable usage is not such a
-   * failure: it is reported as `null`, so the whole reservation is charged, because tokens may have
-   * been consumed either way.
-   */
+  /** Send the request once and return its reply (AAP 0.5.6); with `store: false` and no tools, no response state outlives the call. @throws LlmTimeoutError when the deadline elapses or the caller aborts, and LlmProviderError on any other failure. An unreadable usage is not such a failure: it is reported as `null`, so the whole reservation is charged, because tokens may have been consumed either way. */
   async function complete(request: LlmRequest, call: LlmCallOptions): Promise<LlmResult> {
     assertLlmRequest(request);
     assertSendableOutputBound(request.maxTokens);
@@ -210,26 +151,22 @@ export function createOpenAiAdapter(options: OpenAiAdapterOptions): LlmAdapter {
   }
   return { provider: 'openai', model, countInputTokens, complete };
 }
-
 function callOptions(call: LlmCallOptions): OpenAiCallOptions {
   return call.signal === undefined
     ? { timeout: call.timeoutMs, maxRetries: 0 }
     : { timeout: call.timeoutMs, signal: call.signal, maxRetries: 0 };
 }
-
 function assertSendableOutputBound(maxTokens: number): void {
   if (maxTokens < OPENAI_MIN_OUTPUT_TOKENS) {
     throw new RangeError(`request.maxTokens must be at least ${OPENAI_MIN_OUTPUT_TOKENS}`);
   }
 }
-
 function isTimeoutOrAbort(error: unknown): boolean {
   if (error instanceof APIConnectionTimeoutError || error instanceof APIUserAbortError) {
     return true;
   }
   return error instanceof Error && error.name === 'AbortError';
 }
-
 function providerError(error: unknown): LlmError {
   if (isTimeoutOrAbort(error)) {
     const aborted =
@@ -241,7 +178,6 @@ function providerError(error: unknown): LlmError {
   }
   return new LlmProviderError({ cause: error });
 }
-
 function readUsage(usage: unknown): LlmUsage | null {
   if (typeof usage !== 'object' || usage === null) {
     return null;
@@ -255,7 +191,6 @@ function readUsage(usage: unknown): LlmUsage | null {
   }
   return { inputTokens, outputTokens };
 }
-
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;

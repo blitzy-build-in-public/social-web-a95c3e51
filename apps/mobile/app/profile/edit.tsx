@@ -125,10 +125,7 @@ const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}
 type Pressed = Readonly<{ 'aria-pressed': boolean }>;
 const pressedAttributes = (selected: boolean): Pressed => ({ 'aria-pressed': selected });
 
-/**
- * The web key-event fields the toolbar reads. react-native-web forwards the browser's own event,
- * while React Native declares no key events at all, so the shape is named here.
- */
+/** The web key-event fields the toolbar reads: react-native-web forwards the browser's own event, while React Native declares no key events at all. */
 type WebKeyEvent = Readonly<{
   altKey?: boolean;
   ctrlKey?: boolean;
@@ -137,18 +134,11 @@ type WebKeyEvent = Readonly<{
   preventDefault?: () => void;
 }>;
 
-/**
- * `aria-orientation` tells assistive technology which way a toolbar's arrow keys move, and React
- * Native declares it on no prop. Naming the container's own type keeps the attribute explicit
- * instead of an untyped literal, the way `SECTION_HEADING` names the level a heading renders at.
- */
+/** `aria-orientation` tells assistive technology which way a toolbar's arrow keys move, and React Native declares it on no prop; naming the container's own type keeps the attribute explicit instead of an untyped literal. */
 type ToolbarAttributes = ViewProps & Readonly<{ 'aria-orientation': 'horizontal' }>;
 const TOOLBAR_ATTRIBUTES: ToolbarAttributes = { 'aria-orientation': 'horizontal' };
 
-/**
- * How each arrow key steps through the chips. The chips are one row at every width, so Up and Down
- * move along that row exactly as Left and Right do.
- */
+/** How each arrow key steps through the chips: the chips are one row at every width, so Up and Down move along that row exactly as Left and Right do. */
 const ARROW_STEP: Readonly<Record<string, 1 | -1>> = {
   ArrowLeft: -1,
   ArrowUp: -1,
@@ -161,10 +151,7 @@ function sortTags(tags: readonly InterestTag[]): InterestTag[] {
 function toggled(tags: readonly InterestTag[], tag: InterestTag): InterestTag[] {
   return tags.includes(tag) ? tags.filter((chosen) => chosen !== tag) : sortTags([...tags, tag]);
 }
-/**
- * The next enabled chip from `from`, stepping by `step` and wrapping at either end of the vocabulary.
- * `from` itself comes back when no other chip is enabled, which leaves focus where it is.
- */
+/** The next enabled chip from `from`, stepping by `step` and wrapping at either end of the vocabulary; `from` itself comes back when no other chip is enabled, which leaves focus where it is. */
 function enabledNeighbour(
   from: InterestTag,
   step: 1 | -1,
@@ -220,16 +207,10 @@ interface ChipProps {
   readonly tag: InterestTag;
   readonly selected: boolean;
   readonly disabled: boolean;
-  /**
-   * The chip's place in the toolbar's tab order: `0` for the current chip and `-1` for every other,
-   * and nothing off web, where no platform uses a tab order and each chip keeps the focusability it
-   * had.
-   */
+  /** The chip's place in the toolbar's tab order: `0` for the current chip and `-1` for every other, and nothing off web, where each chip keeps the focusability it had. */
   readonly tabIndex?: 0 | -1 | undefined;
   readonly onPress: () => void;
-  /** Called when the chip takes focus, so the toolbar remembers it as the current one. */
   readonly onFocused: () => void;
-  /** Called with the chip's element on mount and with `null` on unmount. */
   readonly registerRef: (tag: InterestTag, node: View | null) => void;
 }
 function InterestChip({
@@ -293,28 +274,14 @@ interface InterestToolbarProps {
   readonly onToggle: (tag: InterestTag) => void;
 }
 
-/**
- * The interest chips as one toolbar of toggle buttons (AAP 0.5.8, WCAG 2.4.1): a single tab stop for
- * the whole row with the arrow keys moving between the chips, which is the WAI-ARIA pattern for a
- * row of buttons. Tabbed chip by chip the row costs 31 presses — more than the rest of the screen
- * put together — for a keyboard user who may only want the field below it.
- *
- * Exactly one chip is in the tab order: the chip the keyboard last moved to, or the first enabled
- * chip until then. A chip the three-tag limit disabled is never that chip and never takes focus,
- * because the arrows, Home and End all step over it. Everything else about a chip is unchanged: its
- * `role`, `aria-pressed`, `testID`, styling, disabled logic and press behaviour, and the counter
- * below the row still announces the number chosen.
- */
+/** The interest chips as one toolbar of toggle buttons (WCAG 2.4.1): a single tab stop for the whole row with the arrow keys moving between the chips — the WAI-ARIA pattern for a row of buttons, which saves a keyboard user 31 presses. Exactly one chip is in the tab order: the chip the keyboard last moved to, or the first enabled chip until then, and a chip the three-tag limit disabled is never that chip and never takes focus. Everything else about a chip is unchanged. */
 function InterestToolbar({ chosen, atLimit, onToggle }: InterestToolbarProps): ReactElement {
-  // Each chip's element, which the arrow keys call `focus()` on. react-native-web gives a
-  // `Pressable`'s ref the browser element itself, and React Native's own `View` type carries
-  // `focus()`, so the chip's handle is the same `View` type on both platforms.
+  // Each chip's element, which the arrow keys call `focus()` on: react-native-web gives a `Pressable`'s ref the browser element itself and React Native's own `View` type carries `focus()`, so the chip's handle is the same type on both platforms.
   const handles = useRef(new Map<InterestTag, View>());
   const [focusedTag, setFocusedTag] = useState<InterestTag | null>(null);
   const isDisabled = (tag: InterestTag): boolean => !chosen.includes(tag) && atLimit;
   const enabled = INTEREST_TAGS.filter((tag) => !isDisabled(tag));
-  // The tab stop falls back to the first enabled chip when the remembered one stops being usable,
-  // which is what reaching the tag limit while an unselected chip is current would do.
+  // The tab stop falls back to the first enabled chip when the remembered one stops being usable, which is what reaching the tag limit while an unselected chip is current would do.
   const current =
     focusedTag !== null && !isDisabled(focusedTag) ? focusedTag : (enabled[0] ?? null);
   const rememberHandle = useCallback((tag: InterestTag, node: View | null): void => {
@@ -326,14 +293,12 @@ function InterestToolbar({ chosen, atLimit, onToggle }: InterestToolbarProps): R
     handles.current.get(tag)?.focus();
   }, []);
   const onKeyDown = (event: WebKeyEvent): void => {
-    // Alt, Ctrl and Meta belong to the browser's own shortcuts — Alt+Left is Back — so the chips
-    // answer to the four arrows, Home and End alone and let every other key through untouched.
+    // Alt, Ctrl and Meta belong to the browser's own shortcuts — Alt+Left is Back — so the chips answer to the four arrows, Home and End alone and let every other key through untouched.
     if (event.altKey === true || event.ctrlKey === true || event.metaKey === true) return;
     if (current === null) return;
     const step = event.key === undefined ? undefined : ARROW_STEP[event.key];
     if (step !== undefined) {
-      // The arrows and Home/End scroll the page when the browser acts on them itself, so a key this
-      // handler acts on is taken from the browser here.
+      // The arrows and Home/End scroll the page when the browser acts on them itself, so a key this handler acts on is taken from the browser here.
       event.preventDefault?.();
       focusTag(enabledNeighbour(current, step, isDisabled));
       return;
@@ -343,7 +308,6 @@ function InterestToolbar({ chosen, atLimit, onToggle }: InterestToolbarProps): R
     const edge = event.key === 'Home' ? enabled[0] : enabled[enabled.length - 1];
     if (edge !== undefined) focusTag(edge);
   };
-  // React Native has no key events, so the handler reaches the container on web only.
   const toolbarKeys: { onKeyDown?: (event: WebKeyEvent) => void } =
     Platform.OS === 'web' ? { onKeyDown } : {};
   return (
@@ -365,12 +329,7 @@ function InterestToolbar({ chosen, atLimit, onToggle }: InterestToolbarProps): R
             tabIndex={Platform.OS === 'web' ? (tag === current ? 0 : -1) : undefined}
             onPress={() => {
               onToggle(tag);
-              // The toggled chip keeps focus, which is what the pattern this row implements expects
-              // (WAI-ARIA toolbar: the arrow keys continue from the button just pressed). The app
-              // lets go of the control a press arrived on, so that a navigation is not started from
-              // inside a screen that is being hidden (`app/_layout.tsx`), and a chip presses no
-              // route — so the press asks for the chip's own focus back, and the reader's place in
-              // the row is not lost to the page body.
+              // The toggled chip keeps focus, which the WAI-ARIA toolbar pattern expects; the app releases focus from the control a press arrived on (`app/_layout.tsx`), so the chip asks for its own focus back.
               focusTag(tag);
             }}
             onFocused={() => setFocusedTag(tag)}
@@ -537,17 +496,13 @@ export default function EditProfileScreen(): ReactElement {
   const me = useMe();
   const session = useSession();
   const errorCode = me.isError ? (isApiError(me.error) ? me.error.code : 'invalid_response') : null;
-  // A restore that ran, failed and proved nothing leaves the own-profile read unissued — it is
-  // enabled only for a signed-in session — so this screen has no error of its own to show. The
-  // failure's own code is shown and retried in its place: the store's `loading` alone cannot tell
-  // this state from a restore that is still running.
+  // The own-profile read is unissued while the restore has not proved a session, so the failure's own code is shown and retried in its place.
   const restoreCode = session.status === 'loading' ? session.restoreFailureCode : undefined;
   const loadCode = errorCode ?? restoreCode ?? null;
   const loadMessage = loadCode === null ? null : userMessageFor(loadCode);
   const announced = useRef<string | null>(null);
   const profile = me.data;
-  // A read that failed on its own is retried by refetching it. A read that was never issued is not:
-  // what has to run again is the restore, and the read follows the session it installs.
+  // A read that failed on its own is retried by refetching it; one that was never issued is not, because what has to run again is the restore.
   const reload = (): void => {
     if (restoreCode === undefined) void me.refetch();
     else void bootstrap();
@@ -586,8 +541,7 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   body: { ...typography.body, color: colors.text },
   chip: { ...CHIP_CENTER, ...CHIP_EDGE, ...CHIP_FILL, minHeight: MIN_TOUCH_TARGET, ...CHIP_PAD },
-  // Faded as well as recoloured: the muted surface and label alone differ from an enabled chip by one
-  // step of fill, which a reader cannot tell from a chip they can still press (AAP 0.5.8).
+  // Faded as well as recoloured: the muted surface and label alone differ from an enabled chip by one step of fill, which a reader cannot tell from a chip they can still press.
   chipDisabled: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

@@ -21,8 +21,8 @@ const API_SOURCE_DIR = 'apps/api/src';
 const API_DOCKERFILE = 'apps/api/Dockerfile';
 
 /**
- * The repository root: the nearest ancestor of this file's directory that holds the workspace marker.
- * Walking up keeps the suite independent of where Vitest was started.
+ * The repository root: the nearest ancestor of this file's directory that holds the workspace marker, so
+ * the suite is independent of where Vitest was started.
  */
 function findRepoRoot(): string {
   for (let dir = path.dirname(fileURLToPath(import.meta.url)); ; dir = path.dirname(dir)) {
@@ -35,7 +35,6 @@ function findRepoRoot(): string {
   }
 }
 
-/** The repository root, resolved once. */
 const REPO_ROOT = findRepoRoot();
 
 /** Every file under a repository-relative directory, as sorted repository-relative POSIX paths. */
@@ -45,14 +44,12 @@ function filesUnder(relativeDir: string): string[] {
     .sort();
 }
 
-/** The extensions the syntax scan parses, and a file read from the repository. */
 const SOURCE_EXTENSIONS = new Set(['.ts', '.mts', '.cts', '.js']);
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(path.join(REPO_ROOT, relativePath), 'utf8');
 }
 
-/** Every TypeScript or JavaScript file under `apps/api/src`, and every JSON file beside them. */
 const API_SOURCE_FILES = filesUnder(API_SOURCE_DIR).filter((file) =>
   SOURCE_EXTENSIONS.has(path.extname(file)),
 );
@@ -80,8 +77,7 @@ interface DockerStage {
 
 /**
  * Parses a Dockerfile into its stages: comment lines dropped, backslash continuations joined so a
- * multi-line `RUN` is one instruction, then the lines split at `FROM`, each `FROM` opening a stage that
- * holds everything up to the next one.
+ * multi-line `RUN` is one instruction, then the lines split at `FROM`.
  */
 function parseDockerfile(text: string): DockerStage[] {
   const instructions: string[] = [];
@@ -112,7 +108,6 @@ function parseDockerfile(text: string): DockerStage[] {
   return stages;
 }
 
-/** The stages of `apps/api/Dockerfile`, parsed once. */
 const DOCKER_STAGES = parseDockerfile(readRepoFile(API_DOCKERFILE));
 
 /**
@@ -130,8 +125,8 @@ function runtimeStage(): DockerStage {
 /**
  * What the runtime stage may not contain, one pattern per reason, read against its COPY, ADD and RUN
  * instructions. A `.wasm` inside `node_modules` is deliberately not one: snarkjs' verification code and
- * the curve code ffjavascript builds for it arrive with the production dependency install, never
- * through an explicit `COPY` of a `.wasm` path, which is what the third row would find.
+ * the curve code ffjavascript builds for it arrive with the production dependency install, never through
+ * an explicit `COPY` of a `.wasm` path, which is what the third row would find.
  */
 const FORBIDDEN_IN_RUNTIME: readonly { readonly what: string; readonly pattern: RegExp }[] = [
   { what: 'proving key', pattern: /\.zkey\b/ },
@@ -148,13 +143,12 @@ const FORBIDDEN_IN_RUNTIME: readonly { readonly what: string; readonly pattern: 
   { what: 'test harness', pattern: /dist\/test|test\/support/ },
 ];
 
-/** The two instruction kinds that copy files into an image. */
 const COPY_KINDS = new Set(['COPY', 'ADD']);
 
 /**
  * The source paths the COPY and ADD instructions of a stage name: every argument before the last, which
- * is the destination. Each path loses the image's `/app` prefix and any trailing slash, so it compares
- * the way the workspace spells it.
+ * is the destination, each losing the image's `/app` prefix and any trailing slash so it compares the way
+ * the workspace spells it.
  */
 function copySources(commands: readonly string[]): string[] {
   const sources: string[] = [];
@@ -221,8 +215,8 @@ function parseSource(fileName: string, sourceText: string): ts.SourceFile {
 }
 
 /**
- * Calls `visit` on every node of a tree, parents before children. Comments are not nodes, which is what
- * keeps a TSDoc line saying "never call groth16.fullProve" out of the scan's results.
+ * Calls `visit` on every node of a tree, parents before children. Comments are not nodes, which keeps a
+ * TSDoc line saying "never call groth16.fullProve" out of the scan's results.
  */
 function walkTree(root: ts.Node, visit: (node: ts.Node) => void): void {
   visit(root);
@@ -241,8 +235,8 @@ function accessedName(
 }
 
 /**
- * The last static name of an expression: `snarkjs.groth16`, `a.snarkjs.groth16` and `snarkjs['groth16']`
- * all read `groth16`, so the receiver rules see through either spelling.
+ * The last static name of an expression: `snarkjs.groth16`, `a.snarkjs.groth16` and `snarkjs['groth16']` all
+ * read `groth16`, so the receiver rules see through either spelling.
  */
 function lastAccessedName(expression: ts.Expression): string | undefined {
   if (ts.isIdentifier(expression)) {
@@ -294,8 +288,8 @@ function requiredSpecifier(call: ts.CallExpression): string | undefined {
 /**
  * Every proving use in one source text, as `fileName:line:kind` (AAP 0.12.2): a Groth16 proof call, the
  * `fullProve` name wherever it appears, any access on `plonk`, `fflonk` or `wtns`, and a specifier that
- * reaches `rapidsnark` or `mopro` through an import, an export, an `import … = require`, a dynamic
- * import, a `require` or a `createRequire`. The Groth16 *verification* is not a proving use.
+ * reaches `rapidsnark` or `mopro` through an import, an export, a `require` or a `createRequire`. The
+ * Groth16 *verification* is not a proving use.
  */
 function findProvingUses(sourceText: string, fileName: string): string[] {
   const file = parseSource(fileName, sourceText);
@@ -357,8 +351,7 @@ type ScanCase = readonly [label: string, source: string, flagged: boolean];
 
 /**
  * The scan's own cases (AAP 0.12.2): the three Groth16 spellings and the destructured binding, the two
- * witness-only receivers, the three ways a native prover is reached, and the two shapes that stay clean
- * — the verification call the API does make, and a comment naming the call it must not.
+ * witness-only receivers, the three ways a native prover is reached, and the two shapes that stay clean.
  */
 const SCAN_CASES: readonly ScanCase[] = [
   ['reports a Groth16 full proof', 'snarkjs.groth16.fullProve(i, w, z);', true],
@@ -438,10 +431,9 @@ const GENERATOR_INPUTS = interfaceMembers(readRepoFile(CIRCUIT_INPUTS_FILE), 'Ci
 /**
  * The names of {@link GENERATOR_INPUTS} that are not private, and so may legitimately key a schema.
  *
- * `registryRoot` and `nullifierSalt` are the circuit's two *public* inputs, and `anchor`,
- * `terminator`, `charset` and `dateFormat` are the issuer's extraction template — all published by
- * `GET /v1/zk/config`, because the device cannot build inputs without them (AAP 0.5.4, AAP 0.5.5).
- * `anchor` is the template's field name in `IssuerTemplate`, beside the generator's own `anchors`.
+ * `registryRoot` and `nullifierSalt` are the circuit's two *public* inputs, and `anchor`, `terminator`,
+ * `charset` and `dateFormat` are the issuer's extraction template — all published by `GET /v1/zk/config`
+ * (AAP 0.5.4, AAP 0.5.5). `anchor` is the template's field name in `IssuerTemplate`.
  */
 const PUBLISHED_INPUT_NAMES = new Set([
   'registryRoot',
@@ -497,11 +489,9 @@ interface SchemaTree {
  * Every object key reachable from a schema (AAP 0.12.2).
  *
  * The walk follows the children each kind of Zod 4 definition holds — an object's `shape`, an array's
- * `element`, the `innerType` of an optional, a nullable, a default, a readonly, a non-optional or a
- * catch, a union's or discriminated union's `options`, a pipe's `in` and `out`, an intersection's `left`
- * and `right`, a tuple's `items`, a record's `valueType` and a lazy's `getter` — and keeps a visited
- * set, so a recursive schema terminates. Keys come off the definitions themselves, never off a source
- * text, which is what keeps a constant such as `Stripe-Signature` from counting as a key.
+ * `element`, the `innerType` of an optional, a nullable, a default, a readonly, a non-optional or a catch,
+ * a union's `options`, a pipe's `in` and `out`, an intersection's `left` and `right`, a tuple's `items`, a
+ * record's `valueType` and a lazy's `getter` — and keeps a visited set, so a recursive schema terminates.
  */
 function walkSchema(root: unknown): SchemaTree {
   const seen = new Set<z.ZodType>();
@@ -583,7 +573,6 @@ function keysOf(value: unknown): readonly string[] {
   return def?.type === 'object' ? Object.keys(def.shape ?? {}) : [];
 }
 
-/** Every key of a parsed JSON value, at any depth. */
 function collectKeys(value: unknown, keys: Set<string>): void {
   if (Array.isArray(value)) {
     for (const item of value) {

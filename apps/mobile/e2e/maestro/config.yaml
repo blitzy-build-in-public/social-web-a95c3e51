@@ -1,21 +1,16 @@
-# Maestro workspace configuration: it fixes the order this folder's native end-to-end flows run in, which
-# the magic-link budget requires. POST /v1/auth/magic-link allows five links per address per hour
-# (AAP 0.5.4), and actor A has two per platform: the device sign-in in criterion1-initiator, which
-# reachability reuses, and the API-side counterpart sign-in in criterion1-recipient. Maestro's own
-# discovery order does not hold that — it is undocumented and is not the file-name order — and here it
-# reaches reachability first: with no session on the device reachability spends one of A's links and ends
-# signed out, because its last capability deletes a throwaway account, so criterion1-initiator must spend
-# a second device link for A.
+# Maestro workspace configuration: it fixes the order these native flows run in, which the magic-link
+# budget requires — POST /v1/auth/magic-link allows five links per address per hour (AAP 0.5.4) and
+# actor A has two per platform, one spent by criterion1-initiator's device sign-in (reachability reuses
+# that session) and one by criterion1-recipient's API-side sign-in. Maestro's own discovery order is
+# undocumented and is not the file-name order: reachability first, with no session on the device, spends
+# one of A's links and ends signed out, so criterion1-initiator must spend a second.
 #
 # Every entry matches its flow's header `name`, which is also its file stem. zk-bench.yaml is absent
-# deliberately: it carries the `bench` tag and an end-to-end run must never select it. Tag selection stays
-# on the command line (`--include-tags e2e`, passed by e2e:native), so no flows/includeTags/excludeTags key
-# appears here, and continueOnFailure: false stops the rest of the sequence as soon as one flow fails, so a
-# broken run does not spend the remaining flows' links.
-#
-# Maestro 2.12.1 mishandles a run whose tag filter drops a listed flow — issue #1681: the ordered sequence
-# silently loses entries, or the run aborts with "Could not find flows needed for execution in order" —
-# so never run this folder with a filter that excludes one of the three.
+# deliberately (the `bench` tag; tag selection stays on the command line, so no flows/includeTags/
+# excludeTags key appears, and continueOnFailure: false stops the sequence at the first failure so a
+# broken run does not spend the remaining links). Never run this folder with a filter that drops a
+# listed flow: Maestro 2.12.1 loses ordered entries silently or aborts with "Could not find flows
+# needed for execution in order" (#1681).
 executionOrder:
   continueOnFailure: false
   flowsOrder:

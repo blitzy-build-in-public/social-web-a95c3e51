@@ -1,20 +1,16 @@
-# Criterion 1 on native with the device user playing the recipient (AAP 0.11.2, AAP 0.12.1). It is
-# criterion1-initiator.yaml with the two roles swapped: the device is actor B, the recipient, who accepts
-# and locks the proposal on its own screen, checks in at the venue with the console's rotating code and
-# reports a problem; actor A is the initiator, who proposes, checks in and drives the operator steps
-# through the API. Every UI step of both roles therefore runs on each platform.
+# Criterion 1 on native with the device user as the recipient (AAP 0.11.2, AAP 0.12.1): the roles of
+# criterion1-initiator.yaml swapped — the device is actor B, who accepts and locks the proposal, checks in
+# with the console's rotating code and reports a problem, while actor A proposes, checks in and drives the
+# operator steps through the API. Every UI step of both roles therefore runs on each platform.
 #
-# No mocked payment path is used: both holds are real Stripe test-mode authorizations, so the walk runs
-# only where the stack was started with test-mode keys; in mock mode it prints one E2E_BLOCKED line and
-# touches no screen.
-#
-# Magic links are the scarce resource — the route allows five an hour per address (AAP 0.5.4) — so each of
-# this flow's three accounts spends exactly one: A's second and last on this platform, B's second and
-# last, and one per-platform operator, which `prepare-maestro` granted.
-#
-# Maestro binds a literal flow-header value over a command-line `-e`, so every default below reads the
-# incoming value first. API_URL and MAILPIT_URL are the origins the harness scripts' own HTTP requests
-# use, and DEV_CLIENT_URL is the expo-development-client project link a development build needs.
+# No mocked payment path is used: both holds are real Stripe test-mode authorizations, so the walk runs only
+# where the stack was started with test-mode keys; in mock mode it prints one E2E_BLOCKED line and touches
+# no screen. Magic links are the scarce resource — five an hour per address (AAP 0.5.4) — so each of this
+# flow's three accounts spends exactly one: A's second and last on this platform, B's second and last, and
+# one per-platform operator, which `prepare-maestro` granted. Maestro binds a literal flow-header value over
+# a command-line `-e`, so every default below reads the incoming value first: API_URL and MAILPIT_URL are the
+# origins the harness scripts' own HTTP requests use, and DEV_CLIENT_URL is the expo-development-client
+# project link a development build needs.
 appId: com.tablemate.app
 name: criterion1-recipient
 tags: [e2e, stripe-test]
@@ -24,17 +20,13 @@ env:
   STRIPE_MODE: ${STRIPE_MODE || 'mock'}
   DEV_CLIENT_URL: ${DEV_CLIENT_URL || ''}
 ---
-# The harness's fixture data: both actors, this platform's operator for this flow, the partner venue with
-# its city and console secret, and the stay window. apps/mobile/e2e/playwright/support/api-actor.ts wrote
-# it in its `prepare-maestro` run, which scripts/e2e.ts performs before any flow; it carries no proof and
-# no token, each of this flow's three accounts signing in with a link of its own.
+# The harness's fixture data: both actors, this platform's operator, the partner venue with its city and
+# console secret, and the stay window. It carries no proof and no token.
 - runScript:
     file: ../../../../.local/e2e/fixture-proofs.js
-
 # The fixture and the stack must agree on Stripe: one prepared in mock mode cannot drive a test-mode
 # walk, and the first hold would be the place the disagreement surfaced.
 - evalScript: "${output.e2e.stripeMode === STRIPE_MODE ? '' : (function () { throw new Error('the fixture was prepared in stripe mode ' + output.e2e.stripeMode + ', not ' + STRIPE_MODE) })()}"
-
 # Without test-mode keys no hold can be authorized, so the walk reports the same blocked line the web
 # suite writes and ends passing, having touched no screen (AAP 0.11.2).
 - evalScript: "${console.log(STRIPE_MODE === 'test' ? 'E2E_RUN criterion1-recipient ' + maestro.platform : 'E2E_BLOCKED criterion1-recipient ' + maestro.platform + ' Blocked — Stripe test-mode keys not supplied')}"
@@ -224,11 +216,10 @@ env:
                 visible:
                   id: tab-discover
                 timeout: 60000
-      # B's saved card: accepting places a real test-mode hold, so a card must be on the customer. The card
-      # is entered inside Stripe's own sheet and nowhere else, so no card number reaches the app, the API or
-      # a log line; the fields are the SDK's own and are found by their labels, and `prepare-maestro` has
-      # already saved a card, so the entry is conditional and the sheet's primary control is pressed either
-      # way.
+      # B's saved card: accepting places a real test-mode hold, so a card must be on the customer, and it is
+      # entered inside Stripe's own sheet and nowhere else — no card number reaches the app, the API or a log
+      # line, and the fields are the SDK's own, found by their labels. `prepare-maestro` has already saved one, so
+      # the entry is conditional and the sheet's primary control is pressed either way.
       - tapOn:
           id: tab-profile
       # Scrolled for: the card row sits below the identity block and its counters on Profile.
@@ -270,7 +261,6 @@ env:
           visible:
             id: payment-saved
           timeout: 60000
-      # A pushed screen hides the tab bar; the app's own back control returns to the tabs.
       - runFlow:
           when:
             platform: iOS
@@ -336,7 +326,6 @@ env:
       - setLocation:
           latitude: ${output.e2e.venue.lat}
           longitude: ${output.e2e.venue.lng}
-      # B checks in with the console's rotating code, read from the route the venue console renders.
       - scrollUntilVisible:
           element:
             id: meetup-check-in

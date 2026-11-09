@@ -1,17 +1,16 @@
 /**
- * Sessions, refresh rotation with reuse detection, and logout (AAP 0.3.3, 0.5.1, 0.5.2, 0.5.4, 0.11.2).
+ * Sessions, refresh rotation with reuse detection, and logout.
  *
- * A session row *is* the refresh token: only its SHA-256 digest is stored, and `Session.id` is the
- * `sid` claim of every access token the session mints, so revoking the row is what ends them. Rotation
- * marks the presented row `rotatedAt` and `revokedAt` and mints a fresh row; a token presented after
- * it was rotated away is evidence that two parties hold it, so every live session of the account is
- * revoked, the successor included, instead of issuing another pair.
+ * A session row *is* the refresh token: only its SHA-256 digest is stored, and `Session.id` is the `sid` claim of
+ * every access token the session mints, so revoking the row is what ends them. Rotation marks the presented row
+ * `rotatedAt` and `revokedAt` and mints a fresh row; a token presented after it was rotated away is evidence that
+ * two parties hold it, so every live session of the account is revoked, the successor included.
  *
- * Three orderings are deliberate. The account-deletion write fence runs before any session write and
- * before the session row is locked, the order `DELETE /me` uses, because the reverse one would let the
- * two transactions deadlock. Reuse is tested before revocation, since a rotated row is revoked too and
- * the reuse branch is the one that must also revoke the successor. And the reuse branch returns
- * instead of throwing, because a throw inside `transact` would roll back the revocation it wrote.
+ * Three orderings are deliberate: the account-deletion write fence runs before any session write and before the
+ * session row is locked, the order `DELETE /me` uses, because the reverse one would deadlock; reuse is tested before
+ * revocation, since a rotated row is revoked too and the reuse branch is the one that must also revoke the successor;
+ * and the reuse branch returns instead of throwing, because a throw inside `transact` would roll back the revocation
+ * it wrote.
  */
 import { Prisma, type DbTx } from '@tablemate/db';
 import {
@@ -35,13 +34,10 @@ import { transact } from '../outbox/write.ts';
 // Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
-/** A refresh token's lifetime: 30 days, granted again on every rotation (AAP 0.5.2). */
+/** A refresh token's lifetime: 30 days, granted again on every rotation. */
 const REFRESH_TOKEN_TTL_MS = REFRESH_TOKEN_TTL_DAYS * DAY_MS;
 
-/**
- * The session row the rotation path acts on, as the locking read returns it; `created_at` is
- * deliberately absent, because no rule reads it.
- */
+/** The session row the rotation path acts on; `created_at` is deliberately absent, because no rule reads it. */
 interface LockedSessionRow {
   readonly id: string;
   readonly expires_at: Date;
@@ -60,9 +56,9 @@ type RefreshOutcome =
       readonly refreshToken: string;
     };
 /**
- * Creates one session row inside the caller's transaction: the digest of a fresh 32-byte token and an
- * expiry 30 days beyond the injected clock, so every rotation grants a fresh 30 days. It never opens a
- * transaction of its own, so the session commits or rolls back with the change it belongs to (AAP 0.5.2).
+ * Creates one session row inside the caller's transaction: the digest of a fresh 32-byte token and an expiry 30 days
+ * beyond the injected clock, so every rotation grants a fresh 30 days. It opens no transaction of its own, so the
+ * session commits or rolls back with the change it belongs to.
  */
 export async function createSession(
   tx: DbTx,
@@ -88,9 +84,9 @@ export async function createSession(
 }
 
 /**
- * Mints the pair a verified caller receives: a 15-minute access token for the session, and the raw
- * refresh token that session was created with, which the row holds only as a digest — hence this
- * departure from the plan's `{ userId, role, sessionId }` form (AAP 0.3.3, 0.5.4).
+ * Mints the pair a verified caller receives: a 15-minute access token for the session, and the raw refresh token that
+ * session was created with, which the row holds only as a digest — hence this departure from the plan's
+ * `{ userId, role, sessionId }` form.
  */
 export async function issueTokens(
   services: Pick<AppServices, 'env' | 'clock'>,
@@ -110,14 +106,13 @@ export async function issueTokens(
 }
 
 /**
- * Rotates a refresh token, or refuses it (AAP 0.5.4, 0.11.2).
+ * Rotates a refresh token, or refuses it.
  *
- * The digest resolves the account, whose row is share-locked for the fence, and the session row is
- * locked after it and the decision made from that locked row, so two concurrent refreshes of one token
- * are serialized: the second waits, sees `rotatedAt` and is treated as reuse. Clients must refresh
- * single-flight. A session that was logged out, revoked or expired is refused on its own; a rotated
- * token proves it was copied, so every live session of the account is revoked in the same transaction,
- * its cache entries dropped and the invalidation published after the commit, and then refused.
+ * The digest resolves the account, whose row is share-locked for the fence, and the session row is locked after it and
+ * the decision made from that locked row, so two concurrent refreshes of one token are serialized: the second waits,
+ * sees `rotatedAt` and is treated as reuse — clients must refresh single-flight. A session that was logged out, revoked
+ * or expired is refused on its own; a rotated token proves it was copied, so every live session of the account is
+ * revoked in the same transaction, its cache entries dropped and the invalidation published after the commit.
  */
 export async function refresh(
   services: AppServices,
@@ -175,7 +170,7 @@ export async function refresh(
   });
   if (outcome.kind === 'reuse') {
     // After the commit, so every instance drops its cache entries for the revoked sessions and closes
-    // that account's sockets (AAP 0.3.2, 0.5.3).
+    // that account's sockets.
     await invalidateUserSessions(services, outcome.userId, outcome.sessionIds);
     services.logger.warn(
       { event: 'refresh_reuse_detected', userId: outcome.userId },
@@ -193,15 +188,13 @@ export async function refresh(
 }
 
 /**
- * Ends one session: `POST /v1/auth/logout` (AAP 0.5.4).
+ * Ends one session: `POST /v1/auth/logout`.
  *
- * The caller's own session is revoked, so no request can end another account's session; the
- * call is idempotent and runs behind the account-deletion write fence, which refuses it with the
- * same `401 token_invalid` every other mutation answers (AAP 0.5.3). Revoking the row ends the
- * session for HTTP; the socket it may still hold is ended by `invalidateSession`, which drops its
- * cache entry and publishes the session-scoped invalidation after the commit, so every API
- * instance closes that session's sockets and the account's other sessions keep theirs (AAP 0.5.3,
- * 0.5.4).
+ * The caller's own session is revoked, so no request can end another account's session; the call is idempotent and
+ * runs behind the account-deletion write fence, which refuses it with the same `401 token_invalid` every other
+ * mutation answers. Revoking the row ends the session for HTTP, and the socket it may still hold is ended by
+ * `invalidateSession`, which drops its cache entry and publishes the session-scoped invalidation after the commit, so
+ * every API instance closes that session's sockets while the account's other sessions keep theirs.
  */
 export async function logout(
   services: AppServices,

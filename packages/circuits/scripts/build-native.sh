@@ -1,28 +1,27 @@
 #!/usr/bin/env bash
 #
-# Native prover libraries for the tablemate-prover Expo module (AAP 0.3.1, 0.4.2, 0.8.2).
+# Native prover libraries for the tablemate-prover Expo module (AAP 0.4.2).
 #
-# Builds mopro 0.3.7's Circom adapter over the compiled circuit — rust-witness for the witness,
-# rapidsnark for the Groth16 proof — and installs what it produces where the local Expo module
-# reads it. All four destinations are machine-generated per circuit build and git-ignored:
+# Builds mopro 0.3.7's Circom adapter over the compiled circuit — rust-witness for the witness, rapidsnark for the
+# Groth16 proof — and installs what it produces where the local Expo module reads it. All four destinations are
+# machine-generated per circuit build and git-ignored:
 #
 #   ios/Frameworks/MoproBindings.xcframework     vendored by ios/TablemateProver.podspec
 #   ios/Generated/mopro.swift                    the uniffi Swift bindings that podspec compiles
 #   android/src/main/jniLibs/<abi>/libmopro_bindings.so
 #   android/src/main/java/uniffi/mopro/mopro.kt  the Kotlin bindings android/build.gradle loads
 #
-# It builds the libraries only. Whether that integration works at zk-email scale inside an Expo SDK 52
-# development build is unverified (AAP 0.2.4); scripts/native-smoke.sh decides that, per platform.
+# It builds the libraries only. Whether that integration works at zk-email scale inside an Expo SDK 52 development
+# build is unverified (AAP 0.2.4); scripts/native-smoke.sh decides that, per platform.
 #
 # Invoked as `bash scripts/build-native.sh [ios|android|all]` through the `native` package script and root
-# `circuits:native`. `pnpm circuits:compile` must have run first: rust/build.rs transpiles the circuit's WASM
-# witness generator into the app, so a library built against another revision of the circuit proves nothing,
-# and the libraries are rebuilt whenever the circuit changes. Expect a long compile per target and a large
-# resident set.
+# `circuits:native`. `pnpm circuits:compile` must have run first: rust/build.rs transpiles the circuit's WASM witness
+# generator into the app, so a library built against another revision of the circuit proves nothing. Expect a long
+# compile per target and a large resident set.
 #
-# Environment: NATIVE_PLATFORMS (platforms when no argument is given, default `all`) and ANDROID_NDK_HOME (the
-# NDK cargo-ndk builds with, default $ANDROID_HOME/ndk/26.1.10909125). TABLEMATE_CIRCUIT_WASM_DIR is exported
-# here from the circuit build; rust/build.rs reads it.
+# Environment: NATIVE_PLATFORMS (platforms when no argument is given, default `all`) and ANDROID_NDK_HOME (the NDK
+# cargo-ndk builds with, default $ANDROID_HOME/ndk/26.1.10909125). TABLEMATE_CIRCUIT_WASM_DIR is exported here from the
+# circuit build; rust/build.rs reads it.
 
 set -euo pipefail
 
@@ -112,23 +111,23 @@ command -v cargo >/dev/null 2>&1 ||
 command -v rustup >/dev/null 2>&1 ||
     die "rustup is not on PATH; the crate pins its toolchain and targets through rustup: https://rustup.rs"
 
-# rust-toolchain.toml pins the toolchain and rustup selects it from inside the crate, so a `rustc`
-# that is not rustup's shim, or a missing pinned toolchain, is reported with the command that
-# installs the pinned one.
+# rust-toolchain.toml pins the toolchain and rustup selects it from inside the crate, so a `rustc` that is not rustup's
+# shim, or a missing pinned toolchain, is reported with the command that installs it.
 RUSTC_OUTPUT=""
 if ! RUSTC_OUTPUT="$(cd "$CRATE_DIR" && rustc --version 2>&1)"; then RUSTC_OUTPUT=""; fi
 RUSTC_SELECTED="$(printf '%s\n' "$RUSTC_OUTPUT" | awk '{print $2}')"
 [ "$RUSTC_SELECTED" = "$RUST_VERSION" ] || die \
     "the crate needs Rust $RUST_VERSION, pinned by $CRATE_DIR/rust-toolchain.toml, but $CRATE_DIR selects '${RUSTC_SELECTED:-nothing}'; install it with: rustup toolchain install $RUST_VERSION --profile minimal --component rustfmt"
 
-# TABLEMATE_CIRCUIT_WASM_DIR is the binding contract with rust/build.rs, which reads it and hands
-# the directory to rust_witness::transpile_wasm. Without it the witness generator is not compiled
-# into the app, and the module fails at its first proof rather than here.
+# TABLEMATE_CIRCUIT_WASM_DIR is the binding contract with rust/build.rs, which reads it and hands the directory to
+# rust_witness::transpile_wasm. Without it the witness generator is not compiled into the app, and the module fails at
+# its first proof rather than here. It must name a directory holding exactly one .wasm: rust-witness appends one handler
+# stub per wasm it walks, so the build root's second copy of the circuit wasm yields duplicate definitions.
 export TABLEMATE_CIRCUIT_WASM_DIR="$WASM_DIR"
 
-# mopro-cli 0.3.7 reads a project-root Config.toml from the directory it runs in and writes a
-# default one when it is absent. A transient one is written per build below and removed on exit;
-# one the operator already keeps is left as it was found.
+# mopro-cli 0.3.7 reads a project-root Config.toml from the directory it runs in and writes a default one when it is
+# absent. A transient one is written per build below and removed on exit; one the operator already keeps is left as it
+# was found.
 CONFIG_EXISTED=0
 if [ -e "$CONFIG_TOML" ]; then CONFIG_EXISTED=1; fi
 
@@ -140,10 +139,10 @@ trap cleanup EXIT
 # Helpers
 
 resolve_ndk() {
-    # resolve_ndk: prints the NDK directory cargo-ndk builds against, or nothing when there is none.
-    # An explicit ANDROID_NDK_HOME is taken as it stands; otherwise the React Native 0.76.9 default
-    # NDK under the SDK root. source.properties has to name $NDK_VERSION because cargo-ndk builds
-    # with the most recent NDK it finds, and another NDK links a libc++ the app does not load.
+    # resolve_ndk: prints the NDK directory cargo-ndk builds against, or nothing when there is none: an explicit
+    # ANDROID_NDK_HOME is taken as it stands, otherwise the React Native 0.76.9 default NDK under the SDK root.
+    # source.properties has to name $NDK_VERSION because cargo-ndk builds with the most recent NDK it finds, and another
+    # NDK links a libc++ the app does not load.
     local ndk="${ANDROID_NDK_HOME:-}"
     if [ -z "$ndk" ]; then
         local sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -158,9 +157,8 @@ resolve_ndk() {
 }
 
 require_targets() {
-    # require_targets <platform> <arch>...: fails with the exact command that installs what is
-    # missing, because mopro adds a missing target itself once it has started, which buries the
-    # cause in its own output instead of naming it here.
+    # require_targets <platform> <arch>...: fails with the exact command that installs what is missing, because mopro
+    # adds a missing target itself once it has started, which buries the cause in its own output.
     local platform="$1" installed missing="" arch
     shift
     installed="$(rustup target list --installed)"
@@ -172,9 +170,9 @@ require_targets() {
 }
 
 write_config_toml() {
-    # write_config_toml <platform> <arch>...: the flat keys mopro-cli 0.3.7 reads (build_mode,
-    # target_adapters, target_platforms, ios, android, auto_update), holding the same selections the
-    # command's flags carry, so no selection can fall back to an interactive prompt.
+    # write_config_toml <platform> <arch>...: the flat keys mopro-cli 0.3.7 reads (build_mode, target_adapters,
+    # target_platforms, ios, android, auto_update), holding the same selections the command's flags carry, so no
+    # selection can fall back to an interactive prompt.
     local platform="$1" arch archs="" key
     shift
     for arch in "$@"; do archs="$archs\"$arch\", "; done
@@ -200,12 +198,11 @@ first_missing() {
 }
 
 install_outputs() {
-    # install_outputs <platform>: checks every expected output and installs it into the Expo
-    # module. The layout is version-specific, so each path is named, and an absent one fails the
-    # run rather than leaving the module on a stale binding of an earlier circuit. These checks,
-    # not mopro's exit status, report a failed build: mopro-cli 0.3.7 prints a build failure in red
-    # and still exits 0. Only the destinations are replaced, so nothing else under the module is
-    # touched, and the crate-side bindings directory goes once they hold everything.
+    # install_outputs <platform>: checks every expected output and installs it into the Expo module. The layout is
+    # version-specific, so each path is named, and an absent one fails the run rather than leaving the module on a stale
+    # binding of an earlier circuit. These checks, not mopro's exit status, report a failed build: mopro-cli 0.3.7
+    # prints a build failure in red and still exits 0. Only the destinations are replaced, and the crate-side bindings
+    # directory goes once they hold everything.
     local platform="$1" bindings arch abi missing
     local -a expected
     if [ "$platform" = "ios" ]; then

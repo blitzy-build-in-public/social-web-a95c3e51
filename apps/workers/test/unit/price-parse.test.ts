@@ -1,6 +1,4 @@
-/**
- * The locale price parser's unit suite (AAP 0.5.6, "Source gate").
- */
+/** The locale price parser's unit suite (AAP 0.5.6, "Source gate"). */
 
 import { describe, expect, it } from 'vitest';
 
@@ -13,26 +11,15 @@ import {
 } from '../../src/menus/price-parse.ts';
 
 type AcceptedCase = readonly [text: string, currency: PriceCurrency, major: number];
-
 /** A refused string; `currency` stays a plain string, so an unsupported code can be a row. */
 type RefusedCase = readonly [text: string, currency: string];
-
 type MarkerCase = readonly [text: string, currency: PriceCurrency, explicit: boolean];
-
-/**
- * The amount `major` units of `currency` is worth in that currency's ISO 4217 minor units, read
- * from the module's exponent table so no minor-unit literal is repeated in this suite.
- */
+/** The amount `major` units of `currency` is worth in that currency's ISO 4217 minor units, read from the module's exponent table so no minor-unit literal is repeated in this suite. */
 function minor(major: number, currency: PriceCurrency): number {
   return Math.round(major * 10 ** MINOR_UNIT_EXPONENT[currency]);
 }
 
-/**
- * Every form the pipeline must read, one row per rule: both separator orders (`1.234,50` and
- * `1,234.50`), each launch currency's marker, the grouping a lone separator is resolved by
- * (`12,50` is 12.50, `1.500` is 1500), and the IDR thousands suffix (`45K`, `45rb`, `45,5K`). The
- * `€` rows are the fixture strings, in the shapes those pages print themselves.
- */
+/** Every form the pipeline must read, one row per rule: both separator orders (`1.234,50` and `1,234.50`), each launch currency's marker, the grouping a lone separator is resolved by (`12,50` is 12.50, `1.500` is 1500), and the IDR thousands suffix (`45K`, `45rb`, `45,5K`). The `€` rows are the fixture strings, in the shapes those pages print themselves. */
 const ACCEPTED_CASES: readonly AcceptedCase[] = [
   ['1.234,50', 'EUR', 1234.5],
   ['1,234.50', 'USD', 1234.5],
@@ -57,12 +44,7 @@ const ACCEPTED_CASES: readonly AcceptedCase[] = [
   ['15,00 €', 'EUR', 15],
   ['40,00 €', 'EUR', 40],
 ];
-
-/**
- * The strings that are not one price in the row's currency: empty or blank, a sign, zero, a range,
- * two prices, a malformed grouping, the IDR suffix in another currency, a marker naming a currency
- * the row does not ask for, and a code the pipeline does not price.
- */
+/** The strings that are not one price in the row's currency: empty or blank, a sign, zero, a range, two prices, a malformed grouping, the IDR suffix in another currency, a marker naming a currency the row does not ask for, and a code the pipeline does not price. */
 const REFUSED_CASES: readonly RefusedCase[] = [
   ['', 'EUR'],
   ['   ', 'EUR'],
@@ -81,7 +63,6 @@ const REFUSED_CASES: readonly RefusedCase[] = [
   ['€12', 'MXN'],
   ['12,50', 'GBP'],
 ];
-
 /** A bare `$` is ambiguous (USD, MXN or COP) and counts for USD alone; two markers name none. */
 const MARKER_CASES: readonly MarkerCase[] = [
   ['€12,50', 'EUR', true],

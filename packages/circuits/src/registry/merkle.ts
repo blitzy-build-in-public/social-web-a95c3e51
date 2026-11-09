@@ -1,17 +1,14 @@
 /**
- * The depth-8 Poseidon registry tree and the issuer/city registry builder (AAP 0.5.5): the tree
- * `MerkleInclusion` in `circuits/lib/registry_membership.circom` folds a path through, and the
- * committed `config/registry/{production,test}.json` that `pnpm circuits:registry` writes.
+ * The depth-8 Poseidon registry tree and the issuer/city registry builder (AAP 0.5.5): the tree `MerkleInclusion` in
+ * `circuits/lib/registry_membership.circom` folds a path through, and the committed
+ * `config/registry/{production,test}.json` that `pnpm circuits:registry` writes.
  *
- * Level 0 is the leaf level, so `pathElements[0]` is the leaf's sibling, and the leaf index is the sum
- * of the path bits with bit i weighting 2^i, bit 0 meaning the current node is the left child. The
- * tree is padded to its 256 leaves with `EMPTY_LEAF`, and issuer key leaves come before city alias
- * leaves, because the circuit proves one of each against the single published root.
- *
- * Client-safe: `buildMerkleTree` runs on the device through `../inputs/build-inputs.ts` under Hermes (React
- * Native 0.76.9) and in the browser Web Worker, so this module imports `poseidon-lite`, the shared contract
- * and `./leaves.ts`/`./template-hash.ts` only — no Node built-in, no global `Buffer`, no `TextEncoder`, no
- * DOM API, no I/O, no randomness, no logging, no work at module load.
+ * Level 0 is the leaf level, so `pathElements[0]` is the leaf's sibling, and the leaf index is the sum of the path bits
+ * with bit i weighting 2^i, bit 0 meaning the current node is the left child. The tree is padded to its 256 leaves with
+ * `EMPTY_LEAF`, and issuer key leaves come before city alias leaves, because the circuit proves one of each against the
+ * single published root.
+ * Client-safe: `buildMerkleTree` runs on the device under Hermes and in the browser Web Worker, so this module imports
+ * `poseidon-lite`, the shared contract and `./leaves.ts`/`./template-hash.ts` only.
  */
 import type { CityConfig, IssuerConfig, RegistryFile } from '@tablemate/shared';
 
@@ -35,35 +32,29 @@ export const REGISTRY_DEPTH = 8;
 export const MAX_REGISTRY_LEAVES = 256;
 
 /**
- * The leaf a padded position holds: zero, which no Poseidon output can be, so an empty position can
- * never be proven as a member of the tree (AAP 0.5.5, `registry_membership.circom`).
+ * The leaf a padded position holds: zero, which no Poseidon output can be, so an empty position can never be proven
+ * as a member of the tree (AAP 0.5.5, `registry_membership.circom`).
  */
 export const EMPTY_LEAF = 0n;
 
 /**
- * A Merkle path through the registry tree, the shape `RegistryMembership`'s `MerkleInclusion` takes
- * and `../inputs/build-inputs.ts` emits as the circuit's `*PathElements[8]` and `*PathIndices[8]`.
- *
- * Both arrays hold exactly {@link REGISTRY_DEPTH} entries, level 0 (the leaf's sibling) first, and a
- * proof is bound to the root it was taken against.
+ * A Merkle path through the registry tree, the shape `RegistryMembership`'s `MerkleInclusion` takes and
+ * `../inputs/build-inputs.ts` emits as the circuit's `*PathElements[8]` and `*PathIndices[8]`. Both arrays hold exactly
+ * {@link REGISTRY_DEPTH} entries, level 0 first, and a proof is bound to the root it was taken against.
  */
 export interface MerkleProof {
   /** The sibling hash at each level, level 0 first. */
   pathElements: bigint[];
-  /**
-   * The path bit at each level: 0 when the current node is the left child, so the parent hashes
-   * `(current, sibling)`, and 1 when it is the right child.
-   */
+  /** The path bit at each level: 0 when the current node is the left child and 1 when it is the right child. */
   pathIndices: (0 | 1)[];
   /** The root this path reaches, the `registryRoot` public input. */
   root: bigint;
 }
 
 /**
- * The built tree: its root, and a proof of any leaf position it was built over.
- *
- * Built once per registry — the client hashes the tree once and takes both of its paths from it —
- * which is why the paths are extracted here rather than by a free function that rebuilds the tree.
+ * The built tree: its root, and a proof of any leaf position it was built over. Built once per registry — the client
+ * hashes the tree once and takes both of its paths from it — which is why the paths are extracted here rather than by
+ * a free function that rebuilds the tree.
  */
 export interface MerkleTree {
   /** The root of the padded tree, the commitment `RegistryMembership` proves membership of. */
@@ -71,8 +62,7 @@ export interface MerkleTree {
   /**
    * The path of the leaf at `index`, level 0 first.
    *
-   * @param index - The leaf position, 0 to 255.
-   * @throws {RangeError} When `index` is not an integer in that range.
+   * @throws {RangeError} When `index` is not an integer in `0 .. 255`.
    */
   proof(index: number): MerkleProof;
 }
@@ -82,9 +72,9 @@ export interface RegistryBuildInput {
   /** Which registry this is: `production` or `test`. */
   name: RegistryFile['name'];
   /**
-   * The issuer records to take leaves from. The caller decides inclusion by status: only `verified`
-   * issuers are passed for the production registry, and `tablemate-test` is added for the test one.
-   * An issuer carrying no template or no key records no leaf at all.
+   * The issuer records to take leaves from. The caller decides inclusion by status: only `verified` issuers are
+   * passed for the production registry, and `tablemate-test` is added for the test one. An issuer carrying no template
+   * or no key records no leaf at all.
    */
   issuers: readonly IssuerConfig[];
   /** The launch cities, each contributing one leaf per alias. */
@@ -98,7 +88,6 @@ export interface RegistryBuild {
   /**
    * The path of the leaf at `leafIndex`, the index a registry entry carries.
    *
-   * @param leafIndex - A populated leaf position, 0 to `registry.leaves.length - 1`.
    * @throws {RangeError} When `leafIndex` is not an integer naming a populated leaf.
    */
   proofFor(leafIndex: number): MerkleProof;
@@ -119,22 +108,16 @@ function inField(value: bigint): boolean {
 }
 
 /**
- * Builds the fixed-depth Poseidon registry tree over `leaves` (AAP 0.5.5), padding past the last one
- * with {@link EMPTY_LEAF}.
+ * Builds the fixed-depth Poseidon registry tree over `leaves` (AAP 0.5.5), padding past the last one with
+ * {@link EMPTY_LEAF}.
  *
- * The tree mirrors `MerkleInclusion` exactly — level 0 is the leaf level, each parent is
- * `Poseidon(left, right)`, and the root is the one node at depth {@link REGISTRY_DEPTH} — so a path it
- * returns is the path the circuit folds to the root its `registryRoot` input names. Hashing every level
- * once lets the client take both of a proof's paths from one build, and lets the input generator check the
- * registry it was handed before emitting anything.
- *
- * A parent whose two children are both the empty subtree at their depth is read from a table of the
- * empty-subtree root at each depth instead of hashed — the same value, it being the hash of the same two
- * children — which turns about 255 Poseidon calls into the populated count plus eight and keeps the build
- * affordable under Hermes.
- *
- * @param leaves - The populated leaves, issuer leaves first.
- * @returns The tree, with a proof of any of its 256 positions.
+ * The tree mirrors `MerkleInclusion` exactly — level 0 is the leaf level, each parent is `Poseidon(left, right)`, and
+ * the root is the one node at depth {@link REGISTRY_DEPTH} — so a path it returns is the path the circuit folds to the
+ * root its `registryRoot` input names. Hashing every level once lets the client take both of a proof's paths from one
+ * build, and lets the input generator check the registry it was handed before emitting anything.
+ * A parent whose two children are both the empty subtree at their depth is read from a table of the empty-subtree root
+ * at each depth instead of hashed, which turns about 255 Poseidon calls into the populated count plus eight and keeps
+ * the build affordable under Hermes.
  * @throws {RangeError} When there are more than 256 leaves, or a leaf is not a field element.
  */
 export function buildMerkleTree(leaves: readonly bigint[]): MerkleTree {
@@ -200,10 +183,9 @@ function nodeAtLevel(levels: readonly (readonly bigint[])[], depth: number): rea
 }
 
 /**
- * The root of the tree over `leaves`, the value `RegistryMembership`'s `registryRoot` input and the
- * `root` of the committed registry must equal.
+ * The root of the tree over `leaves`, the value `RegistryMembership`'s `registryRoot` input and the `root` of the
+ * committed registry must equal.
  *
- * @param leaves - The populated leaves, issuer leaves first.
  * @throws {RangeError} When there are more than 256 leaves, or a leaf is not a field element.
  */
 export function merkleRoot(leaves: readonly bigint[]): bigint {
@@ -213,27 +195,21 @@ export function merkleRoot(leaves: readonly bigint[]): bigint {
 /**
  * The path of the leaf at `index`, for a caller that needs a single proof (AAP 0.5.5).
  *
- * @param leaves - The populated leaves, issuer leaves first.
- * @param index - The leaf position.
- * @throws {RangeError} When there are more than 256 leaves, a leaf is not a field element, or `index`
- *   is not a leaf position.
+ * @throws {RangeError} When there are more than 256 leaves, a leaf is not a field element, or `index` is not a leaf
+ *   position.
  */
 export function merkleProof(leaves: readonly bigint[], index: number): MerkleProof {
   return buildMerkleTree(leaves).proof(index);
 }
 
 /**
- * Folds a path the way `MerkleInclusion` does and reports whether it reaches the proof's root: the
- * check `../inputs/build-inputs.ts` makes of the registry entry it read, and the check the registry
- * tests make of every generated proof.
+ * Folds a path the way `MerkleInclusion` does and reports whether it reaches the proof's root: the check
+ * `../inputs/build-inputs.ts` makes of the registry entry it read, and the check the registry tests make of every
+ * generated proof.
  *
- * It answers rather than throws, so a proof read from configuration cannot break a caller that only wants
- * to know whether it holds: a path that is not {@link REGISTRY_DEPTH} long, an index that is not a path bit,
- * and a value outside the field all return false.
- *
- * @param leaf - The leaf value the path starts from.
- * @param proof - The path, at the level-0-first order {@link MerkleProof} fixes.
- * @returns Whether the path reaches `proof.root`.
+ * It answers rather than throws, so a proof read from configuration cannot break a caller that only wants to know
+ * whether it holds: a path that is not {@link REGISTRY_DEPTH} long, an index that is not a path bit, and a value
+ * outside the field all return false.
  */
 export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
   const { pathElements, pathIndices, root } = proof;
@@ -262,29 +238,23 @@ export function verifyMerkleProof(leaf: bigint, proof: MerkleProof): boolean {
 }
 
 /**
- * Builds the registry {@link RegistryFile} of one environment and the path of any leaf in it
- * (AAP 0.5.5): the tree the circuit proves membership against, with the readable entries
- * `pnpm circuits:registry` writes to `config/registry/<name>.json` and `GET /zk/config` publishes.
+ * Builds the registry {@link RegistryFile} of one environment and the path of any leaf in it (AAP 0.5.5): the tree the
+ * circuit proves membership against, with the readable entries `pnpm circuits:registry` writes to
+ * `config/registry/<name>.json` and `GET /zk/config` publishes.
  *
  * Leaf layout, which the circuit and the committed file both depend on: issuer key leaves first, in ascending
- * `issuerId` and, within an issuer, in configured key order; then city alias leaves, in ascending
- * `circuitCityId` and configured alias order. Inclusion by verification status is the caller's decision — an
- * issuer whose template is absent or whose keys are empty, as a record awaiting samples is, contributes
- * nothing, and no status is filtered out here. A key's domain is lowercased because the client selects a key
- * by the lowercased `d=` tag, while its selector is kept as written; an alias's bytes are exactly what the
- * decoded body carries, escapes included.
- *
- * An entry's `leafIndex` is its leaf's position in `registry.leaves`, which holds the populated leaves only,
- * while `registry.root` is the root of the tree padded to 256 with {@link EMPTY_LEAF}. The result is
- * deterministic — identical configuration gives a byte-identical `JSON.stringify(registry, null, 2)`,
- * whatever order the caller supplied its records in — so `pnpm circuits:registry --check` and the registry
- * test can compare it with the committed file.
- *
- * @param input - The environment's name, with the issuer and city configuration records.
- * @returns The built registry and a proof of any populated leaf.
- * @throws {RangeError} When an `issuerId`, city slug or `circuitCityId` repeats, a `(domain, selector)` pair
- *   repeats across issuers, two cities register identical alias bytes, or the populated leaves exceed 256,
- *   named with the registry and the count it carries. A repeated key or alias names neither value.
+ * `issuerId` and, within an issuer, in configured key order; then city alias leaves, in ascending `circuitCityId` and
+ * configured alias order. Inclusion by verification status is the caller's decision. A key's domain is lowercased
+ * because the client selects a key by the lowercased `d=` tag, while its selector is kept as written; an alias's bytes
+ * are exactly what the decoded body carries, escapes included.
+ * An entry's `leafIndex` is its leaf's position in `registry.leaves`, which holds the populated leaves only, while
+ * `registry.root` is the root of the tree padded to 256 with {@link EMPTY_LEAF}. The result is deterministic —
+ * identical configuration gives a byte-identical `JSON.stringify(registry, null, 2)`, whatever order the caller
+ * supplied its records in — so `pnpm circuits:registry --check` and the registry test can compare it with the
+ * committed file.
+ * @throws {RangeError} When an `issuerId`, city slug or `circuitCityId` repeats, a `(domain, selector)` pair repeats
+ *   across issuers, two cities register identical alias bytes, or the populated leaves exceed 256. A repeated key or
+ *   alias names neither value.
  */
 export function buildRegistry(input: RegistryBuildInput): RegistryBuild {
   const seenIssuerIds = new Set<number>();

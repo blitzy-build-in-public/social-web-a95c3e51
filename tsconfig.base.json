@@ -1,14 +1,11 @@
-// Shared compiler options for every Tablemate workspace. Each workspace's own
-// tsconfig.json extends this file and adds only what belongs to it: composite, include,
-// rootDir and outDir for the Node workspaces built with `tsc -b`, and
-// module/moduleResolution/jsx/noEmit for the bundler apps.
+// Shared compiler options for every Tablemate workspace. Each workspace's own tsconfig.json extends this file and
+// adds only what belongs to it: composite, include, rootDir and outDir for the Node workspaces built with
+// `tsc -b`, and module/moduleResolution/jsx/noEmit for the bundler apps.
 //
-// Two conventions here are load-bearing:
-//   - customConditions "tablemate-source" resolves a workspace import to its TypeScript
-//     source, so typecheck and editors need no prior build. tsx, Vitest, Vite and Metro
-//     are given the same condition; Node in containers resolves "default", the compiled JS.
-//   - relative imports are written with the .ts extension and rewritten to .js on emit,
-//     the one spelling tsc, Vite, Vitest, tsx and Metro all resolve.
+// Two conventions are load-bearing: customConditions "tablemate-source" resolves a workspace import to its
+// TypeScript source, so typecheck and editors need no prior build (tsx, Vitest, Vite and Metro are given the same
+// condition, and Node in containers resolves "default", the compiled JS); and relative imports are written with the
+// .ts extension and rewritten to .js on emit, the one spelling tsc, Vite, Vitest, tsx and Metro all resolve.
 {
   "compilerOptions": {
     "target": "ES2023",

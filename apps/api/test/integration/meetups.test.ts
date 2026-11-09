@@ -1,17 +1,15 @@
 /**
  * The meetup routes end to end, with the saved-card setup a first proposal needs.
  *
- * Five groups, in the order the contract states the operations: the proposal's guards, which run in
- * the contract's own order so a request breaking two rules is answered with the earlier one; the
- * proposal that succeeds, whose visibility, recipient deadline and lapse timer all follow from the
- * initiator's hold; the acceptance, which alone locks a meetup and whose retry after a refused card
- * releases the attempt it superseded; the decline, the cancellation with its exact two-hour boundary
- * and the initiator's hold retry; and the own-meetup reads with the payment setup.
+ * Five groups, in the order the contract states the operations: the proposal's guards, which run in the contract's own order
+ * so a request breaking two rules is answered with the earlier one; the proposal that succeeds, whose visibility, recipient
+ * deadline and lapse timer all follow from the initiator's hold; the acceptance, which alone locks a meetup and whose retry
+ * after a refused card releases the attempt it superseded; the decline, the cancellation with its exact two-hour boundary and
+ * the initiator's hold retry; and the own-meetup reads with the payment setup.
  *
- * The assertions read what the handlers wrote and scheduled: the meetup's columns, its deposits, its
- * analytics rows, the `notification` outbox rows a worker would deliver, the settlement queue's
- * `lapse-`, `remind-` and `settle-` jobs, and — in the mock topology alone — the proxy's record of
- * the PaymentIntents.
+ * The assertions read what the handlers wrote and scheduled: the meetup's columns, its deposits, its analytics rows, the
+ * outbox rows a worker would deliver, the settlement queue's `lapse-`, `remind-` and `settle-` jobs, and — in the mock
+ * topology alone — the proxy's record of the PaymentIntents.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -131,10 +129,9 @@ interface ProposalOptions {
 }
 
 /**
- * The base fixture of this suite: two consented travelers whose accounts can hold a card deposit, a
- * valid proof each for the venue's city, one active partner venue in that city, and a start three
- * days out — far enough ahead that the recipient deadline is the 48-hour one, and inside the
- * five-day horizon.
+ * The base fixture of this suite: two consented travelers whose accounts can hold a card deposit, a valid proof each for the
+ * venue's city, one active partner venue in that city, and a start three days out — far enough ahead that the recipient
+ * deadline is the 48-hour one, and inside the five-day horizon.
  */
 async function proposal(options: ProposalOptions = {}): Promise<Proposal> {
   const now = t.time.now();
@@ -162,8 +159,8 @@ interface ProposeOverrides {
 }
 
 /**
- * The body of `POST /meetups` for one fixture, with the members a case replaces. Typed as a plain
- * object so a case can spread a replacement over it: the route's own strict schema decides.
+ * The body of `POST /meetups` for one fixture, with the members a case replaces. Typed as a plain object so a case can spread
+ * a replacement over it: the route's own strict schema decides.
  */
 function proposeBody(fixture: Proposal, overrides: ProposeOverrides = {}): object {
   return {
@@ -380,8 +377,8 @@ async function intentsForDeposit(depositId: string): Promise<{ id: string; statu
 }
 
 /**
- * Assert how many authorizations a deposit has at the provider, in mock mode alone: in `test` mode
- * the objects are the operator's and the deposit rows cover the same rules.
+ * Assert how many authorizations a deposit has at the provider, in mock mode alone: in `test` mode the deposit rows cover the
+ * same rules.
  */
 async function expectAttemptIntents(depositId: string, count: number): Promise<void> {
   if (!MOCK) {
@@ -391,8 +388,8 @@ async function expectAttemptIntents(depositId: string, count: number): Promise<v
 }
 
 /**
- * Assert one side's hold was cancelled by our own release and not lost, in mock mode alone:
- * `OUR_CANCELLATION_REASON` is the one reason Stripe reports that is not a hold loss.
+ * Assert one side's hold was cancelled by our own release and not lost, in mock mode alone: `OUR_CANCELLATION_REASON` is the
+ * one reason Stripe reports that is not a hold loss.
  */
 async function expectReleasedByUs(deposits: readonly DepositRow[]): Promise<void> {
   const proxy = t.stripe.proxy;
@@ -450,8 +447,8 @@ async function expectTimer(jobId: string, name: string, expectedDelayMs: number)
 }
 
 /**
- * The PaymentIntents the proxy holds for one account's customer, in mock mode alone: in `test` mode
- * the provider's objects are the operator's own and the deposit rows cover the same rules.
+ * The PaymentIntents the proxy holds for one account's customer, in mock mode alone: in `test` mode the provider's objects are
+ * the operator's own.
  */
 async function intentsFor(user: UserFixture): Promise<{ id: string; status: string }[]> {
   const proxy = t.stripe.proxy;
@@ -463,11 +460,11 @@ async function intentsFor(user: UserFixture): Promise<{ id: string; status: stri
 }
 
 /**
- * Drop the next PaymentIntent create: the provider's answer to a hold never arrives, which is the
- * ambiguous result whose effect stands while no PaymentIntent id is known.
+ * Drop the next PaymentIntent create: the provider's answer to a hold never arrives, which is the ambiguous result whose effect
+ * stands while no PaymentIntent id is known.
  *
- * A `fail` fault is used rather than `dropNextResponse`, which the proxy applies around an answer that
- * a loopback client can still read: a 5xx is what makes the create's outcome unknown to us.
+ * A `fail` fault is used rather than `dropNextResponse`, which the proxy applies around an answer a loopback client can still
+ * read: a 5xx is what makes the create's outcome unknown to us.
  */
 async function failHoldCreate(): Promise<void> {
   const proxy = t.stripe.proxy;
@@ -541,9 +538,8 @@ interface SelfProposalRow {
 }
 
 /**
- * Three breaches that would each be refused on their own, put beside a proposal to the caller
- * itself: the self check comes first, before any read or write, so the answer is `self_proposal`
- * every time (AAP 0.5.4).
+ * Three breaches that would each be refused on their own, put beside a proposal to the caller itself: the self check comes
+ * first, before any read or write, so the answer is `self_proposal` every time (AAP 0.5.4).
  */
 const SELF_PROPOSAL_BREACHES: readonly SelfProposalRow[] = [
   { name: 'an invalid deposit beside it', overrides: { depositCents: 1500 } },
@@ -560,8 +556,8 @@ interface NotFoundRow {
 }
 
 /**
- * The two `404`s and the two blocks: a block in either direction answers exactly as a stranger does,
- * which is what keeps a block undiscoverable (AAP 0.5.3).
+ * The two `404`s and the two blocks: a block in either direction answers exactly as a stranger does, which is what keeps a
+ * block undiscoverable (AAP 0.5.3).
  */
 const NOT_FOUND_ROWS: readonly NotFoundRow[] = [
   { name: 'an unknown venue with 404 venue_not_found', missing: 'venue' },
@@ -926,9 +922,8 @@ const NOT_RECIPIENT_ROWS: readonly ActorRow[] = [
 ];
 
 /**
- * A decline is the recipient's alone too. The initiator is `403 not_recipient`; a stranger is
- * answered `404 meetup_not_found`, exactly as a proposal that is not yet visible is, so the route
- * cannot be used to probe for one (AAP 0.5.3).
+ * A decline is the recipient's alone too. The initiator is `403 not_recipient`; a stranger is answered `404 meetup_not_found`,
+ * exactly as a proposal that is not yet visible is, so the route cannot be used to probe for one (AAP 0.5.3).
  */
 const DECLINE_REFUSALS: readonly ActorRow[] = [
   { name: 'the initiator', actor: 'initiator', httpStatus: 403, code: 'not_recipient' },
@@ -1193,8 +1188,8 @@ interface BoundaryRow {
 }
 
 /**
- * The boundary AAP 0.5.3 states exactly: at `startsAt − 2 h` a cancellation is free and one second
- * later it forfeits the canceller's hold, for either participant.
+ * The boundary AAP 0.5.3 states exactly: at `startsAt − 2 h` a cancellation is free and one second later it forfeits the
+ * canceller's hold, for either participant.
  */
 const CANCELLATION_BOUNDARY: readonly BoundaryRow[] = [
   {
@@ -1607,9 +1602,8 @@ interface CheckInSignalRow {
 }
 
 /**
- * Seeing whether the counterpart showed up is the product's trust signal, and both attendees read it
- * from the meetup's pass `CheckIn` rows while it is still `locked` (AAP 0.5.7): whichever side checked
- * in first, each one gets their own check-in and the counterpart's, and two pass rows give both.
+ * Seeing whether the counterpart showed up is the product's trust signal, and both attendees read it from the meetup's pass
+ * `CheckIn` rows while it is still `locked` (AAP 0.5.7): each one gets their own check-in and the counterpart's.
  */
 const CHECK_IN_SIGNAL_ROWS: readonly CheckInSignalRow[] = [
   {

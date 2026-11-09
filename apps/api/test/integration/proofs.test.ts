@@ -1,15 +1,9 @@
 /**
  * Criterion 3 for the itinerary proof, and the public `GET /v1/zk/config`.
  *
- * Every case proves a committed `.eml` fixture the way a phone proves one and submits only
- * `{ proof, publicSignals }`, the sole thing the server ever receives about a booking confirmation: a
- * genuine proof is accepted once and stored as the stay it proves, the same booking cannot be proved
- * again, and every way of departing from the contract is refused with the code the contract names. A
- * tampered email is unprovable rather than merely unaccepted, because the input generator refuses it
- * before a witness exists.
- *
- * It does not skip — a missing artefact fails by naming `pnpm circuits:build` — and it does not prove
- * on the server: the harness is in the client's role, and the stored rows are audited by column.
+ * Every case proves a committed `.eml` fixture the way a phone proves one and submits only `{ proof, publicSignals }`, the sole thing the
+ * server ever receives about a booking confirmation: a genuine proof is accepted once and stored as the stay it proves, the same booking
+ * cannot be proved twice, and a proof a phone could not have produced is refused.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -51,11 +45,9 @@ const PROOF_ROUTE = '/v1/itinerary-proofs';
 const ZK_CONFIG_ROUTE = '/v1/zk/config';
 
 /**
- * The salt the foreign-salt case proves the `valid` booking under: a short decimal field element
- * that is not the published {@link TEST_NULLIFIER_SALT}. The proof is genuine for the salt it names,
- * so Groth16 verification succeeds and the verifier's own salt check is what refuses it.
- *
- * Fixed rather than randomised, so the proof it names stays in `.local/test-proofs/` between runs.
+ * The salt the foreign-salt case proves the `valid` booking under: a short decimal field element that is not the published
+ * {@link TEST_NULLIFIER_SALT}. The proof is genuine for the salt it names, so Groth16 verification succeeds and the verifier's own salt check
+ * is what refuses it. Fixed rather than randomised, so the proof it names stays in `.local/test-proofs/` between runs.
  */
 const FOREIGN_NULLIFIER_SALT = '7777777777777777';
 
@@ -75,8 +67,8 @@ const REGISTRY_FILES = {
 const MANIFEST_FILE = 'packages/circuits/build/artifacts.manifest.json';
 
 /**
- * Every column `itinerary_proof` may hold: the proof's public outputs, the ids and the stored
- * validity window. The audit fails on any column this list does not name.
+ * Every column `itinerary_proof` may hold: the proof's public outputs, the ids and the stored validity window. The audit fails on any column
+ * this list does not name.
  */
 const ITINERARY_PROOF_COLUMNS: readonly string[] = [
   'arrival_date',
@@ -93,8 +85,8 @@ const ITINERARY_PROOF_COLUMNS: readonly string[] = [
 ];
 
 /**
- * Every column `spent_nullifier` may hold: the key and when it was spent, and no user column at all —
- * the table outlives account erasure, so a deleted account cannot free a booking for reuse.
+ * Every column `spent_nullifier` may hold: the key and when it was spent, and no user column at all — the table outlives account erasure,
+ * so a deleted account cannot free a booking for reuse.
  */
 const SPENT_NULLIFIER_COLUMNS: readonly string[] = ['nullifier', 'spent_at'];
 
@@ -104,10 +96,8 @@ interface MalformedRow {
 }
 
 /**
- * The bodies that are not the contract's `ProofSubmission`, one per case: the strictness of both
- * object levels, the fixed signal count of seven, the proof's protocol, and the field-element shape
- * of a signal. The empty body is the smallest such submission — Fastify parses it and the schema
- * rejects it — which is why it is a `proof_malformed` row rather than a parser failure.
+ * The bodies that are not the contract's `ProofSubmission`, one per case: the strictness of both object levels, the fixed signal count of
+ * seven, the proof's protocol, and the field-element shape of a signal. The empty body is a `proof_malformed` row rather than a parser failure.
  */
 const MALFORMED_SUBMISSIONS: readonly MalformedRow[] = [
   {
@@ -150,18 +140,16 @@ const MALFORMED_SUBMISSIONS: readonly MalformedRow[] = [
 ];
 
 /**
- * The public signals by name and position, one case each. Altering any of them must answer
- * `422 proof_invalid`, and the position that makes that an assertion about the check *order* is
- * `registryRoot`: the altered root is not one this API publishes, so a server that resolved the
+ * The public signals by name and position, one case each. Altering any of them must answer `422 proof_invalid`, and the position that makes
+ * that an assertion about the check *order* is `registryRoot`: the altered root is not one this API publishes, so a server that resolved the
  * registry before verifying the proof would answer `422 issuer_not_allowlisted` instead.
  */
 const SIGNAL_POSITIONS: readonly { readonly name: string; readonly index: number }[] =
   PUBLIC_SIGNAL_NAMES.map((name, index) => ({ name, index }));
 
 /**
- * Read one committed JSON configuration file and parse it with its own schema, so every expectation
- * below is the configured value — an issuer id, a display name, a registry root — rather than one
- * written into this file.
+ * Read one committed JSON configuration file and parse it with its own schema, so every expectation below is the configured value — an issuer
+ * id, a display name, a registry root — rather than one written into this file.
  */
 async function readConfig<T>(relative: string, schema: { parse(value: unknown): T }): Promise<T> {
   const text = await readFile(join(findRepoRoot(), relative), 'utf8');
@@ -169,8 +157,8 @@ async function readConfig<T>(relative: string, schema: { parse(value: unknown): 
 }
 
 /**
- * The columns one table actually holds, from the catalog. This is what makes the storage cases
- * evidence rather than restatement: a column the migration adds shows up here.
+ * The columns one table actually holds, from the catalog. This is what makes the storage cases evidence rather than restatement: a column
+ * the migration adds shows up here.
  */
 async function tableColumns(db: DbClient, table: string): Promise<string[]> {
   const held = await db.$queryRaw<{ column_name: string }[]>`
@@ -210,10 +198,6 @@ function submitProof(
 
 /**
  * Assert an answer is the error envelope with `code`, at `status`, and return the envelope.
- *
- * The code is compared here as well as through the harness, so the refusal a case names cannot be
- * asserted by its HTTP status alone: a route answering another refusal's code with the same status
- * would otherwise pass.
  */
 function expectCode(response: RouteResponse, status: number, code: ErrorCode): ErrorEnvelope {
   const envelope = expectError(response, status, code);

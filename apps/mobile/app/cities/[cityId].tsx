@@ -1,18 +1,4 @@
-/**
- * The city page, route `app/cities/[cityId]` (AAP 0.5.8, AAP 0.8.1): one launch city's name and its
- * active partner venues, reached from the Discover picker.
- *
- * Whether the page offers the traveler list is decided by the caller's entitlement — membership of
- * `MeDto.validCityIds`, the cities a proof of theirs is valid for now — rather than by the single
- * stay `MeDto.proof` reports, because a traveler may hold valid proofs for several cities and the
- * unverified banner would otherwise hide a city they may ask about (AAP 0.5.7, 0.5.8). The offer
- * carries the city, so the Discover tab opens on this one. The venues list needs no proof at all, and
- * it is painted as soon as the proof read settles: the proof area above it has no known height until
- * then, so painting the list first and inserting the banner above it afterwards pushed every venue row
- * down 128 px on a cold load (AAP 0.5.8). While the app-level notice speaks instead — the session
- * could not be restored, so neither read can run — the page leaves its own loading placeholder out and
- * lets the notice be the one surface that reports the failure (`src/ui/app-notice`).
- */
+/** The city page, route `app/cities/[cityId]`: one launch city's name and its active partner venues, reached from the Discover picker. Whether the page offers the traveler list is decided by the caller's entitlement, never by the single stay `MeDto.proof` reports. */
 import { useEffect, type ReactElement } from 'react';
 import { ActivityIndicator, Linking, StyleSheet, Text, View, type TextProps } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
@@ -75,9 +61,7 @@ export default function CityScreen(): ReactElement {
   });
   const city = cities.data?.items.find((candidate) => candidate.id === cityId);
   const cityName = city?.name ?? NO_CITY_NAME;
-  // Entitlement, not the single proof: the caller may hold valid proofs for several cities, and this
-  // page offers the traveler list for each of them (AAP 0.5.7, 0.5.8). A payload cached before the
-  // field existed carries no set, so the page shows the unverified banner as it did before.
+  // Entitlement, not the single proof: the caller may hold valid proofs for several cities, and a payload cached before the field existed carries no set, so the unverified banner shows as before.
   const proofValidForCity = (me.data?.validCityIds ?? []).includes(cityId);
   const venuesCode = venues.error === null ? undefined : errorCodeOf(venues.error);
   const cityUnavailable =
@@ -94,16 +78,7 @@ export default function CityScreen(): ReactElement {
     if (errorMessage !== undefined) announce(errorMessage);
   }, [errorMessage]);
   const rows = venues.data?.items ?? [];
-  // The proof area sits above the venues section and is not a known height until `me` answers, so the
-  // section is not painted while that read is pending: painting it first and inserting the banner
-  // above it afterwards pushed every venue row down 128 px on a cold load (AAP 0.5.8).
-  //
-  // One state ends that wait at once. The app-level notice stands for a session that could not be
-  // restored, so this page's reads cannot run behind it: the proof read stays pending for as long as
-  // the API is unreachable, and the venue list can never arrive. The notice is the one surface that
-  // reports that failure (`src/ui/app-notice`), so the page leaves its own loading placeholder out
-  // while the notice speaks rather than showing a line that cannot resolve, and the shared rule drops
-  // the page's own error banner while it would only repeat the notice's sentence.
+  // The proof area's height is unknown until `me` answers, so the venues section is not painted while that read is pending; while the app-level notice speaks, the page leaves its own loading placeholder out.
   const appNotice = useAppNoticeMessage();
   const sessionUnreachable = appNotice !== null;
   const retry = { label: TRY_AGAIN, onPress: () => void venues.refetch(), busy: venues.isFetching };

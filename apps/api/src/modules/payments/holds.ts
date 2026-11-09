@@ -2,22 +2,9 @@
  * The deposit lifecycle and the durable `PaymentOperation` planners — the database-only leaf that
  * `meetups/state-machine.ts`, `meetups/queries.ts` and `settlement/settle.ts` import.
  *
- * Every Stripe mutation is a `PaymentOperation` row written inside the domain transaction that decides
- * it, with the status change, the analytics events and the outbox rows, and executed by `operations.ts`
- * after that transaction commits (AAP 0.3.2 "Stripe mutations"). Three properties make such a row safe to
- * replay: the key names the attempt, so a superseded attempt and the current one never share a key and
- * every retry sends byte-identical parameters; `seq` is monotonic per deposit and `dependsOnId` names the
- * operation that must finish first, so a release never runs before the hold it releases — {@link nextSeq}
- * is race-free only because every planner runs inside a caller's transaction that already holds the
- * meetup row lock (AAP 0.5.3); and a deposit moves forward only ({@link advanceDeposit},
- * {@link fromStatusesFor}), so a late, historical or backwards provider event is acknowledged and ignored
- * rather than applied.
- *
- * The file is a leaf by design: it imports `@tablemate/db` and `@tablemate/shared` and nothing else, so it
- * never opens a transaction, never makes a network call and never decides a caller's error — a planner
- * returns the reason it could not write its row and the caller maps that to the `AppError` the contract
- * names (AAP 0.5.4). A leaf cannot inject the clock either, so a function that writes a timestamp takes
- * `now: Date` last; `createdAt` in particular drives the executor's 12-hour rule.
+ * Every Stripe mutation is a `PaymentOperation` row written inside the domain transaction that decides it, with the
+ * status change, the analytics events and the outbox rows, and executed after that transaction commits. Nothing
+ * here calls Stripe, reads a clock of its own or opens a transaction.
  */
 
 import { Prisma, type DbTx } from '@tablemate/db';
@@ -49,18 +36,17 @@ export function captureKey(depositId: string, attempt: number): string {
 }
 
 /**
- * The key of the refund reversing attempt `attempt`: `refund:<depositId>:<attempt>` (AAP 0.3.2). It names
- * the attempt whose money is returned, never the capture's, so two reversals of two captures on one
- * deposit cannot collide.
+ * The key of the refund reversing attempt `attempt`: `refund:<depositId>:<attempt>`. It names the attempt whose money
+ * is returned, never the capture's, so two reversals of two captures on one deposit cannot collide.
  */
 export function refundKey(depositId: string, attempt: number): string {
   return `refund:${depositId}:${attempt}`;
 }
 
 /**
- * The key of the deletion of `userId`'s Stripe customer: `delete_customer:<userId>` (AAP 0.3.2). A customer
- * outlives every attempt of every deposit of its owner, so a second `DELETE /me` replays one deletion
- * rather than creating a second operation.
+ * The key of the deletion of `userId`'s Stripe customer: `delete_customer:<userId>`. A customer outlives every
+ * attempt of every deposit of its owner, so a second `DELETE /me` replays one deletion rather than creating a second
+ * operation.
  */
 export function deleteCustomerKey(userId: string): string {
   return `delete_customer:${userId}`;
@@ -69,14 +55,10 @@ export function deleteCustomerKey(userId: string): string {
 // The deposit status table (AAP 0.5.3)
 
 /**
- * The deposit lifecycle of AAP 0.5.3 as a table: the statuses each status may move to, and no others.
- * `released`, `captured`, `expired` and `refunded` are final, and the two deliberate absences are what the
- * row "Forward-only" requires: `held` never returns to `pending`, and `captured` never to `held`.
- *
- * `failed → released` is the row the late-and-orphan-authorization rule supplies, and it is what lets a
- * declined attempt's deposit reach a final status — without which the `delete_customer` gate, which runs
- * only once every one of the user's deposits is final, can never open (AAP 0.5.2). It closes a deposit's
- * life and never revives one.
+ * The deposit lifecycle as a table: the statuses each status may move to, and no others. `released`, `captured`,
+ * `expired` and `refunded` are final, and the two deliberate absences are what Forward-only requires: `held` never
+ * returns to `pending`, and `captured` never to `held`. `failed → released` is the row the late-and-orphan rule
+ * needs.
  */
 export const DEPOSIT_TRANSITIONS: Readonly<Record<DepositStatus, readonly DepositStatus[]>> = {
   pending: ['held', 'requires_action', 'failed', 'released'],
@@ -93,14 +75,8 @@ export const DEPOSIT_TRANSITIONS: Readonly<Record<DepositStatus, readonly Deposi
 const DEPOSIT_STATUSES: readonly DepositStatus[] = DepositStatus.options;
 
 /**
- * The deposit statuses {@link releaseAllOpen} acts on: every status that is not final, which AAP 0.5.3
- * names as `pending`, `requires_action`, `held` and `failed`. Derived rather than spelled out, so a status
- * added to the domain enum is either final and excluded, or open and picked up.
- *
- * Every status this set holds can reach `released` in {@link DEPOSIT_TRANSITIONS}, which is what makes the
- * {@link advanceDeposit} result {@link releaseAllOpen} discards unable to be false. `failed` stays in the
- * set because its release operation is still required: AAP 0.5.3 "Release operations for every non-final
- * deposit attempt".
+ * The deposit statuses {@link releaseAllOpen} acts on: every status that is not final. Derived rather than spelled
+ * out, so a status added to the domain enum is either final and excluded, or open and picked up.
  */
 const RELEASABLE_DEPOSIT_STATUSES: ReadonlySet<DepositStatus> = new Set(
   DEPOSIT_STATUSES.filter(
@@ -126,9 +102,9 @@ export interface DepositRef {
 }
 
 /**
- * The fields an event may record while it moves a deposit forward (AAP 0.5.2). An absent key leaves the
- * column as it is: `exactOptionalPropertyTypes` keeps `undefined` out of the update rather than clearing a
- * value the event never mentioned.
+ * The fields an event may record while it moves a deposit forward. An absent key leaves the column as it is:
+ * `exactOptionalPropertyTypes` keeps `undefined` out of the update rather than clearing a value the event never
+ * mentioned.
  */
 export interface DepositAdvance {
   /** The authorization's capture deadline, recorded when the hold becomes `held`. */
@@ -140,10 +116,9 @@ export interface DepositAdvance {
 }
 
 /**
- * The single forward-only, attempt-scoped deposit write (AAP 0.5.3 "Forward-only"): it filters on the
- * deposit's id, its `currentAttempt` and the statuses {@link fromStatusesFor} allows before `to`, so the
- * row moves only when the event still concerns the current attempt and still moves it forward; a false
- * result is an event the caller acknowledges and ignores.
+ * The single forward-only, attempt-scoped deposit write: it filters on the deposit's id, its `currentAttempt` and the
+ * statuses {@link fromStatusesFor} allows before `to`, so the row moves only when the event still concerns the current
+ * attempt and still moves it forward. A false result is ordinary, never an error.
  */
 export async function advanceDeposit(
   tx: DbTx,
@@ -168,9 +143,8 @@ export async function advanceDeposit(
 // Operation status tables (AAP 0.3.2)
 
 /**
- * The statuses that end an operation's life (AAP 0.3.2 "Fencing"): the executor's success, a failure it
- * will not retry, and a plan a later decision superseded before it was sent. None blocks the operation
- * that depends on it.
+ * The statuses that end an operation's life: the executor's success, a failure it will not retry, and a plan a later
+ * decision superseded before it was sent. None blocks the operation that depends on it.
  */
 export const TERMINAL_OPERATION_STATUSES = [
   'succeeded',
@@ -184,8 +158,8 @@ export function isTerminalOperation(status: PaymentOperationStatus): boolean {
 }
 
 /**
- * The `last_error` values that mean a hold create was handed to the operator: twelve hours without a
- * resolved replay, and an idempotency conflict the gateway could not resolve (AAP 0.3.2).
+ * The `last_error` values that mean a hold create was handed to the operator: twelve hours without a resolved replay,
+ * and an idempotency conflict the gateway could not resolve.
  */
 export const HOLD_HAND_OFF_MARKERS = ['unresolved_12h', 'idempotency_error'] as const;
 
@@ -193,12 +167,9 @@ export const HOLD_HAND_OFF_MARKERS = ['unresolved_12h', 'idempotency_error'] as 
 export type HoldHandOffMarker = (typeof HOLD_HAND_OFF_MARKERS)[number];
 
 /**
- * True when a `hold` operation was handed to the operator instead of being resolved (AAP 0.3.2). Such a
- * row is still `failed_terminal`, and it is **not** proof that the attempt left nothing at Stripe: the
- * create may have succeeded with an answer we never learned, so there may be an authorization under the
- * row's key that only an operator can settle. Nothing may assume otherwise — not {@link releaseAllOpen},
- * which would otherwise declare that authorization released, and not {@link startNewAttempt}, which would
- * otherwise authorize a second time under a new attempt's key while the first may still be live.
+ * True when a `hold` operation was handed to the operator instead of being resolved. Such a row is still
+ * `failed_terminal`, and it is **not** proof that the attempt left nothing at Stripe: the create may have succeeded
+ * with an answer we never learned, so there may be an authorization under the row.
  */
 export function isHandedOffHold(operation: Pick<PaymentOperation, 'kind' | 'lastError'>): boolean {
   if (operation.kind !== 'hold') {
@@ -209,8 +180,8 @@ export function isHandedOffHold(operation: Pick<PaymentOperation, 'kind' | 'last
 }
 
 /**
- * The statuses an operation may still be claimed from (AAP 0.3.2): a row left `executing` past two minutes
- * is a call whose answer was lost, not a call that is running.
+ * The statuses an operation may still be claimed from: a row left `executing` past two minutes is a call whose
+ * answer was lost, not a call that is running.
  */
 export const OPEN_OPERATION_STATUSES = [
   'pending',
@@ -240,9 +211,8 @@ interface NewOperation extends OperationExtras {
 }
 
 /**
- * Reads an integer a raw statement returned. PostgreSQL `INTEGER` reaches JavaScript as a number and
- * `BIGINT` as a bigint, and a driver change could hand back a digit string, so all three are accepted
- * rather than assumed.
+ * Reads an integer a raw statement returned. PostgreSQL `INTEGER` reaches JavaScript as a number and `BIGINT` as a
+ * bigint, and a driver change could hand back a digit string, so all three are accepted rather than assumed.
  */
 function toInt(value: unknown): number | null {
   if (typeof value === 'number' && Number.isInteger(value)) {
@@ -257,10 +227,7 @@ function toInt(value: unknown): number | null {
   return null;
 }
 
-/**
- * The next free `seq` for a deposit: one past the highest one it already has (AAP 0.3.2). A deposit with
- * no operation yet starts at 1.
- */
+/** The next free `seq` for a deposit: one past the highest one it already has. A deposit with no operation yet starts at 1. */
 export async function nextSeq(tx: DbTx, depositId: string): Promise<number> {
   const rows = await tx.$queryRaw<readonly { nextSeq: number | null }[]>(Prisma.sql`
     SELECT COALESCE(MAX("seq"), 0) + 1 AS "nextSeq"
@@ -271,13 +238,9 @@ export async function nextSeq(tx: DbTx, depositId: string): Promise<number> {
 }
 
 /**
- * Writes one operation row, or hands back the row its key already names (AAP 0.3.2).
- *
- * `skipDuplicates` is PostgreSQL's `ON CONFLICT ("idempotency_key") DO NOTHING`, so re-planning a key that
- * exists — a repeated accept, a second `DELETE /me`, a sweeper pass over a decision already written — is
- * an idempotent no-op. The unique violation it suppresses must never be caught instead: in PostgreSQL any
- * error aborts the whole transaction, taking the status change, the analytics events and the outbox rows
- * the caller decided with it.
+ * Writes one operation row, or hands back the row its key already names. `skipDuplicates` is PostgreSQL's
+ * `ON CONFLICT ("idempotency_key") DO NOTHING`, so re-planning a key that exists — a repeated accept, a second
+ * `DELETE /me`, a sweeper pass over a decision already written — is an idempotent no-op.
  */
 async function planOperation(tx: DbTx, row: NewOperation, now: Date): Promise<PaymentOperation> {
   const insert: Prisma.PaymentOperationCreateManyInput = {
@@ -326,9 +289,9 @@ export interface RefundRef extends DepositAttempt {
 }
 
 /**
- * Plans the hold of one attempt: `hold:<depositId>:<attempt>` (AAP 0.5.3). The PaymentIntent id stays null
- * because it does not exist until the executor creates the intent, and the hold needs no `dependsOnId`:
- * its `seq` is the lowest still open on the deposit.
+ * Plans the hold of one attempt: `hold:<depositId>:<attempt>`. The PaymentIntent id stays null because it does not
+ * exist until the executor creates the intent, and the hold needs no `dependsOnId`: its `seq` is the lowest still
+ * open on the deposit.
  */
 export async function planHold(
   tx: DbTx,
@@ -350,10 +313,9 @@ export async function planHold(
 }
 
 /**
- * Plans the release of one attempt's authorization: `release:<depositId>:<attempt>` (AAP 0.5.3). A null
- * `paymentIntentId` is accepted and kept: while an attempt's create is ambiguous there is no id to name,
- * and the executor resolves it from that attempt's hold operation, whose replay is the only way to learn
- * it.
+ * Plans the release of one attempt's authorization: `release:<depositId>:<attempt>`. A null `paymentIntentId` is
+ * accepted and kept: while an attempt's create is ambiguous there is no id to name, and the executor resolves it from
+ * that attempt's hold operation.
  */
 export async function planRelease(tx: DbTx, ref: ReleaseRef, now: Date): Promise<PaymentOperation> {
   return planOperation(
@@ -373,9 +335,8 @@ export async function planRelease(tx: DbTx, ref: ReleaseRef, now: Date): Promise
 }
 
 /**
- * Plans the capture of one attempt's hold: `capture:<depositId>:<attempt>` (AAP 0.5.3). The capture is
- * ordered after the hold by its higher `seq` alone: by the time it is claimed, the hold that created the
- * intent is terminal (AAP 0.3.2).
+ * Plans the capture of one attempt's hold: `capture:<depositId>:<attempt>`. The capture is ordered after the hold by
+ * its higher `seq` alone: by the time it is claimed, the hold that created the intent is terminal.
  */
 export async function planCapture(tx: DbTx, ref: CaptureRef, now: Date): Promise<PaymentOperation> {
   return planOperation(
@@ -394,11 +355,9 @@ export async function planCapture(tx: DbTx, ref: CaptureRef, now: Date): Promise
 }
 
 /**
- * Plans the refund reversing one attempt: `refund:<depositId>:<attempt>` (AAP 0.3.2 "Fencing").
- * `dependsOnId` is required here, so no refund runs while a capture it reverses is outstanding. The
- * executor resolves the intent against its actual state — captured is refunded, uncaptured is cancelled,
- * cancelled needs nothing — so a null `paymentIntentId` only means the id must come from the deposit's
- * current attempt.
+ * Plans the refund reversing one attempt: `refund:<depositId>:<attempt>`. `dependsOnId` is required here, so no
+ * refund runs while a capture it reverses is outstanding. The executor resolves the intent against its actual state —
+ * captured is refunded, uncaptured is cancelled, cancelled needs nothing.
  */
 export async function planRefund(tx: DbTx, ref: RefundRef, now: Date): Promise<PaymentOperation> {
   return planOperation(
@@ -418,12 +377,9 @@ export async function planRefund(tx: DbTx, ref: RefundRef, now: Date): Promise<P
 }
 
 /**
- * Plans the deletion of a user's Stripe customer: `delete_customer:<userId>` (AAP 0.5.3).
- *
- * The operation carries its own copy of the customer id, so `account-erasure` can null
- * `User.stripeCustomerId` without losing the id the executor still needs (AAP 0.5.2). A null id still
- * writes the row — the executor treats it as a satisfied no-op — so "a user has exactly one deletion
- * operation" holds whether or not a card was ever saved.
+ * Plans the deletion of a user's Stripe customer: `delete_customer:<userId>`. The operation carries its own copy of
+ * the customer id, so `account-erasure` can null `User.stripeCustomerId` without losing the id the executor still
+ * needs. A null id still writes the row, and the executor treats it as a satisfied no-op.
  */
 export async function planDeleteCustomer(
   tx: DbTx,
@@ -449,34 +405,21 @@ export async function planDeleteCustomer(
 // Attempts, bulk release and fencing (AAP 0.3.2, 0.5.3)
 
 /**
- * The outcome of {@link startNewAttempt}: the new attempt and its hold, or why none was started.
- *
- * `hold_pending` is the caller's `409 hold_pending` and `not_failed` its `409 not_proposed` (AAP 0.5.4).
- * `hold_pending` is the answer whenever the current attempt is still unresolved — a create in flight, an
- * ambiguous create waiting for its replay, or one handed to the operator — because the meetup **is**
- * proposed, so `409 not_proposed` would tell the client it is not.
+ * The outcome of {@link startNewAttempt}: the new attempt and its hold, or why none was started. `hold_pending` is
+ * the caller's `409 hold_pending` and `not_failed` its `409 not_proposed`; `hold_pending` is the answer whenever the
+ * current attempt is still unresolved.
  */
 export type StartAttemptResult =
   | { readonly ok: true; readonly attempt: number; readonly holdOp: PaymentOperation }
   | { readonly ok: false; readonly reason: 'hold_pending' | 'not_failed' };
 
 /**
- * Starts the next hold attempt of a `failed` deposit (AAP 0.5.3 `failed → pending`), the retry behind
- * `POST /meetups/:id/hold` and a repeated `POST /meetups/:id/accept`.
+ * Starts the next hold attempt of a `failed` deposit (the retry behind `POST /meetups/:id/hold` and a repeated
+ * `POST /meetups/:id/accept`).
  *
- * The retry may not proceed while the current attempt is unresolved: a `pending` deposit, whose attempt
- * never reached a conclusion, or a `failed` deposit whose current attempt's `hold` row is not terminal.
- * Both answer `hold_pending`, because an ambiguous create's replay is the only way to learn its
- * PaymentIntent id and a second attempt would risk a second authorization (AAP 0.3.2). A deposit with
- * nothing to recover answers `not_failed` — `held`, `requires_action`, `released`, `captured`, `expired`,
- * `refunded`, or a `failed` deposit whose hold row is terminal, and that last one starts attempt `n + 1`.
- * A superseded attempt never keeps its authorization: its PaymentIntent, when the hold recorded one, is
- * released under its own attempt's key.
- *
- * The guarded deposit move runs before anything is planned, so a refused retry writes nothing, and it
- * clears `currentPaymentIntentId`, `captureBefore` and `canceledAt`, which all belong to the attempt that
- * just ended — a stale `canceledAt` would otherwise read as a hold loss of the new attempt in the
- * settlement compensation rule.
+ * The retry may not proceed while the current attempt is unresolved — a deposit whose attempt never reached a
+ * conclusion, or whose create may have left an authorization — because a second authorization is what the rule
+ * forbids. Only a `failed` deposit with a resolved attempt starts one, under `hold:<depositId>:<attempt>`.
  */
 export async function startNewAttempt(
   tx: DbTx,
@@ -530,11 +473,9 @@ export async function startNewAttempt(
 }
 
 /**
- * Fences the `hold` operations that were planned but never sent, and reports their attempts. Such a row
- * has `tries` 0, no `claimed_at` and is still `pending`, so no call to Stripe was ever made under its key;
- * fencing it guarantees no authorization can be created after the meetup ends. A hold that is `executing`
- * or `failed_retryable` is deliberately left alone: it may have reached Stripe, and its replay is the only
- * way to learn the PaymentIntent id a release needs.
+ * Fences the `hold` operations that were planned but never sent, and reports their attempts. Such a row has `tries`
+ * 0, no `claimed_at` and is still `pending`, so no call to Stripe was ever made under its key; fencing it guarantees
+ * no authorization can be created after the meetup ends. A hold that is `executing` is left alone.
  */
 async function fenceNeverSentHolds(tx: DbTx, depositId: string, now: Date): Promise<number[]> {
   const rows = await tx.$queryRaw<readonly { attempt: number | null }[]>(Prisma.sql`
@@ -554,15 +495,9 @@ async function fenceNeverSentHolds(tx: DbTx, depositId: string, now: Date): Prom
 }
 
 /**
- * Releases every hold of a meetup's deposits that is not final (AAP 0.5.3 "Release operations for every
- * non-final deposit attempt"), which serves decline, lapse, cancel, block, account deletion and the release
- * side of `lock_lost`. For each deposit it first fences the holds that were never sent, so the meetup's end
- * can never be followed by a new authorization, and then plans one release per attempt that might hold one;
- * a release already planned under its attempt's key is a no-op, so a repeated call is safe.
- *
- * The deposit moves to `released` only when its current attempt has nothing left at Stripe for a release to
- * cancel; otherwise the executor or the webhook confirms the cancel and {@link advanceDeposit} records it
- * then, so a release that fails is retried rather than believed.
+ * Releases every hold of a meetup's deposits that is not final, which serves decline, lapse, cancel, block, account
+ * deletion and the release side of `lock_lost`. For each deposit it first fences the holds that were never sent, so
+ * the meetup's end cannot race a create into leaving an authorization outstanding at the processor.
  */
 export async function releaseAllOpen(
   tx: DbTx,
@@ -607,20 +542,11 @@ export async function releaseAllOpen(
 }
 
 /**
- * True when the attempt has no authorization at Stripe to cancel, so nothing will ever confirm a release of
- * it and the deposit may be marked `released` at once.
+ * True when the attempt has no authorization at Stripe to cancel, so nothing will ever confirm a release of it and
+ * the deposit may be marked `released` at once.
  *
- * A PaymentIntent id can exist under an attempt's key only once a create was sent under that key, so a
- * `hold` operation that records no id on a terminal row is proof that nothing is outstanding there: a
- * definite rejection never creates an intent and ends the row terminal, and {@link fenceNeverSentHolds}
- * only fences a row that was never claimed and never tried. An ambiguous create is deliberately none of
- * these: it stays `executing` or `failed_retryable` until its replay resolves it (AAP 0.3.2).
- *
- * A row that is not terminal is no proof, however few times it was tried, because claiming reserves the
- * call and a replay under the same key performs it. A **handed-off** row ({@link isHandedOffHold}) is the
- * case this function must never wave through: its status is terminal and it records no id, yet an
- * authorization under its key may still be live, and declaring the deposit `released` over it would say an
- * authorization was released that nobody has cancelled (AAP 0.5.3).
+ * A PaymentIntent id can exist under an attempt's key only once a create was sent under that key, so a `hold`
+ * operation that records no id on a terminal row proves the create never reached the provider.
  */
 function hasNoAuthorization(hold: PaymentOperation | null): boolean {
   if (hold === null) {
@@ -643,11 +569,9 @@ export interface FencedCaptures {
 }
 
 /**
- * Fences the captures a resolution has superseded, so none of them can run afterwards (AAP 0.3.2
- * "Fencing"). An operator `no_fault` or a hold-loss compensation supersedes the capture it decided against.
- * A capture still `executing` cannot be fenced — its call is already with Stripe — so it is returned
- * instead and the reversal that depends on it waits for it to finish; fencing happens first, so `capture`
- * is what a reversal must depend on whatever the outcome.
+ * Fences the captures a resolution has superseded, so none of them can run afterwards. An operator `no_fault` or a
+ * hold-loss compensation supersedes the capture it decided against. A capture still `executing` cannot be fenced —
+ * its call is already with Stripe — so it is returned instead.
  */
 export async function fenceCaptures(
   tx: DbTx,
@@ -674,9 +598,9 @@ export async function fenceCaptures(
 }
 
 /**
- * Plans the refund that reverses a capture (AAP 0.3.2 "Fencing"). The reversal depends on `captureOp`, so a
- * refund can never run before an outstanding capture is reconciled, and it carries that capture's attempt
- * and PaymentIntent so the executor can resolve it against the intent's actual state.
+ * Plans the refund that reverses a capture. The reversal depends on `captureOp`, so a refund can never run before an
+ * outstanding capture is reconciled, and it carries that capture's attempt and PaymentIntent so the executor can
+ * resolve it against the intent's actual state.
  */
 export async function planReversal(
   tx: DbTx,
@@ -710,9 +634,8 @@ export async function findHoldOperation(
 }
 
 /**
- * The operation of the named kinds recorded for a PaymentIntent, earliest first (AAP 0.3.2). The webhook
- * handler uses it to turn a PaymentIntent id back into the attempt it concerns; it reads the
- * `paymentIntentId` index.
+ * The operation of the named kinds recorded for a PaymentIntent, earliest first. The webhook handler uses it to turn
+ * a PaymentIntent id back into the attempt it concerns; it reads the `paymentIntentId` index.
  */
 export async function findOperationForIntent(
   tx: DbTx,
@@ -726,10 +649,9 @@ export async function findOperationForIntent(
 }
 
 /**
- * True when a capture or a release is already planned for this attempt (AAP 0.5.3). It backs the late and
- * orphan authorization rule: a `requires_capture` event arriving after the money decision was taken is
- * acknowledged and ignored, because the decision is durable already and the executor's own retrieval
- * settles the actual state.
+ * True when a capture or a release is already planned for this attempt. It backs the late and orphan authorization
+ * rule: a `requires_capture` event arriving after the money decision was taken is acknowledged and ignored, because
+ * the decision is durable already and the executor's own retrieval settles the actual state.
  */
 export async function hasCaptureOrRelease(
   tx: DbTx,
@@ -744,18 +666,18 @@ export async function hasCaptureOrRelease(
 }
 
 /**
- * A meetup's deposits, ordered by role (AAP 0.5.3): the role enum's declaration order, so `initiator`
- * precedes `recipient` and a caller needing a stable pairing — the settlement that retrieves both
- * PaymentIntents, for instance — reads the same order every time.
+ * A meetup's deposits, ordered by role: the role enum's declaration order, so `initiator` precedes `recipient` and a
+ * caller needing a stable pairing — the settlement that retrieves both PaymentIntents — reads the same order every
+ * time.
  */
 export async function depositsForMeetup(tx: DbTx, meetupId: string): Promise<Deposit[]> {
   return tx.deposit.findMany({ where: { meetupId }, orderBy: { role: 'asc' } });
 }
 
 /**
- * The caller-visible hold state of one side of a meetup (AAP 0.5.4): `none` when that side has no deposit,
- * otherwise the current attempt's status. `meetups/queries.ts` and the `MeetupStatusFrame` push of the
- * WebSocket both read it, so the two surfaces cannot disagree.
+ * The caller-visible hold state of one side of a meetup: `none` when that side has no deposit, otherwise the current
+ * attempt's status. `meetups/queries.ts` and the `MeetupStatusFrame` push both read it, so the two surfaces cannot
+ * disagree.
  */
 export function holdView(deposit: Pick<Deposit, 'status'> | null): HoldView {
   return deposit === null ? 'none' : deposit.status;

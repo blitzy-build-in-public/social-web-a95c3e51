@@ -1,18 +1,16 @@
 /**
- * Notification rendering: a notification's kind and the data its job gathered become the push
- * title and body, the plain-text email subject and body, and the app route the message opens
- * (AAP 0.1.1, 0.8.1). Pure -- no database, no clock, no logger, no environment -- so the copy a
- * recipient reads is testable on its own.
+ * Notification rendering: a notification's kind and the data its job gathered become the push title and body, the plain-text
+ * email subject and body, and the app route the message opens (AAP 0.1.1, 0.8.1). Pure — no database, no clock, no logger,
+ * no environment — so the copy a recipient reads is testable on its own.
  *
- * The copy is data: {@link COPY} holds every mandated sentence of AAP 0.5.8, so it can be read
- * against the specification line by line, and {@link renderNotification} is the one renderer that
- * validates the data, fills the placeholders, appends the framing sentence and lays out the email.
+ * The copy is data: {@link COPY} holds every mandated sentence of AAP 0.5.8, so it can be read against the specification line
+ * by line, and {@link renderNotification} is the one renderer that validates the data, fills the placeholders, appends the
+ * framing sentence and lays out the email.
  *
- * Two invariants hold here. A message that concerns a hold is framed in the recipient's own
- * experiment variant (AAP 0.1.1, 0.5.7): the framing sentence is appended verbatim, and data
- * without the variant or the deposit is refused rather than sent unframed. And the data carries
- * ids, a public venue or lodging name, a handle and a start time the job already formatted in city
- * time -- never an email address, real name, booking detail, phone number or coordinate
+ * Two invariants hold here. A message that concerns a hold is framed in the recipient's own experiment variant
+ * (AAP 0.1.1, 0.5.7): the framing sentence is appended verbatim, and data without the variant or the deposit is refused
+ * rather than sent unframed. And the data carries ids, a public venue or lodging name, a handle and a start time the job
+ * already formatted in city time — never an email address, real name, booking detail, phone number or coordinate
  * (AAP 0.5.2, 0.11.1).
  */
 
@@ -30,10 +28,7 @@ import {
 } from '@tablemate/shared';
 import type { DepositCents, NotificationKind, Variant } from '@tablemate/shared';
 
-/**
- * One rendered notification: `title` and `body` feed the push, `emailSubject` and `emailText` the
- * email, and `path` is the app route the message opens.
- */
+/** One rendered notification: `title` and `body` feed the push, `emailSubject` and `emailText` the email, and `path` is the app route the message opens. */
 export type RenderedNotification = {
   title: string;
   body: string;
@@ -41,7 +36,6 @@ export type RenderedNotification = {
   emailText: string;
   path: string;
 };
-
 /**
  * The outcome each kind that reports a money result may carry (AAP 0.5.3, 0.5.7), and the sentence
  * it selects. The job derives the outcome from the recipient's own perspective:
@@ -63,7 +57,6 @@ export const NOTIFICATION_OUTCOMES = {
   dispute_resolved: ['settle_by_checkins', 'no_fault'],
   lodging_claim_resolved: ['verified', 'rejected', 'unreachable'],
 } as const;
-
 /** One outcome value of any kind. */
 export type NotificationOutcome =
   (typeof NOTIFICATION_OUTCOMES)[keyof typeof NOTIFICATION_OUTCOMES][number];
@@ -71,12 +64,7 @@ export type NotificationOutcome =
 const OUTCOMES_BY_KIND: Readonly<
   Partial<Record<NotificationKind, readonly NotificationOutcome[]>>
 > = NOTIFICATION_OUTCOMES;
-
-/**
- * Every kind whose message concerns a hold, so rendered in the recipient's framing variant
- * (AAP 0.1.1, 0.5.7). The job loads that recipient's `ExperimentAssignment.variant` and the
- * meetup's `depositCents` before rendering one of these.
- */
+/** Every kind whose message concerns a hold, so rendered in the recipient's framing variant (AAP 0.1.1, 0.5.7). The job loads that recipient's `ExperimentAssignment.variant` and the meetup's `depositCents` before rendering one of these. */
 export const DEPOSIT_NOTIFICATION_KINDS = [
   'proposal_received',
   'proposal_declined',
@@ -87,14 +75,7 @@ export const DEPOSIT_NOTIFICATION_KINDS = [
   'meetup_settled',
   'lock_lost',
 ] as const satisfies readonly NotificationKind[];
-
-/**
- * Everything a copy line may read (AAP 0.5.2, 0.11.1). The job formats `startsAtLocal` in the venue
- * city's time zone and passes the recipient's own variant, because the framing copy is the
- * recipient's variable (AAP 0.5.7). A field is absent rather than empty, and nothing personal
- * appears here: no email address, real name, booking name or reference, phone number, message body
- * or coordinate.
- */
+/** Everything a copy line may read (AAP 0.5.2, 0.11.1). The job formats `startsAtLocal` in the venue city's time zone and passes the recipient's own variant, because the framing copy is the recipient's variable (AAP 0.5.7). A field is absent rather than empty, and nothing personal appears here: no email address, real name, booking name or reference, phone number, message body or coordinate. */
 export interface NotificationRenderData {
   /** Origin of the web client, used for links; a trailing slash is ignored. */
   webOrigin: string;
@@ -118,11 +99,7 @@ export interface NotificationRenderData {
   magicLinkToken?: string;
 }
 
-/**
- * Thrown when the data cannot produce the message a kind requires: a field is missing or empty, an
- * outcome the kind does not allow, or a deposit notification without its variant or its deposit.
- * The message names the kind and the field, never a value (AAP 0.11.1).
- */
+/** Thrown when the data cannot produce the message a kind requires: a field is missing or empty, an outcome the kind does not allow, or a deposit notification without its variant or its deposit. The message names the kind and the field, never a value (AAP 0.11.1). */
 export class NotificationRenderError extends Error {
   readonly kind: NotificationKind;
   readonly field: string;
@@ -134,29 +111,15 @@ export class NotificationRenderError extends Error {
   }
 }
 
-/**
- * What Table Credit is, wherever a grant is announced (AAP 0.5.8): a record with no cash value,
- * because payouts to users or venues are out of scope (AAP 0.7.2).
- */
+/** What Table Credit is, wherever a grant is announced (AAP 0.5.8): a record with no cash value, because payouts to users or venues are out of scope (AAP 0.7.2). */
 export const TABLE_CREDIT_NOTE =
   'Table Credit is in USD, redeemable at partner venues, and has no cash value.';
-/**
- * The sign-in link the `magic_link` email carries (AAP 0.3.2): the route and query parameter
- * `apps/mobile/app/auth/verify.tsx` parses and the end-to-end mail readers follow.
- */
+/** The sign-in link the `magic_link` email carries (AAP 0.3.2): the route and query parameter `apps/mobile/app/auth/verify.tsx` parses and the end-to-end mail readers follow. */
 export function magicLinkUrl(webOrigin: string, token: string): string {
   return `${appOrigin(webOrigin)}${MAGIC_LINK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
-/**
- * Renders the notification of `kind` from `data` (AAP 0.1.1, 0.5.8), throwing
- * {@link NotificationRenderError} when the data cannot produce it.
- *
- * The framing sentence, required of every deposit kind, is appended verbatim: as the body's last
- * sentence, and as its own email paragraph after the outcome sentence, which states the actual
- * money result first. Every email but the magic link -- which carries its own link -- then names the
- * route, and all of them the closing line.
- */
+/** Renders the notification of `kind` from `data` (AAP 0.1.1, 0.5.8), throwing {@link NotificationRenderError} when the data cannot produce it. The framing sentence, required of every deposit kind, is appended verbatim: as the body's last sentence, and as its own email paragraph after the outcome sentence, which states the actual money result first. Every email but the magic link -- which carries its own link -- then names the route, and all of them the closing line. */
 export function renderNotification(
   kind: NotificationKind,
   data: NotificationRenderData,
@@ -184,21 +147,13 @@ export function renderNotification(
 
 /** The closing line of every email. */
 const CLOSING_LINE = "You're receiving this because you have a Tablemate account.";
-
 /** The variants, keyed by the shared enum so one added there fails to compile here (AAP 0.5.7). */
 const VARIANTS = { social: true, punitive: true } as const satisfies Record<Variant, true>;
-
 /** A brace-wrapped placeholder; a copy line carrying an unknown one is refused (see {@link fill}). */
 const PLACEHOLDER_PATTERN = /\{[a-z]+\}/g;
-
 /** One sentence set per outcome a kind allows. */
 type OutcomeSentences = Partial<Record<NotificationOutcome, readonly string[]>>;
-
-/**
- * One kind's copy (AAP 0.5.8): its title, any email-only paragraphs, and the route the message
- * opens. A kind that reports a money result carries one sentence set per outcome instead of a
- * single lead.
- */
+/** One kind's copy (AAP 0.5.8): its title, any email-only paragraphs, and the route the message opens. A kind that reports a money result carries one sentence set per outcome instead of a single lead. */
 type Copy = {
   readonly title: string;
   /** Email-only paragraphs after the lead, such as the magic link itself. */
@@ -206,10 +161,8 @@ type Copy = {
   /** The route the message opens; the meetup's own screen when a kind does not name one. */
   readonly path?: string;
 } & ({ readonly lead: readonly string[] } | { readonly outcomes: OutcomeSentences });
-
 /** The fields a copy line reads as text, and so the ones a missing or empty value is refused for. */
 type TextField = 'webOrigin' | 'venueName' | 'startsAtLocal' | 'lodgingName' | 'magicLinkToken';
-
 /** Every placeholder a copy line may carry, and how it is filled from the kind's own data. */
 const PLACEHOLDERS: Readonly<
   Record<string, (kind: NotificationKind, data: NotificationRenderData) => string>
@@ -222,7 +175,6 @@ const PLACEHOLDERS: Readonly<
   '{link}': (kind, data) =>
     magicLinkUrl(need(kind, data, 'webOrigin'), need(kind, data, 'magicLinkToken')),
 };
-
 /** A required text field's value, or a refusal naming it; an empty string counts as absent. */
 function need(kind: NotificationKind, data: NotificationRenderData, field: TextField): string {
   const value = data[field];
@@ -302,10 +254,7 @@ function appOrigin(origin: string): string {
   return origin.replace(/\/+$/, '');
 }
 
-/**
- * The copy of every kind (AAP 0.5.8), exhaustive by construction: a kind added to
- * `NotificationKind` fails to compile until its copy is written here.
- */
+/** The copy of every kind (AAP 0.5.8), exhaustive by construction: a kind added to `NotificationKind` fails to compile until its copy is written here. */
 const COPY = {
   magic_link: {
     title: 'Your Tablemate sign-in link',
@@ -374,8 +323,7 @@ const COPY = {
   },
   lock_lost: {
     title: 'A card hold ended',
-    // The outcome names the money movement (`release`/`refund`) while LOCK_LOST_COPY names its own
-    // sentences (`released`/`refunded`), so the two spellings meet here (AAP 0.5.8, 0.3.2).
+    // The outcome names the money movement (`release`/`refund`) while LOCK_LOST_COPY names its own sentences (`released`/`refunded`), so the two spellings meet here (AAP 0.5.8, 0.3.2).
     outcomes: {
       release: [LOCK_LOST_COPY.released],
       refund: [LOCK_LOST_COPY.refunded],

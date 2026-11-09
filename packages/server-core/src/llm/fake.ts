@@ -2,16 +2,9 @@ import { utf8ByteLength } from '@tablemate/shared';
 
 import type { LlmAdapter, LlmCallOptions, LlmRequest, LlmResult } from './contract.ts';
 import { LlmCountError, LlmProviderError, LlmTimeoutError, assertLlmRequest } from './contract.ts';
-
-/**
- * The scripted behaviour of one fake adapter, read at call time so a suite can build the scenarios
- * it needs — `prices-high`, `yes`, `no` and the cap cases — without a mutation API (AAP 0.5.6).
- */
+/** The scripted behaviour of one fake adapter, read at call time so a suite can build the scenarios it needs — `prices-high`, `yes`, `no` and the cap cases — without a mutation API (AAP 0.5.6). */
 export interface FakeLlmOptions {
-  /**
-   * The structured output to return. The default returns `{}`, which callers treat as unusable: menu
-   * extraction yields no items and falls back to a call, and the voice classifier reads `unclear`.
-   */
+  /** The structured output to return. The default returns `{}`, which callers treat as unusable: menu extraction yields no items and falls back to a call, and the voice classifier reads `unclear`. */
   respond?: (request: LlmRequest) => unknown;
   /** Makes {@link LlmAdapter.countInputTokens} throw `LlmCountError`, so the request is never sent. */
   failCount?: boolean;
@@ -26,20 +19,11 @@ export interface FakeLlmOptions {
   /** Default true; `false` returns `usage: null`, which makes `spend.ts` charge the reservation. */
   reportUsage?: boolean;
 }
-
-/**
- * The fake adapter plus the record of what it was asked to do: `counted` holds the serialized input
- * part of every count attempted, `sent` that of every send attempted.
- */
+/** The fake adapter plus the record of what it was asked to do: `counted` holds the serialized input part of every count attempted, `sent` that of every send attempted. */
 export interface FakeLlmAdapter extends LlmAdapter {
   readonly calls: { readonly counted: string[]; readonly sent: string[] };
 }
-
-/**
- * The provider-neutral input part of one request — the system prompt, the messages and the output
- * schema, in a fixed key order — which is what a count and a send must agree on byte for byte (AAP
- * 0.5.6).
- */
+/** The provider-neutral input part of one request — the system prompt, the messages and the output schema, in a fixed key order — which is what a count and a send must agree on byte for byte (AAP 0.5.6). */
 export function serializeFakeInputPart(request: LlmRequest): string {
   return JSON.stringify({
     system: request.system,
@@ -47,25 +31,18 @@ export function serializeFakeInputPart(request: LlmRequest): string {
     jsonSchema: request.jsonSchema ?? null,
   });
 }
-
-/**
- * The fake provider's prices in USD per million tokens, matching the `llm` group `src/env/modes.ts`
- * parses in fake mode.
- */
+/** The fake provider's prices in USD per million tokens, matching the `llm` group `src/env/modes.ts` parses in fake mode. */
 export const FAKE_LLM_PRICES = Object.freeze({
   inputUsdPerMTok: '0.40',
   outputUsdPerMTok: '1.60',
 } as const);
-
 function defaultRespond(): unknown {
   return {};
 }
-
 function serializedText(value: unknown): string {
   const text: unknown = JSON.stringify(value);
   return typeof text === 'string' ? text : '';
 }
-
 function parseJsonOrNull(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
@@ -73,11 +50,9 @@ function parseJsonOrNull(text: string): unknown {
     return null;
   }
 }
-
 function countTokens(part: string): number {
   return Math.ceil(utf8ByteLength(part) / 4);
 }
-
 function waitForDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -96,7 +71,6 @@ function waitForDelay(ms: number, signal: AbortSignal | undefined): Promise<void
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
-
 /** Build the provider `LLM_PROVIDER=fake` names (AAP 0.3.1, AAP 0.5.6). */
 export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapter {
   const counted: string[] = [];
@@ -115,8 +89,7 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
       if (call.signal?.aborted === true) {
         throw new LlmCountError('timeout');
       }
-      // The fake counts locally while a real provider makes a round trip, so one microtask of
-      // yielding keeps the answer asynchronous for callers, as the interface's promise says.
+      // The fake counts locally while a real provider makes a round trip, so one microtask of yielding keeps the answer asynchronous for callers, as the interface's promise says.
       await Promise.resolve();
       return countTokens(part);
     },
@@ -125,8 +98,7 @@ export function createFakeLlmAdapter(options: FakeLlmOptions = {}): FakeLlmAdapt
       const part = serializeFakeInputPart(request);
       // Recorded before anything can fail: a sent request's tokens may already be billed.
       sent.push(part);
-      // Checked before the scripted delay rather than only inside it: an abort must settle the call
-      // whatever `delayMs` is, and answer one aborted signal exactly as `countInputTokens` does.
+      // Checked before the scripted delay rather than only inside it: an abort must settle the call whatever `delayMs` is, and answer one aborted signal exactly as `countInputTokens` does.
       if (call.signal?.aborted === true) {
         throw new LlmTimeoutError('aborted');
       }

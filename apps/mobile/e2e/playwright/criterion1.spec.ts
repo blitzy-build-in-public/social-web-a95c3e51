@@ -1,11 +1,9 @@
 /**
- * Criterion 1 on the web client — two travelers propose, lock, meet and settle — with criterion 3's request-body check
- * (AAP 0.8.1, 0.12.1).
- *
- * Two browser contexts drive both halves of a pair through the real UI: actor A finds the other traveler on Discover and
- * proposes at a seeded partner venue for the harness's fresh city day, actor B reads the proposal on its own screen and locks
- * it, both check in with the code the venue's console is showing at that moment, and the settlement the harness triggers
- * releases both holds.
+ * Criterion 1 on the web client — two travelers propose, lock, meet and settle — with criterion 3's
+ * request-body check (AAP 0.8.1, 0.12.1). Two browser contexts drive both halves of a pair through the real UI:
+ * actor A finds the other traveler on Discover and proposes at a seeded partner venue for the harness's fresh
+ * city day, actor B reads the proposal on its own screen and locks it, both check in with the code the venue's
+ * console is showing at that moment, and the settlement the harness triggers releases both holds.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -47,7 +45,6 @@ import {
 } from './support/api-actor.ts';
 import type { MeetupDay } from './support/api-actor.ts';
 import { readVenueCode } from './support/venue-code.ts';
-
 /*
  * Bounds. One screen, one navigation or one provider round trip gets the harness's own page bound; the group
  * gets minutes, because `ensureActors()` imports a booking through the proof screen once per stack and one
@@ -56,44 +53,33 @@ import { readVenueCode } from './support/venue-code.ts';
 const SCREEN_TIMEOUT_MS = 30_000;
 const WALK_TIMEOUT_MS = 30 * 60_000;
 const UI_STEP_TIMEOUT_MS = 15 * 60_000;
-
 /** Settlement runs at `startsAt + 45 min`, so a minute past it is the first overdue reading. */
 const SETTLE_AFTER_MS = 46 * 60_000;
-
 /** How long the settlement and the payment operations it plans are given to land (AAP 0.3.2). */
 const SETTLE_TIMEOUT_MS = 90_000;
-
 /** The check-in window opens fifteen minutes before the start; five is inside it (AAP 0.5.3). */
 const CHECK_IN_LEAD_MS = 5 * 60_000;
-
 /* The criterion 3 fixtures: the committed booking email and the issuer record beside it. */
 const FIXTURE_EML = 'packages/circuits/fixtures/test-issuer/valid.eml';
 const ISSUER_CONFIG = 'config/issuers/tablemate-test.json';
-
 /** Where `make-test-fixtures.ts` renders the guest's name; it exports no constant to read instead. */
 const GUEST_ANCHOR = 'Guest: ';
-
 /** The carriage return each line of the fixture body ends with, the body being CRLF-terminated. */
 const CR = 13;
-
 /** The shortest run of the email's own text criterion 3 searches a submitted body for (AAP 0.12.1). */
 const WINDOW_CHARS = 12;
-
 /** The whole of what may leave the device: a proof and its public signals (AAP 0.5.5). */
 const PROOF_BODY_KEYS = ['proof', 'publicSignals'];
-
 /** One test id's visible copy: React Navigation keeps a hidden twin of every mounted screen. */
 function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`);
 }
-
 /** The experiment variant a deposit screen renders its framing copy from (AAP 0.5.7). */
 async function variantOf(role: 'a' | 'b'): Promise<Variant> {
   const me = await api(role).get('/me', MeDto);
   if (me.variant === null) throw new Error(`actor ${role} holds no experiment assignment`);
   return me.variant;
 }
-
 /** One instant as the proposal form spells it, in the meetup city's own zone: `YYYY-MM-DD HH:mm`. */
 function startTextFor(instant: string, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -109,7 +95,6 @@ function startTextFor(instant: string, timezone: string): string {
     parts.find((part) => part.type === type)?.value ?? '';
   return `${field('year')}-${field('month')}-${field('day')} ${field('hour')}:${field('minute')}`;
 }
-
 /**
  * A profile read handed back unparsed: the tier assertion is about which keys the API serialized, and every
  * shared schema is a strip-mode object that would drop a field above the viewer's tier before the assertion
@@ -118,9 +103,7 @@ function startTextFor(instant: string, timezone: string): string {
 const RAW_PROFILE = {
   parse: (value: unknown): Record<string, unknown> => value as Record<string, unknown>,
 };
-
 /* The fixture booking's own secrets, which is what criterion 3's assertion turns on. */
-
 /** What criterion 3 searches a submitted body for, read once from the committed fixture. */
 interface FixtureSecrets {
   readonly guest: string;
@@ -130,7 +113,6 @@ interface FixtureSecrets {
 }
 
 let secretsCache: FixtureSecrets | undefined;
-
 /** The value an anchor introduces, up to its terminator byte, or null when the anchor is absent. */
 function valueAfterAnchor(text: string, anchor: string, terminator: number): string | null {
   const at = text.indexOf(anchor);
@@ -139,7 +121,6 @@ function valueAfterAnchor(text: string, anchor: string, terminator: number): str
   const end = text.indexOf(String.fromCharCode(terminator), start);
   return end < 0 ? null : text.slice(start, end);
 }
-
 /** The reference anchor and terminator the test issuer's template declares (AAP 0.5.5). */
 function referenceField(): { anchor: string; terminator: number } {
   const raw: unknown = JSON.parse(readFileSync(join(repoRoot(), ISSUER_CONFIG), 'utf8'));
@@ -153,7 +134,6 @@ function referenceField(): { anchor: string; terminator: number } {
   }
   return { anchor, terminator };
 }
-
 /**
  * The fixture's own secrets: its guest name and booking reference, located in the quoted-printable decoded
  * email by the anchors its template renders, and every window of the email's text. A fixture whose guest line
@@ -186,7 +166,6 @@ function fixtureSecrets(): FixtureSecrets {
   secretsCache = { guest, reference, windows };
   return secretsCache;
 }
-
 /**
  * Asserts that one captured `POST /v1/itinerary-proofs` body carries the proof and nothing else: its keys are
  * exactly `proof` and `publicSignals`, and it holds neither the fixture's guest name, nor its booking
@@ -210,12 +189,9 @@ function assertProofBodyPrivate(bodyText: string): void {
   expect(bodyText).not.toContain(reference);
   expect(windows.filter((window) => bodyText.includes(window))).toEqual([]);
 }
-
 /* The walk's steps: one per group of screens, each reached from the screen before it. */
-
 /** One page of `GET /meetups`, as the contract's paginated schema answers it (AAP 0.5.4). */
 type MeetupPage = ReturnType<typeof MeetupListResponse.parse>;
-
 /** How many meetups the pair had already completed: the tier this walk's outcome moves past. */
 async function completedWithCounterpart(userId: string): Promise<number> {
   let cursor: string | null = null;
@@ -231,7 +207,6 @@ async function completedWithCounterpart(userId: string): Promise<number> {
     cursor = page.nextCursor;
   }
 }
-
 /**
  * Actor A proposes the harness's fresh city day through the proposal screen, and answers the meetup id.
  *
@@ -275,7 +250,6 @@ async function proposeThroughTheUi(
   await expect(visible(page, 'meetup-detail')).toBeVisible({ timeout: SCREEN_TIMEOUT_MS });
   return created.meetupId;
 }
-
 /**
  * Actor B opens the proposal on its own screen, reads the framing there, and locks both holds. The card
  * `ensureCard` saved needs no 3-D Secure, so the accept authorizes in the same request, and the status line
@@ -296,7 +270,6 @@ async function acceptThroughTheUi(page: Page, meetupId: string, variant: Variant
     timeout: SCREEN_TIMEOUT_MS,
   });
 }
-
 /**
  * One attendee checks in, inside the window, with the code the venue's console is showing at that moment. The
  * code is read again per attendee rather than reused, a step being 60 seconds, and the coordinates are the
@@ -321,7 +294,6 @@ async function checkInAtTheVenue(
   await visible(page, 'checkin-submit').click();
   await expect(visible(page, 'checkin-result')).toBeVisible({ timeout: SCREEN_TIMEOUT_MS });
 }
-
 /**
  * The dashboard's headline for one day, which this walk is the only meetup on: `lockedMeetups` counts the
  * meetups that reached two locked holds, `bothCheckedIn` those a pass check-in from each attendee reached, and
@@ -338,7 +310,6 @@ async function expectCompletion(cityId: string, localDate: string): Promise<void
   expect(metrics.completion.bothCheckedIn).toBe(1);
   expect(metrics.completion.rate).toBe(1);
 }
-
 /** The pair's tier, asserted by its keys: one completed meetup is tier 2, and a pair that already had
  * one reaches tier 3 (AAP 0.5.4, 0.5.7). */
 async function expectTier(userId: string, priorCompleted: number): Promise<void> {
@@ -346,7 +317,6 @@ async function expectTier(userId: string, priorCompleted: number): Promise<void>
   const expected = priorCompleted === 0 ? TIER_FIELDS[2] : TIER_FIELDS[3];
   expect(Object.keys(profile).sort()).toEqual([...expected].sort());
 }
-
 /** One open page per role is all the harness allows, so the whole file is one serial group. */
 test.describe.configure({ mode: 'serial' });
 

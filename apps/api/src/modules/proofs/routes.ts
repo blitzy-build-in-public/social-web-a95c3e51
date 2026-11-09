@@ -1,31 +1,21 @@
 /**
- * The two proof routes (AAP 0.5.1, 0.5.4, 0.5.5): the contract's `POST /itinerary-proofs`, which stores
- * the stay a proof proves and spends that booking's nullifier, and the additive public `GET /zk/config`,
- * which publishes the configuration a device builds its circuit inputs from.
+ * The two proof routes: the contract's `POST /itinerary-proofs`, which stores the stay a proof proves and spends that
+ * booking's nullifier, and the additive public `GET /zk/config`, which publishes the configuration a device builds its
+ * circuit inputs from.
  *
- * They differ in who may call them, so each route group is registered in its own encapsulated
- * sub-plugin: the submission is a traveler feature route — a bearer token, the 18+ gate and the mutating
- * allowances of AAP 0.5.4 — while `GET /zk/config` is public, because a device needs the issuer keys, the
- * registry, the salt and the artefact links before it holds any proof, and because AAP 0.5.4 does not
- * name the import screen among the age-gated routes. No hook is installed on the context this file is
- * mounted on, so neither group's guard can reach the other's routes and nothing outside this module
- * inherits the age gate by accident.
+ * They differ in who may call them, so each route group is registered in its own encapsulated sub-plugin: the submission is a
+ * traveler feature route — a bearer token, the 18+ gate and the mutating allowances — while `GET /zk/config` is public,
+ * because a device needs the issuer keys, the registry, the salt and the artefact links before it holds any proof. No hook is
+ * installed on the context this file is mounted on, so neither group's guard can reach the other's routes.
  *
- * The submission's steps are the order AAP 0.5.5 and 0.5.4 fix, and each is where it is for a reason:
- * `verifyItineraryProof` runs outside any transaction, because it is CPU-bound pairing work and holding a
- * transaction open across it would pin a pool connection and a row lock for its whole duration (AAP
- * 0.3.2); the validity window is derived from the arrival city's own zone, so a stay ending on a Lisbon
- * evening is valid to Lisbon's midnight rather than the prover's (AAP 0.5.2, 0.5.7); one transaction,
- * behind the account-deletion write fence, writes the `SpentNullifier` row first and the `ItineraryProof`
- * row second, the nullifier insert being what makes a booking provable once for the whole deployment —
- * the key names the booking rather than the account, it carries no user link and it survives account
- * erasure, so a deleted account cannot free a booking for reuse (AAP 0.5.2, 0.5.3); and the answer is
- * built field by field from the public outputs.
+ * The submission's steps, each where it is for a reason: `verifyItineraryProof` runs outside any transaction, because it is
+ * CPU-bound pairing work and holding a transaction across it would pin a pool connection and a row lock; the validity window
+ * is derived from the arrival city's own zone; and one transaction, behind the account-deletion write fence, writes the
+ * `SpentNullifier` row first and the `ItineraryProof` row second, the nullifier insert being what makes a booking provable
+ * once for the whole deployment — the key names the booking rather than the account and survives account erasure.
  *
- * Nothing private leaves this file: the proof, the nullifier, the registry root and the salt are read by
- * the verifier and written to the row, never logged and never answered (AAP 0.11.1, 0.12.2). The body is
- * parsed by the shared `ProofSubmission`, whose strict schemas make an unknown key or a signal array that
- * is not seven long the `400 proof_malformed` this route's `validationErrorCode` names.
+ * Nothing private leaves this file: the proof, the nullifier, the registry root and the salt are read by the verifier and
+ * written to the row, never logged and never answered.
  */
 
 import { Prisma, isUniqueViolation, type DbTx } from '@tablemate/db';
@@ -49,21 +39,17 @@ import type { App, AppServices } from '../../app.ts';
 const PROOFS_TAG = 'proofs' satisfies OpenApiTag;
 
 /**
- * The one log line a stored proof writes. It carries the public outputs alone — the city, the issuer
- * and the two dates the proof proves — and never the proof, the nullifier, the root or the salt
- * (AAP 0.11.1).
+ * The one log line a stored proof writes: the public outputs alone — the city, the issuer and the two dates the proof proves —
+ * and never the proof, the nullifier, the root or the salt.
  */
 const PROOF_VERIFIED = 'proof_verified';
 
 /**
- * The authenticated caller's id, or a refusal.
+ * The authenticated caller's id, or a refusal: the guard above admitted this request, but that is a property of the
+ * registration rather than of this handler, and a hook that were moved, removed or shadowed would otherwise leave a
+ * `TypeError` answered as `500 internal_error` where the contract requires `401 token_invalid`.
  *
- * The guard above admitted this request, so `request.auth` is set — but that is a property of the
- * registration, not of this handler: a hook that were moved, removed or shadowed would otherwise
- * leave a `TypeError` to be answered as `500 internal_error` where the contract requires
- * `401 token_invalid`, and no compiler check would catch it.
- *
- * @throws AppError `token_invalid` (401) when no context is present.
+ * `@throws AppError token_invalid` (401) when no context is present.
  */
 function callerId(request: FastifyRequest): string {
   if (request.auth === null) {
@@ -73,26 +59,21 @@ function callerId(request: FastifyRequest): string {
 }
 
 /**
- * The UTC midnight of a `YYYY-MM-DD` date: the form Prisma takes for the `@db.Date` columns of
- * `ItineraryProof` (AAP 0.5.2).
- *
- * The date is a calendar date the circuit proved, not an instant, so it is anchored to UTC rather
- * than to any process zone — the two columns are read back with `toISOString().slice(0, 10)`.
+ * The UTC midnight of a `YYYY-MM-DD` date: the form Prisma takes for the `@db.Date` columns of `ItineraryProof`. The date is a
+ * calendar date the circuit proved, not an instant, so it is anchored to UTC rather than to any process zone.
  */
 function dateColumn(isoDate: string): Date {
   return new Date(`${isoDate}T00:00:00.000Z`);
 }
 
 /**
- * Spends the booking's nullifier (AAP 0.5.2, 0.5.5).
+ * Spends the booking's nullifier.
  *
- * `ON CONFLICT DO NOTHING` rather than catching a unique violation, because a failed statement aborts
- * the enclosing PostgreSQL transaction and every later write in it would then fail as well. The
- * returned row count is the whole answer: one row means this call spent the nullifier, and no rows
- * mean another proof already holds it.
+ * `ON CONFLICT DO NOTHING` rather than catching a unique violation, because a failed statement aborts the enclosing PostgreSQL
+ * transaction and every later write in it would then fail as well. The returned row count is the whole answer: one row means
+ * this call spent the nullifier, and no rows mean another proof already holds it.
  *
- * @throws AppError `nullifier_used` (409) when the booking was already spent, by this account or
- *   another.
+ * `@throws AppError nullifier_used` (409) when the booking was already spent, by this account or another.
  */
 async function spendNullifier(tx: DbTx, nullifier: string, now: Date): Promise<void> {
   const spent = await tx.$queryRaw<{ nullifier: string }[]>(
@@ -109,16 +90,14 @@ async function spendNullifier(tx: DbTx, nullifier: string, now: Date): Promise<v
 }
 
 /**
- * Stores a verified proof and the stay it proves, as one transaction behind the deletion write fence
- * (AAP 0.5.2, 0.5.3).
+ * Stores a verified proof and the stay it proves, as one transaction behind the deletion write fence.
  *
- * A second proof for the same city is simply another row: discovery reads the latest valid one, so
- * nothing here replaces or supersedes an earlier proof. `validFrom` and `validTo` are stored rather
- * than derived per read, so a later change to the city's zone or to the look-back constant cannot
- * move an accepted proof's window.
+ * A second proof for the same city is simply another row: discovery reads the latest valid one. `validFrom` and `validTo` are
+ * stored rather than derived per read, so a later change to the city's zone or to the look-back constant cannot move an
+ * accepted proof's window.
  *
- * @throws AppError `nullifier_used` (409) for a booking already spent, and `token_invalid` (401) when
- *   the account has requested deletion.
+ * `@throws AppError nullifier_used` (409) for a booking already spent, and `token_invalid` (401) when the account has
+ * requested deletion.
  */
 async function storeProof(
   services: AppServices,
@@ -162,13 +141,10 @@ async function storeProof(
 }
 
 /**
- * Registers the two proof routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1` (AAP 0.5.1).
+ * Registers the two proof routes of AAP 0.5.4 on the context `app.ts` mounts under `/v1`.
  *
- * Registration is synchronous, as in every plugin the composition root installs — `clock.ts`,
- * `security.ts`, `openapi.ts`, `auth.ts`, `rate-limit.ts`, `raw-body.ts`, `websocket.ts` and the
- * sibling route modules all declare a `void` function — so the returned promise is already resolved
- * and a caller may await it or not. The declared `Promise<void>` is what keeps this plugin usable
- * wherever Fastify's own plugin types expect one.
+ * Registration is synchronous, as in every plugin the composition root installs, so the returned promise is already resolved;
+ * the declared `Promise<void>` is what keeps this plugin usable wherever Fastify's own plugin types expect one.
  */
 export default function proofsRoutes(app: App): Promise<void> {
   // The traveler group: bearer authentication plus the 18+ gate, and the mutating allowances of

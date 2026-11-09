@@ -1,6 +1,5 @@
 /**
- * The traveler app's one WebSocket: pair chat and meetup-status pushes on `WS /v1/chat` (AAP 0.1.1
- * requirement 9, AAP 0.3.3, AAP 0.5.4, AAP 0.8.1).
+ * The traveler app's one WebSocket: pair chat and meetup-status pushes on `WS /v1/chat`.
  *
  * The session owns the socket, not a screen, and this module imports nothing from `src/auth` or
  * `src/state`, so the dependency runs one way and the three stay out of a cycle (AAP 0.5.1). It
@@ -37,14 +36,11 @@ import {
   WS_CLOSE,
 } from '@tablemate/shared';
 import type { ChatSend } from '@tablemate/shared';
-
 import { authHooks, refreshSession } from './client';
 import { isApiError } from './errors';
 
 /** The shortest gap between two connection attempts, in milliseconds. */
 const MIN_BACKOFF_MS = 1_000;
-
-/** The longest gap between two connection attempts, in milliseconds. */
 const MAX_BACKOFF_MS = 30_000;
 
 /** How long {@link send} waits for the socket it reopens to open before it refuses the write. */
@@ -57,8 +53,6 @@ const REOPEN_TIMEOUT_MS = 5_000;
  * client that branches on them both import, so a code added or renumbered there compiles here.
  */
 const CLOSE_NORMAL = 1000;
-
-/** Open, as a number: the static is a property of whichever implementation the platform supplies, while the value is fixed by the WHATWG specification. */
 const READY_STATE_OPEN = 1;
 
 /** How many consecutive closes before their socket ever opened make the next attempt rotate the session first. */
@@ -84,8 +78,6 @@ export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 
 
 /** The state most recently published to the listeners. */
 let connectionState: ConnectionState = 'idle';
-
-/** The socket currently held, or null. Cleared as soon as a socket is discarded. */
 let socket: WebSocket | null = null;
 
 /**
@@ -114,23 +106,11 @@ let resendAttempts = 0;
 
 /** True from {@link connect} until {@link disconnect}: a close while it is true is an interruption. */
 let desired = false;
-
-/** True while an attempt is opening a socket, so a second {@link connect} cannot open another. */
 let opening = false;
-
-/** How many consecutive attempts have failed, which sets the next backoff ceiling. */
 let failedAttempts = 0;
-
-/** The scheduled reconnect, or null. */
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** Whether the next attempt must rotate the session before it opens a socket. */
 let refreshBeforeNextAttempt = false;
-
-/** Whether a rotation has succeeded since the last successful open. */
 let refreshedSinceUnauthorized = false;
-
-/** How many consecutive unauthorized closes have happened since the last successful open. */
 let unauthorizedCloses = 0;
 
 /**
@@ -143,19 +123,11 @@ let refusedOpens = 0;
 
 /** The handlers attached to the socket currently held, removed when it is discarded. */
 let attached: { socket: WebSocket; detach: () => void } | null = null;
-
-/** Everyone waiting for frames: the meetup store, the chat screen. */
 const frameListeners = new Set<(frame: ServerFrame) => void>();
-
-/** Everyone waiting for connection-state changes. */
 const stateListeners = new Set<(state: ConnectionState) => void>();
-
-// --- Listener registration (AAP 0.3.3) ---------------------------------------------------------
-
 /**
- * Subscribes to the frames the API pushes (AAP 0.3.3, AAP 0.5.4). Listeners stay registered across
- * connects and disconnects, because the session outlives a socket, and each is called in isolation,
- * so one that throws neither stops the others nor breaks the socket.
+ * Subscribes to the frames the API pushes. Listeners stay registered across connects and disconnects, and each is
+ * called in isolation, so one that throws neither stops the others nor breaks the socket.
  */
 export function subscribe(listener: (frame: ServerFrame) => void): () => void {
   frameListeners.add(listener);
@@ -172,12 +144,9 @@ export function subscribeConnectionState(listener: (state: ConnectionState) => v
   };
 }
 
-/** The current connection state, for a caller that cannot wait for the next change (AAP 0.3.3). */
 export function getConnectionState(): ConnectionState {
   return connectionState;
 }
-
-// --- Connect, send, disconnect (AAP 0.3.3, AAP 0.5.4) ------------------------------------------
 
 /**
  * Opens the chat socket, or does nothing when one is already connecting, open or waiting to be retried
@@ -195,11 +164,9 @@ export function connect(): void {
 }
 
 /**
- * Whether the runtime currently has a connection — the app's one connectivity answer (AAP 0.3.3).
- * Deliberately the query layer's own signal, because `onlineManager` is what React Query consults, so
- * this answer and the one the query layer acts on cannot disagree. On a platform that raises no
- * connectivity events the manager reports online and the socket's own `readyState` is what refuses a
- * write; {@link send} reads both.
+ * Whether the runtime currently has a connection. Deliberately the query layer's own signal, because `onlineManager`
+ * is what React Query consults, so this answer and the one the query layer acts on cannot disagree. On a platform that
+ * raises no connectivity events the manager reports online and the socket's own `readyState` is what refuses a write.
  */
 export function isOnline(): boolean {
   return onlineManager.isOnline();
@@ -248,8 +215,7 @@ function writeFrame(target: WebSocket, payload: string): boolean {
     target.send(payload);
     return true;
   } catch {
-    // The socket closed between the check above and the write. Nothing is queued; the caller can
-    // ask for a fresh attempt.
+    // The socket closed between the check above and the write. Nothing is queued; the caller can retry after the reconnect.
     return false;
   }
 }
@@ -354,8 +320,6 @@ export function disconnect(): void {
   setState('idle');
 }
 
-// --- Opening a socket -------------------------------------------------------------------------
-
 /** Opens one socket for the current session, rotating the session first when the last close looked unauthorized. Never rejects, and never throws at the caller. */
 async function openSocket(): Promise<void> {
   opening = true;
@@ -366,8 +330,7 @@ async function openSocket(): Promise<void> {
       const rotation = await rotateSession();
       if (rotation === 'signed_out') return;
       if (rotation === 'failed') {
-        // Nothing was opened and nothing was refused, so the session may still be good — a lost
-        // connection is not a refusal. Keep the flag and stay in the backoff.
+        // Nothing was opened and nothing was refused, so the session may still be good — a lost connection, most often.
         refreshBeforeNextAttempt = true;
         scheduleReconnect();
         return;
@@ -398,8 +361,7 @@ async function openSocket(): Promise<void> {
         token,
       ]);
     } catch {
-      // A base the platform cannot parse. Retried like any other interruption, and never logged
-      // (AAP 0.11.1).
+      // A base the platform cannot parse. Retried like any other interruption, and never logged.
       scheduleReconnect();
       return;
     }
@@ -415,9 +377,9 @@ async function openSocket(): Promise<void> {
 }
 
 /**
- * Attaches the four handlers to a socket and records how to remove them again. Every handler first
- * checks that the socket is still the one this module holds, so a late event from a socket that was
- * already discarded cannot change the state or deliver a frame twice.
+ * Attaches the four handlers to a socket and records how to remove them again. Every handler first checks that the
+ * socket is still the one this module holds, so a late event from a discarded socket cannot change the state or
+ * deliver a frame twice.
  */
 function attach(created: WebSocket): void {
   /** Whether this socket ever reached `open`, which is what tells a refused upgrade from an interruption. */
@@ -453,9 +415,7 @@ function attach(created: WebSocket): void {
     receive(event.data);
   };
   const handleError = (): void => {
-    // Nothing to do: a browser and React Native both follow an error with a close, which decides
-    // whether the next attempt rotates the session. The event is never inspected — it can carry the
-    // request URL — and never logged (AAP 0.11.1).
+    // Nothing to do: a browser and React Native both follow an error with a close, which decides what happens next.
   };
   const handleClose = (event: CloseEvent): void => {
     if (socket !== created) return;
@@ -495,9 +455,8 @@ function attach(created: WebSocket): void {
     if (unauthorized) {
       unauthorizedCloses += 1;
       if (refreshedSinceUnauthorized && unauthorizedCloses >= 2) {
-        // Both closes were the API's own unauthorized refusals, and a rotation has run in between —
-        // which only a live session permits — so the session itself is gone: the refresh token was
-        // revoked, or the account was deleted (AAP 0.5.3). Reconnecting would only repeat the refusal.
+        // Both closes were the API's own unauthorized refusals with a rotation in between — which only a live session
+        // permits — so the session itself is gone: the refresh token was revoked, or the account was deleted.
         void signOutAndStop();
         return;
       }
@@ -528,7 +487,6 @@ function attach(created: WebSocket): void {
   };
 }
 
-/** Removes a discarded socket's handlers and drops it, so its late events change nothing. */
 function discard(created: WebSocket): void {
   const current = attached;
   if (current !== null && current.socket === created) {
@@ -575,8 +533,7 @@ function receive(payload: unknown): void {
     return;
   }
   const frame = ServerFrame.safeParse(decoded);
-  // A frame this client cannot read — one from a newer API, or something that is not a frame at all —
-  // is dropped rather than logged or answered (AAP 0.11.1).
+  // A frame this client cannot read — one from a newer API, or not a frame at all — is dropped; it is never forwarded.
   if (!frame.success) return;
   const value: ServerFrame = frame.data;
   if (value.type === 'error') {
@@ -621,8 +578,6 @@ function receive(payload: unknown): void {
   }
 }
 
-// --- Reconnecting and the session rotation ----------------------------------------------------
-
 /** Schedules the next attempt with full-jitter exponential backoff, floored at 1 s, capped at 30 s. */
 function scheduleReconnect(): void {
   if (!desired) return;
@@ -637,7 +592,6 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-/** Cancels a scheduled reconnect, if one is waiting. */
 function clearReconnect(): void {
   if (reconnectTimer === null) return;
   clearTimeout(reconnectTimer);
@@ -645,10 +599,9 @@ function clearReconnect(): void {
 }
 
 /**
- * Rotates the session before a reconnect, through the single flight shared with the REST client, so
- * one refresh token is spent once whatever else is retrying (AAP 0.3.3, AAP 0.11.2). `failed` is a
- * rotation that failed for a reason other than a refusal — a lost connection above all — and
- * `signed_out` one refused with `401 token_invalid`, the session already cleared.
+ * Rotates the session before a reconnect, through the single flight shared with the REST client, so one refresh token is
+ * spent once whatever else is retrying (AAP 0.3.3, AAP 0.11.2). `failed` is a rotation that failed for a reason other
+ * than a refusal, and `signed_out` one refused with `401 token_invalid`, the session already cleared.
  */
 async function rotateSession(): Promise<'rotated' | 'failed' | 'signed_out'> {
   try {
@@ -656,8 +609,8 @@ async function rotateSession(): Promise<'rotated' | 'failed' | 'signed_out'> {
     refreshedSinceUnauthorized = true;
     return 'rotated';
   } catch (error) {
-    // A refusal means the refresh token is spent or revoked: reuse detection revokes the session
-    // that presented a rotated token (AAP 0.11.2). Anything else leaves the session alone.
+    // A refusal means the refresh token is spent or revoked: reuse detection revokes the session that presented a
+    // rotated token, so there is no session left to reconnect for.
     if (isApiError(error) && error.status === 401 && error.code === 'token_invalid') {
       await signOutAndStop();
       return 'signed_out';
@@ -667,9 +620,8 @@ async function rotateSession(): Promise<'rotated' | 'failed' | 'signed_out'> {
 }
 
 /**
- * Ends the session: the hooks clear it and the socket stops reconnecting (AAP 0.5.3, AAP 0.11.2).
- * `onSignedOut` is idempotent by contract and `src/auth/session.ts` calls {@link disconnect} from it
- * as well, so the second call here is harmless.
+ * Ends the session: the hooks clear it and the socket stops reconnecting (AAP 0.5.3). `onSignedOut` is idempotent by
+ * contract and `src/auth/session.ts` calls {@link disconnect} from it as well, so the second call here is harmless.
  */
 async function signOutAndStop(): Promise<void> {
   const hooks = authHooks();
@@ -683,26 +635,20 @@ async function signOutAndStop(): Promise<void> {
   disconnect();
 }
 
-// --- Environment and state --------------------------------------------------------------------
-
 /**
  * The WebSocket base the chat path is appended to, or null when the build configured none.
  *
- * `process.env.EXPO_PUBLIC_WS_URL` is read by direct static member access on purpose:
- * `babel-preset-expo` 12 inlines only that form, so a destructured or computed read would arrive
- * `undefined` in the bundle. Read per call rather than at module load, so importing this module needs
- * no environment.
+ * `process.env.EXPO_PUBLIC_WS_URL` is read by direct static member access on purpose — `babel-preset-expo` inlines only
+ * that form — and read per call rather than at module load, so importing this module needs no environment.
  */
 function wsBaseUrl(): string | null {
-  // The read is kept as one direct member access and the value narrowed by hand, as in `./client`:
-  // under the Expo program's types the variable arrives as `any`, so `typeof` is what turns a
-  // compose-supplied empty string into a missing value.
+  // Kept as one direct member access and narrowed by hand, as in `./client`: an environment read arrives as `any`
+  // under the Expo program's types.
   const configured: unknown = process.env.EXPO_PUBLIC_WS_URL;
   const base = typeof configured === 'string' ? configured.trim().replace(/\/+$/, '') : '';
   return base === '' ? null : base;
 }
 
-/** The access token the auth hooks hold, or null while signed out or unconfigured. */
 function accessToken(): string | null {
   const hooks = authHooks();
   if (hooks === null) return null;

@@ -1,12 +1,11 @@
 /**
- * Integration tests for `GET /v1/meetups/:id/suggestions` — success criterion 13 and the failure
- * isolation the route owes the meetup flow. Nothing of the suggestions read is stubbed.
+ * Integration tests for `GET /v1/meetups/:id/suggestions` — success criterion 13 and the failure isolation the route owes the meetup
+ * flow. Nothing of the suggestions read is stubbed.
  *
- * Two rules the cases turn on: the freshness boundary of each price source is one row per case, and
- * the suggestions window is computed in the city's own zone. Every case starts two hours before a
- * meetup that begins at 13:00 Lisbon wall-clock time on a summer Monday, so the window runs
- * 14:00–23:00 city time — and the fixtures on either side of it are the ones a window computed in
- * UTC would lose or wrongly admit.
+ * Two rules the cases turn on: the freshness boundary of each price source is one row per case, and the suggestions window is computed
+ * in the city's own zone. Every case starts two hours before a meetup that begins at 13:00 Lisbon wall-clock time on a summer Monday, so
+ * the window runs 14:00–23:00 city time, and the fixtures on either side of it are the ones a window computed in UTC would lose or wrongly
+ * admit.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -69,10 +68,8 @@ const DEPOSIT_CENTS: DepositCents = 1000;
 const BUDGET_CENTS = DEFAULT_BUDGET_BY_DEPOSIT[DEPOSIT_CENTS];
 
 /**
- * The meetup's start: Monday 2026-07-13 at 13:00 Lisbon wall-clock time. Lisbon is UTC+1 in July,
- * so the instant is 12:00Z and the suggestions window — an hour after the start to
- * `SUGGESTION_LOCAL_CUTOFF` on the meetup's own local day — is 14:00–23:00 city time. Every
- * opening-hours value below is written in that same city time.
+ * The meetup's start: Monday 2026-07-13 at 13:00 Lisbon wall-clock time. Lisbon is UTC+1 in July, so the instant is 12:00Z and the
+ * suggestions window — an hour after the start to {@link SUGGESTION_LOCAL_CUTOFF} on the meetup's own local day — is 14:00–23:00 city time.
  */
 const STARTS_AT = new Date('2026-07-13T12:00:00.000Z');
 
@@ -87,13 +84,11 @@ const HOURS = {
   always: 'Mo-Su 08:00-23:30',
   late: 'Mo-Su 12:00-23:30',
   /**
-   * Open 13:30–14:30 only: inside the window's first half hour in Lisbon time, and wholly before it
-   * if the hours are ever evaluated in UTC (12:30–13:30 there, against a window starting at 13:00Z).
+   * Open 13:30–14:30 only: inside the window's first half hour in Lisbon time, and wholly before it if the hours are ever evaluated in UTC.
    */
   windowOnly: 'Mo-Su 13:30-14:30',
   /**
-   * Open only in the window's last half hour, 22:30–23:00 of it. A place like this is the one a
-   * window computed in UTC loses: that window ends an hour earlier, at 22:00 Lisbon time.
+   * Open only in the window's last half hour, 22:30–23:00 of it: the place a window computed in UTC loses, that window ending an hour earlier.
    */
   eveningOpen: 'Mo-Su 22:30-23:30',
   morningOnly: 'Mo-Su 08:00-12:00',

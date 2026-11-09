@@ -1,10 +1,7 @@
-# Docker build-context exclusions, shared by every Tablemate image.
-#
-# Each Dockerfile builds with the repository root as its context (`context: .` in
-# docker-compose.yml), so this file governs all of them. Manifests, the lockfile,
-# pnpm-workspace.yaml (its overrides and patchedDependencies), patches/,
-# tsconfig.base.json, every workspace's sources, config/ and infra/nginx/ stay in the
-# context: the images install the workspace and compile it themselves.
+# Docker build-context exclusions, shared by every Tablemate image: each Dockerfile builds with the repository root
+# as its context (`context: .` in docker-compose.yml). Manifests, the lockfile, pnpm-workspace.yaml (its overrides
+# and patchedDependencies), patches/, tsconfig.base.json, every workspace's sources, config/ and infra/nginx/ stay
+# in the context, because the images install the workspace and compile it themselves.
 
 # Version control, editors and OS metadata
 .git
@@ -13,8 +10,8 @@
 .vscode
 **/.DS_Store
 
-# Secrets and local state. An env file is excluded at the root or inside a workspace,
-# at any depth, and only the documented template is ever sent to a builder.
+# Secrets and local state: an env file is excluded at the root or inside a workspace, at any depth, and only the
+# documented template is ever sent to a builder.
 **/.env
 **/.env.*
 !.env.example
@@ -30,10 +27,8 @@
 **/playwright-report
 **/*.log
 
-# Proving artefacts. The api image carries verification_key.json and no proving key,
-# circuit WASM or witness generator, so no context ever holds one: containers receive
-# them only through the compose bind mounts (api: verification_key.json and the
-# manifest; artifacts: the circuit build directory).
+# Proving artefacts. The api image carries verification_key.json and no proving key, circuit WASM or witness
+# generator, so no context ever holds one: containers receive them only through the compose bind mounts.
 packages/circuits/build
 packages/circuits/samples
 **/*.ptau
@@ -59,13 +54,12 @@ apps/mobile/modules/tablemate-prover/android/build
 **/*.aab
 **/*.ipa
 
-# Host-only material no image reads: documentation, end-to-end specs, the menu
-# evaluation fixtures and the k6 script, all of which run on the host
+# Host-only material no image reads: documentation, end-to-end specs, the menu evaluation fixtures and the k6
+# script, all of which run on the host.
 docs
 apps/mobile/e2e
 apps/workers/eval/fixtures
 infra/k6
 
-# Run-harness output kept beside the checkout (screenshots and screen recordings),
-# which no image reads
+# Run-harness output kept beside the checkout, which no image reads.
 blitzy

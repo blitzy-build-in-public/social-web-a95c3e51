@@ -1,29 +1,26 @@
 /**
- * The `menu-ingest` queue: one place's menu read from its own website, and the city-wide fan-out that finds the
- * places whose online prices are missing or stale (AAP 0.5.1, 0.5.6, 0.5.7).
+ * The `menu-ingest` queue: one place's menu read from its own website, and the city-wide fan-out that finds the places
+ * whose online prices are missing or stale (AAP 0.5.1, 0.5.6, 0.5.7).
  *
  * The queue carries two job names. `ingest {placeId}` reads one place: the crawl policy decides its host before
- * anything is fetched, the entry document is read as a rendered page, a PDF (text layer or rasterized and OCR'd)
- * or an image, the text goes through the metered language-model extraction in at most three chunks of 60,000
- * characters, every item passes the no-invention gate of `../menus/source-gate.ts`, and the survivors are
- * converted at the capture date's FX rate and stored as one `PriceRecord` batch. `ingest-city {cityId}` is the
- * fan-out that `POST /v1/admin/price-jobs` with `kind: "menus"` enqueues: it selects the city's places that have
- * a website or a menu link and no approved online price inside the 30-day freshness window, and queues one
- * `ingest` job per place in the call-and-menu priority order of AAP 0.5.7.
+ * anything is fetched, the entry document is read as a rendered page, a PDF (text layer or rasterized and OCR'd) or an
+ * image, the text goes through the metered language-model extraction in at most three chunks of 60,000 characters,
+ * every item passes the no-invention gate of `../menus/source-gate.ts`, and the survivors are converted at the capture
+ * date's FX rate and stored as one `PriceRecord` batch. `ingest-city {cityId}` is the fan-out that
+ * `POST /v1/admin/price-jobs` with `kind: "menus"` enqueues: it selects the city's places that have a website or a menu
+ * link and no approved online price inside the 30-day freshness window, and queues one `ingest` job per place in the
+ * call-and-menu priority order of AAP 0.5.7.
  *
- * Three properties hold throughout, and each is what keeps a menu crawl from inventing a price: an item survives
- * only when its `priceText` occurs in the extracted text it came from and parses to the same positive amount, so
- * criterion 11's "100% of extracted price strings found in the source text" holds by construction (AAP 0.12.2);
- * every way a place can fail to yield `MIN_PRICED_ITEMS` priced items opens a `menu_prices` `CallTask` instead,
- * which `call-dispatch` dials later (AAP 0.5.6); and a refused reservation — `LlmBudgetRefusedError` or
- * `LlmSuspendedError`, the request was never sent — re-adds the place's job for 00:05 local the next day, when the
- * city's day and its cap have reset, while every other language-model failure is left to the queue's three tries.
+ * Three properties keep a menu crawl from inventing a price: an item survives only when its `priceText` occurs in the
+ * extracted text it came from and parses to the same positive amount, so criterion 11's "100% of extracted price
+ * strings found in the source text" holds by construction (AAP 0.12.2); every way a place can fail to yield
+ * `MIN_PRICED_ITEMS` priced items opens a `menu_prices` `CallTask` instead (AAP 0.5.6); and a refused reservation —
+ * `LlmBudgetRefusedError` or `LlmSuspendedError`, the request was never sent — re-adds the place's job for 00:05 local
+ * the next day, while every other language-model failure is left to the queue's three tries.
  *
- * Three workspace conventions are load-bearing here. Time comes from the injected clock and city-local reasoning
- * from `nextLocalDayAt`/`localDateKey` (AAP 0.11.1). No third-party call runs inside a transaction: the crawl, the
- * OCR and the language model all finish before the one write transaction opens. And every raw read of `place`,
- * `price_record` or `call_task` carries `fixturePredicate`, because raw SQL bypasses the guarded client's fixture
- * filter (AAP 0.5.2).
+ * Time comes from the injected clock and city-local reasoning from `nextLocalDayAt`/`localDateKey` (AAP 0.11.1); no
+ * third-party call runs inside a transaction; and every raw read carries `fixturePredicate`, because raw SQL bypasses
+ * the guarded client's fixture filter (AAP 0.5.2).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -72,101 +69,51 @@ import { PDF_MAX_PAGES, PdfTextError, extractPdfText, rasterizePdf } from '../me
 import { isPriceCurrency } from '../menus/price-parse.ts';
 import { SafeFetchError, createFetchBudget, type FetchBudget } from '../menus/safe-fetch.ts';
 import { gateItems } from '../menus/source-gate.ts';
-// Type-only on purpose: `queues.ts` value-imports this file's `process`, so a value import back would
-// close a runtime cycle. A type-only import is erased on emit.
+// Type-only on purpose: `queues.ts` value-imports this file's `process`, so a value import back would close a runtime cycle.
 import type { WorkerContext } from '../queues.ts';
 
-/** The job name that reads one place; its sibling {@link INGEST_CITY_JOB} expands one city. */
 const INGEST_JOB = JOB[QUEUE.menuIngest].ingest;
-
-/** The job name that turns one city into per-place `ingest` jobs (AAP 0.5.4, 0.5.6). */
 const INGEST_CITY_JOB = JOB[QUEUE.menuIngest].ingestCity;
-
-/** The one call-task kind this file opens: a menu price read over the phone (AAP 0.5.6). */
 const MENU_PRICES_KIND = 'menu_prices';
-
-/**
- * Wall time a refused reservation moves its place's job to: 00:05 local the next day, the city's own
- * next day (AAP 0.5.6). The counter it was refused against is the city's local day's, so the retry
- * waits for that day to end.
- */
+// Wall time a refused reservation moves its place's job to: 00:05 local the next day, the city's own next day (AAP 0.5.6). The counter it was refused against is the city's local day's, so the retry waits for that day to end.
 const DEFERRAL_LOCAL_TIME = '00:05';
-
 /** The advisory-lock key prefix that serializes one place's call-task creation (AAP 0.5.3). */
 const MENU_TASK_LOCK_PREFIX = 'menu-task:';
-
-/**
- * The `menu_prices` tasks of a place that count as already open, as an SQL predicate over the `call_task` table
- * aliased `t` (AAP 0.5.6). The three active statuses are the parent rule, with `unreachable` joining them for a
- * task no operator has resolved: an item already waiting in the operator queue would otherwise be duplicated by
- * every weekly refresh, while one an operator resolved is a finished attempt and does not block a new one.
- * `IS DISTINCT FROM` rather than `<>` is deliberate: `resolved_by` is NULL on every unresolved task, and
- * `NULL <> 'operator'` is NULL, which would drop exactly the rows this branch exists for.
- */
+// The one definition of "this place's `menu_prices` refresh is still outstanding", as a predicate over `call_task` aliased `t` (AAP 0.5.3, 0.5.6): `queued`, `in_progress`, `needs_review`, plus an `unreachable` task no operator has resolved, because an item already waiting in the queue would otherwise be duplicated by every weekly refresh. `IS DISTINCT FROM` rather than `<>` is deliberate: `resolved_by` is NULL on every unresolved task.
 const OPEN_TASK_PREDICATE = Prisma.sql`(
         "t"."status" IN ('queued', 'in_progress', 'needs_review')
         OR ("t"."status" = 'unreachable' AND "t"."resolved_by" IS DISTINCT FROM 'operator')
       )`;
-/**
- * The one definition of "this place's `menu_prices` refresh is still outstanding", as an SQL predicate over the
- * `call_task` table aliased `t` (AAP 0.5.3, 0.5.6): `queued`, `in_progress` and `needs_review`, plus an
- * `unreachable` task no operator has resolved. {@link hasOpenMenuPricesTask} applies it to refuse a second task
- * for one place and `./price-freshness.ts` to leave a place whose refresh is already in flight out of its bounded
- * page, so no second reader spells the rule out again and the two can never drift apart.
- */
+// {@link hasOpenMenuPricesTask} applies {@link OPEN_TASK_PREDICATE} to refuse a second task for one place, and `./price-freshness.ts` to leave a place whose refresh is in flight out of its page, so the two cannot drift apart.
 export const OPEN_MENU_PRICES_TASK_PREDICATE: Prisma.Sql = OPEN_TASK_PREDICATE;
-
-/**
- * The reason a place took the phone fallback, as the `menu_phone_fallback` log line carries it (AAP 0.5.6,
- * 0.11.1). A `SafeFetchError`'s own reason travels verbatim — `robots_disallowed`, `policy_uncertain`,
- * `too_large`, `timeout` and the rest — because it is the operator's evidence for why a place needs a call; the
- * rest are this file's own, from the crawl policy or the document read.
- */
+// The reason a place took the phone fallback, as the `menu_phone_fallback` log line carries it (AAP 0.5.6, 0.11.1): a `SafeFetchError`'s own reason travels verbatim, because it is the operator's evidence for the call.
 type FallbackReason = string;
-
-/**
- * What one place's ingestion reported (AAP 0.5.1, 0.5.6).
- *
- * `pricedItems` counts the `PriceRecord` rows this run stored — the items that survived the source gate — and
- * `queuedCall` says whether it opened a phone-price task; the two are not opposites, because a menu that yielded
- * four items keeps all four and still takes the call. `deferred` is present only when a refused language-model
- * reservation moved the work to 00:05 local the next day, a run that read no menu, stored nothing and opened no
- * task.
- */
+// What one place's ingestion reported (AAP 0.5.1, 0.5.6): `pricedItems` counts the rows this run stored and `queuedCall` whether it opened a phone-price task — not opposites, because a menu that yielded four items keeps all four and still takes the call. `deferred` is present only when a refused reservation moved the work to 00:05 local.
 export interface PlaceIngestResult {
   readonly pricedItems: number;
   readonly queuedCall: boolean;
   readonly deferred?: boolean;
 }
 
-/** What one city's fan-out reported (AAP 0.5.4, 0.5.6): how many `ingest` jobs it queued. */
+// What one city's fan-out reported (AAP 0.5.4, 0.5.6): how many `ingest` jobs it queued. A duplicate id for the same local day is suppressed by BullMQ.
 export interface CityIngestResult {
-  /** The number of jobs added; a duplicate id for the same local day is suppressed by BullMQ. */
   readonly enqueued: number;
 }
 
-/**
- * The `menu-ingest` job as a processor receives it: a structural subset of BullMQ's `Job`, so a test
- * can call {@link process} with a plain object.
- */
+// A structural subset of BullMQ's `Job`, so a test can call {@link process} with a plain object: the job id is `menu-ingest-<placeId>-<localDate>`, read for the log only, and the data is `{ placeId }` or `{ cityId }`.
 export interface MenuIngestJob {
-  /** BullMQ's job id — `menu-ingest-<placeId>-<localDate>` (AAP 0.3.2). Read for the log only. */
   readonly id?: string;
-  /** The job name: `ingest` or `ingest-city`. */
   readonly name: string;
-  /** The job's data, held by the queue's schema to `{ placeId }` or `{ cityId }`. */
   readonly data: unknown;
 }
 
-/** One document whose text the extraction reads, with the URL it was fetched from (AAP 0.5.6). */
+// One document whose text the extraction reads, with the URL it was fetched from (AAP 0.5.6): the entry URL or a menu document followed from it, and that document's own text — rendered page text, a PDF text layer or OCR output.
 interface MenuSource {
-  /** The URL the text came from: the entry URL or a menu document followed from it. */
   readonly url: string;
-  /** The document's own text: rendered page text, a PDF text layer or OCR output. */
   readonly text: string;
 }
 
-/** A place row as {@link ingestPlace} reads it: the link to fetch and the city whose rules apply. */
+// A place row as {@link ingestPlace} reads it: the link to fetch and the city whose rules apply.
 interface MenuedPlace {
   readonly id: string;
   readonly isFixture: boolean;
@@ -180,23 +127,12 @@ interface MenuedPlace {
   };
 }
 
-/**
- * The canonical form of an item's name, which two captures of one dish are matched on (AAP 0.5.6): NFKC,
- * lower-cased, every whitespace run collapsed to one space, trimmed. `./call-results.ts` re-derives the same form
- * for a phone quote and the seed writes its fixture rows with it, so a fixture price, an online price and a quoted
- * price for one dish carry one `normalizedName`.
- */
+// The canonical form of an item's name, which two captures of one dish are matched on (AAP 0.5.6): NFKC, lower-cased, every whitespace run collapsed and trimmed. `./call-results.ts` re-derives it and the seed writes its fixtures with it.
 export function normalizeItemName(name: string): string {
   return name.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Adds `count` to `drops[key]`, creating the key on first use.
- *
- * A zero count writes nothing at all, so the object a place logs holds exactly the reasons that
- * fired: a gate that dropped nothing contributes no `not_in_source` or `unparseable` key, and the
- * line only ever reports what happened (AAP 0.11.1).
- */
+// Adds `count` to `drops[key]`, creating the key on first use. A zero count writes nothing, so the object a place logs holds exactly the reasons that fired (AAP 0.11.1).
 function bump(drops: Record<string, number>, key: string, count = 1): void {
   if (count === 0) {
     return;
@@ -211,12 +147,7 @@ function mergeDrops(drops: Record<string, number>, counted: Record<string, numbe
   }
 }
 
-/**
- * Runs `work` in a transaction: the given client's own when one is already open, a fresh one otherwise
- * (AAP 0.5.6). Prisma's interactive-transaction client has no `$transaction` of its own, and calling one from
- * inside a transaction is exactly what its deny-list refuses, so the type test is made defensively: the proxy may
- * answer a property read with `undefined` or throw, and either answer means "already inside a transaction".
- */
+// Runs `work` in a transaction: the given client's own when one is already open, a fresh one otherwise (AAP 0.5.6). The type test is made defensively — the proxy may answer a property read with `undefined` or throw, and either answer means "already inside a transaction", which Prisma's deny-list would otherwise refuse.
 async function inTransaction<T>(db: DbClient | DbTx, work: (tx: DbTx) => Promise<T>): Promise<T> {
   if (opensTransaction(db)) {
     return await db.$transaction(work);
@@ -224,13 +155,7 @@ async function inTransaction<T>(db: DbClient | DbTx, work: (tx: DbTx) => Promise
   return await work(db);
 }
 
-/**
- * Whether `db` is a full client rather than an open transaction (AAP 0.5.6).
- *
- * The test is made defensively: Prisma's transaction proxy may answer a property read with
- * `undefined` or throw, and either answer means "already inside a transaction", which is the safe
- * reading — the work then simply joins the caller's unit of work.
- */
+// Whether `db` is a full client rather than an open transaction. The test is defensive: a property read may answer `undefined` or throw, and either answer means the work simply joins the caller's unit of work.
 function opensTransaction(db: DbClient | DbTx): db is DbClient {
   try {
     return typeof (db as { $transaction?: unknown }).$transaction === 'function';
@@ -239,21 +164,14 @@ function opensTransaction(db: DbClient | DbTx): db is DbClient {
   }
 }
 
-/**
- * Opens the `menu_prices` call task for one place, unless one is already open (AAP 0.5.6). The task is what carries
- * a place without a usable online menu into the price pipeline — the request's "no price is ever guessed" made
- * durable — and `call-dispatch` reads it as the task it dials; nothing is dialled here.
- *
- * Four facts shape it: `pg_advisory_xact_lock(hashtext('menu-task:<placeId>'))` serializes two concurrent
- * ingestions of one place for the rest of the transaction, so a weekly refresh racing the admin fan-out cannot open
- * two tasks; an open task is left alone ({@link OPEN_TASK_PREDICATE}); a `doNotCall` place gets no task at all,
- * because a request not to be called again is honoured for every task kind (AAP 0.5.6); and a place without a phone
- * still gets one, which `call-dispatch` then moves straight to the operator queue as `unreachable` with
- * `no_phone` (AAP 0.5.3).
- *
- * The task's `priority` is the same 1-10 number `enqueueMenuIngest` puts on the place's ingestion job (AAP 0.5.7),
- * so a place's job and its fallback call are ordered by one rule.
- */
+// Opens the `menu_prices` call task for one place, unless one is already open (AAP 0.5.6): it is what carries a place
+// without a usable online menu into the price pipeline, and `call-dispatch` reads it as the task it dials.
+//
+// Four facts shape it: `pg_advisory_xact_lock(hashtext('menu-task:<placeId>'))` serializes two concurrent ingestions of
+// one place for the rest of the transaction; an open task is left alone ({@link OPEN_TASK_PREDICATE}); a `doNotCall`
+// place gets no task at all; and a place without a phone still gets one, which `call-dispatch` moves straight to the
+// operator queue as `unreachable` with `no_phone`. The task's `priority` is the same 1-10 number `enqueueMenuIngest`
+// puts on the place's job, so a job and its fallback call are ordered by one rule.
 export async function ensureMenuPricesTask(
   db: DbClient | DbTx,
   ctx: WorkerContext,
@@ -289,28 +207,18 @@ interface PriorityInputs {
   readonly nearLockedMeetup: boolean;
 }
 
-/** The place fields the priority rule and the `doNotCall` guard read (AAP 0.5.6, 0.5.7). */
 interface PlacePriorityInputs extends PriorityInputs {
   readonly doNotCall: boolean;
 }
 
-/**
- * Takes the per-place call-task creation lock for the rest of the transaction (AAP 0.5.3). `pg_advisory_xact_lock`
- * is released by the commit or the rollback, never by this file, so the lock cannot outlive the unit of work that
- * took it; a key collision would only make two unrelated places wait for each other, never open a second task for
- * one.
- */
+// Takes the per-place call-task creation lock for the rest of the transaction (AAP 0.5.3): it is released by the commit or the rollback, never by this file, so it cannot outlive the unit of work that took it.
 async function lockMenuTaskCreation(tx: DbTx, placeId: string): Promise<void> {
   await tx.$queryRaw<{ lock: string }[]>(Prisma.sql`
     SELECT pg_advisory_xact_lock(hashtext(${MENU_TASK_LOCK_PREFIX + placeId})::bigint)::text AS "lock"
   `);
 }
 
-/**
- * The place's priority inputs, or `null` when the guarded read finds no such place (AAP 0.5.2, 0.5.7). One
- * statement answers all three questions `menuPriority` needs, and the fixture predicate sits in the `WHERE`, so a
- * fixture place is invisible outside `test` and `demo` exactly as the guarded client would make it.
- */
+// The place's priority inputs, or `null` when the guarded read finds no such place (AAP 0.5.2, 0.5.7): one statement answers all three questions `menuPriority` needs, with the fixture predicate in the `WHERE`.
 async function placePriorityInputs(
   tx: DbTx,
   placeId: string,
@@ -330,11 +238,7 @@ async function placePriorityInputs(
   return rows[0] ?? null;
 }
 
-/**
- * The BullMQ priority of a place, 1 through 10 (AAP 0.5.7). `lodgingOnly` is the place's distance being absent or
- * beyond the 2 km neighbourhood: such a place stands near no partner venue, and `menuPriority` then places it after
- * every venue-near place, whatever its meetups.
- */
+// The BullMQ priority of a place, 1 through 10 (AAP 0.5.7). `lodgingOnly` — the distance absent or beyond the 2 km neighbourhood — places it after every venue-near place, whatever its meetups.
 function priorityForPlace(inputs: PriorityInputs): number {
   return menuPriority({
     nearestPartnerDistanceM: inputs.nearestPartnerDistanceM,
@@ -358,11 +262,7 @@ async function hasOpenMenuPricesTask(tx: DbTx, placeId: string): Promise<boolean
   return rows.length > 0;
 }
 
-/**
- * The producer for the `menu-ingest` queue (AAP 0.5.6). `queues.ts` builds one producer per queue at startup, so a
- * worker whose producer is missing is a configuration fault rather than a property of a place: the throw reaches
- * BullMQ, which retries the job, instead of every place of a city being sent to a paid phone call.
- */
+// The producer for the `menu-ingest` queue. A worker whose producer is missing is a configuration fault, not a property of a place: the throw reaches BullMQ rather than sending every place of a city to a paid call.
 function menuIngestQueue(ctx: WorkerContext): Queue {
   const queue: Queue | undefined = ctx.queues.get(QUEUE.menuIngest);
   if (queue === undefined) {
@@ -371,16 +271,11 @@ function menuIngestQueue(ctx: WorkerContext): Queue {
   return queue;
 }
 
-/**
- * The custom id of one place's ingestion on one city-local day (AAP 0.3.2, 0.5.6): `-` separates and never `:`,
- * which BullMQ refuses in a custom id, and the local date is the place's own city's, so the id turns over at that
- * city's midnight.
- */
+// The custom id of one place's ingestion on one city-local day (AAP 0.3.2, 0.5.6): `-` separates and never `:`, which BullMQ refuses, and the local date is the place's own city's, so the id turns over at that city's midnight.
 function menuIngestJobId(placeId: string, timezone: string, at: Date): string {
   return `menu-ingest-${placeId}-${localDateKey(timezone, at)}`;
 }
 
-/** One place as {@link enqueueMenuIngest} reads it: its id, its city's zone and its priority inputs. */
 interface PlaceJobRow {
   readonly id: string;
   readonly timezone: string;
@@ -388,15 +283,7 @@ interface PlaceJobRow {
   readonly nearLockedMeetup: boolean;
 }
 
-/**
- * Queues one `ingest` job per place, each in the call-and-menu priority order (AAP 0.5.6, 0.5.7).
- *
- * One raw statement reads every place's priority inputs and its city's zone, with `fixturePredicate` in the
- * `WHERE`, so a fixture place is invisible outside `test` and `demo` (AAP 0.5.2). The job id carries the place's
- * own local date, which bounds one place to one ingestion per local day — BullMQ ignores an `add` whose id already
- * exists in the waiting, delayed or retained sets — while tomorrow's id is new and the place is read again.
- * `priority` is set on every job, because BullMQ runs a job added with no priority before every prioritized job.
- */
+// Queues one `ingest` job per place, each in the call-and-menu priority order (AAP 0.5.6, 0.5.7). One raw statement reads every place's priority inputs and its city's zone, with `fixturePredicate` in the `WHERE`. The job id carries the place's own local date, which bounds one place to one ingestion per local day while tomorrow's id is new; `priority` is set on every job, because BullMQ runs an unprioritized job before every prioritized one.
 export async function enqueueMenuIngest(
   ctx: WorkerContext,
   placeIds: readonly string[],
@@ -432,24 +319,18 @@ export async function enqueueMenuIngest(
   return added.length;
 }
 
-/**
- * Reads one place's menu and turns it into `PriceRecord` rows, or opens its phone fallback (AAP 0.5.1, 0.5.6).
- *
- * The order of the steps is the design: the place and its city are read through the guarded client, so a fixture
- * row is invisible outside `test` and `demo` and a place that is gone reports nothing rather than failing the job;
- * `menuUrl` wins over `website`; the crawl policy decides the host before a single byte is fetched, recording an
- * `uncertain` domain for operator review and refusing a `prohibited` one outright, so a site whose terms nobody has
- * read cannot be crawled by accident (AAP 0.5.6); the documents are read under one 50-request/30 MiB budget for the
- * place; extraction is bounded to three chunks of 60,000 characters across every source of the place, so one menu
- * cannot spend an unbounded share of its city's language-model day; every item passes the source gate — what makes
- * an invented price impossible — and the survivors are converted at the capture date's FX rate; and one transaction
- * writes the batch, with fewer than `MIN_PRICED_ITEMS` survivors keeping the rows and opening the phone fallback on
- * top.
- *
- * A page or document that cannot be fetched or parsed is a property of the place and takes the fallback, while a
- * failure of the process itself — a browser that will not launch, a database error — is rethrown so BullMQ retries
- * it rather than every place being sent to a paid call.
- */
+// Reads one place's menu and turns it into `PriceRecord` rows, or opens its phone fallback (AAP 0.5.1, 0.5.6).
+//
+// The order of the steps is the design: the place and its city are read through the guarded client, so a fixture row is
+// invisible and a place that is gone reports nothing rather than failing the job; `menuUrl` wins over `website`; the
+// crawl policy decides the host before a single byte is fetched, recording an `uncertain` domain for operator review
+// and refusing a `prohibited` one; the documents are read under one 50-request/30 MiB budget for the place; extraction
+// is bounded to three chunks of 60,000 characters across every source, so one menu cannot spend an unbounded share of
+// its city's language-model day; every item passes the source gate; and one transaction writes the batch, with fewer
+// than `MIN_PRICED_ITEMS` survivors keeping the rows and opening the phone fallback on top.
+//
+// A page or document that cannot be fetched or parsed is a property of the place and takes the fallback, while a
+// failure of the process itself — a browser that will not launch, a database error — is rethrown so BullMQ retries it.
 export async function ingestPlace(ctx: WorkerContext, placeId: string): Promise<PlaceIngestResult> {
   const now = ctx.clock.now();
   const place = await loadMenuedPlace(ctx, placeId);
@@ -496,8 +377,7 @@ export async function ingestPlace(ctx: WorkerContext, placeId: string): Promise<
     stored = await storeOnlinePrices({ ctx, place, now, sources, drops });
   } catch (error) {
     if (error instanceof LlmBudgetRefusedError || error instanceof LlmSuspendedError) {
-      // The request was never sent, so nothing was spent and nothing was written: the whole place
-      // waits for its city's next local day.
+      // The request was never sent, so nothing was spent and nothing was written: the whole place waits for its city's next local day.
       await deferPlaceIngestion(ctx, placeId, place.city.timezone, now);
       ctx.logger.warn({ event: 'menu_ingest_deferred', placeId, code: error.code });
       return { pricedItems: 0, queuedCall: false, deferred: true };
@@ -525,11 +405,7 @@ async function loadMenuedPlace(ctx: WorkerContext, placeId: string): Promise<Men
   });
 }
 
-/**
- * One place's link as an `http` or `https` URL, or `null` (AAP 0.5.6): an operator entry may hold anything, and
- * `safeFetch` would refuse a non-web scheme only once a browser had been launched for it, so the scheme check is
- * taken here and every refusal is reported as `bad_url`.
- */
+// One place's link as an `http` or `https` URL, or `null` (AAP 0.5.6): an operator entry may hold anything, and `safeFetch` would refuse a non-web scheme only after a browser was launched, so the check is taken here.
 function parseHttpUrl(link: string): URL | null {
   let url: URL;
   try {
@@ -540,12 +416,7 @@ function parseHttpUrl(link: string): URL | null {
   return url.protocol === 'http:' || url.protocol === 'https:' ? url : null;
 }
 
-/**
- * The OCR language for one place (AAP 0.5.6): its city's `callLanguage`, or English when the stored value is not
- * one of the five the pipeline knows. A city row is configuration and is validated when the seed loads it, so this
- * branch guards against a hand-edited or migrated row: defaulting to English keeps the place readable instead of
- * failing every one of a city's images, and no price is invented either way.
- */
+// The OCR language for one place (AAP 0.5.6): its city's `callLanguage`, or English when the stored value is not one of the five the pipeline knows, so a migrated row keeps the place readable instead of failing every one of its images.
 function resolveOcrLanguage(ctx: WorkerContext, place: MenuedPlace): OcrLanguage {
   const language = CallLanguage.safeParse(place.city.callLanguage);
   if (language.success) {
@@ -557,12 +428,7 @@ function resolveOcrLanguage(ctx: WorkerContext, place: MenuedPlace): OcrLanguage
 
 /** The fallback language of {@link resolveOcrLanguage}: the one every launch city also speaks. */
 const DEFAULT_CALL_LANGUAGE: CallLanguage = 'en-US';
-
-/**
- * A place's entry document that yields no text, raised for the phone fallback (AAP 0.5.6): it carries the reason
- * the fallback log line reports, and it exists so that "this place has no usable menu" and "this process failed"
- * stay distinguishable — only the first becomes a phone call.
- */
+// A place's entry document that yields no text, raised for the phone fallback (AAP 0.5.6): it exists so that "this place has no usable menu" and "this process failed" stay distinguishable.
 class MenuDocumentError extends Error {
   readonly reason: FallbackReason;
   constructor(reason: FallbackReason) {
@@ -572,12 +438,7 @@ class MenuDocumentError extends Error {
   }
 }
 
-/**
- * The documents one place's menu is read from, in the order they are read (AAP 0.5.6): a `.pdf` entry is fetched and
- * read as a PDF, an image extension is fetched and OCR'd, and anything else is rendered as a page whose same-domain
- * menu links are then fetched through the same budget. A menu link that fails is skipped and counted, while the
- * entry document's failure is the place's and is raised.
- */
+// The documents one place's menu is read from, in reading order (AAP 0.5.6): a `.pdf` entry is read as a PDF, an image extension is OCR'd, and anything else is rendered as a page whose same-domain menu links are then fetched through the same budget; a menu link that fails is skipped and counted, while the entry document's failure is the place's.
 async function collectMenuSources(deps: {
   ctx: WorkerContext;
   target: URL;
@@ -598,9 +459,7 @@ async function collectMenuSources(deps: {
     browser: ctx.browser,
     safeFetch: ctx.safeFetch,
     budget,
-    // Read off the environment rather than composed again: `env.crawlerUserAgent` is the identical
-    // string `robots.ts` builds from `CRAWLER_CONTACT_URL`, and the loaded configuration is the one
-    // place the process's own user agent comes from.
+    // Read off the environment rather than composed again: `env.crawlerUserAgent` is the identical string `robots.ts` builds from `CRAWLER_CONTACT_URL`.
     userAgent: ctx.env.crawlerUserAgent,
     logger: ctx.logger,
   });
@@ -630,17 +489,11 @@ async function collectMenuSources(deps: {
   return sources;
 }
 
-/** The one source of an entry document that is itself the menu, or none when it held no text. */
 function singleSource(url: string, text: string): MenuSource[] {
   return text.trim() === '' ? [] : [{ url, text }];
 }
 
-/**
- * Reads one document linked from a rendered page, counting a refusal instead of failing the place (AAP 0.5.6). The
- * link has already passed `safeFetch`'s own checks — the address, the blocklist, the site-terms decision,
- * `robots.txt` and the per-domain throttle — so a refusal here is one of those or a document that will not parse,
- * and the drop count is what tells an operator a menu was partly unreadable.
- */
+// Reads one document linked from a rendered page, counting a refusal instead of failing the place (AAP 0.5.6). The link has already passed `safeFetch`'s own checks, so a refusal here is one of those or a document that will not parse, and the drop count is what tells an operator a menu was partly unreadable.
 async function followedLink(
   read: () => Promise<string>,
   drops: Record<string, number>,
@@ -653,12 +506,7 @@ async function followedLink(
   }
 }
 
-/**
- * A PDF's text: its own text layer, or OCR of its rasterized pages when it has none (AAP 0.5.6). A scanned menu PDF
- * is the normal case for a photographed card, and `pdf-text.ts` reports a text layer only past its own character
- * threshold, so a file holding a page number and little else is rasterized like a scan. Both calls carry the same
- * page bound.
- */
+// A PDF's text: its own text layer, or OCR of its rasterized pages when it has none (AAP 0.5.6): a scanned menu PDF is the normal case for a photographed card, and both calls carry the same page bound.
 async function readPdfSource(
   ctx: WorkerContext,
   url: string,
@@ -704,11 +552,7 @@ function isDocumentFailure(
   );
 }
 
-/**
- * The fallback reason of a document failure (AAP 0.5.6): a refusal keeps its own reason — `robots_disallowed`,
- * `policy_uncertain`, `too_large`, `timeout` — because it is the operator's evidence for the call, while a document
- * that was permitted but could not be parsed is reported as `parse_failed` whatever stopped it.
- */
+// The fallback reason of a document failure (AAP 0.5.6): a refusal keeps its own reason, because it is the operator's evidence for the call, while a permitted document that could not be parsed is reported as `parse_failed`.
 function documentFailureReason(
   error: MenuDocumentError | SafeFetchError | PdfTextError | OcrError,
 ): FallbackReason {
@@ -718,23 +562,19 @@ function documentFailureReason(
   return error instanceof MenuDocumentError ? error.reason : 'parse_failed';
 }
 
-/**
- * Extracts one place's sources, gates and converts the items, and stores the survivors as one batch (AAP 0.5.6).
- *
- * The per-place bound is spent across every source in reading order: the chunks of each source are measured with
- * `chunkText`, only as many as are still within the three-chunk allowance are sent, and the ones it refused are
- * counted as `chunk_limit`. The allowed chunks are joined back into one string, a prefix of that source's own text,
- * so `extractMenuItems` re-derives exactly those chunks and sends no more requests than the allowance holds.
- * `chunkText` additionally bounds a single source at the same three chunks, so a source longer than the bound loses
- * its tail to the chunker, counted as `text_truncated` one per source: both counters are what tells an operator that
- * a long menu was only partly read.
- *
- * A source's items are grouped by their upper-cased currency before the gate, so a currency the pipeline holds no
- * rate for is a `currency_unsupported` drop rather than an unparseable price, and the rate is then read once per
- * currency. The gate is the last word on every item: an item whose `priceText` is not in the text it came from is
- * dropped, which is criterion 11's 100% guarantee (AAP 0.12.2). Nothing is written before the whole place has been
- * read, so a refusal part-way through leaves no half-batch behind.
- */
+// Extracts one place's sources, gates and converts the items, and stores the survivors as one batch (AAP 0.5.6).
+//
+// The per-place bound is spent across every source in reading order: the chunks of each source are measured with
+// `chunkText`, only as many as are still within the three-chunk allowance are sent, and the ones refused are counted as
+// `chunk_limit`. The allowed chunks are joined back into one string, a prefix of that source's own text, so
+// `extractMenuItems` re-derives exactly those chunks. `chunkText` additionally bounds a single source at the same three
+// chunks, so a longer source loses its tail, counted as `text_truncated` one per source: both counters are what tells an
+// operator that a long menu was only partly read.
+//
+// A source's items are grouped by upper-cased currency before the gate, so a currency the pipeline holds no rate for is
+// a `currency_unsupported` drop rather than an unparseable price. The gate is the last word: an item whose `priceText`
+// is not in the text it came from is dropped, which is criterion 11's 100% guarantee (AAP 0.12.2), and nothing is
+// written before the whole place has been read.
 async function storeOnlinePrices(deps: {
   ctx: WorkerContext;
   place: MenuedPlace;
@@ -761,9 +601,7 @@ async function storeOnlinePrices(deps: {
       continue;
     }
     chunksLeft -= allowed.length;
-    // `chunkText` bounds one source's own text at the same three chunks, so a longer source loses its
-    // tail before this loop can count it. Comparing what is sent with the source is what makes that
-    // loss visible, and it is the only way to see it: the chunker reports no total.
+    // `chunkText` bounds one source's own text at the same three chunks, so a longer source loses its tail before this loop can count it. Comparing what is sent with the source is the only way to see that loss.
     const text = allowed.join('');
     if (text.length < source.text.trim().length) {
       bump(drops, 'text_truncated');
@@ -786,9 +624,7 @@ async function storeOnlinePrices(deps: {
       bump(drops, 'unparseable', gated.drops.unparseable);
       let rate = rates.get(currency);
       if (rate === undefined) {
-        // Read once per currency per run: one capture date and one code always convert to the same
-        // cents. A currency with no row reaching back to the capture date cannot be converted at all,
-        // and the pipeline would rather call the place than invent a rate.
+        // Read once per currency per run: one capture date and one code always convert to the same cents. A currency with no row reaching back to the capture date cannot be converted at all, so the place is called instead.
         rate = await fxRateFor(ctx.db, currency, captureDate);
         rates.set(currency, rate);
       }
@@ -813,9 +649,7 @@ async function storeOnlinePrices(deps: {
           source: 'online_menu',
           sourceUrl: source.url,
           capturedAt: now,
-          // Prisma types a `@db.Date` column as a DateTime and refuses a bare `YYYY-MM-DD`, so the
-          // rate's own day is passed as its UTC midnight: the date PostgreSQL stores is then exactly
-          // the day the rate belongs to, whatever zone the process runs in.
+          // Prisma types a `@db.Date` column as a DateTime and refuses a bare `YYYY-MM-DD`, so the rate's own day is passed as its UTC midnight, whatever zone the process runs in.
           fxDate: new Date(`${rate.date}T00:00:00.000Z`),
           confidence: null,
           reviewStatus: 'approved',
@@ -834,13 +668,7 @@ async function storeOnlinePrices(deps: {
   return rows.length;
 }
 
-/**
- * The extracted items grouped by their upper-cased ISO 4217 currency (AAP 0.5.6). A menu may print a foreign price —
- * a beach club on a Thai island quoting euros — and the pipeline converts only the currencies it holds rates for, so
- * the currency is the unit both the support check and the FX lookup work at. Grouping here keeps the support check
- * ahead of the gate, so an unsupported currency is counted as `currency_unsupported` rather than as an unparseable
- * price.
- */
+// The extracted items grouped by their upper-cased ISO 4217 currency (AAP 0.5.6): a menu may print a foreign price, and the pipeline converts only the currencies it holds rates for. Grouping before the gate keeps the support check ahead of it, so an unsupported currency is counted as `currency_unsupported` rather than as an unparseable price.
 function groupByCurrency(items: readonly ExtractedMenuItem[]): Map<string, ExtractedMenuItem[]> {
   const groups = new Map<string, ExtractedMenuItem[]>();
   for (const item of items) {
@@ -860,10 +688,7 @@ function utcDate(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
-/**
- * Opens the place's phone fallback and reports why, in one place (AAP 0.5.6): every path that leaves a place without
- * a usable online menu comes through here, so the log line and the task are written by one function.
- */
+// Opens the place's phone fallback and reports why, in one place (AAP 0.5.6): every path that leaves a place without a usable online menu comes through here, so the log line and the task are written by one function.
 async function takePhoneFallback(
   ctx: WorkerContext,
   placeId: string,
@@ -878,13 +703,7 @@ async function takePhoneFallback(
   return { pricedItems, queuedCall };
 }
 
-/**
- * Re-adds one place's ingestion for 00:05 local the next day (AAP 0.5.6). The refusal that reaches here is the
- * city's own local day's budget being exhausted, so the retry waits for that day to end rather than burning the
- * queue's three tries on a limit that cannot move. The job id carries the local date it is deferred to, so a second
- * refusal on the same day adds a new job rather than replacing one, and the priority is read again from the place
- * because the queue's order must not depend on when the place was first tried.
- */
+// Re-adds one place's ingestion for 00:05 local the next day (AAP 0.5.6). The refusal reaching here is the city's own local day's budget being exhausted, so the retry waits for that day to end rather than burning the queue's three tries; the job id carries the local date it is deferred to, and the priority is read again from the place.
 async function deferPlaceIngestion(
   ctx: WorkerContext,
   placeId: string,
@@ -904,22 +723,12 @@ async function deferPlaceIngestion(
   );
 }
 
-/**
- * The priority inputs of a place the guarded read can no longer return. The last band with no locked
- * meetup puts its deferred job behind every place the queue can still rank (AAP 0.5.7).
- */
+// The priority inputs of a place the guarded read can no longer return: the last band with no locked meetup puts its deferred job behind every place the queue can still rank (AAP 0.5.7).
 const UNREADABLE_PLACE_INPUTS: PriorityInputs = {
   nearestPartnerDistanceM: null,
   nearLockedMeetup: false,
 };
-
-/**
- * Records the run's drop counts, once per place (AAP 0.11.1).
- *
- * Only reasons that occurred are written: a reason that never fired is absent from the object rather
- * than a zero, so a place that dropped nothing logs nothing and the line that is written is always
- * worth reading. Counts, ids and reason codes only — never page text, an item name or a price.
- */
+// Records the run's drop counts, once per place (AAP 0.11.1). Only reasons that occurred are written, so a place that dropped nothing logs nothing; counts, ids and reason codes only — never page text, an item name or a price.
 function logDrops(ctx: WorkerContext, placeId: string, drops: Record<string, number>): void {
   if (Object.keys(drops).length === 0) {
     return;
@@ -927,15 +736,7 @@ function logDrops(ctx: WorkerContext, placeId: string, drops: Record<string, num
   ctx.logger.info({ event: 'menu_pipeline_drops', placeId, drops });
 }
 
-/**
- * Queues one `ingest` job per place of a city whose online prices are missing or stale (AAP 0.5.4, 0.5.6).
- *
- * A place qualifies when it has a website or a menu link and holds no approved `online_menu` record captured inside
- * the 30-day freshness window that `suggestions` reads prices by, so the fan-out re-reads exactly what the pipeline
- * cannot serve from; `review_status` is part of the test, because a record an operator has not yet approved does not
- * count as a price. Both raw reads carry `fixturePredicate`, for the place and for the price records, because raw
- * SQL bypasses the guarded client's filter (AAP 0.5.2).
- */
+// Queues one `ingest` job per place of a city whose online prices are missing or stale (AAP 0.5.4, 0.5.6). A place qualifies when it has a website or a menu link and holds no approved `online_menu` record captured inside the 30-day freshness window that `suggestions` reads prices by, so the fan-out re-reads exactly what the pipeline cannot serve from; `review_status` is part of the test. Both raw reads carry `fixturePredicate`.
 async function ingestCity(ctx: WorkerContext, cityId: string): Promise<CityIngestResult> {
   const now = ctx.clock.now();
   const rows = await ctx.db.$queryRaw<{ id: string }[]>(Prisma.sql`
@@ -964,11 +765,7 @@ async function ingestCity(ctx: WorkerContext, cityId: string): Promise<CityInges
   return { enqueued };
 }
 
-/**
- * Runs one `menu-ingest` job (AAP 0.5.6). The job name is narrowed with `isJobName` before the data is parsed,
- * which is the pair `names.ts` and `payloads.ts` are built for: a name this queue does not accept, or data that does
- * not match that name's schema, fails here rather than reaching a rule.
- */
+// Runs one `menu-ingest` job (AAP 0.5.6). The job name is narrowed with `isJobName` before the data is parsed: a name this queue does not accept, or data that does not match its schema, fails here rather than reaching a rule.
 export async function process(job: MenuIngestJob, ctx: WorkerContext): Promise<unknown> {
   const queue = QUEUE.menuIngest;
   if (!isJobName(queue, job.name)) {

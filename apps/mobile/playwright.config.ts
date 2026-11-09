@@ -3,16 +3,13 @@
  *
  * `pnpm --filter @tablemate/mobile e2e:web` runs this file against the stack `scripts/e2e.ts` has already started, which
  * is why no `webServer` is configured here: the suite starts nothing and only reads the origins below.
- *
  * The suite is serial by construction. One stack, one seeded city day and one test clock are shared by every spec, and
  * the harness keeps at most one browser context per actor at a time, so `workers: 1` with `fullyParallel: false` is what
  * the specs assume; a retry would replay a walk whose holds and nullifiers are already spent, so `retries` stays 0.
- *
  * Chromium runs every spec; Firefox and WebKit run `web-proving.spec.ts` alone, because AAP 0.3.4 requires that proof to
  * be generated in each engine's own build, so every project takes a desktop device descriptor. The accessibility audit
  * stays in the Chromium project for the reason that spec's own header gives, and the criterion walks are Chrome walks
  * because they drive the app's file picker, clock and geolocation.
- *
  * Environment — the four origins and the two modes the harness uses, with the names and defaults of
  * `e2e/playwright/support/api-actor.ts`, which reads them itself: `E2E_WEB_URL` (the web app's origin, and
  * `use.baseURL`), `E2E_CONSOLE_URL`, `E2E_API_URL` (every caller appends `/v1`), `E2E_MAILPIT_URL` (where the magic
@@ -21,7 +18,6 @@
  * which has no default and is deliberately absent from `metadata`, because that is written to disk and read by
  * `docs/acceptance.md`; a spec that needs the test clock reads it itself and fails with its name (AAP 0.11.2), so a
  * listing of the suite works with no stack and no token.
- *
  * Reports: `.local/e2e/playwright/` (git-ignored) holds `results.json` for the run and, under `artifacts/`, the trace
  * and screenshot of a failure; `web-proving.spec.ts` also writes one row per engine to `.local/e2e/web-proving/`, which
  * is what `docs/zk-performance.md` records pass, fail or pending from, and the metadata below is what
@@ -29,16 +25,11 @@
  * `playwright install --with-deps chromium firefox webkit`, which `scripts/e2e.ts` runs before the suite.
  */
 import { defineConfig, devices } from '@playwright/test';
-
 /** The stack and the two modes this run reads: the harness's contract, resolved once (AAP 0.11.2). */
 interface SuiteEnv {
-  /** The web app's origin, without a trailing slash. */
   readonly webUrl: string;
-  /** The venue and lodging console's origin, without a trailing slash. */
   readonly consoleUrl: string;
-  /** The API's origin, to which every request appends `/v1`, without a trailing slash. */
   readonly apiUrl: string;
-  /** Mailpit's origin, where the suite reads the magic links it signs its actors in with. */
   readonly mailpitUrl: string;
   /**
    * Read so that this file reads the harness's whole environment in one place, and never reported:
@@ -55,7 +46,6 @@ const DEFAULT_WEB_URL = 'http://localhost:8080';
 const DEFAULT_CONSOLE_URL = 'http://localhost:8090';
 const DEFAULT_API_URL = 'http://localhost:3000';
 const DEFAULT_MAILPIT_URL = 'http://localhost:8025';
-
 /**
  * One test's ceiling, which is also the ceiling of a `beforeAll` hook, because a hook shares the
  * bound of the test it belongs to.
@@ -73,13 +63,10 @@ const DEFAULT_MAILPIT_URL = 'http://localhost:8025';
  * every other test's own assertions bound it far below.
  */
 const TEST_TIMEOUT_MS = 20 * 60_000;
-
 /** One assertion's ceiling: a screen, a navigation or a provider round trip, never a proof. */
 const EXPECT_TIMEOUT_MS = 15_000;
-
 /** Where the run's reports go, relative to this file: git-ignored, and outside the app's own tree. */
 const REPORT_DIR = '../../.local/e2e/playwright';
-
 /**
  * One environment variable, trimmed: compose passes `""` for a variable it leaves unset, and an
  * empty string must not reach a caller as a value.

@@ -1,17 +1,17 @@
 # Criterion 1 on a device, with the device user as the INITIATOR (actor A) and the counterpart acting
-# through the API (AAP 0.11.2 "End-to-end native"; AAP 0.12.1 criterion 1, the criterion this request
-# ranks first): every UI step of the initiator's role runs here — the magic-link sign-in, the saved-card
-# step, the proposal with its framing copy and its safety notice, the lock it waits for, chat, the day
-# plan, the witnessed check-in and the settlement result — and `criterion1-recipient.yaml` runs the same
-# walk with the roles swapped, so both roles pass through the real UI on each platform. `config.yaml`
-# orders this flow first.
+# through the API (AAP 0.11.2 "End-to-end native"; AAP 0.12.1 criterion 1, ranked first): every UI step of
+# the initiator's role runs here — sign-in, saved card, the proposal with its framing copy and its safety
+# notice, the lock it waits for, chat, the day plan, the witnessed check-in and the settlement result — and
+# `criterion1-recipient.yaml` runs the same walk with the roles swapped, so both roles pass through the
+# real UI on each platform; `config.yaml` orders this flow first.
 #
 # The walk confirms real Stripe test-mode holds and no mocked payment path exists, so under
-# `STRIPE_MODE=mock` it prints one E2E_BLOCKED line, touches no UI and passes; `scripts/e2e.ts` reads that
-# line and records the blocked row for web, iOS and Android in docs/acceptance.md. It is driven by
-# `.local/e2e/fixture-proofs.js`, which `pnpm --filter @tablemate/mobile e2e:prepare` writes before
-# Maestro starts; a missing file means that step never ran. Maestro binds a literal flow-header value
-# before a command-line `-e`, so every default below reads the incoming value first.
+# `STRIPE_MODE=mock` it prints one E2E_BLOCKED line, touches no UI and passes, and `scripts/e2e.ts` reads
+# that line and records the blocked row for web, iOS and Android in docs/acceptance.md. The harness's
+# `.local/e2e/fixture-proofs.js` (both actors, the partner venue with its city and console secret, the stay
+# window and the Stripe mode; written by `e2e:prepare` before Maestro starts, absent meaning that step never
+# ran) carries no proof and no token, the device signing in with a link of its own. Maestro binds a literal
+# flow-header value before a command-line `-e`, so every default below reads the incoming value first.
 appId: com.tablemate.app
 name: criterion1-initiator
 tags: [e2e, stripe-test]
@@ -21,12 +21,8 @@ env:
   STRIPE_MODE: ${STRIPE_MODE || 'mock'}
   DEV_CLIENT_URL: ${DEV_CLIENT_URL || ''}
 ---
-# The harness's prepared data: both actors, the partner venue with its city and console secret, the stay
-# window and the Stripe mode. It carries no proof and no token, the device signing in with a link of its
-# own.
 - runScript:
     file: ../../../../.local/e2e/fixture-proofs.js
-
 # A fixture prepared for the other mode would ask this stack to confirm holds it cannot confirm.
 - assertTrue:
     condition: ${output.e2e.stripeMode === STRIPE_MODE}
@@ -38,13 +34,11 @@ env:
       true: ${STRIPE_MODE !== 'test'}
     commands:
       - evalScript: ${console.log('E2E_BLOCKED criterion1-initiator ' + maestro.platform + ' Blocked — Stripe test-mode keys not supplied')}
-
 # Everything below runs in Stripe test mode only, against the `APP_ENV=test` stack scripts/e2e.ts starts.
 - runFlow:
     when:
       true: ${STRIPE_MODE === 'test'}
     commands:
-      # --- the API-side actors: the operator first, then the counterpart B ---
       # The operator signs in first because clearing a pair needs one while it holds an open dispute.
       - runScript:
           file: scripts/read-magic-link.js
@@ -70,7 +64,6 @@ env:
       - assertTrue:
           condition: ${Date.parse(output.day.date + 'T23:30:00.000Z') < Date.now() + 5 * 86400000}
           label: 'the walk day ${output.day.date} is beyond the proposal form horizon, which is five days from the device clock and cannot follow the API test clock — reset the stack and rerun e2e:prepare'
-      # --- the device: launch, and make sure the device user is A ---
       # No state is cleared: iOS keeps the keychain across a clearState anyway, and A's session has to
       # survive for reachability.yaml and for the second platform's run.
       - launchApp:
@@ -149,7 +142,6 @@ env:
                 visible:
                   id: tab-discover
                 timeout: 30000
-      # --- the device: the saved-card step a deposit needs ---
       # e2e:prepare already stored a card for A, so Stripe's sheet normally lists it, and the card fields
       # are filled only when the sheet asks for one. Those labels belong to Stripe's views rather than to
       # Tablemate, which is why text selectors appear here and nowhere else.
@@ -186,7 +178,6 @@ env:
       # root Stack labels "Back", and Android presses the system back.
       - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
       - runFlow: { when: { platform: Android }, commands: [back] }
-      # --- the device: the proposal ---
       - tapOn:
           id: tab-discover
       - tapOn:
@@ -209,13 +200,13 @@ env:
             id: propose-start
           direction: DOWN
           centerElement: true
-      # The start is this walk's own day at a city-local 17:30, in the form's own `YYYY-MM-DD HH:mm`
-      # spelling of the venue city's zone. Maestro's sandbox carries no zone data, so the local time is
-      # chosen to hold across the launch cities' offsets (-6 to +8) instead of being computed: 17:30
-      # city-local is the instant D 09:30Z to D 23:30Z, after the D 09:00Z clock `fresh-day` set, still on
-      # day D for `accept`, and 30 minutes inside both ends of that range, so the clock can still move five
-      # minutes back from the start for the check-in. The two erases clear the field whatever the tap put
-      # the cursor on: the prefilled value is 16 characters.
+      # The start is this walk's own day at a city-local 17:30, in the form's own `YYYY-MM-DD HH:mm` spelling of
+      # the venue city's zone. Maestro's sandbox carries no zone data, so the local time is chosen to hold across
+      # the launch cities' offsets (-6 to +8) instead of being computed: 17:30 city-local is the instant
+      # D 09:30Z to D 23:30Z, after the D 09:00Z clock `fresh-day` set, still on day D for `accept`, and 30
+      # minutes inside both ends of that range, so the clock can still move five minutes back from the start for
+      # the check-in. The two erases clear the field whatever the tap put the cursor on: the prefilled value is
+      # 16 characters.
       - tapOn:
           id: propose-start
       - eraseText: 16
@@ -259,7 +250,6 @@ env:
             id: meetup-status
             text: '(?i)proposed'
           timeout: 60000
-      # --- the counterpart locks the proposal the device made ---
       # B's saved card is the public test card, so the hold needs no 3-D Secure step and the accept
       # answers `locked` (AAP 0.5.3).
       - runScript: { file: scripts/api-actor.js, env: { ACTION: accept, ROLE: b } }
@@ -269,7 +259,7 @@ env:
             id: meetup-status
             text: '(?i)locked'
           timeout: 30000
-      # --- chat, and the day plan, both reached from navigation on the locked meetup (criterion 8) ---
+      # Chat and the day plan, both reached from navigation on the locked meetup (criterion 8).
       - tapOn:
           id: meetup-chat
       - extendedWaitUntil:
@@ -305,7 +295,6 @@ env:
           id: osm-attribution
       - runFlow: { when: { platform: iOS }, commands: [{ tapOn: { text: 'Back' } }] }
       - runFlow: { when: { platform: Android }, commands: [back] }
-      # --- the witnessed check-in, and the settlement ---
       # The API clock moves to five minutes before the start: inside the window that runs from 15
       # minutes before it to 45 minutes after it (AAP 0.5.7).
       - runScript:

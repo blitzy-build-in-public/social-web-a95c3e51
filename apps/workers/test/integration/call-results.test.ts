@@ -1,6 +1,4 @@
-/**
- * Integration tests for `apps/workers/src/jobs/call-results.ts` (AAP 0.3.2, 0.5.3, 0.5.6, 0.5.7).
- */
+/** Integration tests for `apps/workers/src/jobs/call-results.ts` (AAP 0.3.2, 0.5.3, 0.5.6, 0.5.7). */
 
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -61,24 +59,14 @@ import { normalizeItemName } from '../../src/jobs/menu-ingest.ts';
 import { closeWorkerContext, createWorkerContext, type WorkerContext } from '../../src/queues.ts';
 
 const CITY = 'lisbon';
-
-/**
- * The instant every case starts at: Lisbon midday on the harness's own default day. `resetState`
- * returns the clock here, and each case states it so the reason the dates below line up is visible.
- */
+/** The instant every case starts at: Lisbon midday on the harness's own default day. `resetState` returns the clock here, and each case states it so the reason the dates below line up is visible. */
 const NOW = new Date('2026-11-16T12:00:00.000Z');
-
 const FX_FIXTURE = new URL('../fixtures/fx/usd-latest.json', import.meta.url);
-
 /** The number a menu call is dialed from, from the reserved fictional range (AAP 0.5.2). */
 const MENU_PHONE = '+14155550150';
 const SHARED_PHONE = '+14155550151';
 const OTHER_PHONE = '+14155550152';
-
-/**
- * One priced item a menu call collected, in the shape the API's relay records it (AAP 0.5.6):
- * `amountMinor` is the price in the currency's minor units and `priceText` is the price as heard.
- */
+/** One priced item a menu call collected, in the shape the API's relay records it (AAP 0.5.6): `amountMinor` is the price in the currency's minor units and `priceText` is the price as heard. */
 interface MenuPriceItem {
   readonly slot: 'cheapest_main' | 'priciest_main' | 'coffee' | 'beer';
   readonly dish: string;
@@ -95,7 +83,6 @@ type ExtractedFields =
       readonly answer: 'yes' | 'no' | null;
       readonly confirmed: boolean;
     };
-
 const MENU_ITEMS: readonly MenuPriceItem[] = [
   {
     slot: 'cheapest_main',
@@ -130,7 +117,6 @@ const MENU_ITEMS: readonly MenuPriceItem[] = [
     confirmed: true,
   },
 ];
-
 /** Each dish's price in whole USD cents: `amountMinor / 100 * 1.25 * 100`, rounded half up. */
 const USD_CENTS: Readonly<Record<string, number>> = {
   Bitoque: 1188,
@@ -138,29 +124,23 @@ const USD_CENTS: Readonly<Record<string, number>> = {
   Café: 113,
   Imperial: 313,
 };
-
 const STAY_FROM = '2026-11-09';
 const STAY_TO = '2026-11-15';
-
 const IN_STAY = new Date('2026-11-12T12:00:00.000Z');
 const OUTSIDE_STAY = new Date('2026-10-20T12:00:00.000Z');
 const BEFORE_WINDOW = new Date('2026-07-01T12:00:00.000Z');
-
 let app: TestApp;
 let store: DbClient;
 let ctx: WorkerContext;
 let fx: Server;
-
 beforeAll(async () => {
   const table = await readFile(FX_FIXTURE, 'utf8');
-  // The recorded provider response, served over HTTP: `fx-refresh` reads it through the same path it
-  // reads the real endpoint through, so the rates and their own date are the recorded ones (AAP 0.3.3).
+  // The recorded provider response, served over HTTP: `fx-refresh` reads it through the same path it reads the real endpoint through, so the rates and their own date are the recorded ones (AAP 0.3.3).
   fx = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
     response.end(table);
   });
   const fxUrl = await listenOnLoopback(fx);
-
   app = await createTestApp();
   store = app.services.db;
   ctx = await createWorkerContext(
@@ -168,7 +148,6 @@ beforeAll(async () => {
     { clock: app.clock },
   );
 });
-
 afterAll(async () => {
   fx.closeAllConnections();
   await new Promise<void>((resolve) => {
@@ -179,31 +158,21 @@ afterAll(async () => {
   await closeWorkerContext(ctx);
   await app.close();
 });
-
 beforeEach(async () => {
   await app.resetState();
   await app.seedCities();
   app.time.at(NOW);
-  // The rates every `phone_quote` converts through, written by the job that writes them in production
-  // rather than inserted by hand, so the conversion the cases assert is the pipeline's own.
+  // The rates every `phone_quote` converts through, written by the job that writes them in production rather than inserted by hand, so the conversion the cases assert is the pipeline's own.
   await runFxRefresh({ name: JOB[QUEUE.fxRefresh].refresh, data: {} }, ctx);
 });
-
-/**
- * Start a fixture HTTP server on an ephemeral loopback port.
- * @param server - The server to start.
- * @returns Its `http://127.0.0.1:<port>` base.
- * @throws Error when the server bound no TCP address.
- */
+/** Start a fixture HTTP server on an ephemeral loopback port. @param server - The server to start. @returns Its `http://127.0.0.1:<port>` base. @throws Error when the server bound no TCP address. */
 async function listenOnLoopback(server: Server): Promise<string> {
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       resolve();
     });
   });
-
   const address = server.address();
-
   if (address === null || typeof address === 'string') {
     throw new Error('the FX fixture server bound no TCP port');
   }
@@ -236,19 +205,13 @@ function taskRow(taskId: string): Promise<{
   });
 }
 
-/**
- * The job one outbox row becomes: the row the API's relay would have written, parsed before the insert
- * as `outbox/write.ts` parses it, dispatched under the stable id of AAP 0.3.2.
- * @param attemptId - The attempt whose recorded result the row names.
- * @returns The `call-results` / `apply` job carrying that row.
- */
+/** The job one outbox row becomes: the row the API's relay would have written, parsed before the insert as `outbox/write.ts` parses it, dispatched under the stable id of AAP 0.3.2. @param attemptId - The attempt whose recorded result the row names. @returns The `call-results` / `apply` job carrying that row. */
 async function callResultJob(attemptId: string): Promise<CallResultsJob> {
   const payload = parseOutboxPayload('apply_call_result', { callAttemptId: attemptId });
   const row = await store.outboxMessage.create({
     data: { kind: 'apply_call_result', payload, createdAt: now() },
     select: { id: true },
   });
-
   return {
     id: outboxJobId(row.id),
     name: JOB[QUEUE.callResults].apply,
@@ -256,12 +219,7 @@ async function callResultJob(attemptId: string): Promise<CallResultsJob> {
   };
 }
 
-/**
- * Runs one `apply` job as BullMQ would, at the delivery the caller names.
- * @param job - The job to run.
- * @param delivery - `first` for a delivery a retry follows, `last` for the one that has none.
- * @returns What the processor reports.
- */
+/** Runs one `apply` job as BullMQ would, at the delivery the caller names. @param job - The job to run. @param delivery - `first` for a delivery a retry follows, `last` for the one that has none. @returns What the processor reports. */
 function runJob(
   job: CallResultsJob,
   delivery: 'first' | 'last' = 'first',
@@ -271,15 +229,10 @@ function runJob(
   }
 
   const attempts = QUEUE_JOB_OPTIONS[QUEUE.callResults].attempts ?? 1;
-
   return runCallResults({ ...job, attemptsMade: attempts - 1, opts: { attempts } }, ctx);
 }
 
-/**
- * Writes what the API's relay recorded on an attempt: the extraction the dialogue contract defines.
- * @param attemptId - The attempt to write.
- * @param fields - The extraction, or any other payload a case needs.
- */
+/** Writes what the API's relay recorded on an attempt: the extraction the dialogue contract defines. @param attemptId - The attempt to write. @param fields - The extraction, or any other payload a case needs. */
 async function setExtraction(attemptId: string, fields: ExtractedFields): Promise<void> {
   await store.callAttempt.update({
     where: { id: attemptId },
@@ -306,11 +259,7 @@ interface MenuCallInput {
   readonly phone?: string;
 }
 
-/**
- * Seed one `menu_prices` task in `in_progress` with one ended attempt, as the dispatcher leaves them.
- * @param input - The outcome the call produced and whatever the case varies.
- * @returns The place the call was dialed to, the task and the attempt.
- */
+/** Seed one `menu_prices` task in `in_progress` with one ended attempt, as the dispatcher leaves them. @param input - The outcome the call produced and whatever the case varies. @returns The place the call was dialed to, the task and the attempt. */
 async function seedMenuCall(input: MenuCallInput): Promise<MenuCall> {
   const place = await makePlace(app, {
     cityId: CITY,
@@ -329,9 +278,7 @@ async function seedMenuCall(input: MenuCallInput): Promise<MenuCall> {
     durationSec: 90,
     ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
   });
-
   await setExtraction(attempt.id, { kind: 'menu_prices', items: input.items ?? MENU_ITEMS });
-
   return { place, task, attempt };
 }
 
@@ -352,12 +299,7 @@ interface StayCallInput {
   readonly attempts?: number;
 }
 
-/**
- * Seed one `lodging_stay_verification` task in `in_progress`, the `calling` claim it verifies, and the
- * completed meetups a verified stay is credited with.
- * @param input - The outcome the call produced and whatever the case varies.
- * @returns The rows the assertion needs, including the meetup inside the stay.
- */
+/** Seed one `lodging_stay_verification` task in `in_progress`, the `calling` claim it verifies, and the completed meetups a verified stay is credited with. @param input - The outcome the call produced and whatever the case varies. @returns The rows the assertion needs, including the meetup inside the stay. */
 async function seedStayCall(input: StayCallInput): Promise<StayCall> {
   const claimant = await makeUser(app);
   const counterpart = await makeUser(app);
@@ -368,12 +310,10 @@ async function seedStayCall(input: StayCallInput): Promise<StayCall> {
     stayFrom: STAY_FROM,
     stayTo: STAY_TO,
   });
-
   await store.lodgingClaim.update({
     where: { id: claim.id },
     data: { createdAt: new Date(now().getTime() - 2 * HOUR_MS) },
   });
-
   const inStay = await makeMeetup(app, {
     status: 'completed',
     initiator: claimant,
@@ -395,7 +335,6 @@ async function seedStayCall(input: StayCallInput): Promise<StayCall> {
     venue,
     startsAt: BEFORE_WINDOW,
   });
-
   const task = await makeCallTask(app, {
     kind: 'lodging_stay_verification',
     lodgingId: lodging.id,
@@ -409,13 +348,11 @@ async function seedStayCall(input: StayCallInput): Promise<StayCall> {
     durationSec: 45,
     ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
   });
-
   await setExtraction(attempt.id, {
     kind: 'lodging_stay_verification',
     answer: input.answer,
     confirmed: input.answer !== null,
   });
-
   return { claimant, counterpart, lodging, claim, task, attempt, inStay };
 }
 
@@ -427,11 +364,7 @@ interface Rows {
   readonly outbox: readonly unknown[];
 }
 
-/**
- * Read the rows of one menu call, so a case can assert that a refused result changed none of them.
- * @param call - The seeded call.
- * @returns Its task, its attempts, its price records and every outbox row.
- */
+/** Read the rows of one menu call, so a case can assert that a refused result changed none of them. @param call - The seeded call. @returns Its task, its attempts, its price records and every outbox row. */
 async function callRows(call: MenuCall): Promise<Rows> {
   return {
     task: await store.callTask.findMany({ where: { id: call.task.id } }),
@@ -452,19 +385,12 @@ interface AppliedResult {
   readonly result: CallResultsResult;
 }
 
-/**
- * Apply one seeded result as the dispatcher would: the outbox row the API's relay writes, then the job
- * that row becomes.
- * @param attemptId - The attempt whose recorded result is applied.
- * @param delivery - Which delivery of that job this is.
- * @returns The job, so a case can redeliver it, and what the processor reported.
- */
+/** Apply one seeded result as the dispatcher would: the outbox row the API's relay writes, then the job that row becomes. @param attemptId - The attempt whose recorded result is applied. @param delivery - Which delivery of that job this is. @returns The job, so a case can redeliver it, and what the processor reported. */
 async function applyResult(
   attemptId: string,
   delivery: 'first' | 'last' = 'first',
 ): Promise<AppliedResult> {
   const job = await callResultJob(attemptId);
-
   return { job, result: await runJob(job, delivery) };
 }
 
@@ -481,12 +407,7 @@ interface MenuMapping {
   readonly reviewStatus?: 'approved' | 'needs_review';
 }
 
-/**
- * Every outcome a menu call can record, and the task status and price records each leaves behind
- * (AAP 0.5.3's lifecycle, 0.5.6's confidence rule): a call that collected every price completes the
- * task, one that collected less hands it to an operator queue, and the outcomes that collected nothing
- * store no price at all.
- */
+/** Every outcome a menu call can record, and the task status and price records each leaves behind (AAP 0.5.3's lifecycle, 0.5.6's confidence rule): a call that collected every price completes the task, one that collected less hands it to an operator queue, and the outcomes that collected nothing store no price at all. */
 const MENU_MAPPINGS: readonly MenuMapping[] = [
   {
     name: 'a completed call with every price confirmed completes the task',
@@ -690,7 +611,6 @@ describe('a menu call record applied to its task', () => {
     expect(await store.priceRecord.count({ where: { placeId: call.place.id } })).toBe(0);
   });
 });
-
 /* Results that must not be applied (AAP 0.3.2, 0.5.3) */
 
 describe('a result that must not be applied', () => {
@@ -744,7 +664,6 @@ describe('a result that must not be applied', () => {
     expect(new Set(records.map((record) => record.captureBatchId)).size).toBe(1);
   });
 });
-
 /** One case of a recorded stay result: the answer and what the claim and task must read after it. */
 interface StayMapping {
   readonly name: string;
@@ -756,11 +675,7 @@ interface StayMapping {
   readonly claimStatus: LodgingClaimStatus;
 }
 
-/**
- * Every result a stay call can record, and what it leaves behind (AAP 0.5.3): only an explicit,
- * confirmed answer decides the claim, and every other result returns it to the operator queue while
- * the claimant still reads it as pending.
- */
+/** Every result a stay call can record, and what it leaves behind (AAP 0.5.3): only an explicit, confirmed answer decides the claim, and every other result returns it to the operator queue while the claimant still reads it as pending. */
 const STAY_MAPPINGS: readonly StayMapping[] = [
   {
     name: 'a confirmed yes verifies the claim and completes the task',

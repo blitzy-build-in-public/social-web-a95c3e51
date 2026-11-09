@@ -1,14 +1,14 @@
 /* global http, json, output, API_URL */
 /*
- * Reads the venue's current check-in code for the native criterion-1 flows and puts the pair the
- * check-in screen needs in `output.code` and `output.codeExpiresAt`. The flows run this immediately
- * before typing the code on the device, and before `api-actor.js ACTION=check-in`.
+ * Reads the venue's current check-in code for the native criterion-1 flows and puts the pair the check-in
+ * screen needs in `output.code` and `output.codeExpiresAt`. The flows run this immediately before typing the
+ * code on the device, and before `api-actor.js ACTION=check-in`.
  *
- * Flow env `API_URL`, the API origin, is required; `output.e2e.venue.secret`, written by
- * `pnpm --filter @tablemate/mobile e2e:prepare` into `.local/e2e/fixture-proofs.js`, is the input. The
- * code is the server's alone — HKDF-SHA256 keyed by the venue secret, the counter of the current
- * 60-second step, accepted at T-1, T and T+1 and validated on the server clock only (AAP 0.5.7) — so
- * device clock skew moves nothing here. No message below carries the secret or the code.
+ * Flow env `API_URL`, the API origin, is required; `output.e2e.venue.secret`, written by `pnpm --filter
+ * @tablemate/mobile e2e:prepare` into `.local/e2e/fixture-proofs.js`, is the input. The code is the server's
+ * alone — HKDF-SHA256 keyed by the venue secret, the counter of the current 60-second step, accepted at T-1,
+ * T and T+1 and validated on the server clock only (AAP 0.5.7) — so device clock skew moves nothing here. No
+ * message below carries the secret or the code.
  */
 (function () {
   'use strict';
