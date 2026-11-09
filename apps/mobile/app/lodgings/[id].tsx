@@ -17,6 +17,7 @@ import {
   OSM_ATTRIBUTION,
   OSM_COPYRIGHT_URL,
   guestCountText,
+  travelerSubtitle,
 } from '../../src/copy/strings';
 import { queryKeys, useMe } from '../../src/state/meetup-store';
 import { Avatar, Banner, Button, Card, ListItem, Screen, announce } from '../../src/ui';
@@ -73,6 +74,7 @@ const guestRow = (guest: Tier0Profile): ReactElement => (
   <ListItem
     key={guest.id}
     label={`@${guest.handle}`}
+    subtitle={travelerSubtitle(guest)}
     leading={<Avatar avatarSeed={guest.avatarSeed} handle={guest.handle} size={32} decorative />}
     onPress={() => router.push(`/users/${guest.id}`)}
     role="link"

@@ -258,15 +258,29 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
         name,
       );
       if (outcome.meetupId !== undefined) {
-        // Never awaited: the operations a delivery planned are carried out after the response, and
-        // the 60-second sweeper is the backstop for anything that does not finish (AAP 0.3.2).
-        void runOperationsFor(services, { meetupId: outcome.meetupId }).catch((error: unknown) => {
+        // Awaited, so an acknowledged delivery means the provider calls it planned have been carried
+        // out as well: the caller that reads the meetup next — and the settlement pass that follows
+        // the delivery — then finds deposits that no further pass may move, which is the contract
+        // every other post-commit caller of the executor keeps (`cancel.ts`, `accept.ts` and the
+        // operator's resolution all await it before they answer). Returning first would leave the
+        // delivery's own money movement in flight behind an answer that says it was applied, and a
+        // pass cannot take that claim: an `executing` row younger than two minutes belongs to the
+        // executor running it. This delivery therefore answers after its own one or two provider
+        // calls rather than before them — the price of an answer that means what it says — and what
+        // this run cannot finish (a claim it could not take, a call that failed retryably) stays open
+        // for the 60-second sweeper, the backstop AAP 0.3.2 keeps for a delivery that dies mid-call.
+        try {
+          await runOperationsFor(services, { meetupId: outcome.meetupId });
+        } catch (error) {
+          // The effects are committed and every operation is durable, so a failure of the executor is
+          // answered `200` all the same: the sweeper resumes what this delivery left open, and a
+          // `5xx` would only have the provider redeliver an event this application already applied.
           request.log.error({
             event: OPERATIONS_FAILED,
             eventId: event.id,
             code: failureToken(error),
           });
-        });
+        }
       }
       reply.code(OK).send(null);
     },

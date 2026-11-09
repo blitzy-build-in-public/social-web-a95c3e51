@@ -23,7 +23,12 @@ const styles = StyleSheet.create({
   heading: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },
   note: { ...typography.body, color: colors.textMuted },
   sortRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  trailing: { alignItems: 'flex-end', gap: spacing.xs },
+  // `marginLeft: 'auto'` is what puts these figures on the row's right edge once the row wraps and
+  // this block is alone on the line below the text column: that line's free space goes to the auto
+  // margin. Unwrapped it moves nothing — the column's `flex: 1` absorbs that free space before an
+  // auto margin receives any — and a layout keyword is no measurement, so the entry's values stay
+  // design tokens.
+  trailing: { alignItems: 'flex-end', gap: spacing.xs, marginLeft: 'auto' },
   trailingText: { ...typography.body, color: colors.textMuted },
   fill: { flex: 1 },
   // The block spacing the screen's content container gives every child: a row sits flush against the
@@ -50,6 +55,7 @@ const COPY = {
   empty: 'No lodgings listed in this city yet.',
   noCity: 'The lodgings query was enabled without a city.',
   tryAgain: 'Try again',
+  name: 'Lodgings',
 };
 const OPEN_OSM = (): void => void Linking.openURL(OSM_COPYRIGHT_URL);
 const IMPORT_ACTION = { label: 'Verify my stay', onPress: () => router.push('/proof/import') };
@@ -134,7 +140,11 @@ export default function LodgingsScreen(): ReactElement {
     return panel(
       <Banner tone="info" message={IMPORT_BANNER} action={IMPORT_ACTION} testID="proof-banner" />,
     );
-  const cityName = cities.data?.items.find((city) => city.id === cityId)?.name ?? cityId;
+  // The city list is the only source of a display name: the proof carries a city id, a slug such as
+  // `mexico-city`, and a slug is never painted. The section's own name stands in until the list
+  // answers, and stays it when the list settles without that city.
+  const cityName = cities.data?.items.find((city) => city.id === cityId)?.name;
+  const heading = cityName === undefined ? COPY.name : `${COPY.name} in ${cityName}`;
   const items = lodgings.data?.items ?? [];
   // An error supersedes the rows, the empty state and the loading notice; a directory that has not
   // answered yet is not an empty one, so the reader sees the notice this screen already shows while it
@@ -153,7 +163,9 @@ export default function LodgingsScreen(): ReactElement {
         renderItem={({ item }) => lodgingRow(item)}
         ListHeaderComponent={
           <View style={styles.listHeader}>
-            <Text {...HEADING} style={styles.heading}>{`Lodgings in ${cityName}`}</Text>
+            <Text {...HEADING} style={styles.heading}>
+              {heading}
+            </Text>
             <Text style={styles.note}>{COPY.ranking}</Text>
             <View role="radiogroup" aria-label={SORT_GROUP_LABEL} style={styles.sortRow}>
               <Chip
