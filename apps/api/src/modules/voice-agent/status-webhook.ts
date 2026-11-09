@@ -47,7 +47,6 @@ import { transact } from '../outbox/write.ts';
 import { isStripped, lockAttempt, recordAttemptOutcome, type AttemptResult } from './dialogue.ts';
 import { twilioSignatureHook } from './signature.ts';
 
-// Type-only: `app.ts` is the app's one declaration of its type and of what it hands its modules, and nothing of that module is read here at runtime.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag the route groups under: a member of the document's own vocabulary, never a new string. */

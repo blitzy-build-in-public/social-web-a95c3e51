@@ -55,7 +55,6 @@ import { registerStatusWebhook } from './status-webhook.ts';
 
 import type { FastifyContextConfig } from 'fastify';
 
-// Type-only, so this file opens no runtime edge back to the composition root.
 import type { App, AppServices } from '../../app.ts';
 
 /** The route's path, relative to the `/v1` prefix `app.ts` mounts the modules under (AAP 0.5.4). */

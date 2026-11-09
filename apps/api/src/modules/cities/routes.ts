@@ -32,7 +32,6 @@ import { cityBySlug, readCitiesConfig } from '../proofs/registry.ts';
 import { hasValidProof } from '../proofs/validity.ts';
 import { listTravelers } from './discovery.ts';
 
-// Type-only, so this file holds no run-time edge back to the module that registers it.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag all three routes group under: a member of the document's own vocabulary (AAP 0.11.2). */

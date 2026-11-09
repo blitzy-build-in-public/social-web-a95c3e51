@@ -36,7 +36,6 @@ import { lodgingStats } from '../lodgings/leaderboard.ts';
 import { findLodgingBySecret, findVenueBySecret } from './secrets.ts';
 import { codeFor } from './totp.ts';
 
-// Type-only, so this file holds no run-time edge back to the module that registers it.
 import type { App } from '../../app.ts';
 
 /** The tag both routes group under. */

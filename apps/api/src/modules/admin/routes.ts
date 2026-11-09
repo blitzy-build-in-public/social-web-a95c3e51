@@ -79,7 +79,6 @@ import { listReports } from './reports.ts';
 
 import type { FastifyRequest } from 'fastify';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 
 /** The tag every route here groups under: a member of the document's own vocabulary (AAP 0.11.2). */

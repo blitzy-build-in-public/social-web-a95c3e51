@@ -12,7 +12,6 @@
  */
 import type { Clock } from '@tablemate/server-core';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 declare module 'fastify' {

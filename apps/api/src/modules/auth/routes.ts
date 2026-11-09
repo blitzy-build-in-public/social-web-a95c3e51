@@ -29,7 +29,6 @@ import { ipOnlyLimits, magicLinkLimits, mutatingLimits } from '../../plugins/rat
 import { requestMagicLink, verifyMagicLink } from './magic-link.ts';
 import { logout, refresh } from './sessions.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { App } from '../../app.ts';
 

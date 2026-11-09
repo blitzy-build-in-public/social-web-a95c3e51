@@ -43,7 +43,6 @@ import { createClaim, deleteClaim, getClaim } from './claims.ts';
 import { leaderboard, lodgingSummary } from './leaderboard.ts';
 import { guestsFor, setVisibility } from './visibility.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 import type { FastifyRequest } from 'fastify';
 

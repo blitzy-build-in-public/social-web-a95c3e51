@@ -15,7 +15,6 @@ import { Variant } from '@tablemate/shared';
 
 import type { DbClient, DbTx } from '@tablemate/db';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** The bucket count and the basis-point scale of the split: `share * SHARE_BASIS`. */

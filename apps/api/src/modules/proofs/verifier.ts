@@ -31,7 +31,6 @@ import { AppError } from '../../plugins/errors.ts';
 import { activeRegistries, circuitsBuildPath, cityBySlug } from './registry.ts';
 import { signalDateToIso, stayDays } from './validity.ts';
 
-// Type-only, so this file holds no runtime edge to the module that builds the app — the single `AppServices` declaration every module of `apps/api/src/modules` names.
 import type { AppServices } from '../../app.ts';
 
 const VERIFICATION_KEY_FILE = 'verification_key.json';

@@ -34,8 +34,6 @@ import { loadForParticipant, loadMeetup } from './queries.ts';
 import { isLateCancel, lockMeetup, transition } from './state-machine.ts';
 import type { MeetupEvent } from './state-machine.ts';
 
-// Type-only, as everywhere on this branch: `app.ts` is the one declaration of the app's type, it is
-// erased at compile time, and nothing of that module is read here at runtime.
 import type { AppServices } from '../../app.ts';
 
 /**

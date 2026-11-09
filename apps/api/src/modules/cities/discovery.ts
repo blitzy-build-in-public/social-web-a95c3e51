@@ -30,7 +30,6 @@ import type { TravelersResponse } from '@tablemate/shared';
 import { AppError } from '../../plugins/errors.ts';
 import { tier0Profiles } from '../users/disclosure/serialize.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /**

@@ -41,7 +41,6 @@ import type { SettleResult } from '../settlement/settle.ts';
 /** How many outbox passes a settlement trigger drains before it answers, bounded on purpose. */
 const MAX_OUTBOX_PASSES = 5;
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App, AppServices } from '../../app.ts';
 
 /**

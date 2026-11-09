@@ -33,7 +33,6 @@ import { invalidateLeaderboard, recordActivityForVerifiedClaim } from '../lodgin
 import { notify } from '../notifications/enqueue.ts';
 import { transact } from '../outbox/write.ts';
 
-// Type-only, so this file holds no runtime edge to the module that builds the app.
 import type { AppServices } from '../../app.ts';
 
 /**

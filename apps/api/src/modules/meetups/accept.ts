@@ -43,7 +43,6 @@ import type { IntentState, IntentStatus } from '../payments/gateway.ts';
 import type { RunOperationsOptions } from '../payments/operations.ts';
 import type { MeetupRow } from './queries.ts';
 
-// Type-only, as everywhere in this module: `app.ts` is the one declaration of the app's type and nothing of that module is read here at runtime.
 import type { AppServices } from '../../app.ts';
 
 const ACCEPT_EVENT = 'meetup_accept';

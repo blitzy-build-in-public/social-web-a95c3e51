@@ -10,7 +10,6 @@ import { dropCachedSessions, type AuthContext } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { transact } from '../outbox/write.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** A version mismatch's message: the client renders its own sentence for the code, so this is constant. */

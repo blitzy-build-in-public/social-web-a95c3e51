@@ -47,8 +47,6 @@ import type { HoldExecution } from '../payments/operations.ts';
 import { hasValidProof } from '../proofs/validity.ts';
 import { scheduleLapse } from '../settlement/timers.ts';
 
-// Type-only, as everywhere in this module: `app.ts` is the one declaration of the app's type, it is
-// erased at compile time, and nothing of that module is read here at runtime.
 import type { AppServices } from '../../app.ts';
 
 /**

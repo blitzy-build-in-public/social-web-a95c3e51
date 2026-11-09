@@ -19,7 +19,6 @@ import { LODGING_SECRET_HEADER, VENUE_SECRET_HEADER } from '@tablemate/shared';
 
 import type { ApiEnv } from '@tablemate/server-core';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**

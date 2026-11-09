@@ -43,7 +43,6 @@ import { block, report } from './safety.ts';
 
 import type { FastifyContextConfig, FastifyRequest } from 'fastify';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag all four routes group under: a member of the document's own vocabulary (AAP 0.11.2). */

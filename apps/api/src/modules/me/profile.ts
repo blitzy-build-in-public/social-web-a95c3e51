@@ -30,7 +30,6 @@ import { countersFor } from '../reputation/counters.ts';
 import { processPhoto, storePhoto } from './photo.ts';
 import type { ProcessedPhoto } from './photo.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /**

@@ -37,7 +37,6 @@ import { chatWsRoutes, toMessageDto, type MessageRow } from './chat-ws.ts';
 import type { FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 
 /** The tag the history route groups under. */

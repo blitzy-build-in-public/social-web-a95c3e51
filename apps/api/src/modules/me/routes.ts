@@ -33,7 +33,6 @@ import { requestDeletion } from './deletion.ts';
 import { createPaymentSetup } from './payment-setup.ts';
 import { buildMeDto, updateProfile } from './profile.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { App } from '../../app.ts';

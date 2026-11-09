@@ -30,7 +30,6 @@ import { zkConfig } from './registry.ts';
 import { proofValidity } from './validity.ts';
 import { verifyItineraryProof, type VerifiedItinerary } from './verifier.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { App, AppServices } from '../../app.ts';

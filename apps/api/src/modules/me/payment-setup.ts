@@ -17,7 +17,6 @@ import { isPaymentError } from '../payments/gateway.ts';
 
 import type { SetupResult } from '../payments/gateway.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** What a setup the provider could not start answers with: the fixed sentence of `503 payment_unavailable`. */

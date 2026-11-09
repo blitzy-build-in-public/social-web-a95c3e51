@@ -56,7 +56,6 @@ import type { RawData, WebSocket } from 'ws';
 
 import type { AuthContext } from '../../plugins/auth.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App, AppServices } from '../../app.ts';
 
 /**

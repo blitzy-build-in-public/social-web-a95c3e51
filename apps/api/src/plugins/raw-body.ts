@@ -19,7 +19,6 @@ import { AppError } from './errors.ts';
 
 import type { FastifyBodyParser, FastifyInstance } from 'fastify';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /** The bytes this request was received with, verbatim: set by {@link registerRawJsonBody} alone. */

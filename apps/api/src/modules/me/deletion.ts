@@ -23,7 +23,6 @@ import { transact, writeOutbox } from '../outbox/write.ts';
 import { planDeleteCustomer } from '../payments/holds.ts';
 import { runOperationsFor } from '../payments/operations.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** The two statuses a meetup can still be cancelled from; every other status is final, and `applyCancellationRules` answers

@@ -37,7 +37,6 @@ import { transact, writeOutbox, type AfterCommit } from '../outbox/write.ts';
 import { activeProof, currentProof, type ProofSummary } from '../proofs/validity.ts';
 import { currentStayPredicate, invalidateLeaderboard } from './leaderboard.ts';
 
-// Type-only: `app.ts` is the one declaration of the app's type, erased at compile time.
 import type { AppServices } from '../../app.ts';
 
 /**

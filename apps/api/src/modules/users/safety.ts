@@ -19,7 +19,6 @@ import { lockMeetup, transition } from '../meetups/state-machine.ts';
 import { transact } from '../outbox/write.ts';
 import { runOperationsFor } from '../payments/operations.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** The two statuses an open meetup can hold, and the only ones a block cancels: a meetup in any final status is never

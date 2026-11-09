@@ -52,8 +52,6 @@ import { listMeetups, loadForParticipant, toMeetupDto } from './queries.ts';
 import { proposeMeetup } from './propose.ts';
 import { lockMeetup, markRecipientViewed } from './state-machine.ts';
 
-// Type-only: `App` is the one declaration of the app's type, erased at compile time, so this module holds no
-// run-time edge back to the composition root that registers it.
 import type { FastifyRequest } from 'fastify';
 import type { App } from '../../app.ts';
 

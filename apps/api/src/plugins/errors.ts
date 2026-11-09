@@ -22,7 +22,6 @@ import {
 
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../app.ts';
 
 /**

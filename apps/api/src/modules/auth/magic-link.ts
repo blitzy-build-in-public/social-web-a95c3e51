@@ -32,7 +32,6 @@ import { transact } from '../outbox/write.ts';
 import { generateHandle, MAX_HANDLE_ATTEMPTS, newAvatarSeed } from './handles.ts';
 import { createSession, issueTokens } from './sessions.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** How long a magic-link token stays valid: 15 minutes, and single use. */

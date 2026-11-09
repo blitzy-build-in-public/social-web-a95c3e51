@@ -64,8 +64,6 @@ import {
 } from './holds.ts';
 import { runOperationsFor } from './operations.ts';
 
-// Type-only: `app.ts` is the one declaration of the app's type and of what it hands its modules, it is erased at
-// compile time, and nothing of that module is read here at runtime.
 import type { App, AppServices } from '../../app.ts';
 
 /** The tag the route groups under: a member of the document's own vocabulary (AAP 0.11.2). */

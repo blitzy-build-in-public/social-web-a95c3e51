@@ -33,7 +33,6 @@ import { transact } from '../outbox/write.ts';
 import { assertBudgetInRange, effectiveBudget } from './budget.ts';
 import { suggest, type SuggestResult } from './candidates.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { App } from '../../app.ts';
 import type { FastifyRequest } from 'fastify';
 

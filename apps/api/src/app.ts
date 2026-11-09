@@ -337,7 +337,9 @@ function createApiQueues(redis: ApiRedis, logger: Logger): ApiQueues {
 /**
  * What every module and every plugin of the API is handed. The members are the one statement of what the app
  * provides: a `Pick<AppServices, …>` in a module names a subset and is satisfied structurally, so a test can
- * stand a smaller double in for one capability.
+ * stand a smaller double in for one capability. Every module and plugin imports this interface with `import type`:
+ * the edge back to this composition root — which imports them as values — is erased on emit, so no runtime import
+ * cycle closes.
  * Four members are built on first read rather than eagerly, each for the same reason — the app must build with no
  * database and no Redis: `spend` and `suspension` because they take a Redis connection, `pubsub` because it takes
  * two, and `outbox` because the dispatcher it builds is handed the container itself.

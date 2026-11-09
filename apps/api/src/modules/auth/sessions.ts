@@ -31,7 +31,6 @@ import {
 import { AppError } from '../../plugins/errors.ts';
 import { transact } from '../outbox/write.ts';
 
-// Type-only, so nothing of `app.ts` is read at run time and no import cycle reaches the root.
 import type { AppServices } from '../../app.ts';
 
 /** A refresh token's lifetime: 30 days, granted again on every rotation. */
