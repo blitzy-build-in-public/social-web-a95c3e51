@@ -5,38 +5,28 @@
  *
  * Invariants for the life of an accepted socket:
  *
- * - Frames are processed one at a time, in order: each inbound frame's work is appended to a per-socket promise chain
- *   and turns every failure it can meet into a frame, since a rejected chain would stall the frames behind it.
- * - The access check runs inside the transaction that writes the message, behind the account-deletion write fence,
- *   with the session re-resolved from PostgreSQL (`assertLiveSession`, never the 30-second cache).
- * - No Redis call runs inside that transaction: the publish goes through `after`, so a failed publish costs only the
- *   live frame.
- * - Delivery is the pub/sub echo, so the sender's confirmation is the same `MessageFrame` the counterpart receives.
- * - A socket is bounded and always given up: `CHAT_MAX_SOCKETS_PER_USER` per account per instance, refused before
- *   attachment; sixty sends per rolling minute; a 30-second heartbeat that ends a socket which stopped answering.
- *
- *  - **Frames are processed one at a time, in order.** Every inbound frame's work is appended to a per-socket
- *    promise chain, so two messages from one sender commit in the order they were sent and a frame written the
- *    moment the handshake completed waits for the socket's meetup set instead of being lost. Each frame's handling
- *    turns every failure it can meet into a frame and resolves, since a rejected chain would stall the frames
- *    behind it.
- *  - **The access check runs inside the transaction that writes the message**, behind the account-deletion write
- *    fence (AAP 0.5.3): the session the upgrade authenticated with is re-resolved from PostgreSQL
- *    (`assertLiveSession`, never from the 30-second cache) and `canMessage` reads the block, the pair's lock and
- *    the counterpart's account, so a logout, revocation, block, settlement or deletion that committed first is
- *    visible and a refusal writes nothing.
- *  - **No Redis call runs inside the transaction.** The message is published to both participants after the
- *    commit, through `after`: Redis is never a condition of the write, and a publish that fails costs only the
- *    live frame, since the message is in the pair's history either way (AAP 0.3.2).
- *  - **Delivery is the pub/sub echo.** The sender's confirmation is the same `MessageFrame` the other participant
- *    receives, delivered by subscription rather than by this handler (AAP 0.5.4); the meetup joins the writer's own
- *    socket before that frame is published, so a chat beyond the attached set is live for its sender too.
- *  - **A socket is bounded and is always given up.** An account holds at most `CHAT_MAX_SOCKETS_PER_USER` live
- *    sockets on one instance, refused before they are attached rather than registered and then closed; sixty
- *    accepted sends per rolling minute per socket; a 30-second ping/pong heartbeat ends a socket that stopped
- *    answering; a close or an error stops the heartbeat and detaches it from the fan-out, whichever way the
- *    transport ends and whenever that lands — the release is registered before this module awaits anything on the
- *    socket's behalf, and a socket that can no longer carry a frame is never registered at all (AAP 0.3.2).
+ * - **Frames are processed one at a time, in order.** Every inbound frame's work is appended to a per-socket
+ *   promise chain, so two messages from one sender commit in the order they were sent and a frame written the
+ *   moment the handshake completed waits for the socket's meetup set instead of being lost. Each frame's handling
+ *   turns every failure it can meet into a frame and resolves, since a rejected chain would stall the frames
+ *   behind it.
+ * - **The access check runs inside the transaction that writes the message**, behind the account-deletion write
+ *   fence (AAP 0.5.3): the session the upgrade authenticated with is re-resolved from PostgreSQL
+ *   (`assertLiveSession`, never from the 30-second cache) and `canMessage` reads the block, the pair's lock and
+ *   the counterpart's account, so a logout, revocation, block, settlement or deletion that committed first is
+ *   visible and a refusal writes nothing.
+ * - **No Redis call runs inside the transaction.** The message is published to both participants after the
+ *   commit, through `after`: Redis is never a condition of the write, and a publish that fails costs only the
+ *   live frame, since the message is in the pair's history either way (AAP 0.3.2).
+ * - **Delivery is the pub/sub echo.** The sender's confirmation is the same `MessageFrame` the other participant
+ *   receives, delivered by subscription rather than by this handler (AAP 0.5.4); the meetup joins the writer's own
+ *   socket before that frame is published, so a chat beyond the attached set is live for its sender too.
+ * - **A socket is bounded and is always given up.** An account holds at most `CHAT_MAX_SOCKETS_PER_USER` live
+ *   sockets on one instance, refused before they are attached rather than registered and then closed; sixty
+ *   accepted sends per rolling minute per socket; a 30-second ping/pong heartbeat ends a socket that stopped
+ *   answering; a close or an error stops the heartbeat and detaches it from the fan-out, whichever way the
+ *   transport ends and whenever that lands — the release is registered before this module awaits anything on the
+ *   socket's behalf, and a socket that can no longer carry a frame is never registered at all (AAP 0.3.2).
  *
  * Nothing here logs a message body, a token or a `Sec-WebSocket-Protocol` header: a refused frame writes no line,
  * a socket refused for the allowance writes the event and the allowance, an internal failure writes the event, the
