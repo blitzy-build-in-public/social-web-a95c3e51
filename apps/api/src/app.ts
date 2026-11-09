@@ -36,7 +36,7 @@ import {
   systemClock,
   waitForRedisReady,
 } from '@tablemate/server-core';
-import { HealthResponse } from '@tablemate/shared';
+import { API_PATH_PREFIX as API_PREFIX, HealthResponse } from '@tablemate/shared';
 
 import { registerAuth } from './plugins/auth.ts';
 import { registerClock } from './plugins/clock.ts';
@@ -103,9 +103,6 @@ import type { PubSub } from './modules/messaging/pubsub.ts';
  * carries a base64 photo (AAP 0.5.4), and the Stripe webhook parses its body under the same limit.
  */
 const BODY_LIMIT_BYTES = 1_048_576;
-
-/** The prefix every module's routes and the test-control routes are mounted under (AAP 0.5.4). */
-const API_PREFIX = '/v1';
 
 /** The health probe's route, mounted on its own context under {@link API_PREFIX} (AAP 0.5.4). */
 const HEALTH_ROUTE = '/health';
@@ -593,8 +590,13 @@ export function buildApp(deps: AppDeps): App {
     // and the app's check-in window line are both read from it (AAP 0.3.2, 0.5.1) — and every instant
     // a response body carries comes from the injected clock, so the header has to come from it too.
     // Node stamps it from the system clock instead, which agrees in production and not under the
-    // flowing test clock of `APP_ENV=test`.
-    reply.header('Date', request.receivedAt.toUTCString());
+    // flowing test clock of `APP_ENV=test`. A route that stamps its own keeps it: the venue
+    // check-in-code route does, from the instant that code was derived, and this hook fills the
+    // header in only for a response that carries none — every other response takes the receipt
+    // instant of the same injected clock.
+    if (reply.getHeader('Date') === undefined) {
+      reply.header('Date', request.receivedAt.toUTCString());
+    }
     done(null, payload);
   });
   // 10. Every route answers with a declared schema or says why it does not (AAP 0.5.4). The guard

@@ -3,11 +3,11 @@
  * the navigation gate, the web head and the one Stack the route tree hangs from (AAP 0.5.8,
  * AAP 0.6.2, AAP 0.8.1).
  *
- * It also releases focus from the control a navigation was started from, and marks the containers the
- * router has hidden `inert`: a screen the reader has left keeps its controls in the tab order while it
- * is only `aria-hidden`, so without the mark a keyboard or screen-reader user can be left holding a
- * control on a screen that is not on the window, and the next write to that screen's container cannot
- * be applied while they hold it.
+ * It also releases focus from the control a press was made on, hands that control back when the press
+ * stayed on its screen, and marks the containers the router has hidden `inert`: a screen the reader
+ * has left keeps its controls in the tab order while it is only `aria-hidden`, so without the mark a
+ * keyboard or screen-reader user can be left holding a control on a screen that is not on the window,
+ * and the next write to that screen's container cannot be applied while they hold it.
  */
 import 'react-native-get-random-values';
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -155,12 +155,48 @@ function browserAnswersPress(active: HTMLElement): boolean {
  * Chrome re-focuses a pressed control on mousedown, so a mouse press has to be answered as the press
  * itself arrives, and these listeners therefore run in the capture phase rather than after the app's
  * own handlers have run.
+ *
+ * The release is only right for a press that navigates, and that is all it lasts for here: the control
+ * is handed back by {@link restoreReleasedFocus} when the press stayed on its screen.
  */
 function releaseFocusedControl(): void {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return;
   if (TEXT_ENTRY_TAGS.has(active.tagName) || active.isContentEditable) return;
   active.blur();
+  restoreReleasedFocus(active);
+}
+
+/**
+ * The mark of a screen the router has left: the `aria-hidden` the router writes, and the `inert` this
+ * file mirrors it into. A control below either one has no screen of its own to hold focus on.
+ */
+const HIDDEN_SCREEN = '[aria-hidden="true"], [inert]';
+
+/**
+ * Hands focus back to the control a press was released from, on web, when the press did not leave the
+ * screen it was made on.
+ *
+ * A press that stays on the screen hides nothing, so releasing it costs a keyboard user the control
+ * they were operating and the ring the primitives paint from their own focused state, with nothing to
+ * say where they are (AAP 0.5.8: every web flow is fully keyboard-operable). A press that navigates
+ * leaves focus released, because the screen being left is being hidden.
+ *
+ * Which of the two a press was is only known once the app has applied it: the router hides the screen
+ * it leaves in a React commit, and that commit lands after the microtasks of the press, at the end of
+ * the frame the press arrived in. That frame is therefore when the release is settled, and what the
+ * conditions below read is the app as it stands then: nothing else has taken focus, the control is
+ * still in the document and is not `document.body`, no ancestor of it carries the mark above (both
+ * forms, because the `inert` mirror of it is applied by a MutationObserver microtask), and it is still
+ * focusable — the browser decides that last one, and `focus()` is a no-op on a control that is not.
+ */
+function restoreReleasedFocus(released: HTMLElement): void {
+  requestAnimationFrame(() => {
+    if (released === document.body || !released.isConnected) return;
+    if (document.activeElement !== document.body) return;
+    if (released.closest(HIDDEN_SCREEN) !== null) return;
+    released.focus();
+  });
 }
 
 /**

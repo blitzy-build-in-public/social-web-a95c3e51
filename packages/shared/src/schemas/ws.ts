@@ -27,6 +27,46 @@ import { Message } from './messaging.ts';
 export const WS_BEARER_SUBPROTOCOL = 'bearer' as const;
 
 /**
+ * Close codes the API sends on its own application-level refusals, in the 4000-4999 range
+ * WebSocket reserves for applications (RFC 6455 §7.4.2). Each one is used where the socket cannot
+ * continue:
+ *
+ * - `unauthorized` (4401): the token was rejected after the upgrade, or a write was attempted
+ *   after `DELETE /me` committed and the account-deletion write fence answered
+ *   `401 token_invalid` (AAP 0.5.3).
+ * - `forbidden` (4403): the caller lost access to what the socket carries — messaging is not open
+ *   for the pair (`messaging_locked`) or a block exists in either direction (`blocked`), or a
+ *   voice relay could not be attached to its call attempt (AAP 0.5.4, 0.5.6).
+ * - `invalidated` (4409): the session itself ended — `DELETE /me` or logout published
+ *   `{ type: 'invalidate' }` on `user:<id>`, and every API instance closes that user's sockets
+ *   from `apps/api/src/modules/messaging/pubsub.ts` (AAP 0.3.2, 0.5.3). A frame that names its
+ *   sessions closes the sockets those sessions were admitted with, which is what a logout
+ *   publishes; one that names none closes every socket of the user, which is what an account that
+ *   ended as a whole publishes.
+ * - `tooMany` (4429): the caller is over an allowance that ends the socket — the
+ *   `CHAT_MAX_SOCKETS_PER_USER` allowance of live chat sockets one account may hold on an API
+ *   instance (AAP 0.3.2). The relay's `VOICE_RELAY_MAX_SESSIONS` cap is not this code: it refuses
+ *   a further Twilio connection as plain HTTP `503 service_unavailable` before its upgrade, and a
+ *   chat socket's own send allowance is answered in place, per the paragraph below.
+ *
+ * Both sides read this one declaration — the API sends these codes and the app's socket client
+ * branches on them (`apps/mobile/src/api/ws.ts`) — so a code added or renumbered here fails to
+ * compile on the side that did not change, rather than silently diverging there.
+ *
+ * A refusal answered without closing the socket (the single over-limit chat frame, answered in
+ * place with a `rate_limited` frame) is delivered as a frame instead.
+ */
+export const WS_CLOSE = {
+  unauthorized: 4401,
+  forbidden: 4403,
+  invalidated: 4409,
+  tooMany: 4429,
+} as const;
+
+/** One of the {@link WS_CLOSE} codes. */
+export type WsCloseCode = (typeof WS_CLOSE)[keyof typeof WS_CLOSE];
+
+/**
  * The Redis pub/sub channel carrying one meetup's chat frames (AAP 0.5.1). Every API instance
  * subscribes while it holds a socket for the meetup and publishes each accepted message, so chat
  * fan-out works across API replicas.

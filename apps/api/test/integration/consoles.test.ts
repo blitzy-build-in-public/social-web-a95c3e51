@@ -18,6 +18,7 @@ import {
   LodgingConsoleStats,
   VENUE_SECRET_HEADER,
   VenueCodeResponse,
+  parseHttpDate,
 } from '@tablemate/shared';
 
 import { codeFor, counterAt } from '../../src/modules/consoles/totp.ts';
@@ -196,6 +197,10 @@ describe('console CORS', () => {
     );
     // The countdown is measured from `Date`, which a browser withholds unless CORS exposes it.
     expect(header(response.headers, 'access-control-expose-headers')).toContain('date');
+    // The header itself must stay in the IMF-fixdate shape the console parses it with: the route
+    // stamps it from the instant its code was derived, and a response that dropped it would leave
+    // the console measuring its countdown on the device clock (AAP 0.5.1, 0.5.7).
+    expect(parseHttpDate(String(response.headers['date']))).not.toBeNull();
   });
   it('approves a preflight that asks for the venue secret header', async () => {
     // A preflight is an `OPTIONS` the browser sends before the real request, which `callRoute`'s

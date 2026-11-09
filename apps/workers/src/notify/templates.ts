@@ -22,6 +22,7 @@ import {
   DISPUTE_RESOLUTION_DAYS,
   LATE_CANCEL_WINDOW_HOURS,
   LOCK_LOST_COPY,
+  MAGIC_LINK_PATH,
   MAGIC_LINK_TTL_MINUTES,
   depositCopy,
   formatUsdWhole,
@@ -144,7 +145,7 @@ export const TABLE_CREDIT_NOTE =
  * `apps/mobile/app/auth/verify.tsx` parses and the end-to-end mail readers follow.
  */
 export function magicLinkUrl(webOrigin: string, token: string): string {
-  return `${appOrigin(webOrigin)}/auth/verify?token=${encodeURIComponent(token)}`;
+  return `${appOrigin(webOrigin)}${MAGIC_LINK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
 /**
@@ -314,7 +315,7 @@ const COPY = {
       `This link is valid for ${MAGIC_LINK_TTL_MINUTES} minutes and works once.`,
       "If you didn't ask to sign in, you can ignore this email.",
     ],
-    path: '/auth/verify',
+    path: MAGIC_LINK_PATH,
   },
   proposal_received: {
     title: 'New meetup proposal',

@@ -24,6 +24,7 @@ import { apiClient } from '../../../src/api/client';
 import { isApiError, userMessageFor } from '../../../src/api/errors';
 import type { ClientErrorCode } from '../../../src/api/errors';
 import {
+  connect,
   getConnectionState,
   isOnline,
   send,
@@ -54,6 +55,7 @@ const CONNECTION_TEXT = {
   connecting: 'Reconnecting…',
   open: 'Connected',
   reconnecting: 'Reconnecting…',
+  limited: 'Chat is open elsewhere',
 } satisfies Record<ConnectionState, string>;
 /** The label for a device with no connectivity at all. An open socket on a device that has lost its
  * connection still reports `open` until its own close arrives, so the socket's state alone is no
@@ -326,6 +328,13 @@ export default function ChatScreen(): ReactElement {
         return;
       }
       if (frame.type === 'error' && (frame.meetupId === undefined || frame.meetupId === meetupId)) {
+        // A refusal that names the session is the socket layer's own business: it rotates the session,
+        // reopens the socket and writes the frame once more there, so this banner would tell the
+        // traveler their session ended while it is alive — and would sit where the message that
+        // arrives a moment later should be. The connectivity line over the composer is what tells the
+        // truth about a write being recovered, and a session that really did end signs the traveler
+        // out instead (AAP 0.5.8).
+        if (frame.code === 'token_invalid') return;
         setFrameError(frame.code);
       }
     });
@@ -361,6 +370,10 @@ export default function ChatScreen(): ReactElement {
   const retryable = failure !== null && failure !== undefined && isTransient(failure);
   const retryAction = { label: 'Try again', onPress: retry, testID: 'chat-retry' };
   const retryProp = retryable ? { action: retryAction } : {};
+  // The socket was refused because the account already holds its allowance of live chat sockets on
+  // that API instance, so nothing is retried while they stay open: the traveler closes the other one
+  // and asks for this socket again, which is the only call that clears the refusal.
+  const limitedAction = { label: 'Try again', onPress: connect, testID: 'chat-connection-retry' };
   const composer = {
     ...FIELD,
     label: 'Message',
@@ -410,9 +423,20 @@ export default function ChatScreen(): ReactElement {
   function onSend(): void {
     if (body === '' || body.length > MESSAGE_MAX_CHARS) return;
     setSendFailure(null);
-    // The socket validates the frame with the shared schema; with no open socket the text is kept.
-    if (send(meetupId, body)) {
-      setDraft('');
+    void deliver(body);
+  }
+  /**
+   * Writes one message and clears the composer only once it was written (AAP 0.5.4).
+   *
+   * The answer is awaited because the socket can take a moment to become writeable: `../api/ws`
+   * reopens it with the session's current credential when a rotation has replaced the one it was
+   * admitted with, and waits for the reopened socket to open. Until that answer arrives the text stays
+   * in the composer, so a refusal leaves the draft in place for the traveler to send again.
+   */
+  async function deliver(text: string): Promise<void> {
+    if (await send(meetupId, text)) {
+      // Only this text is cleared: a traveler who typed on while the write was in flight keeps it.
+      setDraft((current) => (current.trim() === text ? '' : current));
       setFrameError(null);
       return;
     }
@@ -493,6 +517,14 @@ export default function ChatScreen(): ReactElement {
             {errorText === undefined ? null : (
               <Banner tone="error" message={errorText} testID="chat-error" {...retryProp} />
             )}
+            {connection === 'limited' ? (
+              <Banner
+                tone="info"
+                message="Chat is open on another device. Close it there, then try again."
+                testID="chat-connection-limited"
+                action={limitedAction}
+              />
+            ) : null}
             {rows.length === 0 ? (
               errorText === undefined ? (
                 <Text style={styles.muted}>{history.isPending ? 'Loading…' : MESSAGES_EMPTY}</Text>

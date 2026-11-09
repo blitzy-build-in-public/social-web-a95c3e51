@@ -102,12 +102,13 @@ Frames come from `packages/shared/src/schemas/ws.ts`: the client sends
 sends `MessageFrame`, `MeetupStatusFrame` and `ErrorFrame { type: "error", code, message, meetupId? }`.
 A send is refused in place for `messaging_locked`, `blocked`, `invalid_field` or `rate_limited` (60
 sends a rolling minute per socket); `token_invalid` answers the frame and closes with
-`WS_CLOSE.unauthorized` (4401). The close codes are `WS_CLOSE` in `plugins/websocket.ts`: `unauthorized`
-4401, `forbidden` 4403, `invalidated` 4409, and `tooMany` 4429, which closes the socket that would
-exceed the `CHAT_MAX_SOCKETS_PER_USER` allowance of live sockets one account may hold on an API
-instance — the account's other sockets keep serving its chat, and the allowance is released as one of
-them closes. The socket routes and the two test-control routes are hidden from `openapi.json`, so it
-lists every operation below except those four.
+`WS_CLOSE.unauthorized` (4401). The close codes are `WS_CLOSE` in `packages/shared/src/schemas/ws.ts`,
+the one declaration both sides import — the API sends these codes and the app's socket client
+branches on them: `unauthorized` 4401, `forbidden` 4403, `invalidated` 4409, and `tooMany` 4429, which
+closes the socket that would exceed the `CHAT_MAX_SOCKETS_PER_USER` allowance of live sockets one
+account may hold on an API instance — the account's other sockets keep serving its chat, and the
+allowance is released as one of them closes. The socket routes and the two test-control routes are
+hidden from `openapi.json`, so it lists every operation below except those four.
 
 ## Route index
 

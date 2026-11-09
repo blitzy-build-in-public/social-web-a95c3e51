@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
-import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
 import {
@@ -581,7 +581,13 @@ function PriceEntryForm(props: PriceEntryFormProps): ReactElement {
 function crawlBody(decision: Exclude<CrawlDecision, 'uncertain'>): CrawlDomainDecisionUpdate {
   return { decision };
 }
-const RESOLVABLE_CALL_STATUSES = ['queued', 'in_progress', 'needs_review', 'unreachable'] as const;
+/**
+ * The statuses the queue's own read returns and its resolve route accepts: the read narrows to the two
+ * an operator still has to act on, and the route answers `invalid_outcome` for any other, so a row of
+ * any other status carries no resolve control rather than a control that cannot succeed (AAP 0.5.3,
+ * 0.5.4).
+ */
+const RESOLVABLE_CALL_STATUSES = ['needs_review', 'unreachable'] as const;
 const RESOLVABLE_CLAIM_STATUSES: readonly LodgingClaimStatus[] = ['pending_call', 'calling'];
 const SETTLE_HINT = `A resolution before the start plus ${CHECK_IN_CLOSES_AFTER_MINUTES} minutes only closes the dispute; the outcome then waits for the check-in window.`;
 const RETRY_ACTION = { label: 'Try again', testID: 'ops-queue-retry' };
@@ -894,6 +900,12 @@ const CALL_TASKS_KIND_LABEL = 'Kind';
 const CALL_TASKS_PAGE_SIZE = 100;
 /** How long typing pauses before the search term is applied, in milliseconds. */
 const CALL_TASKS_SEARCH_DEBOUNCE_MS = 300;
+/**
+ * The most a search term may carry, the bound the contract's own schema puts on `q`: a longer term is
+ * answered `400 invalid_field` rather than read, so the term is cut here, and the cut term is a prefix
+ * of the target's name, which matches the same rows (AAP 0.5.4).
+ */
+const CALL_TASKS_SEARCH_MAX = 80;
 const CALL_TASKS_MORE = { label: 'Load more call tasks', variant: 'secondary' } as const;
 type CallTaskStatusFilter = 'all' | 'needs_review' | 'unreachable';
 type CallTaskKindFilter = 'all' | CallTaskKind;
@@ -996,7 +1008,7 @@ function CallTasksPanel(): ReactElement {
     if (pendingSearch.current !== null) clearTimeout(pendingSearch.current);
     pendingSearch.current = setTimeout(() => {
       pendingSearch.current = null;
-      setTerm(text.trim());
+      setTerm(text.trim().slice(0, CALL_TASKS_SEARCH_MAX));
     }, CALL_TASKS_SEARCH_DEBOUNCE_MS);
   };
 
@@ -1507,9 +1519,20 @@ function TabButton({ tab, selected, onSelect }: TabButtonProps): ReactElement {
 }
 
 export default function OpsQueuesScreen(): ReactElement {
+  const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
   const [tab, setTab] = useState<QueueTab>(() =>
     isQueueTab(params.tab) ? params.tab : 'disputes',
+  );
+  // The selection is mirrored into the `tab` param the initialiser above reads, so a reload returns
+  // the operator to the queue they were working in. The param write replaces the current entry, so
+  // activating a tab adds no history entry and leaves the tab's keyboard focus where it was.
+  const selectTab = useCallback(
+    (next: QueueTab): void => {
+      setTab(next);
+      router.setParams({ tab: next });
+    },
+    [router],
   );
   const { label } = QUEUE_TABS[tab];
   const panelID = `ops-queue-panel-${tab}`;
@@ -1518,7 +1541,7 @@ export default function OpsQueuesScreen(): ReactElement {
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
       <View role="tablist" aria-label={SCREEN_TITLE} style={styles.choices} testID="ops-queue-tabs">
         {TAB_ORDER.map((id) => (
-          <TabButton key={id} tab={id} selected={id === tab} onSelect={setTab} />
+          <TabButton key={id} tab={id} selected={id === tab} onSelect={selectTab} />
         ))}
       </View>
       <View role="tabpanel" aria-label={label} style={styles.panel} testID={panelID}>

@@ -20,13 +20,12 @@
 
 import { z } from 'zod';
 
-import { ServerFrame, Uuid, chatChannel, userChannel } from '@tablemate/shared';
+import { ServerFrame, Uuid, WS_CLOSE, chatChannel, userChannel } from '@tablemate/shared';
 import type { MessageFrame } from '@tablemate/shared';
 import { throttleRedisFailure } from '@tablemate/server-core';
 import type { Logger } from '@tablemate/server-core';
 
 import { dropCachedSessions } from '../../plugins/auth.ts';
-import { WS_CLOSE } from '../../plugins/websocket.ts';
 
 import type { SessionCacheCommands } from '../../plugins/auth.ts';
 

@@ -12,9 +12,12 @@
  * resolved at module load so a misconfigured build fails loudly instead of requesting the page's own origin.
  */
 import {
+  API_PATH_PREFIX,
   ErrorEnvelope,
+  LODGING_CONSOLE_STATS_PATH,
   LODGING_SECRET_HEADER,
   LodgingConsoleStats,
+  VENUE_CODE_PATH,
   VENUE_SECRET_HEADER,
   VenueCodeResponse,
 } from '@tablemate/shared';
@@ -22,10 +25,8 @@ import type { ErrorCode } from '@tablemate/shared';
 
 import { estimateOffsetMs, parseHttpDate } from './server-time.ts';
 
-/** The status a rejected secret answers with, and the two routes both consoles read (AAP 0.5.4). */
+/** The status a rejected secret answers with (AAP 0.5.4). */
 const UNAUTHORIZED_STATUS = 401;
-const VENUE_CODE_PATH = '/venue/check-in-code';
-const LODGING_STATS_PATH = '/lodging-console/stats';
 
 /** The message a build without `VITE_API_URL` fails with, at load (AAP 0.6.2). */
 const MISSING_ORIGIN_MESSAGE = 'VITE_API_URL is not configured';
@@ -51,9 +52,9 @@ const DEADLINE_MESSAGE = 'The API did not answer before the request deadline.';
 /**
  * Resolves the API origin this console calls (AAP 0.6.2), repeating the validation `vite.config.ts` does so this module's
  * contract does not depend on another file's. The origin comes back trimmed and without a trailing slash, because
- * {@link API_BASE} appends `/v1` by concatenation: `http://host/` would otherwise build a path no route matches. A value
- * that holds nothing but slashes is as absent as a blank one and throws, rather than resolving to a path on the page's own
- * origin.
+ * {@link API_BASE} appends {@link API_PATH_PREFIX} by concatenation: `http://host/` would otherwise build a path no route
+ * matches. A value that holds nothing but slashes is as absent as a blank one and throws, rather than resolving to a path on
+ * the page's own origin.
  */
 function resolveApiOrigin(value: unknown): string {
   if (typeof value !== 'string') {
@@ -70,7 +71,7 @@ function resolveApiOrigin(value: unknown): string {
 const apiOrigin: unknown = import.meta.env.VITE_API_URL;
 
 /** The versioned base both console routes hang off (AAP 0.5.4). */
-export const API_BASE = `${resolveApiOrigin(apiOrigin)}/v1`;
+export const API_BASE = `${resolveApiOrigin(apiOrigin)}${API_PATH_PREFIX}`;
 
 /** Which console a secret belongs to (AAP 0.5.4). */
 export type ConsoleKind = 'venue' | 'lodging';
@@ -258,12 +259,12 @@ export async function fetchLodgingStats(
   secret: string,
   signal?: AbortSignal,
 ): Promise<LodgingConsoleStats> {
-  const { body } = await request('lodging', LODGING_STATS_PATH, secret, signal);
+  const { body } = await request('lodging', LODGING_CONSOLE_STATS_PATH, secret, signal);
   const parsed = LodgingConsoleStats.safeParse(body);
   if (!parsed.success) {
     throw new ConsoleApiError(
       'invalid_response',
-      `${LODGING_STATS_PATH} answered a body that is not the stats shape`,
+      `${LODGING_CONSOLE_STATS_PATH} answered a body that is not the stats shape`,
     );
   }
   return parsed.data;

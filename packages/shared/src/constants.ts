@@ -340,3 +340,27 @@ export const RATE_LIMIT_USER_PER_MIN = 60 as const;
  * `RATE_LIMIT_IP_PER_MIN` (AAP 0.5.4).
  */
 export const RATE_LIMIT_WEBHOOK_IP_PER_MIN = 6000 as const;
+
+/**
+ * The version prefix every API route is mounted under (AAP 0.5.4): the composition root mounts every
+ * module beneath it and every client builds its paths from it, so the value is declared once for the
+ * workspace here in `@tablemate/shared`.
+ */
+export const API_PATH_PREFIX = '/v1' as const;
+
+/**
+ * The chat socket's path relative to {@link API_PATH_PREFIX} (AAP 0.4.1, AAP 0.5.4): the messaging
+ * module registers it under that prefix, and the app's socket client appends the prefix and this
+ * path to its configured origin, which composes the `WS /v1/chat` `docs/api/README.md` publishes.
+ */
+export const CHAT_PATH = '/chat' as const;
+
+/**
+ * The app's sign-in route (AAP 0.3.2, AAP 0.5.4, AAP 0.11.1): the magic-link email opens it as
+ * `${WEB_ORIGIN}${MAGIC_LINK_PATH}?token=…`, the app's own deep link spells it
+ * `tablemate://auth/verify?token=…` — the same path with its leading slash dropped, because a
+ * custom-scheme link takes the route's first segment after the scheme separator — and the Expo
+ * Router screen `apps/mobile/app/auth/verify.tsx` serves it: declared once here, so the mailer, the
+ * deep-link builder and the route metadata cannot drift from that route file's name.
+ */
+export const MAGIC_LINK_PATH = '/auth/verify' as const;

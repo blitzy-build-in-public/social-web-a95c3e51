@@ -10,6 +10,7 @@
  * preview never disagree about what a screen is called; a dynamic route takes the wording its screen falls back to before
  * the record it names has loaded. Pure by design: no React, no platform module and no I/O.
  */
+import { MAGIC_LINK_PATH } from '@tablemate/shared';
 
 /** The app's name: the title of a pathname the table does not match, and the brand it belongs to. */
 export const APP_NAME = 'Tablemate';
@@ -40,7 +41,7 @@ const EXACT_ROUTES: Readonly<Record<string, RouteMeta>> = {
     title: 'Before you start',
     description: 'Confirms you are 18 or older and sets out the terms on holds and forfeits.',
   },
-  '/auth/verify': {
+  [MAGIC_LINK_PATH]: {
     title: 'Sign in',
     description: 'Exchanges the one-time link from your email for a session.',
   },

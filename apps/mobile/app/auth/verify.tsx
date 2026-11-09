@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Linking, Platform } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { MAGIC_LINK_PATH } from '@tablemate/shared';
 
 import type { MeDto } from '@tablemate/shared';
 
@@ -28,7 +29,7 @@ const CONTINUE_IN_BROWSER = 'Continue in browser';
 const OPEN_IN_APP = 'Open in the Tablemate app';
 const BACK_TO_SIGN_IN = 'Back to sign-in';
 const TRY_AGAIN = 'Try again';
-const CLEAN_PATH = '/auth/verify';
+const CLEAN_PATH = MAGIC_LINK_PATH;
 const SECONDARY = { variant: 'secondary' } as const;
 const MOBILE_AGENT = /Android|iPhone|iPad|iPod/i;
 const IPAD_ON_MAC_AGENT = /Macintosh/i;
@@ -45,7 +46,11 @@ function normalizeToken(raw: unknown): string {
 }
 
 function appLink(token: string): string {
-  return `tablemate://auth/verify?token=${encodeURIComponent(token)}`;
+  /*
+   * The leading slash serves the mailer's web URL; a custom-scheme deep link takes the route's
+   * path as its first segment after the scheme separator, so it is dropped here.
+   */
+  return `tablemate://${MAGIC_LINK_PATH.replace(/^\//, '')}?token=${encodeURIComponent(token)}`;
 }
 
 function failureMessage(error: unknown): string {

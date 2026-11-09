@@ -11,10 +11,13 @@
  * stateless API fan out. Delivery happens only through the pub/sub subscription, so both apps are
  * subscribed before a socket opens.
  */
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { connect } from 'node:net';
 
 import {
+  API_PATH_PREFIX,
   AcceptResponse,
+  CHAT_PATH,
   DEFAULT_DEPOSIT_CENTS,
   HOUR_MS,
   MESSAGE_MAX_CHARS,
@@ -23,6 +26,7 @@ import {
   ProposeResponse,
   ServerFrame,
   WS_BEARER_SUBPROTOCOL,
+  WS_CLOSE,
 } from '@tablemate/shared';
 import type {
   ErrorCode,
@@ -37,7 +41,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import WebSocket from 'ws';
 
 import { CHAT_SEND_LIMIT_PER_MINUTE } from '../../src/modules/messaging/chat-ws.ts';
-import { WS_CLOSE } from '../../src/plugins/websocket.ts';
 import { createTestApp } from '../support/app.ts';
 import {
   callRoute,
@@ -58,7 +61,8 @@ import type { ActorRef, RouteResponse, UserFixture, VenueFixture } from '../supp
 
 const CITY = 'lisbon';
 
-const CHAT_PATH = '/v1/chat';
+/** The chat socket's published address, composed from the two shared constants it is declared as. */
+const CHAT_URL_PATH = `${API_PATH_PREFIX}${CHAT_PATH}`;
 
 const FRAME_TIMEOUT_MS = 5_000;
 
@@ -194,7 +198,7 @@ function parseFrame(text: string): ServerFrame | null {
  * connection was upgraded.
  */
 function openSocket(baseUrl: string, token: string | null): Promise<ChatSocket> {
-  const url = `${baseUrl.replace(/^http/, 'ws')}${CHAT_PATH}`;
+  const url = `${baseUrl.replace(/^http/, 'ws')}${CHAT_URL_PATH}`;
   const socket =
     token === null ? new WebSocket(url) : new WebSocket(url, [WS_BEARER_SUBPROTOCOL, token]);
   const frames: ServerFrame[] = [];
@@ -295,6 +299,52 @@ function closeCode(socket: WebSocket, timeoutMs = FRAME_TIMEOUT_MS): Promise<num
       resolve(code);
     }
     socket.once('close', onClose);
+  });
+}
+
+/**
+ * One upgrade whose transport is destroyed the instant the server accepts it.
+ *
+ * The handshake is written by hand over a raw TCP socket, because this case is a connection that ends
+ * inside the API's own handling of it: the socket goes the moment `101` arrives — the earliest a
+ * client can end one — so `ws` emits `close` while the API is still reading that socket's meetups,
+ * before anything the close would have to release was registered (AAP 0.3.2). An upgrade the API
+ * refuses before it upgrades fails the case with the status it answered.
+ */
+async function abandonUpgrade(baseUrl: string, token: string): Promise<void> {
+  const target = new URL(baseUrl);
+  const socket = connect({ host: target.hostname, port: Number(target.port) });
+  const request = [
+    `GET ${CHAT_URL_PATH} HTTP/1.1`,
+    `Host: ${target.host}`,
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}`,
+    'Sec-WebSocket-Version: 13',
+    `Sec-WebSocket-Protocol: ${WS_BEARER_SUBPROTOCOL}, ${token}`,
+    '',
+    '',
+  ].join('\r\n');
+  await new Promise<void>((done, fail) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      fail(new Error('the upgrade was not answered in time'));
+    }, FRAME_TIMEOUT_MS);
+    socket.once('connect', () => {
+      socket.write(request);
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      socket.destroy();
+      fail(error);
+    });
+    socket.once('data', (chunk: Buffer) => {
+      clearTimeout(timer);
+      const status = chunk.toString('utf8').split(' ')[1] ?? '';
+      socket.destroy();
+      if (status === '101') done();
+      else fail(new SocketRefused(Number(status)));
+    });
   });
 }
 
@@ -706,6 +756,43 @@ describe('WS /v1/chat', () => {
       const fourth = await openSocket(cappedBase, token);
       await awaitFanOut(fourth, initiator.id, meetupId, LOCKED_PROBE);
       expect(fourth.socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      await capped.close();
+    }
+  });
+
+  it('releases the allowance of an upgrade whose transport ends before it registers', async () => {
+    const { initiator, meetupId } = await meeting('locked');
+    // Every other case here ends a socket with a close frame, which is one of the two ways a
+    // transport ends and the one an upgrade destroyed at the `101` never sends. `ws` emits `close`
+    // exactly once, so a registration made after that emit is never released and holds its slot for
+    // the life of the instance — and the allowance below is this account's whole share, so one
+    // leaked slot is enough to refuse every connection that follows.
+    const capped = await createTestApp({ env: { CHAT_MAX_SOCKETS_PER_USER: '2' } });
+    try {
+      const cappedBase = await capped.listen();
+      await Promise.all([
+        ready(capped.services.redis.client),
+        ready(capped.services.redis.subscriber),
+      ]);
+      await capped.services.pubsub.start();
+      const token = await t.tokenFor(initiator);
+      await abandonUpgrade(cappedBase, token);
+      await abandonUpgrade(cappedBase, token);
+      // A socket answers a publish only once it is registered, so both sockets below — the whole
+      // allowance — prove no slot went with the upgrades that died, and the third proves the
+      // allowance is still counted rather than simply open.
+      const first = await openSocket(cappedBase, token);
+      await awaitFanOut(first, initiator.id, meetupId, LOCKED_PROBE);
+      const second = await openSocket(cappedBase, token);
+      await awaitFanOut(second, initiator.id, meetupId, LOCKED_PROBE);
+      const third = await openSocket(cappedBase, token);
+      const closedWith = closeCode(third.socket);
+      expect(await closedWith).toBe(WS_CLOSE.tooMany);
+      expect([first.socket.readyState, second.socket.readyState]).toEqual([
+        WebSocket.OPEN,
+        WebSocket.OPEN,
+      ]);
     } finally {
       await capped.close();
     }

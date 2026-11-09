@@ -10,11 +10,12 @@
  * the OpenAPI security scheme is what documents the header instead.
  *
  * The check-in code comes from the server clock and from nowhere else (AAP 0.5.7): the console derives no code of
- * its own, and device clock skew therefore moves a countdown and never a validation. `Date` is set from that same
- * instant, because Node otherwise stamps the response from the system clock while the code comes from the injected
- * one — the two coincide in production but not under the flowing test clock of `APP_ENV=test`, and the console
- * measures its countdown from the offset between this header and the device clock (CORS exposes `Date` for exactly
- * that).
+ * its own, and device clock skew therefore moves a countdown and never a validation. This route stamps the response's
+ * own `Date` from that very instant, because Node would otherwise stamp it from the system clock while the code comes
+ * from the injected one — the two coincide in production but not under the flowing test clock of `APP_ENV=test` — and
+ * the app-level `onSend` hook fills the header in only for a response that carries none, so a route's `Date` stands.
+ * The console measures its countdown from the offset between this header and the device clock (CORS exposes `Date`
+ * for exactly that).
  *
  * The context is encapsulated and hook-free on purpose: a guard or header rule registered here would apply to these
  * two routes and to nothing else, which is the whole of what this module owns.
@@ -22,8 +23,10 @@
 
 import {
   ErrorEnvelope,
+  LODGING_CONSOLE_STATS_PATH,
   LODGING_SECRET_HEADER,
   LodgingConsoleStats,
+  VENUE_CODE_PATH,
   VENUE_SECRET_HEADER,
   VenueCodeResponse,
 } from '@tablemate/shared';
@@ -52,7 +55,7 @@ const CONSOLES_TAG = 'consoles' satisfies OpenApiTag;
  */
 export default function consolesRoutes(app: App): Promise<void> {
   app.get(
-    '/venue/check-in-code',
+    VENUE_CODE_PATH,
     {
       schema: {
         tags: [CONSOLES_TAG],
@@ -77,7 +80,7 @@ export default function consolesRoutes(app: App): Promise<void> {
     },
   );
   app.get(
-    '/lodging-console/stats',
+    LODGING_CONSOLE_STATS_PATH,
     {
       schema: {
         tags: [CONSOLES_TAG],

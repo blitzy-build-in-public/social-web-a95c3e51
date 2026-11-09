@@ -30,19 +30,20 @@
  *  - **A socket is bounded and is always given up.** An account holds at most `CHAT_MAX_SOCKETS_PER_USER` live
  *    sockets on one instance, refused before they are attached rather than registered and then closed; sixty
  *    accepted sends per rolling minute per socket; a 30-second ping/pong heartbeat ends a socket that stopped
- *    answering; a close or an error stops the heartbeat and detaches it from the fan-out (AAP 0.3.2).
+ *    answering; a close or an error stops the heartbeat and detaches it from the fan-out, whichever way the
+ *    transport ends and whenever that lands — the release is registered before this module awaits anything on the
+ *    socket's behalf, and a socket that can no longer carry a frame is never registered at all (AAP 0.3.2).
  *
  * Nothing here logs a message body, a token or a `Sec-WebSocket-Protocol` header: a refused frame writes no line,
  * a socket refused for the allowance writes the event and the allowance, an internal failure writes the event, the
  * meetup id and the error's name, and a stored message writes at most one debug line (AAP 0.11.1).
  */
 
-import { ClientFrame, MINUTE_MS } from '@tablemate/shared';
+import { CHAT_PATH, ClientFrame, MINUTE_MS, WS_CLOSE } from '@tablemate/shared';
 import type { ChatSend, Message, ServerFrame } from '@tablemate/shared';
 
 import { assertLiveSession, requireWebSocketBearer } from '../../plugins/auth.ts';
 import { AppError, errorFrame, isAppError } from '../../plugins/errors.ts';
-import { WS_CLOSE } from '../../plugins/websocket.ts';
 import { transact } from '../outbox/write.ts';
 import { canMessage, messageableMeetupIds } from './access.ts';
 
@@ -69,12 +70,6 @@ export const CHAT_SEND_LIMIT_PER_MINUTE = 60;
  * mobile client on a slow network is not ended by one late pong (AAP 0.3.2).
  */
 export const CHAT_HEARTBEAT_MS = 30_000;
-
-/**
- * The chat socket's path, relative to the `/v1` prefix the composition root mounts the messaging
- * module under; the client appends the same path to its configured base (`src/api/ws.ts`).
- */
-const CHAT_PATH = '/chat';
 
 /**
  * RFC 6455's "internal error": this file failed on a connection it had already accepted, so the
@@ -350,6 +345,8 @@ async function receiveFrame(
  * The account's socket allowance is decided inside that attach (AAP 0.3.2): a socket the account has no allowance
  * left for is refused before it is attached, so nothing about it enters the registry and it never reaches
  * `pubsub.detach`, by closing it with `WS_CLOSE.tooMany` (4429) after one line naming the event and the allowance.
+ * A socket whose transport ended before that point is not registered at all, so a connection that dies during its
+ * own setup leaves nothing of itself behind for the allowance to count (AAP 0.3.2, 0.5.4).
  */
 async function serveSocket(
   services: ChatServices,
@@ -394,8 +391,45 @@ async function serveSocket(
       .then(() => ready)
       .then(() => receiveFrame(connection, data, isBinary));
   });
+  /**
+   * The heartbeat, its `pong` listener and the handlers that end the socket, registered before the first `await`.
+   *
+   * The order is the invariant (AAP 0.3.2): `ws` emits `close` exactly once and a transport can end at any moment,
+   * the window of the query below included. A handler attached after that emit never runs, so everything the socket
+   * registered would stay counted against the account's allowance for the life of the instance, and the heartbeat
+   * meant to end it would ping a socket that can no longer answer — a send `ws` discards in silence rather than one
+   * that errors. Attached here, a close or an error that lands anywhere in this handler's life is answered by
+   * `detach`, and no interval can be created after the close that should have cleared it. `answered` is whether the
+   * ping sent last is still unanswered.
+   */
+  let answered = true;
+  const heartbeat = setInterval(() => {
+    if (!answered) {
+      // A socket that stopped answering is gone without having closed — a dropped mobile connection
+      // leaves no FIN — and it still holds a registration and a timer, so it is terminated here.
+      socket.terminate();
+      return;
+    }
+    answered = false;
+    socket.ping();
+  }, CHAT_HEARTBEAT_MS);
+  socket.on('pong', () => {
+    answered = true;
+  });
+  const stop = (): void => {
+    clearInterval(heartbeat);
+    services.pubsub.detach(socket);
+  };
+  socket.on('close', stop);
+  socket.on('error', stop);
   try {
     const meetupIds = await messageableMeetupIds(services.db, userId);
+    // The transport may have ended inside that query, in which case `stop` has already run: nothing was
+    // registered, so there is nothing to release and nothing to report, and a socket that can no longer
+    // carry a frame is never registered. The check is here rather than inside the attach, whose refusal
+    // keeps its own single meaning — the account is over its allowance — so the newest socket is still
+    // the one refused, and a readiness check there would answer `false` to a question nobody asked.
+    if (socket.readyState !== socket.OPEN) return;
     const registered = services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
     if (!registered) {
       // The account already holds its allowance of live sockets on this instance, so this socket is
@@ -417,29 +451,7 @@ async function serveSocket(
       'chat_attach_failed',
     );
     socket.close(CLOSE_INTERNAL_ERROR, 'internal_error');
-    return;
   }
-  /** Whether the ping sent last is still unanswered. */
-  let answered = true;
-  const heartbeat = setInterval(() => {
-    if (!answered) {
-      // A socket that stopped answering is gone without having closed — a dropped mobile connection
-      // leaves no FIN — and it still holds a registration and a timer, so it is terminated here.
-      socket.terminate();
-      return;
-    }
-    answered = false;
-    socket.ping();
-  }, CHAT_HEARTBEAT_MS);
-  socket.on('pong', () => {
-    answered = true;
-  });
-  const stop = (): void => {
-    clearInterval(heartbeat);
-    services.pubsub.detach(socket);
-  };
-  socket.on('close', stop);
-  socket.on('error', stop);
 }
 
 /**

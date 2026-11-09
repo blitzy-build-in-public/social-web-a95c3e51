@@ -36,13 +36,13 @@ import {
   RelayOutboundFrame,
   Uuid,
   VOICE_ATTEMPT_PARAMETER,
+  WS_CLOSE,
   utf8ByteLength,
   type RelaySetupFrame,
 } from '@tablemate/shared';
 
 import { AppError } from '../../plugins/errors.ts';
 import { webhookLimits } from '../../plugins/rate-limit.ts';
-import { WS_CLOSE } from '../../plugins/websocket.ts';
 
 import { DialogueSession, isStripped, loadCallContext, type RelayIo } from './dialogue.ts';
 import { twilioSignatureHook } from './signature.ts';

@@ -20,6 +20,7 @@
  * token_invalid` a deleted account receives, and 0.5.5 for the proof's private inputs.
  */
 import {
+  API_PATH_PREFIX,
   AcceptResponse,
   AdminCallTasksResponse,
   AdminCrawlDomainDto,
@@ -95,9 +96,6 @@ import type {
 import { invalidResponse, isApiError, networkError, parseError } from './errors';
 import type { ApiError } from './errors';
 import { recordServerDate } from './server-clock';
-
-/** The path prefix every route is served under (AAP 0.5.4). */
-const API_PATH_PREFIX = '/v1';
 
 /** How long a request waits unless the route asks for longer, in milliseconds. */
 const DEFAULT_TIMEOUT_MS = 20_000;

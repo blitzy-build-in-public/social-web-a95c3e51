@@ -25,6 +25,21 @@ export const VENUE_SECRET_HEADER = 'X-Venue-Secret' as const;
 export const LODGING_SECRET_HEADER = 'X-Lodging-Secret' as const;
 
 /**
+ * The venue check-in code route's path, relative to `API_PATH_PREFIX` (AAP 0.5.4): the consoles
+ * module registers it under that prefix and the venue console appends the prefix and this path to
+ * the origin its build was given, so a rename on either side is a compile error rather than a
+ * runtime 404.
+ */
+export const VENUE_CODE_PATH = '/venue/check-in-code' as const;
+
+/**
+ * The lodging console's stats route, relative to `API_PATH_PREFIX` (AAP 0.5.4) and read on the same
+ * terms as {@link VENUE_CODE_PATH}: the consoles module registers it under that prefix and the
+ * lodging console appends the prefix and this path to its own configured origin.
+ */
+export const LODGING_CONSOLE_STATS_PATH = '/lodging-console/stats' as const;
+
+/**
  * The pattern of one check-in code, built from {@link CODE_DIGITS} so the two cannot drift apart —
  * the server renders every code zero-padded to that width, and the console only displays it.
  */
