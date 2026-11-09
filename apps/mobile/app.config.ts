@@ -197,7 +197,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ],
     },
     // A single-page export: the nginx image answers every route with index.html, and
-    // static rendering would execute the native-only screens at export time.
+    // static rendering would execute the native-only screens at export time. Single-page output is how
+    // a route is served, not how the graph behind it is built: the web graph splits by route, which is
+    // the `extra.router` note below.
     web: { bundler: 'metro', output: 'single' },
     // Route types are not generated for this app; the API client is typed from the
     // shared contract schemas instead.
@@ -269,8 +271,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // merchant identifier list.
       ['@stripe/stripe-react-native', { merchantIdentifier: [], enableGooglePay: false }],
     ],
-    // Only the EAS project id belongs here, and only when a build needs it. No secret
-    // does: the app holds the Stripe publishable key and nothing else.
-    extra: { ...(easProjectId === undefined ? {} : { eas: { projectId: easProjectId } }) },
+    // Only the EAS project id and the router's split setting belong here, and no secret does: the app
+    // holds the Stripe publishable key and nothing else.
+    //
+    // `asyncRoutes` is read per platform, which is why it is stated per platform. The web export turns
+    // it on, so every route under `app/` becomes its own chunk and a chunk is fetched when its route is
+    // entered: the first load then carries the entry route's own code and the app shell, instead of the
+    // operator dashboard, the proving client and the payment screens as well. Native keeps the default
+    // `false`, because a React Native bundle cannot split its route graph. The runtime that fetches a
+    // split chunk is `@expo/metro-runtime`, a dependency of this app, and an exported chunk is loaded
+    // by injecting a same-origin `<script>` element.
+    extra: {
+      ...(easProjectId === undefined ? {} : { eas: { projectId: easProjectId } }),
+      router: { asyncRoutes: { web: true, default: false } },
+    },
   };
 };

@@ -131,6 +131,13 @@ export interface PubSubServices {
     readonly subscriber: SubscriberCommands;
   };
   readonly logger: Pick<Logger, 'info' | 'warn'>;
+  /**
+   * The API's validated configuration, narrowed to the one setting this module decides with: the
+   * per-account socket allowance {@link PubSub.attach} enforces (AAP 0.5.2, 0.6.2). Declared as its
+   * own shape rather than as `ApiEnv`, which carries the whole process's configuration, so the app
+   * container satisfies it structurally exactly as it satisfies the rest of this interface.
+   */
+  readonly env: { readonly CHAT_MAX_SOCKETS_PER_USER: number };
 }
 
 /**
@@ -230,15 +237,31 @@ export interface PubSub {
   publishInvalidate(userId: string, sessionIds?: readonly string[]): Promise<void>;
   /**
    * Registers an open socket under its user, the session it was admitted with, and each of the
-   * meetups it carries (AAP 0.5.1, 0.5.3).
+   * meetups it carries, and answers whether it registered it (AAP 0.5.1, 0.5.3).
    *
    * Called once by the chat route when a socket opens, with the meetups the caller may chat in. The
    * meetup set is what makes a message reach both participants: a socket in it is delivered to
    * whatever the pair writes, on whichever instance wrote it. The session is what a session-scoped
    * invalidation closes the socket from, so a logout ends the sockets it opened and no others
    * (AAP 0.5.3).
+   *
+   * This is the one place the account's socket allowance is decided (AAP 0.3.2, 0.5.2): `true` when
+   * the socket is registered, `false` when the account already holds `CHAT_MAX_SOCKETS_PER_USER` live
+   * sockets on this instance and this socket is not one of them, in which case nothing about it is
+   * recorded and its caller refuses it. The count and the registration are one synchronous step, so
+   * two upgrades of one account that arrive together cannot both pass the same count. The newest
+   * socket is the one refused, because refusing it leaves the sockets the account already holds —
+   * its live chat — serving; only the addition is refused, and one of those sockets closing is what
+   * releases the allowance. A socket already registered for the same account and session keeps its
+   * registration rather than being refused, so re-attaching a socket that is already served costs
+   * nothing and never ends it.
    */
-  attach(socket: WebSocket, userId: string, sessionId: string, meetupIds: readonly string[]): void;
+  attach(
+    socket: WebSocket,
+    userId: string,
+    sessionId: string,
+    meetupIds: readonly string[],
+  ): boolean;
   /**
    * Adds one meetup to every open socket of a user on this instance.
    *
@@ -296,6 +319,11 @@ function decodeJson(payload: string): unknown {
 
 /*
  * The registry and the fan-out
+ *
+ * `userSockets` is both the fan-out index and the count the per-account allowance of
+ * {@link PubSub.attach} is taken against: it holds exactly the sockets of one account this instance
+ * has registered and not yet detached, which is what `CHAT_MAX_SOCKETS_PER_USER` bounds (AAP 0.3.2,
+ * 0.5.2).
  */
 
 /** One socket's membership: the account it belongs to, its session, and the meetups it carries. */
@@ -321,7 +349,9 @@ interface SocketRegistration {
  * The registry is per instance and in process. It is the only place this instance knows which
  * sockets it holds, and nothing about them is written to Redis: an instance serves the sockets it
  * accepted, and a frame reaches a socket on another instance through the subscription both instances
- * hold on the same channel.
+ * hold on the same channel. One account's set under its user id is also what the socket allowance is
+ * counted against and what {@link PubSub.detach} releases it from, and a set is dropped as soon as it
+ * empties, so a detached socket is never counted (AAP 0.3.2, 0.5.2).
  *
  * @param services - the publishing connection, the subscriber connection and the process logger.
  * @returns the {@link PubSub} the app exposes to `modules/messaging`, the meetup state machine and
@@ -381,7 +411,7 @@ export function createPubSub(services: PubSubServices): PubSub {
     userId: string,
     sessionId: string,
     meetupIds: readonly string[],
-  ): void {
+  ): boolean {
     const existing = registrations.get(socket);
     // A socket belongs to one user and one session for its life. Should a route re-attach it as
     // another user, or under a session that replaced the one it was admitted with, the earlier
@@ -396,12 +426,23 @@ export function createPubSub(services: PubSubServices): PubSub {
 
     let registration = registrations.get(socket);
     if (registration === undefined) {
+      // The account's allowance, counted and claimed in one synchronous step: `userSockets` holds
+      // exactly the sockets of this account the instance has registered and not detached, and there
+      // is no await between reading its size and writing the registration below, so two upgrades of
+      // one account arriving together cannot both pass the same count (AAP 0.3.2). The newest socket
+      // is the one refused, so a refusal leaves the sockets the account is already chatting on
+      // serving; one of them closing is what releases the allowance.
+      if ((userSockets.get(userId)?.size ?? 0) >= services.env.CHAT_MAX_SOCKETS_PER_USER) {
+        return false;
+      }
+
       registration = { userId, sessionId, meetupIds: new Set<string>() };
       registrations.set(socket, registration);
       addSocket(userSockets, userId, socket);
     }
 
     for (const meetupId of meetupIds) attachMeetupTo(registration, socket, meetupId);
+    return true;
   }
 
   function attachMeetup(userId: string, meetupId: string): void {

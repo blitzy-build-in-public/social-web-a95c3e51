@@ -49,6 +49,9 @@ COPY tsconfig.base.json ./
 COPY config/ config/
 COPY packages/shared/ packages/shared/
 COPY packages/circuits/src/ packages/circuits/src/
+# The DKIM-signed fixtures are in the build context for a `bench` export, which bundles the one
+# app/dev/zk-bench.tsx proves. A non-bench export excludes that fixture from the bundle graph in
+# apps/mobile/metro.config.cjs, so only a build with EXPO_PUBLIC_ZK_BENCH=1 ships it.
 COPY packages/circuits/fixtures/ packages/circuits/fixtures/
 COPY apps/mobile/ apps/mobile/
 

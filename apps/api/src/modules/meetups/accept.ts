@@ -663,7 +663,7 @@ async function runMeetupOperations(
     await runOperationsFor(services, { meetupId }, opts);
   } catch (error) {
     services.logger.warn(
-      { event: 'meetup_operations_deferred', meetupId, err: error },
+      { event: 'meetup_operations_deferred', meetupId, code: failureToken(error) },
       'meetup_operations_deferred',
     );
   }
@@ -727,4 +727,36 @@ function depositOf(
   ownerId: string,
 ): Promise<Deposit | null> {
   return db.deposit.findUnique({ where: { meetupId_ownerId: { meetupId, ownerId } } });
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
+ * class name (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack — the whole cause chain with them — as strings that key-based
+ * redaction cannot rewrite, and a provider failure's message can quote the `PaymentIntent` id it
+ * concerns, or the credential it was presented with, which no log line of this module may carry
+ * (AAP 0.5.4). A token that is not a plain short identifier becomes `Error`, so nothing a thrown
+ * value happens to say can reach a log through this path.
+ *
+ * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
+ * modules its acceptance work names (`./propose.ts`, `./queries.ts`, `./state-machine.ts`,
+ * `../payments/holds.ts`, `../payments/operations.ts`, `../outbox/write.ts`) — the same course
+ * `../settlement/timers.ts` took with its own `errorTokenOf`.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

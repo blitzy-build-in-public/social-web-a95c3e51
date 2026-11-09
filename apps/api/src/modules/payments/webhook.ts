@@ -43,6 +43,7 @@
 import { z } from 'zod';
 
 import {
+  ErrorEnvelope,
   HANDLED_STRIPE_EVENT_TYPES,
   OUR_CANCELLATION_REASON,
   STRIPE_SIGNATURE_HEADER,
@@ -228,8 +229,11 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
         tags: [WEBHOOKS_TAG],
         summary: 'Stripe webhook (signature-checked)',
         // A public provider route declares no `security`: its signature is its authentication. The
-        // `200` acknowledges the delivery and carries no body.
-        response: { [OK]: z.null() },
+        // `200` acknowledges the delivery and carries no body, and the two refusals the handler
+        // raises are declared beside it: `400 bad_signature` when the header or the raw body is
+        // unusable, and `503 payment_unavailable` when a PaymentIntent a missing field cannot be
+        // read. Both appear in `docs/api/README.md`, and the document is generated from here.
+        response: { [OK]: z.null(), 400: ErrorEnvelope, 503: ErrorEnvelope },
       },
     },
     async (request, reply) => {

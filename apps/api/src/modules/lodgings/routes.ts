@@ -59,7 +59,7 @@ import { OPENAPI_SECURITY, type OpenApiTag } from '../../plugins/openapi.ts';
 import { mutatingLimits } from '../../plugins/rate-limit.ts';
 import { hasValidProof } from '../proofs/validity.ts';
 import { createClaim, deleteClaim, getClaim } from './claims.ts';
-import { leaderboard } from './leaderboard.ts';
+import { leaderboard, lodgingSummary } from './leaderboard.ts';
 import { guestsFor, setVisibility } from './visibility.ts';
 
 // Type-only, as in every sibling plugin and route module: `App` is the plan's one declaration of the
@@ -169,8 +169,9 @@ export default function lodgingRoutes(app: App): Promise<void> {
 
       // The guarded client applies the fixture rule itself, so a fixture outside `test` and `demo` is
       // not found here either; a lodging that has left the OpenStreetMap directory (`osmMissingAt`
-      // set) counts as not found (AAP 0.5.6). Only the id and the city are read: every other field
-      // comes from the city's own directory below, so the detail cannot disagree with the list.
+      // set) counts as not found (AAP 0.5.6). Only the id and the city are read: the summary fields
+      // come from the city's own board below, and from the lodging's own row when the board's bound
+      // left it out, so this detail and the list cannot disagree about a lodging (AAP 0.5.4).
       const lodging = await app.services.db.lodging.findFirst({
         where: { id: request.params.id, osmMissingAt: null },
         select: { id: true, cityId: true },
@@ -184,31 +185,53 @@ export default function lodgingRoutes(app: App): Promise<void> {
         throw new AppError('no_valid_proof');
       }
 
-      const entry = (await leaderboard(app.services, lodging.cityId, 'activity')).find(
-        (item) => item.id === lodging.id,
-      );
+      // The city's own board first: where it carries this lodging, its entry is what the directory
+      // answers with, so the two cannot disagree. The board is bounded, though, so a lodging the
+      // bound's cut left out is resolved from its own row, its own window facts and its own guest
+      // count — the sources the board itself is computed from — and answered with its own numbers at
+      // the position after every listed lodging, instead of as a lodging that does not exist
+      // (AAP 0.5.4, 0.5.7).
+      const board = await leaderboard(app.services, lodging.cityId, 'activity');
+      const entry =
+        board.find((item) => item.id === lodging.id) ??
+        (await lodgingSummary(app.services, lodging.id, board.length));
+
       const point = (
         await readPoints(app.services.db, 'lodging', [lodging.id], app.services.env.APP_ENV)
       ).get(lodging.id);
 
-      // Both are defects rather than client mistakes: the row exists, so the directory that lists it
-      // and this detail must agree about it, and `LodgingDetail` cannot carry a lodging without
-      // coordinates. Answered as not found — the one refusal the contract has for this route — and
-      // logged, because no coordinate is ever invented to fill the gap.
-      if (entry === undefined || point === undefined) {
+      // Two defects rather than client mistakes, each of them its own gap: the row was listed a
+      // moment ago and this detail has to answer it, so a row that is gone or no longer listed
+      // leaves nothing to describe; and `LodgingDetail` cannot carry a lodging without coordinates.
+      // Each is answered as not found — the one refusal the contract has for this route — and
+      // logged, because neither gap is filled by inventing a value.
+      if (entry === null) {
         request.log.warn(
           {
             event: 'lodging_detail_unrepresentable',
             lodgingId: lodging.id,
-            missing: entry === undefined ? 'directory_entry' : 'location',
+            missing: 'lodging_row',
           },
           'lodging detail cannot be rendered; answered as not found',
         );
         throw new AppError('lodging_not_found');
       }
 
-      // Field by field, never a spread of a row: the summary fields are the directory's own, and the
-      // guest list is the tier-0 shape `guestsFor` builds (AAP 0.5.4, 0.5.7).
+      if (point === undefined) {
+        request.log.warn(
+          {
+            event: 'lodging_detail_unrepresentable',
+            lodgingId: lodging.id,
+            missing: 'location',
+          },
+          'lodging detail cannot be rendered; answered as not found',
+        );
+        throw new AppError('lodging_not_found');
+      }
+
+      // Field by field, never a spread of a row: the summary fields are the entry resolved above —
+      // the board's own, or the lodging's own row through the board's mapping — and the guest list is
+      // the tier-0 shape `guestsFor` builds (AAP 0.5.4, 0.5.7).
       return {
         id: entry.id,
         cityId: entry.cityId,

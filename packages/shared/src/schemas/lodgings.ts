@@ -82,7 +82,10 @@ export function toGuestCount(n: number): GuestCount {
  * guest count and then by name, lodgings scoring 0 following alphabetically. It is never the
  * position in the order a query asked for: `sort` changes only the order in which the items are
  * listed, so a client printing `rank` shows the same standing for a lodging under `sort=activity`
- * and `sort=name`, and the same number the lodging's own console reports (AAP 0.5.4).
+ * and `sort=name`, and the same number the lodging's own console reports (AAP 0.5.4). A city
+ * holding more lodgings than the directory answers is cut in the ranking's own order, and a lodging
+ * that cut left out stands after every lodging the directory listed — the position its console
+ * reports for it as well (AAP 0.5.4, 0.5.7).
  */
 export const LodgingSummary = z.object({
   id: Uuid,

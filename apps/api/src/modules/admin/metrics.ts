@@ -24,7 +24,9 @@
  * `activeProofsByCity` counts the proofs valid at `now`, and both calls panels are current
  * snapshots. The lodging-claim measures and signups come from the unlinked `account_created`,
  * `lodging_claim_submitted` and `lodging_claim_resolved` events, which survive account erasure
- * (AAP 0.5.2), so neither figure moves when a user is deleted.
+ * (AAP 0.5.2), so neither figure moves when a user is deleted. Places opened reads the same table
+ * over the same range and shares one aggregate with signups, so the two events cost one statement
+ * rather than two.
  *
  * Decisions taken where the AAP leaves a choice, each restated at its code: the composition root's
  * services are declared here as {@link AdminMetricsServices} rather than imported from `app.ts`,
@@ -357,7 +359,7 @@ type MeetupMeasureRow = {
   readonly suggestions_viewed: number;
 };
 
-/** A statement that answers one count, such as the dispute count or the signup count. */
+/** A statement that answers one count, such as the dispute count. */
 type CountRow = { readonly count: number };
 
 /** One `city_id` group of a per-city breakdown. */
@@ -401,6 +403,12 @@ type LodgingClaimRow = {
   readonly rejected: number;
   readonly unreachable: number;
   readonly median: unknown;
+};
+
+/** The two measures one aggregate over the unlinked events answers (AAP 0.5.7). */
+type EventCountsRow = {
+  readonly signups: number;
+  readonly opened: number;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -675,28 +683,6 @@ function neighborhoodsStatement(
   `;
 }
 
-/**
- * How often a suggested place was opened, over the range (AAP 0.5.7).
- *
- * The variant filter is deliberately not applied: `suggestion_place_opened` is reported by the
- * client through `POST /events`, and a client event carries no meetup pairing, so filtering it by
- * variant would silently drop every one of them.
- */
-function placesOpenedStatement(
-  start: Date,
-  endExclusive: Date,
-  cityId: string | undefined,
-): Prisma.Sql {
-  return Prisma.sql`
-    SELECT count(*)::int AS "count"
-      FROM "analytics_event" AS "e"
-     WHERE "e"."name" = ${ANALYTICS_NAMES.placeOpened}
-       AND "e"."occurred_at" >= ${start}
-       AND "e"."occurred_at" < ${endExclusive}
-       ${cityEquals('e', cityId)}
-  `;
-}
-
 /** Calls by outcome, each task counted once and dated by its `outcome_at` (AAP 0.5.7). */
 function callOutcomesStatement(
   env: AdminMetricsEnv,
@@ -806,21 +792,35 @@ function lodgingClaimsStatement(
 }
 
 /**
- * Signups over the range, from `account_created` (AAP 0.5.7).
+ * The two unlinked event measures over one range (AAP 0.5.7): signups, from `account_created`, and
+ * how often a suggested place was opened, from `suggestion_place_opened`.
  *
- * The dashboard's one global figure, labelled as such in {@link MetricsDto} for the operator:
- * neither filter applies, because an account is created before any city is claimed or any meetup
- * exists, so a signup has no city and no pairing and its row carries both columns null — a city
- * predicate would answer 0 for every city filter rather than count these rows. The range runs on
- * `occurred_at`, the column the event carries, not on a meetup's `starts_at`. The figure is a
- * secondary measure and never the headline (AAP 0.1.1).
+ * One statement answers both, because the two differ only in the event name they count and in the
+ * city filter the second one carries: run separately, they read the same rows of the same table
+ * twice. The range runs on `occurred_at`, the column the events carry, not on a meetup's
+ * `starts_at`, and reaches both measures; each measure keeps its own predicate inside its own
+ * `FILTER`, which is this file's shape for an aggregate that reads several event names.
+ *
+ * Every filter that used to narrow one statement now narrows one measure. The city filter reaches
+ * places opened alone: `signups` is the dashboard's one global figure, labelled as such in
+ * {@link MetricsDto} for the operator, because an account is created before any city is claimed or
+ * any meetup exists, so a signup carries no city and a city predicate would answer 0 for every city
+ * filter rather than count those rows. Neither measure takes the variant filter: a
+ * `suggestion_place_opened` is reported by the client through `POST /events` and an
+ * `account_created` is emitted at sign-up, so neither event carries a meetup pairing, and filtering
+ * on one would silently drop every row. Signups are a secondary measure and never the headline
+ * (AAP 0.1.1).
  */
-function signupsStatement(start: Date, endExclusive: Date): Prisma.Sql {
+function signupsAndPlacesOpenedStatement(
+  start: Date,
+  endExclusive: Date,
+  cityId: string | undefined,
+): Prisma.Sql {
   return Prisma.sql`
-    SELECT count(*)::int AS "count"
+    SELECT count(*) FILTER (WHERE "e"."name" = ${ANALYTICS_NAMES.signup})::int AS "signups",
+           count(*) FILTER (WHERE "e"."name" = ${ANALYTICS_NAMES.placeOpened} ${cityEquals('e', cityId)})::int AS "opened"
       FROM "analytics_event" AS "e"
-     WHERE "e"."name" = ${ANALYTICS_NAMES.signup}
-       AND "e"."occurred_at" >= ${start}
+     WHERE "e"."occurred_at" >= ${start}
        AND "e"."occurred_at" < ${endExclusive}
   `;
 }
@@ -838,7 +838,7 @@ function cityCounts(rows: readonly CityCountRow[]): MetricsDto['activeProofsByCi
  * The operator dashboard for one range, city and variant pairing (AAP 0.5.4, 0.5.7).
  *
  * The statements are independent and run together, so the answer costs one round of queries rather
- * than thirteen. Nothing here writes, so there is no transaction and no row lock; the only non-SQL
+ * than twelve. Nothing here writes, so there is no transaction and no row lock; the only non-SQL
  * read is the language-model suspension flag, which fails closed to "suspended" when it cannot be
  * read.
  *
@@ -868,13 +868,12 @@ export async function computeMetrics(
     proofs,
     prices,
     coverage,
-    opened,
     outcomes,
     lifecycle,
     blocked,
     budgets,
     claims,
-    signups,
+    eventCounts,
     suspension,
   ] = await Promise.all([
     services.db.$queryRaw<MeetupMeasureRow[]>(meetupsStatement(where, windowEnd)),
@@ -883,7 +882,6 @@ export async function computeMetrics(
     services.db.$queryRaw<CityCountRow[]>(activeProofsStatement(now, cityId)),
     services.db.$queryRaw<CityCountRow[]>(freshPricesStatement(services.env, now, cityId)),
     services.db.$queryRaw<CoverageRow[]>(neighborhoodsStatement(services.env, now, cityId)),
-    services.db.$queryRaw<CountRow[]>(placesOpenedStatement(start, endExclusive, cityId)),
     services.db.$queryRaw<CallOutcomeRow[]>(
       callOutcomesStatement(services.env, start, endExclusive, cityId),
     ),
@@ -891,7 +889,9 @@ export async function computeMetrics(
     services.db.$queryRaw<BlockedReasonRow[]>(blockedReasonsStatement(services.env, cityId)),
     services.db.$queryRaw<BudgetDayRow[]>(budgetDaysStatement(query.from, query.to, cityId)),
     services.db.$queryRaw<LodgingClaimRow[]>(lodgingClaimsStatement(start, endExclusive, cityId)),
-    services.db.$queryRaw<CountRow[]>(signupsStatement(start, endExclusive)),
+    services.db.$queryRaw<EventCountsRow[]>(
+      signupsAndPlacesOpenedStatement(start, endExclusive, cityId),
+    ),
     readSuspension(services),
   ]);
 
@@ -963,7 +963,7 @@ export async function computeMetrics(
       placesWithFreshPriceByCity: cityCounts(prices),
       neighborhoodsCoveredShare: partnerVenues === 0 ? null : coveredVenues / partnerVenues,
       meetupsWithSuggestionsViewed: countOf(meetupRow, 'suggestions_viewed'),
-      placesOpened: countOf(opened[0], 'count'),
+      placesOpened: countOf(eventCounts[0], 'opened'),
     },
     calls: {
       byOutcome: {
@@ -1002,6 +1002,6 @@ export async function computeMetrics(
       unreachable: countOf(claimsRow, 'unreachable'),
       medianResolveSeconds: medianSeconds,
     },
-    signups: countOf(signups[0], 'count'),
+    signups: countOf(eventCounts[0], 'signups'),
   };
 }

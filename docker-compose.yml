@@ -34,7 +34,10 @@
 # and `WEB_ORIGIN` the base of the magic link the notifications job mails (AAP 0.3.2, 0.3.3).
 x-common-server-env: &common-server-env
   APP_ENV: ${APP_ENV:-demo}
-  DATABASE_URL: postgresql://tablemate:${POSTGRES_PASSWORD:-tablemate}@postgres:5432/tablemate
+  # The pool is capped here because Prisma's default, `2 x CPU cores + 1`, exceeds the server's own
+  # ceiling by itself on a large host: `postgres` raises that ceiling to 200, and 20 connections per
+  # client (`pool_timeout` 10 is the wait for a free one) keeps all three clients inside it.
+  DATABASE_URL: 'postgresql://tablemate:${POSTGRES_PASSWORD:-tablemate}@postgres:5432/tablemate?connection_limit=20&pool_timeout=10'
   REDIS_URL: redis://redis:6379
   FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:-}
   FIELD_ENCRYPTION_KEY_ID: ${FIELD_ENCRYPTION_KEY_ID:-k1}
@@ -73,6 +76,7 @@ x-api-env: &api-env
   RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-600}
   TERMS_VERSION: ${TERMS_VERSION:-2026-11-04}
   VOICE_RELAY_MAX_SESSIONS: ${VOICE_RELAY_MAX_SESSIONS:-10}
+  CHAT_MAX_SOCKETS_PER_USER: ${CHAT_MAX_SOCKETS_PER_USER:-5}
   PILOT_LOCK_RATE_THRESHOLD: ${PILOT_LOCK_RATE_THRESHOLD:-0.5}
   PILOT_COMPLETION_THRESHOLD: ${PILOT_COMPLETION_THRESHOLD:-0.7}
   # The proxy is named by this network's service name rather than read from `.env`, whose value
@@ -126,8 +130,16 @@ services:
       - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Sized against those pools: api 20 + workers 20 + the migrate service, which also runs `pnpm
+    # perf`'s seed, 20 = 60 for a running stack, and 80 with a second API replica (AAP 0.1.1). What
+    # is left of the 200 stays free for an operator's own session.
+    command: [postgres, -c, max_connections=200]
+    # The probe dials the TCP listener every other service connects to rather than the unix socket:
+    # the socket is also answered by the temporary server the entrypoint runs while it initializes the
+    # cluster, whose `listen_addresses=''` leaves port 5432 closed, so a socket probe reports ready
+    # before `migrate`, `api` and `workers` can reach the database at all.
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U tablemate -d tablemate]
+      test: [CMD-SHELL, pg_isready -h 127.0.0.1 -p 5432 -U tablemate -d tablemate]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -242,7 +254,7 @@ services:
       migrate:
         condition: service_completed_successfully
       stripe-proxy:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   # The workers: place and lodging refresh, menu ingestion, call dispatch, notification delivery, data
@@ -252,6 +264,15 @@ services:
     build:
       context: .
       dockerfile: apps/workers/Dockerfile
+    # Headless Chromium forks a renderer, a GPU process and zygotes per context, and the workers
+    # process is the only PID 1 here, so nothing reaps them when they exit: docker-init does
+    # (Playwright's Recommended Docker Configuration asks for `--init` on a Chromium workload).
+    init: true
+    # A 1 GiB shared-memory segment instead of the 64 MiB default, and not `ipc: host` on purpose:
+    # the container keeps its own IPC namespace, where `ipc: host` would put this browser in the
+    # host's namespace, shared with every checkout running this same file side by side on one
+    # machine, whose Chromium segments would then see one another and collide by name.
+    shm_size: '1gb'
     environment:
       <<: *workers-env
     depends_on:
@@ -352,6 +373,18 @@ services:
     environment:
       PORT: '12100'
       STRIPE_MOCK_UPSTREAM: http://stripe-mock:12111
+    # The image is the api's `test-support` target, whose slim base ships neither curl nor wget, so the
+    # check is Node's own fetch, and the health control answers without the upstream being consulted.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:12100/__proxy/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     depends_on:
       stripe-mock:
         condition: service_started

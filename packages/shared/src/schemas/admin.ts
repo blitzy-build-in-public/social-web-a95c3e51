@@ -360,11 +360,27 @@ export type AdminCallTasksResponse = z.infer<typeof AdminCallTasksResponse>;
  * through its claim instead, so any outcome here on one is `422` too (AAP 0.5.3). `completed`
  * carries the prices the operator was told on the phone and stores them as `operator_entry`; a
  * ticket price states `perPerson` and `ticketType` like any other entry (AAP 0.5.6).
+ *
+ * `prices` belongs to `completed` alone, because that is the only outcome that stores anything:
+ * the other three close the task on its status (AAP 0.5.3). The relation is stated here rather
+ * than left to the handler, so a body that carries prices with `refused`, `do_not_call` or
+ * `unreachable` is refused by this schema — `400 invalid_field`, before any task is read — instead
+ * of being answered `200` with the supplied array dropped.
  */
-export const ResolveCallTask = z.strictObject({
-  outcome: z.string(),
-  prices: z.array(PriceItemInput).optional(),
-});
+export const ResolveCallTask = z
+  .strictObject({
+    outcome: z.string(),
+    prices: z.array(PriceItemInput).optional(),
+  })
+  .superRefine((body, ctx) => {
+    if (body.prices !== undefined && body.outcome !== 'completed') {
+      ctx.addIssue({
+        code: 'custom',
+        message: '`prices` accompanies `completed` only.',
+        path: ['prices'],
+      });
+    }
+  });
 export type ResolveCallTask = z.infer<typeof ResolveCallTask>;
 
 /**

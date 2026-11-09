@@ -3,6 +3,8 @@
  * one set per configured city — the weekly place refresh, the daily price-freshness sweep, the 00:05
  * local stay expiry and, while telephony is on, the two-minute call dispatch — plus the four global
  * runs: the daily FX table, the hourly and daily data-expiry steps, and the account-erasure sweep.
+ * Beside them {@link primeFxTable} enqueues the one-off `fx-refresh` run a stack needs before its
+ * first 00:30 UTC, because that table is what a price conversion reads (AAP 0.5.6).
  *
  * Four rules shape it.
  *
@@ -37,6 +39,7 @@ import {
   ACCOUNT_ERASURE_SWEEP_SCHEDULER_ID,
   DATA_EXPIRY_DAILY_SCHEDULER_ID,
   DATA_EXPIRY_HOURLY_SCHEDULER_ID,
+  FX_REFRESH_PRIME_JOB_ID,
   FX_REFRESH_SCHEDULER_ID,
   JOB,
   QUEUE,
@@ -308,4 +311,49 @@ export async function registerSchedulers(
   });
 
   return { registered, removed };
+}
+
+/*
+ * The first FX table (AAP 0.5.6)
+ */
+
+/**
+ * Enqueue the one-off `fx-refresh` run that fills an FX table no run has written yet, and report
+ * whether it was added (AAP 0.5.6).
+ *
+ * AAP 0.5.6 fixes a price's conversion on the capture day's `FxRate`, and the delivered `fx-refresh`
+ * job is the only writer of that table, on a schedule whose first run is 00:30 UTC. A stack younger
+ * than that run therefore holds no rate at all, and the operator's price entry — the one path that
+ * converts a price outside the menu pipeline — has nothing to convert a non-USD price with. Priming
+ * runs the delivered job once at startup instead of inventing a rate or converting at another day's
+ * rate: the job reads the provider's own table and stores what it publishes, so the conversion stays
+ * the capture day's, and a provider that is unreachable or answers without a currency fails the run
+ * on the queue's own policy — five tries, backoff from 10 minutes (AAP 0.5.6) — leaving the table as
+ * it was.
+ *
+ * A row of any date at all answers the count, because the read is `usdRateFor`'s own: it takes the
+ * latest rate at or before the capture day, so an existing table serves every day this stack can
+ * capture on and there is nothing left to prime.
+ *
+ * @param ctx - The process context: the database read that answers whether any rate exists, and the
+ *   producer registry the run is added through.
+ * @returns `true` when the run was enqueued, `false` when the table already holds a row.
+ * @throws Whatever the count, the enqueue or Redis throws. Like the schedulers above, this is a
+ *   start path: `main.ts` records the failure and fails the start rather than letting a stack come
+ *   up with a price entry that cannot convert.
+ */
+export async function primeFxTable(ctx: WorkerContext): Promise<boolean> {
+  if ((await ctx.db.fxRate.count()) > 0) {
+    return false;
+  }
+
+  await ctx.queues
+    .get(QUEUE.fxRefresh)
+    .add(
+      JOB[QUEUE.fxRefresh].refresh,
+      parseJobData(QUEUE.fxRefresh, JOB[QUEUE.fxRefresh].refresh, {}),
+      jobOptionsFor(QUEUE.fxRefresh, { jobId: FX_REFRESH_PRIME_JOB_ID }),
+    );
+
+  return true;
 }

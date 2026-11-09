@@ -1,19 +1,16 @@
 /** The operator dashboard, route `app/ops/index` (AAP 0.5.8, AAP 0.8.1, AAP 0.5.7): the pilot's
  * headline measure and every figure behind it, read from `GET /v1/admin/metrics`. */
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Svg, { Line, Rect } from 'react-native-svg';
 import {
   BlockedReason,
   DateOnly,
-  MIN_TOUCH_TARGET,
   VariantPairing,
-  borderWidths,
   colors,
   fontWeights,
-  radii,
   spacing,
   typography,
 } from '@tablemate/shared';
@@ -22,7 +19,7 @@ import type { CityDto, MetricsDto, MetricsQuery } from '@tablemate/shared';
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor, type ClientErrorCode } from '../../src/api/errors';
 import { queryKeys } from '../../src/state/meetup-store';
-import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
+import { Banner, Button, Card, Chip, Screen, TextField, announce } from '../../src/ui';
 
 const PAGE_TITLE = 'Operator dashboard';
 const DEFAULT_RANGE_DAYS = 30;
@@ -74,7 +71,6 @@ type CityCount = { cityId: string; count: number };
 type BarProps = { label: string; value: number; max: number; reference?: number | undefined };
 type BarRowProps = { label: string; text: string; value: number; max: number; reference?: number };
 type PanelProps = { title: string; rows?: readonly Stat[]; testID?: string; children?: ReactNode };
-type ChipProps = { label: string; selected: boolean; onPress: () => void; testID?: string };
 const ymd = (date: Date): string => date.toISOString().slice(0, 10);
 const countText = (value: number): string => String(value);
 const usdText = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
@@ -216,33 +212,6 @@ const Panel = ({ title, rows, testID, children }: PanelProps): ReactElement => (
     </Card>
   </View>
 );
-/** A filter option as a radio; hover, focus and selection are never colour alone (WCAG 1.4.1). */
-function Chip({ label, selected, onPress, testID }: ChipProps): ReactElement {
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  return (
-    <Pressable
-      {...spaceActivates(onPress)}
-      role="radio"
-      aria-checked={selected}
-      onPress={onPress}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      testID={testID}
-      style={[
-        styles.chip,
-        hovered && !selected ? styles.chipHovered : null,
-        selected ? styles.chipSelected : null,
-        focused ? styles.chipFocused : null,
-        Platform.OS === 'web' ? ({ outlineStyle: 'none' } as ViewStyle) : null,
-      ]}
-    >
-      <Text style={[styles.chipLabel, selected ? styles.chipLabelSelected : null]}>{label}</Text>
-    </Pressable>
-  );
-}
 /** Every panel of the dashboard, in the order an operator reads them, signups last (AAP 0.1.1). */
 function Dashboard({ metrics, cities }: DashboardProps): ReactElement {
   const { completion, thresholds, funnel, prices, calls } = metrics;
@@ -418,17 +387,6 @@ export default function OpsDashboardScreen(): ReactElement {
     </>
   );
 }
-type WebKeyEvent = Readonly<{ key?: string; repeat?: boolean; preventDefault?: () => void }>;
-/** react-native-web answers Space only for a native button or role="button", so a radio takes it. */
-function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
-  if (Platform.OS !== 'web') return {};
-  const onKeyDown = (event: WebKeyEvent): void => {
-    if (event.repeat === true || (event.key !== ' ' && event.key !== 'Spacebar')) return;
-    event.preventDefault?.();
-    activate();
-  };
-  return { onKeyDown };
-}
 /** The responsive widths of the wrapping rows, named once (AAP 0.5.8). */
 const DATE_FIELD_BASIS = 180;
 const DATE_FIELD_MIN_WIDTH = 160;
@@ -445,22 +403,6 @@ const styles = StyleSheet.create({
   filterGroup: { gap: spacing.xs },
   filterLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  chip: {
-    alignItems: 'center',
-    backgroundColor: colors.background,
-    borderColor: colors.border,
-    borderRadius: radii.pill,
-    borderWidth: borderWidths.control,
-    justifyContent: 'center',
-    minHeight: MIN_TOUCH_TARGET,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  chipHovered: { backgroundColor: colors.surface },
-  chipSelected: { backgroundColor: colors.surface, borderColor: colors.primary },
-  chipFocused: { borderColor: colors.focusRing },
-  chipLabel: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
-  chipLabelSelected: { color: colors.primary, fontWeight: fontWeights.bold },
   grid: { alignItems: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
   panel: { flexBasis: PANEL_BASIS, flexGrow: 1, minWidth: PANEL_MIN_WIDTH },
   headline: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },

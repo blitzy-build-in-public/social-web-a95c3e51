@@ -209,8 +209,14 @@ export default function SuggestionsScreen(): ReactElement {
   };
   const emptyMessage =
     emptyReason === undefined ? SUGGESTIONS_EMPTY.no_priced_places : SUGGESTIONS_EMPTY[emptyReason];
+  // Retryable: the two failures a second attempt can answer differently — a suggestion service that
+  // was briefly unavailable, and a request that never reached the API. The terminal codes (the meetup
+  // not locked, not found, or not the caller's) keep the banner without one, because the same request
+  // would be refused again.
   const showRetry =
-    isApiError(suggestions.error) && suggestions.error.code === 'suggestions_unavailable';
+    isApiError(suggestions.error) &&
+    (suggestions.error.code === 'suggestions_unavailable' ||
+      suggestions.error.code === 'network_error');
   const card = (item: Suggestion): CardProps => ({ item, expandedPlaceId, onToggle: togglePlace });
   const osmNow = (): void => openUrl(OSM_COPYRIGHT_URL);
   const retryNow = (): void => void suggestions.refetch();

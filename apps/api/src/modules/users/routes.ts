@@ -244,17 +244,30 @@ export default function usersRoutes(app: App): Promise<void> {
       profileForViewer(app.services, callerId(request), request.params.userId, request.receivedAt),
   );
 
-  app.get(
+  // The reply's payload type is overridden to the `Buffer` the handler sends: the declared `200`
+  // describes those bytes to the document as the string body the media type carries, while the
+  // payload itself never reaches a serializer (AAP 0.11.2). `Params` is restated because supplying
+  // the override replaces the schema-derived request type; it is `UserIdParams`' own shape.
+  app.get<{ Params: z.infer<typeof UserIdParams>; Reply: Buffer }>(
     '/users/:userId/photo',
     {
       schema: {
         tags: [USERS_TAG],
         security: OPENAPI_SECURITY.bearer,
         params: UserIdParams,
-        // No `response`: the answer is WebP bytes that no Zod schema describes, and a declared `200`
-        // would put a JSON serializer in front of them. `config.rawResponse` is the composition root's
-        // marker for the routes that answer bytes, and the shared envelope still answers every refusal
-        // through the error handler (AAP 0.5.4).
+        // The document describes what the route answers (AAP 0.11.2): the `200` under the WebP
+        // media type the reply carries, and its refusals as the shared envelope. The `200` is a
+        // content-typed entry, which is the shape the document can hold for a body no Zod schema
+        // describes — and it stays out of the reply's way, because the bytes are a `Buffer`, which
+        // `reply.send` writes as they are and never puts a serializer in front of. Naming only the
+        // refusals here would drop the emitted `200` for this route entirely.
+        response: {
+          200: { content: { [PHOTO_CONTENT_TYPE]: { schema: z.string() } } },
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          404: ErrorEnvelope,
+        },
       },
       config: RAW_PHOTO_RESPONSE,
     },

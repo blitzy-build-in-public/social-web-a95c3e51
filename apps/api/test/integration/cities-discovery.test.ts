@@ -8,8 +8,9 @@
  *    route group installs answers `403 age_gate_required` to a caller who has not accepted the terms
  *    (AAP 0.5.4).
  *  - `GET /cities/:cityId/venues` requires no proof, so an unverified traveler browses where a
- *    meetup may be held (AAP 0.5.8); it lists active partners alone, and every item carries exactly
- *    the seven `VenueDto` fields, with the venue's own coordinates and no console secret.
+ *    meetup may be held (AAP 0.5.8); it lists active partners alone, in (name, id) order and no more
+ *    than `CITY_VENUES_LIMIT` of them, and every item carries exactly the seven `VenueDto` fields,
+ *    with the venue's own coordinates and no console secret.
  *  - `GET /cities/:cityId/travelers` answers its errors in the order AAP 0.5.4 lists them —
  *    `404 city_not_found` before `403 no_valid_proof` before `400 invalid_field` for a cursor this
  *    API did not write — which is why the error table names the caller each row needs.
@@ -34,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { Prisma, geoPoint } from '@tablemate/db';
 import {
   CitiesFile,
   CitiesResponse,
@@ -46,6 +48,7 @@ import {
 } from '@tablemate/shared';
 import type { CityConfig, ErrorCode } from '@tablemate/shared';
 
+import { CITY_VENUES_LIMIT } from '../../src/modules/cities/routes.ts';
 import { createTestApp } from '../support/app.ts';
 import {
   callRoute,
@@ -108,6 +111,47 @@ const GARBAGE_CURSOR = Buffer.from('{"not":"a cursor"}', 'utf8').toString('base6
  * the case crosses both boundaries (AAP 0.5.1).
  */
 const EXTRA_TRAVELERS = 5;
+
+/**
+ * How many venues the overflow case stores beyond {@link CITY_VENUES_LIMIT}, so the row the venue
+ * read takes as its sentinel exists and the bound is observable rather than merely equal to the
+ * number of rows the case stored (AAP 0.5.4).
+ */
+const VENUES_BEYOND_LIMIT = 5;
+
+/** One venue the overflow case stores, and the place the route must answer it in. */
+interface OverflowVenue {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** The address every overflow venue carries: `Venue.address` is required (AAP 0.5.2). */
+const OVERFLOW_ADDRESS = '1 Overflow Row';
+
+/**
+ * The venues the overflow case stores, in the order `GET /cities/:cityId/venues` must answer them:
+ * `name` ascending, with the id breaking a same-name tie (AAP 0.5.4).
+ *
+ * The names are zero-padded, so their order by code unit is the order of the numbers in them, and the
+ * ids are lowercase uuids of one width, so Postgres's bytewise uuid order is this list's order inside
+ * a shared name. The rows past the bound carry the highest names, so a read that answered the wrong
+ * rows answers ones this case can name.
+ *
+ * The two rows around the bound share a name: they are the last venue inside the bound and the first
+ * past it, so only the id decides which of the pair is answered, and a read ordering by name without
+ * that tie-break cannot answer the pair in a defined order. This list is in the order the response is
+ * expected in, while the statement below writes it reversed, so a read that applied no ordering — or
+ * one ordering by id alone — answers the list backwards.
+ */
+const OVERFLOW_VENUES: readonly OverflowVenue[] = Array.from(
+  { length: CITY_VENUES_LIMIT + VENUES_BEYOND_LIMIT },
+  (_unused, index): OverflowVenue => ({
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    name: `Overflow Venue ${String(
+      index === CITY_VENUES_LIMIT ? CITY_VENUES_LIMIT - 1 : index,
+    ).padStart(3, '0')}`,
+  }),
+);
 
 /** The path of a city's venue list. */
 function venuesPath(cityId: string): string {
@@ -284,6 +328,49 @@ describe('GET /cities/:cityId/venues', () => {
     // Neither `secretLookupHash` nor `secretCiphertext` is a field of `VenueDto`, and a console
     // secret is shown once by its issue route alone (AAP 0.5.4).
     expect(response.body).not.toContain('secret');
+  });
+
+  it('answers the first CITY_VENUES_LIMIT venues of a longer list, in (name, id) order', async () => {
+    const viewer = await makeUser(t, { card: 'none' });
+    const now = t.services.clock.now();
+    const point = PRIMARY_CITY.centroid;
+
+    // One statement, in the reverse of the order the route must answer, so the case proves the read's
+    // ordering rather than the order the rows happened to be written in. Each row carries its own
+    // location, since the geography column is written by hand here: a venue with a NULL location is
+    // left out of the list and logged, which would leave the response short of the bound. The rows are
+    // not fixtures, so the fixture guard leaves them visible in `test` (AAP 0.5.2).
+    await t.services.db.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "venue"
+          ("id", "city_id", "name", "address", "location", "is_active_partner", "is_fixture",
+           "created_at", "updated_at")
+        VALUES ${Prisma.join(
+          [...OVERFLOW_VENUES]
+            .reverse()
+            .map(
+              (venue) =>
+                Prisma.sql`(${venue.id}::uuid, ${PRIMARY_CITY.id}, ${venue.name}, ${OVERFLOW_ADDRESS}, ${geoPoint(point)}, true, false, ${now}::timestamptz, ${now}::timestamptz)`,
+            ),
+          ', ',
+        )}`,
+    );
+
+    const response = await getAs(t, viewer, venuesPath(PRIMARY_CITY.id));
+
+    expect(response.status).toBe(200);
+    const venues = VenuesResponse.parse(response.json());
+    // Exactly the bound, and the rows are the first `CITY_VENUES_LIMIT` of the (name, id) order: the
+    // sentinel row the read asks for beyond the bound is dropped before the response is built.
+    expect(venues.items).toHaveLength(CITY_VENUES_LIMIT);
+    expect(venues.items.map((item) => item.id)).toEqual(
+      OVERFLOW_VENUES.slice(0, CITY_VENUES_LIMIT).map((venue) => venue.id),
+    );
+    // The twin of the row at the bound — the same name, the next id — is the first row past it, so it
+    // is the sentinel rather than a venue this city holds one too many of (AAP 0.5.4).
+    expect(venues.items.map((item) => item.id)).not.toContain(
+      OVERFLOW_VENUES[CITY_VENUES_LIMIT]?.id,
+    );
   });
 });
 

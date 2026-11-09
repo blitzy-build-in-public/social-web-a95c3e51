@@ -11,7 +11,7 @@ import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { CHECKED_IN_NOTICE } from '../../src/copy/strings';
 import { meetupsInPages, queryKeys, useMeetups } from '../../src/state/meetup-store';
-import { Avatar, Banner, Button, ListItem, Screen, announce } from '../../src/ui';
+import { Avatar, Banner, Button, Chip, ListItem, Screen, announce } from '../../src/ui';
 const CITIES_STALE_TIME_MS = 60 * 60 * 1000;
 const START_TIME_FORMAT: Intl.DateTimeFormatOptions = {
   weekday: 'short',
@@ -64,6 +64,11 @@ export const MEETUP_FILTERS: Record<MeetupFilter, MeetupFilterSpec> = {
 const FILTER_ORDER: readonly MeetupFilter[] = ['all', 'proposed_to_me', 'mine'];
 const DISCOVER = { label: 'Find travelers on Discover', testID: 'meetups-discover' };
 const SHOW_MORE = { label: 'Show more meetups', testID: 'meetups-show-more' };
+/**
+ * The name of the filter row, which is a `radiogroup`: axe's `aria-required-parent` rule requires
+ * the radio chips to sit inside a named group, and VoiceOver and TalkBack announce it with them.
+ */
+const FILTER_GROUP_LABEL = 'Filter meetups';
 export function formatStart(iso: string, timeZone?: string): string {
   const start = new Date(iso);
   if (timeZone !== undefined) {
@@ -135,14 +140,14 @@ export default function MeetupsScreen(): ReactElement {
   }, [errorMessage]);
   return (
     <Screen edges={['left', 'right']}>
-      <View style={styles.filters}>
+      <View role="radiogroup" aria-label={FILTER_GROUP_LABEL} style={styles.filters}>
         {FILTER_ORDER.map((id) => (
-          <Button
+          <Chip
             key={id}
-            {...MEETUP_FILTERS[id]}
-            variant={id === filter ? 'primary' : 'secondary'}
-            {...(id === filter ? { hint: 'Selected' } : {})}
+            label={MEETUP_FILTERS[id].label}
+            selected={id === filter}
             onPress={() => setFilter(id)}
+            testID={MEETUP_FILTERS[id].testID}
           />
         ))}
       </View>

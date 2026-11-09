@@ -24,17 +24,24 @@
  * run of the same job leaves the same state (AAP 0.3.2). And nothing here calls a third party: a
  * resolution touches PostgreSQL alone.
  *
- * The leaderboard rule of AAP 0.5.7 that {@link backfillActivityFacts} implements is the one in
- * `apps/api/src/modules/lodgings/leaderboard.ts` (`recordActivityForVerifiedClaim`), repeated here
- * because `workers` must not import `@tablemate/api`; the two statements have to stay identical, and
- * a change to one belongs in both (AAP 0.3.2, 0.8.1).
+ * The leaderboard rule of AAP 0.5.7 that {@link backfillActivityFacts} implements is stated once,
+ * in `@tablemate/db` (`coveringMeetupStatement`): `workers` must not import `@tablemate/api`, so
+ * that statement lives in the package both processes already depend on, and the API's
+ * `recordActivityForVerifiedClaim` runs that same one statement — which is what makes drift
+ * impossible rather than merely forbidden (AAP 0.3.2, 0.5.7, 0.8.1).
  *
  * @see AAP 0.5.3 for the lodging-claim lifecycle and the 72-hour expiry, 0.5.6 for the job table and
  *   the 00:05 local schedule, 0.5.7 for the leaderboard and lodging-visibility rules, 0.5.2 for
  *   `LodgingActivityFact`, `AnalyticsEvent` and the booking-detail retention, 0.8.1 for this file.
  */
 
-import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';
+import {
+  Prisma,
+  coveringMeetupStatement,
+  fixturePredicate,
+  type CoveringMeetupRow,
+  type DbTx,
+} from '@tablemate/db';
 import {
   JOB,
   QUEUE,
@@ -193,14 +200,6 @@ interface LockedClaimRow {
   readonly created_at: Date;
   readonly stay_from: Date;
   readonly stay_to: Date;
-}
-
-/** One row of the completed-meetup statement of {@link backfillActivityFacts} (AAP 0.5.7). */
-interface ClaimMeetupRow {
-  readonly id: string;
-  readonly initiator_id: string;
-  readonly recipient_id: string;
-  readonly settled_at: Date;
 }
 
 /** The two calendar dates of a stay, in the one spelling the SQL casts accept. */
@@ -365,25 +364,31 @@ async function cancelOutstandingVerification(
 /**
  * Credits the lodging's leaderboard with the completed meetups a verified stay covers (AAP 0.5.7).
  *
- * This is the rule of `recordActivityForVerifiedClaim` in
- * `apps/api/src/modules/lodgings/leaderboard.ts`, repeated verbatim because `workers` may not import
- * `@tablemate/api`:
+ * The statement that finds them is stated once, in `@tablemate/db`
+ * ({@link coveringMeetupStatement}, `packages/db/src/lodging-activity.ts`), and both this function
+ * and the API's `recordActivityForVerifiedClaim` (`apps/api/src/modules/lodgings/leaderboard.ts`)
+ * run that one statement: `workers` may not import `@tablemate/api`, so it lives in the package both
+ * processes already depend on, which is what makes the two paths' facts impossible to drift apart.
+ * What that statement states:
  *
  * - The meetup's local date is `(meetup.starts_at AT TIME ZONE city.timezone)::date`, the city being
  *   the meetup venue's city.
  * - A verified claim *covers* a meetup when the claim covers that date:
- *   `claim.stay_from <= local_date AND claim.stay_to >= local_date`.
- * - `pair_key` is `pairKey(ANALYTICS_SALT, initiatorId, recipientId)`, the order-independent HMAC of
- *   the two ids.
- * - One fact per distinct (lodging, meetup), inserted with `ON CONFLICT (lodging_id, meetup_id) DO
- *   NOTHING` — `createMany({ skipDuplicates: true })` in Prisma's terms, which is what makes a
- *   second resolution of the same claim write nothing.
+ *   `claim.stay_from <= local_date AND claim.stay_to >= local_date`, both ends being the stay dates
+ *   this function reads and passes in.
+ * - Only meetups inside the 90-day activity window are read, from the window start this function
+ *   computes.
  *
- * Only meetups settled inside the 90-day activity window are read, because an older one could not
- * count, and each fact carries the meetup's own `settledAt` as its completion instant, so a
- * backfill never moves a historical score to today. A fact holds no user id: the pair hash is its
- * only trace of the two travelers, which is why deleting the claim or erasing the account leaves the
- * lodging's score unchanged (AAP 0.5.2).
+ * What this function adds to the rows the statement returns: `pair_key` is
+ * `pairKey(ANALYTICS_SALT, initiatorId, recipientId)`, the order-independent HMAC of the two ids, and
+ * one fact per distinct (lodging, meetup) is inserted with `ON CONFLICT (lodging_id, meetup_id) DO
+ * NOTHING` — `createMany({ skipDuplicates: true })` in Prisma's terms, which is what makes a second
+ * resolution of the same claim write nothing.
+ *
+ * Each fact carries the meetup's own `settledAt` as its completion instant, so a backfill never
+ * moves a historical score to today. A fact holds no user id: the pair hash is its only trace of the
+ * two travelers, which is why deleting the claim or erasing the account leaves the lodging's score
+ * unchanged (AAP 0.5.2).
  *
  * @param tx - The caller's transaction, which the facts commit with.
  * @param ctx - The worker context: `env.APP_ENV` decides fixture visibility in the raw statement and
@@ -406,23 +411,13 @@ async function backfillActivityFacts(
     return 0;
   }
 
-  const rows = await tx.$queryRaw<ClaimMeetupRow[]>(Prisma.sql`
-    SELECT "m"."id"::text AS "id",
-           "m"."initiator_id"::text AS "initiator_id",
-           "m"."recipient_id"::text AS "recipient_id",
-           "m"."settled_at" AS "settled_at"
-      FROM "meetup" AS "m"
-      JOIN "venue" AS "v" ON "v"."id" = "m"."venue_id"
-      JOIN "city" AS "ci" ON "ci"."id" = "v"."city_id"
-     WHERE "m"."status" = 'completed'
-       AND "m"."settled_at" IS NOT NULL
-       AND "m"."settled_at" > ${new Date(now.getTime() - LEADERBOARD_WINDOW_MS)}
-       AND ("m"."initiator_id" = ${claim.userId}::uuid
-            OR "m"."recipient_id" = ${claim.userId}::uuid)
-       AND (("m"."starts_at" AT TIME ZONE "ci"."timezone")::date
-              BETWEEN CAST(${stay.from} AS date) AND CAST(${stay.to} AS date))
-       AND ${fixturePredicate(ctx.env.APP_ENV, 'v')}
-  `);
+  const rows = await tx.$queryRaw<CoveringMeetupRow[]>(
+    coveringMeetupStatement(
+      ctx.env.APP_ENV,
+      { userId: claim.userId, stayFrom: stay.from, stayTo: stay.to },
+      new Date(now.getTime() - LEADERBOARD_WINDOW_MS),
+    ),
+  );
 
   if (rows.length === 0) {
     return 0;

@@ -620,8 +620,8 @@ async function requeueErasures(tx: DbTx, participantIds: readonly string[]): Pro
  *
  * A failure to reach the provider is not the operator's error and not a lost decision: the dispute
  * is resolved and durable, the meetup stays `locked` and the 60-second sweeper settles it on its
- * next pass (AAP 0.3.2). The failure is logged with the two ids and the error alone — never the
- * filer's text (AAP 0.11.1).
+ * next pass (AAP 0.3.2). The failure is logged with the two ids and the failure's short code — its
+ * `code`, else its name — and never its message, its stack or the filer's text (AAP 0.11.1).
  */
 async function settleAfterResolution(
   services: AppServices,
@@ -632,10 +632,42 @@ async function settleAfterResolution(
     await settleMeetup(services, meetupId, { trigger: 'operator' });
   } catch (error) {
     services.logger.warn(
-      { event: DISPUTE_SETTLE_DEFERRED, disputeId, meetupId, err: error },
+      { event: DISPUTE_SETTLE_DEFERRED, disputeId, meetupId, code: failureToken(error) },
       DISPUTE_SETTLE_DEFERRED,
     );
   }
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
+ * class name (`SettlementReconcileError`), and never its message or stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack as strings that key-based redaction cannot rewrite, and the
+ * Stripe or Prisma failure `settleMeetup` raises can quote what it concerns — the `PaymentIntent` id
+ * of the hold, or the filer's own text on the meetup — which the log lines of this module are
+ * forbidden to carry. A token that is not a plain short identifier becomes `Error`, so nothing a
+ * thrown value happens to say can reach a log through this path.
+ *
+ * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
+ * modules its resolution work names (`../settlement/settle.ts`, `../meetups/state-machine.ts`,
+ * `../outbox/write.ts`, `../payments/operations.ts`) — the same course `../settlement/timers.ts`
+ * took with its own `errorTokenOf`.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }
 
 /**

@@ -28,8 +28,17 @@ function joinWithOr(items: readonly string[]): string {
   return head === '' ? last : `${head} or ${last}`;
 }
 
-/** The accepted deposit levels as whole USD amounts, e.g. `'5, 10 or 20'` (AAP 0.7.3). */
-const DEPOSIT_AMOUNTS_TEXT = joinWithOr(DEPOSIT_LEVELS_CENTS.map((cents) => String(cents / 100)));
+/**
+ * The accepted deposit levels as whole USD amounts, e.g. `'5, 10 or 20'` (AAP 0.7.3), built from
+ * {@link DEPOSIT_LEVELS_CENTS} so no sentence can drift from what `POST /meetups` accepts.
+ *
+ * The one home for the text: {@link TERMS_SUMMARY}, the terms screen's Card holds paragraph and
+ * `src/api/errors.ts`'s `deposit_invalid` sentence all read it, so the deposit amounts are written
+ * once.
+ */
+export const DEPOSIT_AMOUNTS_TEXT = joinWithOr(
+  DEPOSIT_LEVELS_CENTS.map((cents) => String(cents / 100)),
+);
 
 /** English month names for {@link formatCalendarDate}: a fixed table, never `Intl` or the locale. */
 const ENGLISH_MONTHS = [
@@ -292,6 +301,18 @@ export function supportedIssuersText(names: readonly string[]): string {
     : `Supported booking sites: ${names.join(', ')}.`;
 }
 
+/**
+ * The sentence naming the booking sites whose issuer the registry does not verify yet (AAP 0.5.5,
+ * 0.5.8), for an email whose DKIM domain matches one of them: `app/proof/import.tsx` shows it as the
+ * warning banner's message, and `app/proof/generate.tsx` composes it under
+ * {@link supportedIssuersText}. The names come from `GET /v1/zk/config`, which lists an issuer this
+ * way until its samples arrive and it receives a production leaf. Both screens render this one
+ * sentence, so the two proof screens cannot drift from each other.
+ */
+export function unsupportedIssuersText(names: readonly string[]): string {
+  return `Not yet supported: ${names.join(', ')}.`;
+}
+
 // --- Check-in: app/meetups/[id]/{check-in,index}.tsx, app/(tabs)/meetups.tsx ---------------------
 
 /**
@@ -306,6 +327,16 @@ export const CHECKED_IN_NOTICE = "You're checked in.";
  * which is the meetup the headline completion rate counts.
  */
 export const BOTH_CHECKED_IN_NOTICE = "You're both checked in.";
+
+/**
+ * The refusal a meetup that has already finished gets (AAP 0.5.3, 0.5.4). Every `MeetupStatus`
+ * except `proposed` and `locked` is final, and the check-in route answers `409 not_locked` for all
+ * of them alike, so the check-in screen resolves which one it is from `GET /meetups/:id` rather
+ * than explaining a settled meetup as one that has not been locked yet. It is the terminal card's
+ * title for a final status, and the sentence a `not_locked` refusal is announced with once a fresh
+ * read reports one.
+ */
+export const CHECK_IN_CLOSED_NOTICE = 'This meetup has finished, so check-in is closed.';
 
 // --- Empty states (AAP 0.5.8, verbatim) ---------------------------------------------------------
 

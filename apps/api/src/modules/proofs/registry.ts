@@ -44,7 +44,7 @@ import type {
   TemplateField,
   ZkConfig,
 } from '@tablemate/shared';
-import type { ApiEnv, Logger } from '@tablemate/server-core';
+import type { ApiEnv } from '@tablemate/server-core';
 
 import { AppError } from '../../plugins/errors.ts';
 
@@ -529,19 +529,15 @@ export function activeRegistryRoots(env: ZkEnv): readonly string[] {
 /* The published ZK configuration, `GET /v1/zk/config` (AAP 0.5.4, 0.5.5). */
 
 /**
- * What {@link zkConfig} needs of the app's services: the environment it publishes from and the logger a
- * missing manifest is recorded in.
+ * What {@link zkConfig} needs of the app's services: the environment it publishes from.
  *
  * Declared narrow and locally, the way `modules/admin/price-jobs.ts` and `modules/lodgings/leaderboard.ts`
  * declare theirs: the composition root states the app's own services type, and the app's services object
- * satisfies this shape structurally, so a caller passes what it already has and a test can stand a
- * one-line logger in for one.
+ * satisfies this shape structurally, so a caller passes what it already has.
  */
 export interface ZkConfigServices {
   /** The process's configuration: the mode, the test-only switches, the salt and the artefact base. */
   readonly env: ZkEnv;
-  /** Where the absent-manifest warning is recorded. */
-  readonly logger: Pick<Logger, 'warn'>;
 }
 
 /** The built configuration, one entry per {@link testIssuerAllowed} answer. */
@@ -558,11 +554,13 @@ const zkConfigCache = new Map<boolean, ZkConfig>();
  * {@link activeRegistries} chooses the accepted ones, so a client given the test registry also proves
  * against a root the verifier accepts.
  *
- * A missing manifest is a `503 service_unavailable` after one `warn` line, because the client cannot
- * download or check an artefact without it; `main.ts` requires the manifest outright in staging and
- * production, so this answer is reachable only where a build has not run.
+ * A missing manifest is a `503 service_unavailable`, because the client cannot download or check an
+ * artefact without it: the failure travels as the thrown error's `cause`, which names the absent file,
+ * so the one line it is recorded by is the errors plugin's, which logs the code with the head of that
+ * chain (AAP 0.11.1). `main.ts` requires the manifest outright in staging and production, so this
+ * answer is reachable only where a build has not run.
  *
- * @param services - The environment and the logger.
+ * @param services - The process's configuration.
  * @returns A promise for the published configuration, the same object for every call in one mode.
  * @throws {AppError} `service_unavailable` when the artefact manifest is absent.
  * @throws {ZkConfigurationError} When a configuration file it publishes cannot be read.
@@ -575,11 +573,9 @@ export async function zkConfig(services: ZkConfigServices): Promise<ZkConfig> {
   // holds the event loop on a filesystem call (AAP 0.12.2).
   const manifest = await readArtifactsManifest();
   if (manifest === null) {
-    services.logger.warn(
-      { event: 'zk_artifacts_missing', file: MANIFEST_FILE },
-      'zk_artifacts_missing',
-    );
-    throw new AppError('service_unavailable');
+    throw new AppError('service_unavailable', undefined, {
+      cause: new Error(`zk_artifacts_missing: ${MANIFEST_FILE}`),
+    });
   }
 
   const cached = zkConfigCache.get(allowTestIssuer);

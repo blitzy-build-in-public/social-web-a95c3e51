@@ -14,15 +14,15 @@
  *   - Screens render {@link userMessageFor}. `ApiError.message` is the code itself, which is what a
  *     log line or a crash report may safely hold.
  *
- * Its only import is `@tablemate/shared`, it has no side effects and it touches no platform API, so
- * the module loads unchanged under Hermes, in a browser and in a plain Node test process.
+ * Its imports are `@tablemate/shared` and the fixed copy of `src/copy/strings.ts`, neither of which
+ * has a side effect or touches a platform API, so the module loads unchanged under Hermes, in a
+ * browser and in a plain Node test process.
  */
 import {
   BUDGET_MAX_CENTS,
   BUDGET_MIN_CENTS,
   CHECK_IN_CLOSES_AFTER_MINUTES,
   CHECK_IN_OPENS_BEFORE_MINUTES,
-  DEPOSIT_LEVELS_CENTS,
   DISPUTE_FILING_WINDOW_HOURS,
   ErrorCode,
   ErrorEnvelope,
@@ -31,6 +31,8 @@ import {
   STAY_MAX_DAYS,
   STAY_MIN_DAYS,
 } from '@tablemate/shared';
+
+import { DEPOSIT_AMOUNTS_TEXT } from '../copy/strings';
 
 /**
  * Every code the client can hold: the shared server codes of AAP 0.5.4, plus the two that exist only
@@ -175,20 +177,6 @@ function retryAfterSecondsFrom(response: {
 /** What a screen shows for a code the map below does not hold. */
 const GENERIC_MESSAGE = 'Something went wrong. Please try again.';
 
-/** Joins items as an English list ending in `or`: `['5', '10', '20']` -> `'5, 10 or 20'`. */
-function joinWithOr(items: readonly string[]): string {
-  if (items.length === 0) return '';
-  const head = items.slice(0, -1).join(', ');
-  const last = items[items.length - 1] ?? '';
-  return head === '' ? last : `${head} or ${last}`;
-}
-
-/**
- * The accepted deposit levels as whole USD amounts, e.g. `5, 10 or 20`, built from
- * {@link DEPOSIT_LEVELS_CENTS} so the sentence cannot drift from what `POST /meetups` accepts.
- */
-const DEPOSIT_AMOUNTS_TEXT = joinWithOr(DEPOSIT_LEVELS_CENTS.map((cents) => String(cents / 100)));
-
 /** The largest accepted photo in whole megabytes, built from {@link PHOTO_MAX_BYTES}. */
 const PHOTO_MAX_MEGABYTES = PHOTO_MAX_BYTES / 1024 / 1024;
 
@@ -199,9 +187,11 @@ const PHOTO_MAX_MEGABYTES = PHOTO_MAX_BYTES / 1024 / 1024;
  * sentence is short, actionable and repeats nothing the server sent: no field name, no id, no reason
  * text, no provider message (AAP 0.11.1). No sentence here repeats a fixed string of AAP 0.5.8; the
  * deposit framing, safety, age-gate, Table Credit, lodging-call and visibility notices belong to
- * their own screens. A sentence that carries a rule's own number — a window, the deposit levels, the
- * budget bounds, the stay range, the photo limit — is built from that shared constant rather than
- * typed out, so the copy cannot drift from what the API enforces.
+ * their own screens. A sentence that carries a rule's own number — a window, the budget bounds, the
+ * stay range, the photo limit — is built from that shared constant rather than typed out, so the copy
+ * cannot drift from what the API enforces. The deposit levels are the one such sentence the copy
+ * module already builds, so {@link DEPOSIT_AMOUNTS_TEXT} is imported from there rather than derived
+ * here a second time.
  *
  * The `/ops` operator screens share this mapping, so the operator codes are covered here too. Only a
  * code this client does not know at all reaches {@link GENERIC_MESSAGE}.
@@ -289,6 +279,8 @@ const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
 
   // 5xx — the server side
   internal_error: 'Something went wrong on our side. Please try again.',
+  fx_rate_unavailable:
+    'No exchange rate for that currency yet. Enter the price in USD, or try again after the daily exchange-rate refresh.',
   payment_unavailable:
     'Payment is catching up: your hold is still being confirmed. Check back shortly.',
   service_unavailable: 'Tablemate is briefly unavailable. Please try again shortly.',

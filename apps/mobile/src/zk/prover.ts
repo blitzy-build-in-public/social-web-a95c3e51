@@ -13,12 +13,16 @@
  * test process. Its two collaborators arrive per platform through the extensionless `./prover` import
  * below (`prover.native.ts` on iOS and Android, `prover.web.ts` on the web).
  *
+ * The input generator arrives through `./circuits`, for the same reason one level further out: it is
+ * imported statically on iOS and Android, where the package is already in the bundle the app starts
+ * from, and on the web it is fetched as a chunk of its own the first time {@link prove} runs — so a
+ * web build's entry payload carries the entry route's code, not this client's.
+ *
  * {@link prove} measures one span — input construction through witness generation and proving to the
  * proof output — which is the figure AAP 0.5.5 holds against p95 ≤ 90 s on phone-class devices.
  * Artefact downloads happen before it, so network time cannot distort a proving measurement. Client
  * state keeps only `{ status, issuerId?, errorCode? }` and a numeric download progress.
  */
-import { CircuitInputError, buildCircuitInputs } from '@tablemate/circuits';
 import type { CircuitInputErrorCode, SupportedIssuer } from '@tablemate/circuits';
 import { PUBLIC_SIGNAL_NAMES, ProofSubmission } from '@tablemate/shared';
 import type {
@@ -34,6 +38,14 @@ import { apiClient } from '../api/client';
 import { isApiError } from '../api/errors';
 import type { ClientErrorCode } from '../api/errors';
 import { resetProof, setProofError, setProofStatus } from '../state/proof-store';
+
+/*
+ * The circuit API — the witness input generator, and the way this platform recognises the error it
+ * raises — resolved by the bundler exactly as the platform half below is: `circuits.ts` on iOS and
+ * Android, where the package is in the bundle the app starts from, and `circuits.web.ts` on the web,
+ * where one dynamic `import` keeps the package out of the entry chunk and hands it over on first use.
+ */
+import { isCircuitInputError, loadCircuitApi } from './circuits';
 
 /*
  * The platform half of the split, resolved by the bundler rather than a runtime flag: Metro maps this
@@ -391,14 +403,16 @@ let sessionInFlight = false;
 /**
  * The code of anything the proving flow can throw, or `unknown_error` for an error that offers none.
  *
- * The two error types this client owns are recognised by class — the input generator's
- * {@link CircuitInputError} and the API client's `ApiError` — and everything else by shape: an
- * `AbortError` is this flow's `cancelled`, and any error carrying a `snake_case` `code` keeps it,
- * which covers the platform files, the native module and a Web Worker's reported failure. No message
- * is ever read: an exception's text can carry a field value, and a code is all a screen needs.
+ * The two error types this client owns are recognised by identity: the input generator's refusal
+ * through the circuit API's own predicate — membership of the class on iOS and Android, its shape on
+ * the web, where the package is not loaded — and the API client's `ApiError` by class. Everything
+ * else is read by shape: an `AbortError` is this flow's `cancelled`, and any error carrying a
+ * `snake_case` `code` keeps it, which covers the platform files, the native module and a Web Worker's
+ * reported failure. No message is ever read: an exception's text can carry a field value, and a code
+ * is all a screen needs.
  */
 export function errorCodeOf(err: unknown): ProofErrorCode | 'unknown_error' {
-  if (err instanceof CircuitInputError) return err.code;
+  if (isCircuitInputError(err)) return err.code;
   if (isApiError(err)) return err.code;
   if (typeof err !== 'object' || err === null) return 'unknown_error';
 
@@ -549,6 +563,11 @@ export async function prove(
   await new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
   });
+
+  // The generator is loaded before the span starts: on the web this call fetches the package's chunk,
+  // the one download a first attempt on the entry route pays, and a figure measured across it would
+  // not be the span AAP 0.5.5 defines.
+  const { buildCircuitInputs } = await loadCircuitApi();
 
   const startedAt = now();
   const { inputs, issuerId } = buildCircuitInputs(emlBytes, config.issuers, config.registry, {

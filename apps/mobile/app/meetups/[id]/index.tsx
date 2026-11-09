@@ -22,7 +22,9 @@ import type { AnyTierProfile, HoldView, MeetupDto, MeetupStatus, Variant } from 
 
 import { apiClient } from '../../../src/api/client';
 import { isApiError, userMessageFor } from '../../../src/api/errors';
+import { serverNow } from '../../../src/api/server-clock';
 import {
+  BOTH_CHECKED_IN_NOTICE,
   CHECKED_IN_NOTICE,
   SAFETY_NOTICE,
   SAFETY_TIPS,
@@ -80,6 +82,8 @@ const COPY = {
     'Cancelling now counts as a late cancellation: your deposit hold will be captured and your counterpart receives Table Credit.',
   resultForfeit: "Your deposit hold was captured because you didn't check in or cancelled late.",
   resultCredit: "Your counterpart didn't make it. You receive Table Credit equal to the deposit.",
+  counterpartCheckedIn: (handle: string): string => `@${handle} is checked in.`,
+  counterpartPending: (handle: string): string => `Waiting for @${handle} to check in.`,
   disputeOpen: 'A problem report is open',
 } as const;
 const CANCEL_CONFIRM = { label: 'Cancel meetup', variant: 'danger' as const };
@@ -130,6 +134,15 @@ const CITY_FORMATS = [
   { dateStyle: 'medium', timeStyle: 'short' },
   { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
 ] as const satisfies readonly Intl.DateTimeFormatOptions[];
+/**
+ * Formats a meetup instant the way this screen shows it: in the venue's zone and labelled with that
+ * zone, or -- while the city is not known yet -- in the device's zone, labelled with the same zone.
+ * The label is what stops a traveler reading a venue-local time as their own.
+ *
+ * @param iso - The instant to show, as an ISO 8601 timestamp from the API.
+ * @param timeZone - The venue city's IANA zone, or nothing while `GET /cities` has not answered.
+ * @returns The labelled instant, or `iso` when it cannot be parsed or no zone renders.
+ */
 export function formatInCity(iso: string, timeZone: string | undefined): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return iso;
@@ -143,7 +156,8 @@ export function formatInCity(iso: string, timeZone: string | undefined): string 
     }
     return null;
   };
-  const named = timeZone === undefined ? null : render({ timeZone }, '');
+  const named =
+    timeZone === undefined || timeZone === '' ? null : render({ timeZone }, ` (${timeZone})`);
   return named ?? render({}, suffix) ?? iso;
 }
 export function pollIsSatisfied(kind: PollKind, meetup: MeetupDto): boolean {
@@ -168,12 +182,37 @@ export const disputeReportable = (meetup: MeetupDto, now: number): boolean => {
   if (status !== 'completed' && status !== 'forfeited' && status !== 'unattended') return false;
   return now <= Date.parse(meetup.startsAt) + DISPUTE_FILING_WINDOW_HOURS * HOUR_MS;
 };
+/** One line about the counterpart's check-in, and the testID a check reads it by. */
+export type CheckInSignal = { readonly testID: string; readonly text: string };
+
+/**
+ * The counterpart's check-in as the summary card states it, or null when the card has nothing to add.
+ *
+ * Both attendees read the same two facts off the meetup (AAP 0.5.4, 0.5.7), so the sentence names
+ * whichever side is missing: the counterpart's once they are in, the wait once the caller is and
+ * they are not, and the shared pair notice once both are. A final status states nothing here,
+ * because the result card below already explains the outcome.
+ */
+export function counterpartCheckInSignal(meetup: MeetupDto): CheckInSignal | null {
+  if (meetup.status !== 'locked') return null;
+  const { handle } = meetup.counterpart;
+  if (meetup.checkedIn && meetup.counterpartCheckedIn) {
+    return { testID: 'meetup-both-checked-in', text: BOTH_CHECKED_IN_NOTICE };
+  }
+  if (meetup.counterpartCheckedIn) {
+    return { testID: 'meetup-counterpart-checked-in', text: COPY.counterpartCheckedIn(handle) };
+  }
+  if (meetup.checkedIn) {
+    return { testID: 'meetup-counterpart-pending', text: COPY.counterpartPending(handle) };
+  }
+  return null;
+}
 export type MeetupLink = { readonly testID: string; readonly label: string; readonly href: string };
 const link = (testID: string, label: string, href: string): MeetupLink => ({ testID, label, href });
 export function onwardLinks(meetup: MeetupDto, now: number): readonly MeetupLink[] {
-  const { id, status, nextAction, disputeOpen } = meetup;
+  const { id, status, nextAction, disputeOpen, checkedIn } = meetup;
   const until = Date.parse(meetup.startsAt) + SUGGESTIONS_ELIGIBLE_FOR_MS;
-  const checkIn = status === 'locked' && nextAction !== 'check_in';
+  const checkIn = status === 'locked' && !checkedIn && nextAction !== 'check_in';
   const chat = status === 'locked' || status === 'completed';
   const plan = status === 'locked' || (status === 'completed' && now <= until);
   const links: MeetupLink[] = [];
@@ -191,13 +230,24 @@ export const cancelIsLate = (meetup: MeetupDto, now: number): boolean =>
   meetup.status === 'locked' && now > Date.parse(meetup.lateCancelFrom);
 const errorCodeOf = (error: unknown): string =>
   isApiError(error) ? error.code : 'invalid_response';
-function useDeviceClock(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
+/**
+ * The instant this screen compares its time-dependent terms against (AAP 0.5.3). The
+ * late-cancellation boundary and the dispute-filing window are the API's decisions, so the instant
+ * they are compared with here is the server's, re-estimated from each response's `Date` header
+ * (AAP 0.3.2, 0.5.1).
+ *
+ * The tick only re-renders the screen; the reading itself comes from `serverNow()` at every render,
+ * so an offset a response records after this screen mounted takes effect at once and a device clock
+ * that is hours out cannot move either statement. Before any response has been read the offset is
+ * zero and `serverNow()` answers the device clock.
+ */
+function useServerClock(intervalMs: number): number {
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    const id = setInterval(() => setTick((tick) => tick + 1), intervalMs);
     return () => clearInterval(id);
   }, [intervalMs]);
-  return now;
+  return serverNow();
 }
 type DepositProps = { readonly variant: Variant | null; readonly depositCents: number };
 type BusyProps = DepositProps & { readonly busy: boolean };
@@ -309,7 +359,7 @@ export default function MeetupDetailScreen(): ReactElement {
   const [cardPanel, setCardPanel] = useState(false);
   const [poll, setPoll] = useState<PollKind | null>(null);
   const inFlight = useRef(false);
-  const now = useDeviceClock(cancelConfirm ? CLOCK_FAST_TICK_MS : MINUTE_MS);
+  const now = useServerClock(cancelConfirm ? CLOCK_FAST_TICK_MS : MINUTE_MS);
   const meetup = meetupQ.data;
   const variant = meQ.data?.variant ?? null;
   useEffect(() => {
@@ -468,6 +518,7 @@ export default function MeetupDetailScreen(): ReactElement {
     <ListItem key={item.testID} {...linkRow(item)} />
   );
   const onward = meetup === undefined ? [] : onwardLinks(meetup, now).map(toRow);
+  const checkInSignal = meetup === undefined ? null : counterpartCheckInSignal(meetup);
   const resultText = meetup === undefined ? null : resultTextFor(meetup);
   const credit = meetup === undefined ? false : wonTableCredit(meetup);
   return (
@@ -491,6 +542,11 @@ export default function MeetupDetailScreen(): ReactElement {
               {meetup.checkedIn && (
                 <Text testID="meetup-checked-in" style={styles.muted}>
                   {CHECKED_IN_NOTICE}
+                </Text>
+              )}
+              {checkInSignal !== null && (
+                <Text testID={checkInSignal.testID} style={styles.muted}>
+                  {checkInSignal.text}
                 </Text>
               )}
             </Card>

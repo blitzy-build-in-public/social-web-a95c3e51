@@ -17,7 +17,7 @@ import {
   guestCountText,
 } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
-import { Banner, Button, ListItem, Screen, announce } from '../../src/ui';
+import { Banner, Chip, ListItem, Screen, announce } from '../../src/ui';
 
 const styles = StyleSheet.create({
   heading: { ...typography.heading, color: colors.text, fontWeight: fontWeights.bold },
@@ -30,6 +30,11 @@ const VALID_PROOF_STATUS = 'valid' satisfies ProofStatus;
 const TAB_EDGES = ['left', 'right'] as const;
 type SortLabels = Record<LodgingSort, string>;
 const SORT_LABELS = { activity: 'Most active', name: 'A–Z' } as const satisfies SortLabels;
+/**
+ * The name of the sort row, which is a `radiogroup`: axe's `aria-required-parent` rule requires the
+ * radio chips to sit inside a named group, and VoiceOver and TalkBack announce it with them.
+ */
+const SORT_GROUP_LABEL = 'Sort lodgings';
 const KIND_LABELS = {
   hostel: 'Hostel',
   hotel: 'Hotel',
@@ -40,7 +45,6 @@ const COPY = {
   empty: 'No lodgings listed in this city yet.',
   noCity: 'The lodgings query was enabled without a city.',
   tryAgain: 'Try again',
-  selected: 'Selected',
 };
 const OPEN_OSM = (): void => void Linking.openURL(OSM_COPYRIGHT_URL);
 const IMPORT_ACTION = { label: 'Verify my stay', onPress: () => router.push('/proof/import') };
@@ -110,18 +114,16 @@ export default function LodgingsScreen(): ReactElement {
     <Screen edges={TAB_EDGES}>
       <Text {...HEADING} style={styles.heading}>{`Lodgings in ${cityName}`}</Text>
       <Text style={styles.note}>{COPY.ranking}</Text>
-      <View style={styles.sortRow}>
-        <Button
+      <View role="radiogroup" aria-label={SORT_GROUP_LABEL} style={styles.sortRow}>
+        <Chip
           label={SORT_LABELS.activity}
-          variant={sort === 'activity' ? 'primary' : 'secondary'}
-          {...(sort === 'activity' ? { hint: COPY.selected } : {})}
+          selected={sort === 'activity'}
           onPress={() => setSort('activity')}
           testID="lodgings-sort-activity"
         />
-        <Button
+        <Chip
           label={SORT_LABELS.name}
-          variant={sort === 'name' ? 'primary' : 'secondary'}
-          {...(sort === 'name' ? { hint: COPY.selected } : {})}
+          selected={sort === 'name'}
           onPress={() => setSort('name')}
           testID="lodgings-sort-name"
         />

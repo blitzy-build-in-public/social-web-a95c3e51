@@ -1206,6 +1206,54 @@ describe('a call driven turn by turn', () => {
       }),
     ]);
   });
+
+  it('answers an utterance the relay cut at its own byte bound without asking the model', async () => {
+    const harness = driveScenario({
+      ctx: callContext({ city: LISBON, kind: 'menu_prices' }),
+      turns: pricesHighScenario.turns,
+    });
+    await harness.session.start();
+
+    // The relay holds an utterance only up to the classification window's own bound, and hands the
+    // turn on with nothing but the fact that it was cut (AAP 0.5.6).
+    const cut = 'Z9'.repeat(CLASSIFICATION_WINDOW_MAX_BYTES);
+    await harness.session.onPrompt(cut, { overlong: true });
+
+    // No request was counted, sent or charged: the dialogue budget is untouched (AAP 0.5.6).
+    expect(harness.llm.calls.counted).toEqual([]);
+    expect(harness.llm.calls.sent).toEqual([]);
+    // It is still a turn, and it takes the path an `unclear` classification takes: the question the
+    // step asked is put again, and the per-turn line names the label the dialogue answered itself.
+    expect(textFrames(harness.frames).map((frame) => frame.token)).toEqual([
+      renderTemplate('pt-PT', 'ask.cheapest_main'),
+      renderTemplate('pt-PT', 'retry.unclear'),
+    ]);
+    expect(linesFor(harness.stores.lines, 'voice_turn')).toEqual([
+      expect.objectContaining({
+        attemptId: ATTEMPT_ID,
+        turn: 1,
+        step: 'cheapest_main',
+        classification: 'unclear',
+      }),
+    ]);
+
+    // The next turns are classified as any other is, and neither the requests nor the call's own
+    // transcript carries the cut utterance: nothing of it was appended anywhere (AAP 0.5.6). The
+    // script still runs to its end, so the cut utterance cost one question and nothing else.
+    for (const turn of pricesHighScenario.turns) {
+      await harness.session.onPrompt(turn.say);
+    }
+
+    expect(harness.llm.calls.sent).toHaveLength(pricesHighScenario.turns.length);
+    for (const request of harness.llm.calls.sent) {
+      expect(request).not.toContain('Z9');
+    }
+    const recorded = harness.stores.attemptUpdates[0];
+    expect(recorded?.['outcome']).toBe('completed');
+    const transcript = textOf(recorded?.['transcript']);
+    expect(transcript).toContain(renderTemplate('pt-PT', 'ask.cheapest_main'));
+    expect(transcript).not.toContain('Z9');
+  });
 });
 
 function placeholders(text: string): string[] {

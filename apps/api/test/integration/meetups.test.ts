@@ -80,6 +80,7 @@ import {
 import { TEST_CARDS, type TestCardId } from '../support/stripe-proxy/state.ts';
 
 import type {
+  CheckInResult,
   DepositStatus,
   ErrorCode,
   HoldView,
@@ -1799,6 +1800,41 @@ const BAD_QUERIES: readonly BadQueryRow[] = [
   { name: 'a cursor this API never issued', query: { cursor: '%%' } },
 ];
 
+/** One check-in state a locked meetup can hold, and what each attendee must read from it. */
+interface CheckInSignalRow {
+  readonly name: string;
+  /** Which attendees hold a passing check-in, as the meetup's own `CheckIn` rows. */
+  readonly passes: { readonly initiator?: CheckInResult; readonly recipient?: CheckInResult };
+  /** Each attendee's expected `[checkedIn, counterpartCheckedIn]` (AAP 0.5.4, 0.5.7). */
+  readonly expected: {
+    readonly initiator: readonly [boolean, boolean];
+    readonly recipient: readonly [boolean, boolean];
+  };
+}
+
+/**
+ * Seeing whether the counterpart showed up is the product's trust signal, and both attendees read it
+ * from the meetup's pass `CheckIn` rows while it is still `locked` (AAP 0.5.7): whichever side checked
+ * in first, each one gets their own check-in and the counterpart's, and two pass rows give both.
+ */
+const CHECK_IN_SIGNAL_ROWS: readonly CheckInSignalRow[] = [
+  {
+    name: 'the initiator checked in alone',
+    passes: { initiator: 'pass' },
+    expected: { initiator: [true, false], recipient: [false, true] },
+  },
+  {
+    name: 'the recipient checked in alone',
+    passes: { recipient: 'pass' },
+    expected: { initiator: [false, true], recipient: [true, false] },
+  },
+  {
+    name: 'both attendees checked in',
+    passes: { initiator: 'pass', recipient: 'pass' },
+    expected: { initiator: [true, true], recipient: [true, true] },
+  },
+];
+
 describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
   it.each(rows(BAD_QUERIES))(`${MODE} answers 400 invalid_field for $name`, async (entry) => {
     const fixture = await proposal();
@@ -1842,6 +1878,40 @@ describe(`GET ${MEETUPS_URL} and GET ${MEETUPS_URL}/:id (AAP 0.5.4)`, () => {
     expect(empty.items).toHaveLength(0);
     expect(empty.nextCursor).toBeNull();
   });
+
+  it.each(rows(CHECK_IN_SIGNAL_ROWS))(
+    `${MODE} serves each attendee their own and the counterpart's check-in with $name`,
+    async (entry) => {
+      const fixture = await proposal();
+      const meetup = await makeMeetup(t, {
+        status: 'locked',
+        initiator: fixture.initiator,
+        recipient: fixture.recipient,
+        venue: fixture.venue,
+        startsAt: fixture.startsAt,
+        checkIns: entry.passes,
+      });
+
+      // Both attendees read the same two facts, each from their own side of the meetup (AAP 0.5.4).
+      const attendees = [
+        { actor: fixture.initiator, expected: entry.expected.initiator },
+        { actor: fixture.recipient, expected: entry.expected.recipient },
+      ] as const;
+
+      for (const { actor, expected } of attendees) {
+        const dto = MeetupDto.parse((await readMeetup(actor, meetup.id)).json());
+        expect([dto.checkedIn, dto.counterpartCheckedIn], `@${actor.handle}`).toEqual(expected);
+      }
+
+      // The page read answers the same two fields out of its own single query (AAP 0.5.4, 0.12.2).
+      const page = MeetupListResponse.parse(
+        (await listMeetups(fixture.initiator, { status: 'locked' })).json(),
+      );
+      expect(page.items.map((item) => [item.checkedIn, item.counterpartCheckedIn])).toEqual([
+        entry.expected.initiator,
+      ]);
+    },
+  );
 
   it(`${MODE} pages the caller's own meetups at ${PAGE_SIZE} and continues from the cursor`, async () => {
     const fixture = await proposal();

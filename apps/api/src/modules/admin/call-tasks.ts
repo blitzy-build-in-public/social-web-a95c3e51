@@ -20,8 +20,11 @@
  * made: an outcome outside `OperatorCallTaskOutcome` is `422 invalid_outcome`, an unknown task id is
  * `404 not_found`, a `lodging_stay_verification` task is `422` for every outcome, a task that is
  * not `needs_review` or `unreachable` — or that an operator already resolved — is `422`, because
- * terminal tasks stay terminal, and a task whose one target the guarded client can no longer read
- * is `422` for every outcome rather than a `500` (AAP 0.5.2). A resolution then runs in one
+ * terminal tasks stay terminal, a task whose one target the guarded client can no longer read
+ * is `422` for every outcome rather than a `500` (AAP 0.5.2), and a `completed` whose prices name a
+ * currency with no `FxRate` row at or before the capture day is `503 fx_rate_unavailable` rather
+ * than `422`, because the missing row is the dependency the daily `fx-refresh` job supplies and not
+ * a fault of the outcome the operator recorded (AAP 0.5.6). A resolution then runs in one
  * transaction behind the operator's own write fence and takes `SELECT … FOR UPDATE` on the task
  * row first, so two operators resolving one task serialize and the second cannot store a second
  * outcome.
@@ -628,6 +631,16 @@ function sourceUrlForPlace(
  * The rate to convert a price in `currency` on `day`: the latest `FxRate` at or before that day, or
  * the unit rate for USD, which the table need not carry (AAP 0.5.6). A currency with no rate at all
  * refuses the resolution, so nothing is stored and no price is guessed.
+ *
+ * @param tx - The caller's open transaction, which the rate is read in.
+ * @param currency - The ISO 4217 code the operator's price is denominated in.
+ * @param day - The capture day, whose own rate AAP 0.5.6 fixes the conversion on.
+ * @returns the rate's date and its `usdPerUnit`.
+ * @throws {AppError} `fx_rate_unavailable` (503) when no row exists at or before `day`: only the
+ *   `fx-refresh` job writes that table and it runs daily at 00:30 UTC (AAP 0.5.6), so a stack
+ *   younger than its first run holds no row for a non-USD currency, and the contract's
+ *   `422 invalid_outcome` (AAP 0.5.4) describes a refused outcome rather than a dependency still to
+ *   arrive. The throw stays inside the caller's transaction, so the resolution stores nothing.
  */
 async function usdRateFor(tx: DbTx, currency: string, day: Date) {
   if (currency === 'USD') {
@@ -641,7 +654,10 @@ async function usdRateFor(tx: DbTx, currency: string, day: Date) {
   });
 
   if (row === null) {
-    throw new AppError('invalid_outcome', `No FX rate for ${currency}.`);
+    throw new AppError(
+      'fx_rate_unavailable',
+      `No FX rate for ${currency} at or before the capture day. Enter the price in USD, or retry once the daily FX refresh has stored a rate.`,
+    );
   }
 
   return row;
@@ -800,7 +816,9 @@ async function stopCallingPlace(tx: DbTx, task: Pick<CallTask, 'id' | 'placeId'>
  *   lodging task, for a task that is not in the queue, for a `completed` with no prices to store,
  *   and for a task whose target is no longer readable — checked before the outcome is applied —
  *   which rolls the resolution back rather than storing an outcome the reply could not carry;
- *   `not_found` (404) for an unknown task id.
+ *   `fx_rate_unavailable` (503) for a `completed` whose prices name a currency with no `FxRate` row
+ *   at or before the capture day (AAP 0.5.6), which likewise stores nothing and leaves the task in
+ *   the queue; `not_found` (404) for an unknown task id.
  */
 export async function resolveCallTask(
   services: CallTaskServices,

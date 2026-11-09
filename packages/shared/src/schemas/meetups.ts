@@ -210,9 +210,13 @@ export type MeetupListQuery = z.infer<typeof MeetupListQuery>;
  * (AAP 0.5.4).
  *
  * `role` and `checkedIn` are the calling user's: which side of the meetup they hold, and whether
- * they have a pass check-in. `counterpart` is serialized at the caller's tier through
- * `PROFILE_SCHEMA_BY_TIER`, so it is a `Tier0Profile` for a stranger and reaches tier 3 only after
- * two completed meetups (criterion 5).
+ * they have a pass check-in. `counterpartCheckedIn` is the other attendee's pass check-in, from the
+ * same pass `CheckIn` rows `Meetup.bothCheckedInAt` is set from (AAP 0.5.7), so it is what lets
+ * either attendee see whether the counterpart showed up — the trust signal the deposit is held
+ * against — while the meetup is still `locked`. It reports the row that exists at the read, so
+ * neither settlement, nor an open dispute, nor a hold loss changes it (AAP 0.5.7). `counterpart` is
+ * serialized at the caller's tier through `PROFILE_SCHEMA_BY_TIER`, so it is a `Tier0Profile` for a
+ * stranger and reaches tier 3 only after two completed meetups (criterion 5).
  *
  * `recipientDeadline` is the earlier of `proposalVisibleAt + 48 h` and `startsAt`, and is null
  * while the proposal is not yet visible because the initiator's hold is still pending; a meetup
@@ -236,6 +240,7 @@ export const MeetupDto = z.object({
   recipientHold: HoldView,
   lateCancelFrom: IsoDateTime,
   checkedIn: z.boolean(),
+  counterpartCheckedIn: z.boolean(),
   disputeOpen: z.boolean(),
   nextAction: NextAction,
 });

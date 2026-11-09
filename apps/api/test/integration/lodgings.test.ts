@@ -23,9 +23,17 @@
  * derived from it and `DAY_MS` — a claim whose stay has ended is written with dates before it, never by
  * moving the clock — so no case waits for a window to pass. And the directory is cached in Redis for
  * `LEADERBOARD_CACHE_SECONDS` under `leaderboard:<APP_ENV>:<cityId>`, one entry per fixture policy,
- * whose TTLs are wall-clock: the reader below drops this run's own key before every read that must see
- * the rows a case has just written, and asserts the entry was written again with the TTL the contract
- * states, which is also what proves the key it drops is the route's own.
+ * holding the version-stamped envelope `{ v, items }` the module writes rather than the bare board:
+ * the reader below drops this run's own key before every read that must see the rows a case has just
+ * written, and asserts the entry was written again with the TTL the contract states, which is also
+ * what proves the key it drops is the route's own.
+ *
+ * Three more cases cover the detail route over a bounded directory: a city holding more lodgings than
+ * `LODGING_DIRECTORY_LIMIT` still answers one the cut left out with its own `activityScore`, its own
+ * `guestCount` and the rank after every listed lodging — never as a lodging that does not exist —
+ * while a lodging the board does carry answers exactly the board's own numbers; and a guest list is
+ * cut at `LODGING_GUEST_LIST_LIMIT`, the most recently resolved stay first, with `guestCount` still
+ * reporting every current verified guest (AAP 0.5.4, 0.5.7).
  *
  * @see AAP 0.5.4 for the routes, their errors and their DTOs, 0.5.7 for the visibility, guest-count and
  *   leaderboard rules, 0.12.1 for the two criteria, 0.11.2 for the harness, 0.8.1 for this file.
@@ -36,6 +44,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, inject } from 'vitest';
 
 import { createPrismaClient, type DbClient } from '@tablemate/db';
+import { pairKey } from '@tablemate/server-core';
 import {
   DAY_MS,
   GUEST_COUNT_BELOW_LABEL,
@@ -47,6 +56,7 @@ import {
   LodgingDetail,
   LodgingsResponse,
   LodgingSummary,
+  MINUTE_MS,
   TIER_FIELDS,
   VisibilityResponse,
 } from '@tablemate/shared';
@@ -74,9 +84,14 @@ import type {
   UserFixture,
 } from '../support/factories.ts';
 import {
+  LEADERBOARD_CACHE_VERSION,
+  LODGING_ACTIVITY_FACTS_LIMIT,
+  LODGING_DIRECTORY_LIMIT,
   leaderboard,
+  lodgingStats,
   type LodgingLeaderboardServices,
 } from '../../src/modules/lodgings/leaderboard.ts';
+import { LODGING_GUEST_LIST_LIMIT } from '../../src/modules/lodgings/visibility.ts';
 
 /* Names and keys every case is written against (AAP 0.5.2, 0.5.7) */
 
@@ -699,6 +714,308 @@ describe('criterion 16: the city leaderboard', () => {
 });
 
 /* ---------------------------------------------------------------------------------------------
+ * The bound on a directory answer (AAP 0.1.1, 0.11.1)
+ * ------------------------------------------------------------------------------------------- */
+
+/** One warning line the module wrote, kept as the fields it carries (AAP 0.11.1). */
+type WarningLine = Record<string, unknown>;
+
+/** The services a case drives the module with, and the warning lines the module wrote through them. */
+interface RecordedServices {
+  readonly services: LodgingLeaderboardServices;
+  readonly warnings: WarningLine[];
+}
+
+/**
+ * The run's own services over a logger that keeps every warning the module writes, so a case can read
+ * the line a bounded answer is reported with (AAP 0.11.1).
+ *
+ * The directory route calls this module with services built the same way — `t.services` narrowed to
+ * {@link LodgingLeaderboardServices} — so the line asserted here is the line the route writes; only
+ * the logger differs, because the app's own logger writes to the process rather than to the case.
+ */
+function recordingServices(db: DbClient): RecordedServices {
+  const warnings: WarningLine[] = [];
+
+  return {
+    warnings,
+    services: {
+      db,
+      redis: t.services.redis,
+      clock: t.services.clock,
+      logger: {
+        warn: (...args: unknown[]): void => {
+          const first = args[0];
+          warnings.push(typeof first === 'object' && first !== null ? (first as WarningLine) : {});
+        },
+      },
+      env: { APP_ENV: t.env.APP_ENV, ANALYTICS_SALT: t.env.ANALYTICS_SALT },
+      timezoneFor: t.services.timezoneFor,
+    },
+  };
+}
+
+/** The lines of `warnings` carrying `event`, in the order they were written (AAP 0.11.1). */
+function warningsFor(warnings: readonly WarningLine[], event: string): WarningLine[] {
+  return warnings.filter((line) => line.event === event);
+}
+
+/** How many lodgings {@link createLodgings} opens at once: past this the client queue does the rest. */
+const LODGING_CREATE_BATCH = 50;
+
+/** `count` lodgings in Lisbon, created in batches rather than all in one `Promise.all`. */
+async function createLodgings(count: number): Promise<LodgingFixture[]> {
+  const created: LodgingFixture[] = [];
+
+  while (created.length < count) {
+    const size = Math.min(LODGING_CREATE_BATCH, count - created.length);
+    created.push(
+      ...(await Promise.all(
+        Array.from({ length: size }, () => makeLodging(t, { cityId: LISBON })),
+      )),
+    );
+  }
+
+  return created;
+}
+
+/** One lodging in Lisbon, failing the case when none was created. */
+async function oneLodging(): Promise<LodgingFixture> {
+  const [lodging] = await createLodgings(1);
+  if (lodging === undefined) {
+    throw new Error('no lodging was created');
+  }
+  return lodging;
+}
+
+describe('the bound on a directory answer', () => {
+  it('answers the bound and keeps the lodgings that witnessed a meetup', async () => {
+    // The two lodgings that carry activity sort last of all by name, so a bound cut in name order
+    // alone would drop exactly these two; the order the bound cuts in has them first instead.
+    const scored = [
+      await namedLodging('Zzz Scored Lodging A'),
+      await namedLodging('Zzz Scored Lodging B'),
+    ];
+    const quiet = await createLodgings(LODGING_DIRECTORY_LIMIT - 1);
+    const quietIds = new Set(quiet.map((lodging) => lodging.id));
+    const now = t.time.now();
+
+    for (const lodging of scored) {
+      await makeActivityFacts(t, lodging, [{ pair: pairOf(), completedAt: ago(now, 1) }]);
+    }
+
+    const recorded = recordingServices(t.services.db);
+    const listed = await leaderboard(recorded.services, LISBON, 'activity');
+
+    expect(listed).toHaveLength(LODGING_DIRECTORY_LIMIT);
+    expect(listed.slice(0, 2).map((entry) => entry.id)).toEqual(
+      scored.map((lodging) => lodging.id),
+    );
+    expect(listed.slice(0, 2).map((entry) => entry.rank)).toEqual([1, 2]);
+    // Exactly one lodging is missing, and it is one that witnessed nothing.
+    expect(listed.filter((entry) => quietIds.has(entry.id))).toHaveLength(
+      LODGING_DIRECTORY_LIMIT - 2,
+    );
+    expect(warningsFor(recorded.warnings, 'lodgings_truncated')).toEqual([
+      { event: 'lodgings_truncated', cityId: LISBON, limit: LODGING_DIRECTORY_LIMIT },
+    ]);
+
+    // The route answers the same board over the app's own services, and caches it again.
+    const items = await board();
+    expect(items.map((entry) => entry.id)).toEqual(listed.map((entry) => entry.id));
+  });
+
+  it('saturates one lodging at the facts bound and reports the cap', async () => {
+    const lodging = await oneLodging();
+    const now = t.time.now();
+
+    // A distinct pair per fact, so every fact inside the window would count on its own and the score
+    // is exactly the number of facts the read kept.
+    await t.services.db.lodgingActivityFact.createMany({
+      data: Array.from({ length: LODGING_ACTIVITY_FACTS_LIMIT + 1 }, () => ({
+        lodgingId: lodging.id,
+        meetupId: randomUUID(),
+        pairKey: pairKey(t.env.ANALYTICS_SALT, randomUUID(), randomUUID()),
+        completedAt: now,
+      })),
+    });
+
+    const recorded = recordingServices(t.services.db);
+    const listed = await leaderboard(recorded.services, LISBON, 'activity');
+
+    expect(item(listed, lodging.id).activityScore).toBe(LODGING_ACTIVITY_FACTS_LIMIT);
+    expect(warningsFor(recorded.warnings, 'lodging_activity_facts_capped')).toEqual([
+      {
+        event: 'lodging_activity_facts_capped',
+        lodgingId: lodging.id,
+        limit: LODGING_ACTIVITY_FACTS_LIMIT,
+      },
+    ]);
+
+    // The reads that score this lodging on its own — its console standings and its detail summary —
+    // clip at the same bound, so the three readers report one number rather than the directory
+    // reporting the bound and the console the lodging's own larger count.
+    const standings = await lodgingStats(recorded.services, lodging.id);
+    expect(standings.activityScore).toBe(LODGING_ACTIVITY_FACTS_LIMIT);
+    expect(standings.weeklyTrend.reduce((sum, point) => sum + point.activityScore, 0)).toBe(
+      LODGING_ACTIVITY_FACTS_LIMIT,
+    );
+  });
+});
+
+/* ---------------------------------------------------------------------------------------------
+ * The detail route over a bounded directory (AAP 0.5.4, 0.5.7)
+ * ------------------------------------------------------------------------------------------- */
+
+describe('the detail route over a bounded directory', () => {
+  it('answers a lodging the bound left out with its own numbers, not as one that does not exist', async () => {
+    const now = t.time.now();
+
+    // A board full to its bound, every lodging in it carrying a meetup inside the window, so the two
+    // lodgings below are ones the cut leaves out however their own data reads.
+    const fullBoard = await createLodgings(LODGING_DIRECTORY_LIMIT);
+    await t.services.db.lodgingActivityFact.createMany({
+      data: fullBoard.map((lodging) => ({
+        lodgingId: lodging.id,
+        meetupId: randomUUID(),
+        pairKey: pairKey(t.env.ANALYTICS_SALT, randomUUID(), randomUUID()),
+        completedAt: now,
+      })),
+    });
+
+    // The name sorts after every listed one's, so a name the cut orders by drops this lodging.
+    const scored = await namedLodging('Zzz Cap Lodging Scored');
+    await makeActivityFacts(t, scored, [
+      { pair: pairOf(), completedAt: ago(now, 1) },
+      { pair: pairOf(), completedAt: ago(now, 2) },
+    ]);
+
+    // Carrying no fact inside the window and three current verified guests of its own.
+    const quiet = await namedLodging('Zzz Cap Lodging Quiet');
+    for (let index = 0; index < GUEST_COUNT_THRESHOLD; index += 1) {
+      await makeGuest(quiet);
+    }
+    await makeActivityFacts(t, quiet, [
+      { pair: pairOf(), completedAt: ago(now, OUTSIDE_WINDOW_DAYS_AGO) },
+    ]);
+
+    const items = await board();
+    const listedIds = items.map((entry) => entry.id);
+
+    expect(items).toHaveLength(LODGING_DIRECTORY_LIMIT);
+    expect(listedIds).not.toContain(scored.id);
+    expect(listedIds).not.toContain(quiet.id);
+
+    // The scored one is answered with the two facts of its own window and the position after the
+    // whole board; the quiet one with the count its own three current guests give it and a score of
+    // 0, because its only fact is older than the window (AAP 0.5.7).
+    const scoredDetail = LodgingDetail.parse((await readDetail(scored.id)).json());
+    expect(scoredDetail.activityScore).toBe(2);
+    expect(scoredDetail.guestCount).toBe(GUEST_COUNT_BELOW_LABEL);
+    expect(scoredDetail.rank).toBe(LODGING_DIRECTORY_LIMIT + 1);
+
+    const quietDetail = LodgingDetail.parse((await readDetail(quiet.id)).json());
+    expect(quietDetail.activityScore).toBe(0);
+    expect(quietDetail.guestCount).toBe(GUEST_COUNT_THRESHOLD);
+    expect(quietDetail.rank).toBe(LODGING_DIRECTORY_LIMIT + 1);
+    // Its own row, through the mapping the directory uses: the fields the contract publishes, no
+    // more, and the name and number the row itself holds.
+    expect(quietDetail.name).toBe(quiet.name);
+    expect(quietDetail.phone).toBe(quiet.phone);
+    expect(Object.keys(quietDetail).sort()).toEqual(Object.keys(LodgingDetail.shape).sort());
+  });
+
+  it('bounds a guest list at the limit, the newest resolved stay first', async () => {
+    const lodging = await oneLodging();
+    const now = t.time.now();
+    const guests: GuestFixture[] = [];
+
+    // One opted-in guest more than the list answers, each with its own resolved instant, so a list
+    // that were unbounded would carry one guest more and a list cut in any other order would carry
+    // the oldest stay (AAP 0.5.7).
+    for (let index = 0; index <= LODGING_GUEST_LIST_LIMIT; index += 1) {
+      const guest = await makeGuest(lodging);
+      await t.services.db.lodgingClaim.update({
+        where: { id: guest.claim.id },
+        data: { resolvedAt: new Date(now.getTime() - index * MINUTE_MS) },
+      });
+      await makeVisibility(t, guest.user, guest.claim, true);
+      guests.push(guest);
+    }
+
+    const detail = LodgingDetail.parse((await readDetail(lodging.id)).json());
+
+    expect(detail.guests).toHaveLength(LODGING_GUEST_LIST_LIMIT);
+    expect(detail.guests.map((entry) => entry.id)).toEqual(
+      guests.slice(0, LODGING_GUEST_LIST_LIMIT).map((guest) => guest.user.id),
+    );
+    // The count beside the list is every current verified guest, so a list shorter than it is a cut
+    // list a reader can see rather than a claim that nobody else is staying here (AAP 0.5.7).
+    expect(detail.guestCount).toBe(LODGING_GUEST_LIST_LIMIT + 1);
+  });
+
+  it('answers a lodging the board carries with exactly the numbers the board published', async () => {
+    const now = t.time.now();
+    const carried = await namedLodging('Zzz Carried Lodging');
+    await makeActivityFacts(t, carried, [{ pair: pairOf(), completedAt: ago(now, 1) }]);
+    for (let index = 0; index < GUEST_COUNT_THRESHOLD; index += 1) {
+      await makeGuest(carried);
+    }
+
+    const listed = item(await board(), carried.id);
+    const detail = LodgingDetail.parse((await readDetail(carried.id)).json());
+    const { lat, lng, guests, ...summary } = detail;
+
+    // Field for field the same object as the directory's entry, so a lodging both answers carry is
+    // described the same way by both (AAP 0.5.4).
+    expect(summary).toEqual(listed);
+    expect(lat).toBeCloseTo(carried.lat, 6);
+    expect(lng).toBeCloseTo(carried.lng, 6);
+    // Nobody opted in, so the list is empty while the count still reports the three guests.
+    expect(guests).toEqual([]);
+    expect(listed.guestCount).toBe(GUEST_COUNT_THRESHOLD);
+    expect(listed.activityScore).toBe(1);
+  });
+});
+
+/* ---------------------------------------------------------------------------------------------
+ * The cache entry's version stamp (AAP 0.5.7)
+ * ------------------------------------------------------------------------------------------- */
+
+/**
+ * The entries a hit must refuse rather than serve (AAP 0.5.7), as (title, raw entry) rows: a bare
+ * array an older process wrote, a stamp a later version wrote, a value that is not an object, and
+ * JSON that will not parse.
+ */
+const STALE_ENTRIES: readonly (readonly [string, string])[] = [
+  ['a bare array', JSON.stringify([])],
+  ['a stamp from a later version', JSON.stringify({ v: LEADERBOARD_CACHE_VERSION + 1, items: [] })],
+  ['a value that is not an object', JSON.stringify('not a board')],
+  ['JSON that will not parse', '{ not json'],
+];
+
+describe('the directory cache entry', () => {
+  it.each(rows(STALE_ENTRIES))('recomputes and re-stamps %s', async (_title, raw) => {
+    const lodging = await oneLodging();
+    const recorded = recordingServices(t.services.db);
+
+    // One board is computed first, so the entry the case overwrites is one this process wrote: the
+    // read below then proves the entry was refused and recomputed, not simply absent.
+    await leaderboard(recorded.services, LISBON, 'activity');
+    expect(await cachedVersion(CACHE_KEY)).toBe(LEADERBOARD_CACHE_VERSION);
+
+    await t.services.redis.client.set(CACHE_KEY, raw, 'EX', LEADERBOARD_CACHE_SECONDS);
+    const listed = await leaderboard(recorded.services, LISBON, 'activity');
+
+    expect(idsOf(listed)).toEqual([lodging.id]);
+    expect(warningsFor(recorded.warnings, 'leaderboard_cache_invalid')).toEqual([
+      { event: 'leaderboard_cache_invalid', cityId: LISBON },
+    ]);
+    expect(await cachedVersion(CACHE_KEY)).toBe(LEADERBOARD_CACHE_VERSION);
+  });
+});
+
+/* ---------------------------------------------------------------------------------------------
  * The cache's scope — one board per fixture policy (AAP 0.5.2)
  * ------------------------------------------------------------------------------------------- */
 
@@ -736,14 +1053,39 @@ function idsOf(items: readonly LodgingSummary[]): string[] {
 
 /** The board one cache key holds, as the route would have answered it (AAP 0.5.7). */
 async function cachedBoard(key: string): Promise<readonly LodgingSummary[]> {
+  return (await cachedEntry(key)).items;
+}
+
+/** The version stamp one cache entry carries, which a case reads to see the entry was re-stamped. */
+async function cachedVersion(key: string): Promise<unknown> {
+  return (await cachedEntry(key)).v;
+}
+
+/**
+ * The envelope one cache key holds: the board `items` carries, and the `v` stamp that gates a hit
+ * (AAP 0.5.7).
+ *
+ * The entry is the version-stamped envelope the module writes, not the bare board — a bare array is a
+ * shape the module refuses and recomputes — so a case reads both halves; `items` is parsed as the
+ * board the contract publishes, which is what an older process's array could not satisfy.
+ *
+ * @param key - The cache key to read.
+ * @returns The entry's stamp and its board.
+ */
+async function cachedEntry(
+  key: string,
+): Promise<{ readonly v: unknown; readonly items: readonly LodgingSummary[] }> {
   const raw = await t.services.redis.client.get(key);
   if (raw === null) {
     throw new Error(`no leaderboard cache entry at ${key}`);
   }
 
-  // The entry is the board itself, the array the route hands its callers (AAP 0.5.7).
-  const decoded: unknown = JSON.parse(raw);
-  return LodgingSummary.array().parse(decoded);
+  const decoded = JSON.parse(raw) as { readonly v?: unknown; readonly items?: unknown };
+  if (decoded.items === undefined) {
+    throw new Error(`the leaderboard cache entry at ${key} carries no items`);
+  }
+
+  return { v: decoded.v, items: LodgingSummary.array().parse(decoded.items) };
 }
 
 /** Asserts one key holds an entry whose lifetime is the contract's (AAP 0.5.7). */

@@ -17,7 +17,7 @@
  * Client-safe: `@tanstack/react-query`, `@tablemate/shared` and the modules above, with no Node
  * built-in, no DOM global and one inert `QueryClient` as its only top-level effect.
  */
-import { QueryClient, useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { QueryClient, onlineManager, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
 import { isFinalMeetupStatus } from '@tablemate/shared';
 import type {
@@ -45,24 +45,43 @@ const NETWORK_RETRIES = 3;
 /**
  * The one client for the whole app, built at module load and inert until something mounts it.
  *
+ * `networkMode: 'always'` is why an attempt made with no connection fails here instead of never
+ * starting. React Query's default, `'online'`, refuses to call the request function at all while
+ * `onlineManager` reports the runtime offline, which leaves a query pending for ever — a screen
+ * stuck on its spinner with no error to report and no retry to offer — and a mutation paused before
+ * its function runs, which leaves a control frozen in its pending state with no outcome either. With
+ * `'always'` the request is really made and `../api/client` turns the fetch rejection into its own
+ * `network_error`, the code every screen already maps through `userMessageFor`: the dispute form's
+ * "No connection. Check your network and try again." beside its Retry, and the same copy in the
+ * bootstrap notice, are that pattern (AAP 0.5.4, AAP 0.5.8).
+ *
  * `retry` retries only a `network_error` — a request that never reached the API (AAP 0.5.4) — and
  * never an `ApiError` that carries a status, so a `4xx` or `5xx` answer is final: the screen shows
- * `userMessageFor(error.code)` and the traveler decides what to do. `staleTime` keeps a freshly read
- * list from refetching on every mount while the socket's frames keep it current, and mutation retries
- * are off, because one could repeat a hold or a check-in POST (AAP 0.3.2, AAP 0.5.4).
+ * `userMessageFor(error.code)` and the traveler decides what to do. It requires a connection as
+ * well, because a request that cannot leave the device has the same answer on its first attempt as
+ * on its fourth: failing where it stands is what lets the screen report it at once rather than after
+ * the 1 s + 2 s + 4 s backoff. `staleTime` keeps a freshly read list from refetching on every mount
+ * while the socket's frames keep it current, and mutation retries are off, because one could repeat
+ * a hold or a check-in POST (AAP 0.3.2, AAP 0.5.4).
  *
  * No persister is installed, so nothing here survives the process (AAP 0.5.2), and
  * `src/auth/session.ts` calls `queryClient.clear()` on sign-out and after account deletion, so the
  * cache never outlives the session that filled it.
+ *
+ * The offline check-in path is a different mechanism and is unaffected by anything set here: a code
+ * entered with no connection is held and resubmitted by `src/checkin/offline-code.ts`, which reads
+ * connectivity itself through NetInfo (AAP 0.5.7).
  */
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: (failureCount, error) => isNetworkError(error) && failureCount < NETWORK_RETRIES,
+      networkMode: 'always',
+      retry: (failureCount, error) =>
+        isNetworkError(error) && onlineManager.isOnline() && failureCount < NETWORK_RETRIES,
       staleTime: STALE_TIME_MS,
       refetchOnWindowFocus: true,
     },
-    mutations: { retry: false },
+    mutations: { networkMode: 'always', retry: false },
   },
 });
 

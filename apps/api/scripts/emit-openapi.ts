@@ -47,6 +47,13 @@ const TEST_PATH_PREFIX = '/v1/test/';
 /** How long the app is given to close before the process ends anyway: no client may hang the run. */
 const CLOSE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
+ * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
+ * hold the run open once the document has been emitted or refused.
+ */
+const EXIT_DRAIN_TIMEOUT_MS = 1_000;
+
 /** One route per contract group, whose absence means the document was collected too early (AAP 0.5.4). */
 const REQUIRED_PATHS = [
   '/v1/health',
@@ -68,10 +75,82 @@ interface EmittedDocument {
   readonly components?: { readonly securitySchemes?: Record<string, unknown> };
 }
 
-/** Refuse the run in the one-line form every failure takes: `emit-openapi: <step>: <reason>`. */
-function fail(step: string, reason: string): never {
+/**
+ * End the process with `code` once every byte already written to stdout and stderr has reached its
+ * consumer.
+ *
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
+ * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
+ * script exists to print. An empty write queued behind the real ones calls back once they have been
+ * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
+ * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
+ * this script decided is what stands in either case.
+ *
+ * @param code - the status the explicit exit this replaces carried.
+ */
+function exitAfterFlush(code: number): void {
+  process.exitCode = code;
+
+  const draining = new Set<NodeJS.WriteStream>();
+  if (process.stdout.writableLength > 0) draining.add(process.stdout);
+  if (process.stderr.writableLength > 0) draining.add(process.stderr);
+
+  if (draining.size === 0) {
+    // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
+    process.exit(code);
+    return;
+  }
+
+  const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
+  bound.unref();
+
+  const finish = (stream: NodeJS.WriteStream): void => {
+    draining.delete(stream);
+    if (draining.size === 0) {
+      clearTimeout(bound);
+      process.exit(code);
+    }
+  };
+
+  for (const stream of [...draining]) {
+    stream.once('error', () => {
+      finish(stream);
+    });
+    stream.write('', () => {
+      finish(stream);
+    });
+  }
+}
+
+/**
+ * The marker a refusal throws once its own line is written: every {@link fail} and the drift refusal
+ * in {@link writeOrCheck}. Only the top-level handler can drain the streams before the process ends,
+ * and throwing is what keeps `fail`'s `never` return type, which this file's callers rely on for the
+ * definite assignment of `env` and for narrowing the document.
+ */
+class RefusalError extends Error {
+  constructor() {
+    super('emit-openapi: refused the run');
+    this.name = 'RefusalError';
+  }
+}
+
+/** Write one refusal line, in the one-line form every failure takes: `emit-openapi: <step>: <reason>`. */
+function writeRefusal(step: string, reason: string): void {
   process.stderr.write(`emit-openapi: ${step}: ${reason}\n`);
-  process.exit(1);
+}
+
+/**
+ * Refuse the run in the one-line form every failure takes: `emit-openapi: <step>: <reason>`.
+ *
+ * The line is written where the failure is detected and the refusal is then thrown rather than the
+ * process ended here, so that the top-level handler can drain the line before the process ends.
+ *
+ * @throws {RefusalError} Always: the top-level handler ends the process through {@link exitAfterFlush}.
+ */
+function fail(step: string, reason: string): never {
+  writeRefusal(step, reason);
+  throw new RefusalError();
 }
 
 /** A per-run placeholder for a secret variable (`envSecret`): it reaches no output and no log line. */
@@ -218,7 +297,7 @@ async function writeOrCheck(
   if (check) {
     if ((await readIfPresent(target)) !== text) {
       process.stderr.write(`${OUTPUT_FILE} is out of date\n`);
-      process.exit(1);
+      throw new RefusalError();
     }
     process.stdout.write(`openapi: ${OUTPUT_FILE} is up to date (${pathCount} paths)\n`);
     return;
@@ -286,9 +365,13 @@ async function main(argv: readonly string[]): Promise<void> {
 
 main(process.argv.slice(2)).then(
   () => {
-    process.exit(0);
+    exitAfterFlush(0);
   },
   (error: unknown) => {
-    fail('emit', describeError(error));
+    // A refusal wrote its own line where it was detected; anything else is reported in the same form.
+    if (!(error instanceof RefusalError)) {
+      writeRefusal('emit', describeError(error));
+    }
+    exitAfterFlush(1);
   },
 );

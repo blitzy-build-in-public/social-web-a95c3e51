@@ -1,5 +1,6 @@
 /**
- * Fixed business constants for Tablemate (AAP 0.8.1): API, workers and clients read them.
+ * Fixed business constants for Tablemate (AAP 0.8.1): API, workers and clients read them, and the
+ * HTTP-date/offset arithmetic both clients read the server clock with lives here too (AAP 0.5.1).
  *
  * These are the bounds the API enforces with an error code of their own. Values an operator tunes
  * per environment -- the call and language-model caps, the general per-IP rate limit, the
@@ -178,6 +179,63 @@ export const CODE_DIGITS = 6 as const;
 
 /** How long the client keeps an entered code while offline before discarding it (AAP 0.5.7). */
 export const OFFLINE_CODE_RETENTION_MS = 60_000 as const;
+
+// The server clock the API, the mobile app and the venue console share (AAP 0.3.2, 0.5.1, 0.5.7)
+
+/** Resolution of an HTTP `Date` header in milliseconds. */
+export const HTTP_DATE_RESOLUTION_MS = 1000;
+
+/**
+ * The only header shape this module trusts: the IMF-fixdate form of an HTTP date, which is what the
+ * API emits. `Date.parse` accepts far more than that -- ISO 8601, the obsolete RFC 850 and asctime
+ * forms, and a date-time with no zone at all -- and it reads an unzoned date-time in the device's
+ * own zone, so an offset taken from one would be hours out.
+ */
+const HTTP_DATE_PATTERN =
+  /^[A-Za-z]{3}, [0-9]{2} [A-Za-z]{3} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/;
+
+/**
+ * Parses an HTTP `Date` header into epoch milliseconds (AAP 0.3.2, 0.5.1). The API exposes this
+ * header to the web origin, which is what lets the offset be re-estimated on every response instead
+ * of trusting the device clock; the shape above is the only one trusted.
+ *
+ * @param header - The header value, or nothing when the response carried none.
+ * @returns Epoch milliseconds, or `null` when the header is missing, blank or not in that form, so
+ * the caller keeps the offset it already has.
+ */
+export function parseHttpDate(header: string | null | undefined): number | null {
+  if (header === null || header === undefined) {
+    return null;
+  }
+  const trimmed = header.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (!HTTP_DATE_PATTERN.test(trimmed)) {
+    return null;
+  }
+  const parsed = Date.parse(trimmed);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Estimates the offset to add to the device clock to obtain the server clock (AAP 0.5.1). An HTTP
+ * date carries whole seconds, so the server instant is taken as the middle of that second and the
+ * device instant that pairs with it as the midpoint of the round trip.
+ *
+ * @param sample - The `Date` header as an instant, and the device instants that bracketed the
+ * round trip it answered.
+ * @returns The device-clock error in milliseconds: how far ahead of the server this device reads.
+ */
+export function estimateOffsetMs(sample: {
+  serverDateMs: number;
+  sentAtMs: number;
+  receivedAtMs: number;
+}): number {
+  return Math.round(
+    sample.serverDateMs + HTTP_DATE_RESOLUTION_MS / 2 - (sample.sentAtMs + sample.receivedAtMs) / 2,
+  );
+}
 
 // Suggestions, fresh prices, lodgings and reputation (AAP 0.5.6, 0.5.7)
 

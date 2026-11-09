@@ -3,8 +3,11 @@
  * one of them renders inside (AAP 0.5.8, AAP 0.8.1).
  */
 import type { ReactElement } from 'react';
+import { Platform } from 'react-native';
 import { Tabs } from 'expo-router';
 import { MIN_TOUCH_TARGET, borderWidths, colors, fontWeights, typography } from '@tablemate/shared';
+
+import { renderWebHeaderLeft } from '../../src/ui/HeaderBackButton';
 
 const TABS = [
   { name: 'discover', label: 'Discover' },
@@ -42,6 +45,9 @@ export default function TabsLayout(): ReactElement {
         tabBarLabelStyle: { ...typography.label, fontWeight: fontWeights.medium },
         tabBarItemStyle: { minHeight: MIN_TOUCH_TARGET },
         tabBarAllowFontScaling: true,
+        // Web only: a tab screen that inherits a back entry draws the same control, so no header of
+        // this navigator requests the navigator's own PNG. Native keeps the platform header (AAP 0.5.8).
+        ...(Platform.OS === 'web' ? { headerLeft: renderWebHeaderLeft } : {}),
       }}
     >
       {TABS.map((tab) => (

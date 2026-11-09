@@ -21,7 +21,13 @@ import type { Message, MessageHistoryResponse } from '@tablemate/shared';
 import { apiClient } from '../../../src/api/client';
 import { isApiError, userMessageFor } from '../../../src/api/errors';
 import type { ClientErrorCode } from '../../../src/api/errors';
-import { getConnectionState, send, subscribe, subscribeConnectionState } from '../../../src/api/ws';
+import {
+  getConnectionState,
+  isOnline,
+  send,
+  subscribe,
+  subscribeConnectionState,
+} from '../../../src/api/ws';
 import type { ConnectionState } from '../../../src/api/ws';
 import { MESSAGES_EMPTY } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
@@ -190,7 +196,7 @@ export default function ChatScreen(): ReactElement {
   });
   const [draft, setDraft] = useState('');
   const [frameError, setFrameError] = useState<ClientErrorCode | null>(null);
-  const [sendFailed, setSendFailed] = useState(false);
+  const [sendFailure, setSendFailure] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmingBlock, setConfirmingBlock] = useState(false);
   const now = useNow(MINUTE_MS);
@@ -233,7 +239,7 @@ export default function ChatScreen(): ReactElement {
   const refusal = meetupCode ?? errorCodeOf(history.error);
   const failure = errorCodeOf(block.error) ?? frameError ?? refusal;
   const accessClosed = closesChat(refusal) || closesChat(frameError);
-  const errorText = sendFailed ? 'Not connected. Try again in a moment.' : closeText(failure);
+  const errorText = sendFailure ?? closeText(failure);
   const unreadable = meetupCode === undefined || isTransient(meetupCode) ? undefined : meetupCode;
   const closedText = meetupId === '' ? "This meetup isn't available." : closeText(unreadable);
   const rows = messagesInPages(history.data?.pages ?? []);
@@ -275,14 +281,20 @@ export default function ChatScreen(): ReactElement {
   }, [menuOpen]);
   function onSend(): void {
     if (body === '' || body.length > MESSAGE_MAX_CHARS) return;
-    setSendFailed(false);
+    setSendFailure(null);
     // The socket validates the frame with the shared schema; with no open socket the text is kept.
     if (send(meetupId, body)) {
       setDraft('');
       setFrameError(null);
       return;
     }
-    setSendFailed(true);
+    // Refused, so nothing was written and nothing is queued: the draft stays in the composer and the
+    // sentence says which refusal it was. An offline send is reported rather than buffered, because
+    // the socket keeps answering as open while the connection is gone and would drop the frame with
+    // the tab — hence the network sentence the product shows everywhere else for that case.
+    setSendFailure(
+      isOnline() ? 'Not connected. Try again in a moment.' : userMessageFor('network_error'),
+    );
   }
   const openReport = (userId: string) =>
     void router.push({ pathname: '/report', params: { userId, meetupId } });

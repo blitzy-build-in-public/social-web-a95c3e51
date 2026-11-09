@@ -5,61 +5,21 @@
  * neither the code shown nor the countdown: the gap between the two clocks is re-estimated from the
  * `Date` header of every response and applied as `serverNow = deviceNow + offset`, which cancels the
  * skew. Every function here is pure -- no DOM, no timers, no `Date.now()` -- so each instant is a
- * parameter the caller supplies and a test can pin both clocks.
+ * parameter the caller supplies and a test can pin both clocks. The header parsing and the offset
+ * estimate the mobile app reads too are defined once in `@tablemate/shared` (AAP 0.5.1) and
+ * re-exported below.
  */
 
-import { CODE_STEP_SECONDS, CODE_TOLERANCE_STEPS } from '@tablemate/shared';
+import {
+  CODE_STEP_SECONDS,
+  CODE_TOLERANCE_STEPS,
+  HTTP_DATE_RESOLUTION_MS,
+  estimateOffsetMs,
+  parseHttpDate,
+} from '@tablemate/shared';
 
-/** Resolution of an HTTP `Date` header in milliseconds. */
-export const HTTP_DATE_RESOLUTION_MS = 1000;
-
-/**
- * The only header shape this module trusts: the IMF-fixdate form of an HTTP date, which is what the
- * API and its proxy emit. `Date.parse` accepts far more than that -- ISO 8601, the obsolete RFC 850
- * and asctime forms, and a date-time with no zone at all -- and it reads an unzoned date-time in the
- * browser's own zone, so an offset taken from one would be hours out.
- */
-const HTTP_DATE_PATTERN =
-  /^[A-Za-z]{3}, [0-9]{2} [A-Za-z]{3} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$/;
-
-/**
- * Parses an HTTP `Date` header into epoch milliseconds (AAP 0.3.2, 0.5.1). The API exposes this
- * header to the console's origin, which is what lets the offset be re-estimated on every response
- * instead of trusting the device clock; the shape above is the only one trusted.
- *
- * @param header - The header value, or nothing when the response carried none.
- * @returns Epoch milliseconds, or `null` when the header is missing, blank or not in that form, so
- * the caller keeps the offset it already has.
- */
-export function parseHttpDate(header: string | null | undefined): number | null {
-  if (header === null || header === undefined) {
-    return null;
-  }
-  const trimmed = header.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-  if (!HTTP_DATE_PATTERN.test(trimmed)) {
-    return null;
-  }
-  const parsed = Date.parse(trimmed);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-/**
- * Estimates the offset to add to the device clock to obtain the server clock (AAP 0.5.1). An HTTP
- * date carries whole seconds, so the server instant is taken as the middle of that second and the
- * device instant that pairs with it as the midpoint of the round trip.
- */
-export function estimateOffsetMs(sample: {
-  serverDateMs: number;
-  sentAtMs: number;
-  receivedAtMs: number;
-}): number {
-  return Math.round(
-    sample.serverDateMs + HTTP_DATE_RESOLUTION_MS / 2 - (sample.sentAtMs + sample.receivedAtMs) / 2,
-  );
-}
+/* Re-exported so this module stays the console's one import for the clock arithmetic. */
+export { HTTP_DATE_RESOLUTION_MS, estimateOffsetMs, parseHttpDate };
 
 /**
  * Converts a device instant to the server clock (AAP 0.5.1). Applying the offset is the only thing

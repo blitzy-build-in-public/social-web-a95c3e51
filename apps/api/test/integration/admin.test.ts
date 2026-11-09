@@ -386,6 +386,44 @@ describe('the dashboard (AAP 0.5.4, 0.5.7)', () => {
   });
 
   it.each(
+    rows<{
+      readonly filter: string;
+      readonly query: Record<string, string>;
+      readonly opened: number;
+      readonly signups: number;
+    }>([
+      { filter: 'no filter', query: {}, opened: 2, signups: 1 },
+      {
+        filter: 'a city filter, which narrows places opened alone',
+        query: { cityId: LISBON },
+        opened: 1,
+        signups: 1,
+      },
+      {
+        filter: 'a variant filter, which reaches neither measure',
+        query: { variant: 'punitive' },
+        opened: 2,
+        signups: 1,
+      },
+    ]),
+  )('answers places opened and signups under $filter', async (row) => {
+    await t.services.db.analyticsEvent.createMany({
+      data: [
+        { name: 'suggestion_place_opened', cityId: LISBON, occurredAt: t.clock.now() },
+        { name: 'suggestion_place_opened', cityId: MEXICO_CITY, occurredAt: t.clock.now() },
+        { name: 'account_created', occurredAt: t.clock.now() },
+      ],
+    });
+
+    // One aggregate answers both measures without either filter crossing to the other: the city
+    // narrows the place openings alone, because an account is created in no city, and the variant
+    // reaches neither, because a client-reported opening carries no pairing (AAP 0.5.7).
+    const dashboard = await metrics(row.query);
+    expect(dashboard.prices.placesOpened).toBe(row.opened);
+    expect(dashboard.signups).toBe(row.signups);
+  });
+
+  it.each(
     rows<{ readonly name: string; readonly query: Record<string, string> }>([
       { name: 'a missing range', query: { to: TODAY } },
       { name: 'a from that is not a date', query: { from: 'yesterday', to: TODAY } },
@@ -1009,6 +1047,121 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     }
   });
 
+  /** The prices an operator reads out in a city that does not price in USD (AAP 0.5.6). */
+  const MXN_PRICE = {
+    name: 'Tacos al pastor',
+    category: 'main',
+    priceText: '$85',
+    currency: 'MXN',
+    alcoholic: null,
+    perPerson: null,
+    ticketType: null,
+    localAmountMinor: 8500,
+  } as const;
+
+  /** The rate the conversion cases store: 0.05 USD a peso, so 8,500 minor units are 425 cents. */
+  const MXN_USD_PER_UNIT = '0.05';
+  const MXN_USD_CENTS = 425;
+
+  /**
+   * A non-USD price entry before and after the FX table holds a rate for its currency (AAP 0.5.6):
+   * `rateDaysBefore` is how many days before the capture day the case's one `FxRate` row belongs to,
+   * so the conversion has to take the latest rate at or before that day, and `null` is a table no run
+   * has written yet. `code` is what the row proves: the code the answer carries, or `null` for the row
+   * whose entry is stored.
+   */
+  const FX_RESOLUTIONS = rows<{
+    readonly name: string;
+    readonly rateDaysBefore: number | null;
+    readonly httpStatus: number;
+    readonly code: ErrorCode | null;
+  }>([
+    {
+      name: 'a currency the table has no rate for',
+      rateDaysBefore: null,
+      httpStatus: 503,
+      code: 'fx_rate_unavailable',
+    },
+    {
+      name: 'a rate at or before the capture day',
+      rateDaysBefore: 2,
+      httpStatus: 200,
+      code: null,
+    },
+  ]);
+
+  it.each(FX_RESOLUTIONS)('answers a non-USD price with $name', async (row) => {
+    const rateDay =
+      row.rateDaysBefore === null
+        ? null
+        : `${dayOf(instant(-row.rateDaysBefore * DAY_MS))}T00:00:00.000Z`;
+
+    if (rateDay !== null) {
+      await t.services.db.fxRate.create({
+        data: {
+          currency: MXN_PRICE.currency,
+          date: new Date(rateDay),
+          usdPerUnit: MXN_USD_PER_UNIT,
+        },
+      });
+    }
+
+    const task = await menuTask('needs_review');
+    const response = await resolveTask(task.id, { outcome: 'completed', prices: [MXN_PRICE] });
+
+    expect(response.status, response.body).toBe(row.httpStatus);
+
+    const stored = await t.services.db.callTask.findUniqueOrThrow({
+      where: { id: task.id },
+      select: { outcomeAt: true, resolvedBy: true, status: true },
+    });
+
+    const records = await t.services.db.priceRecord.findMany({
+      where: { placeId: place.id },
+      select: {
+        currency: true,
+        fxDate: true,
+        localAmountMinor: true,
+        priceUsdCents: true,
+        source: true,
+      },
+    });
+
+    if (row.code === null) {
+      // The conversion runs on the capture day's own rate, and the stored row keeps that rate's date,
+      // which is what `fx_date` records (AAP 0.5.6).
+      expect(AdminCallTaskDto.parse(response.json()).status).toBe('completed');
+      expect(stored.status).toBe('completed');
+      expect(stored.resolvedBy).toBe('operator');
+      expect(records).toHaveLength(1);
+
+      const [record] = records;
+
+      expect(record?.source).toBe('operator_entry');
+      expect(record?.currency).toBe(MXN_PRICE.currency);
+      expect(record?.localAmountMinor).toBe(MXN_PRICE.localAmountMinor);
+      expect(record?.priceUsdCents).toBe(MXN_USD_CENTS);
+      expect(record?.fxDate?.toISOString()).toBe(rateDay);
+    } else {
+      // A currency the table cannot price yet is the conversion's own dependency, so the entry is
+      // answered with the code that names it, and the message names the currency the operator has to
+      // price in USD instead, rather than `422 invalid_outcome`, which AAP 0.5.4 reserves for an
+      // outcome or a transition the call-task lifecycle refuses (AAP 0.5.4, 0.5.6). Nothing is
+      // stored and the task stays in the queue, so the identical entry succeeds once a rate exists.
+      const envelope = expectError(response, row.httpStatus, row.code);
+      expect(envelope.error.message).toContain(MXN_PRICE.currency);
+
+      expect(stored.status).toBe('needs_review');
+      expect(stored.resolvedBy).toBeNull();
+      expect(stored.outcomeAt).toBeNull();
+      expect(records).toHaveLength(0);
+    }
+
+    // The rate this case wrote is deleted with it: the table is another case's input too, and the one
+    // that has to answer 503 needs it empty.
+    await t.services.db.fxRate.deleteMany({ where: { currency: MXN_PRICE.currency } });
+  });
+
   it.each(
     rows<{ readonly name: string; readonly outcome: OperatorCallTaskOutcome }>([
       { name: 'refused', outcome: 'refused' },
@@ -1027,6 +1180,46 @@ describe('the call-task queue (AAP 0.5.3, 0.5.4)', () => {
     });
     expect(stored.resolvedBy).toBe('operator');
     expect(await t.services.db.priceRecord.count({ where: { placeId: place.id } })).toBe(0);
+  });
+
+  it.each(
+    rows<{
+      readonly name: string;
+      readonly outcome: OperatorCallTaskOutcome;
+      readonly status: CallTaskStatus;
+    }>([
+      // One task in each status the queue still holds, the `unreachable` one being the state the
+      // queue reader actually acts on, so the refusal is shown to be the request schema's rather
+      // than a state the task stands in (AAP 0.5.3, 0.5.4).
+      { name: 'refused', outcome: 'refused', status: 'unreachable' },
+      { name: 'do_not_call', outcome: 'do_not_call', status: 'needs_review' },
+      { name: 'unreachable', outcome: 'unreachable', status: 'needs_review' },
+    ]),
+  )('refuses prices supplied with $name rather than dropping them', async (row) => {
+    const task = await menuTask(row.status);
+
+    const response = await resolveTask(task.id, { outcome: row.outcome, prices: OPERATOR_PRICES });
+
+    // The refusal is the request schema's, so the resolution never ran: prices the operator's entry
+    // form sent with an outcome that stores nothing are answered rather than accepted and discarded
+    // (AAP 0.5.3, 0.5.4). The task is untouched — still in the queue, with no resolver and no outcome
+    // instant — nothing was written for its place, and no side effect of the outcome was applied.
+    expectError(response, 400, 'invalid_field');
+
+    const stored = await t.services.db.callTask.findUniqueOrThrow({
+      where: { id: task.id },
+      select: { outcomeAt: true, resolvedBy: true, status: true },
+    });
+    expect(stored.status).toBe(row.status);
+    expect(stored.resolvedBy).toBeNull();
+    expect(stored.outcomeAt).toBeNull();
+    expect(await t.services.db.priceRecord.count({ where: { placeId: place.id } })).toBe(0);
+
+    const target = await t.services.db.place.findUniqueOrThrow({
+      where: { id: place.id },
+      select: { doNotCall: true },
+    });
+    expect(target.doNotCall).toBe(false);
   });
 
   it.each(BLOCKED_RESOLUTIONS)(

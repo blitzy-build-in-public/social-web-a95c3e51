@@ -20,11 +20,13 @@ import WebSocket from 'ws';
 
 import {
   DAY_MS,
+  RelayOutboundFrame,
   TWILIO_SIGNATURE_HEADER,
   VOICE_ATTEMPT_PARAMETER,
   type CallAttemptOutcome,
   type CallAttemptState,
   type CallTaskStatus,
+  type RelayInboundFrame,
   type TwilioCallStatus,
 } from '@tablemate/shared';
 import {
@@ -69,6 +71,7 @@ import esUS from '../../src/modules/voice-agent/i18n/es-US.json' with { type: 'j
 import ptPT from '../../src/modules/voice-agent/i18n/pt-PT.json' with { type: 'json' };
 import budgetExhaustion from '../support/voice-simulator/scenarios/budget-exhaustion.json' with { type: 'json' };
 import wantsHumanScenario from '../support/voice-simulator/scenarios/wants-human.json' with { type: 'json' };
+import yesScenario from '../support/voice-simulator/scenarios/yes.json' with { type: 'json' };
 
 /* Constants, harness and helpers (AAP 0.3.3, AAP 0.11.2) */
 
@@ -260,6 +263,86 @@ function openRelay(
       resolve({ status: null, socket: null });
     });
   });
+}
+
+/**
+ * One relay conversation a case drives itself (AAP 0.3.3, 0.5.6): the `CallSid` a signed TwiML
+ * fetch adopts for the call, a socket upgraded against the public address with a valid signature,
+ * the `setup` frame that attaches the attempt, and every line the API speaks back.
+ *
+ * The simulator drives this same socket for the scripted scenarios. A case sends its own frames
+ * where the framing no scenario file carries is what it is about: an utterance the relay has to cut
+ * at its own byte bound, or a provider `error` frame.
+ */
+interface Conversation {
+  /** The upgraded socket. */
+  readonly socket: WebSocket;
+  /** Send one frame, as Twilio would. */
+  readonly send: (frame: RelayInboundFrame) => void;
+  /** Every line the API has spoken so far, in order. */
+  readonly spoken: () => readonly string[];
+  /** Wait until a spoken line satisfies `match`, and return it (AAP 0.5.6). */
+  readonly waitForSpoken: (match: (line: string) => boolean, what: string) => Promise<string>;
+  /** Close the socket, as Twilio does when the call ends. */
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Open one relay conversation for `call` and attach it, so a case can send its own frames.
+ *
+ * The `CallSid` comes first: only a signed TwiML fetch of the answered call adopts it, and the relay
+ * refuses a socket whose `setup` names another one (AAP 0.3.2).
+ */
+async function openConversation(call: LiveCall): Promise<Conversation> {
+  await postTwilio(TWIML_PATH, twimlParams(SID), { attemptId: call.attemptId });
+
+  const signature = twilioSignature(relayPublicUrl(), {}, TWILIO_SIMULATOR.authToken);
+  const opened = await openRelay(await t.listen(), signature);
+  const socket = opened.socket;
+  if (socket === null) {
+    throw new Error(
+      `the relay refused an upgrade signed for the public address (${opened.status})`,
+    );
+  }
+
+  const lines: string[] = [];
+  socket.on('message', (data: unknown) => {
+    const frame = RelayOutboundFrame.safeParse(JSON.parse(String(data)) as unknown);
+    if (frame.success && frame.data.type === 'text') {
+      lines.push(frame.data.token);
+    }
+  });
+
+  const send = (frame: RelayInboundFrame): void => {
+    socket.send(JSON.stringify(frame));
+  };
+  const spoken = (): readonly string[] => [...lines];
+  const waitForSpoken = async (match: (line: string) => boolean, what: string): Promise<string> => {
+    await waitUntil(() => lines.some(match), what);
+    return lines.find(match) ?? '';
+  };
+  const close = (): Promise<void> =>
+    new Promise((resolve) => {
+      if (socket.readyState === socket.CLOSED) {
+        resolve();
+        return;
+      }
+      socket.once('close', () => resolve());
+      socket.close();
+    });
+
+  send({
+    type: 'setup',
+    sessionId: `VX${SID}`,
+    callSid: SID,
+    from: TWILIO_SIMULATOR.fromNumber,
+    to: call.to,
+    direction: 'outbound-api',
+    customParameters: { [VOICE_ATTEMPT_PARAMETER]: call.attemptId },
+  });
+  await waitUntil(() => lines.length > 0, 'the first question');
+
+  return { socket, send, spoken, waitForSpoken, close };
 }
 
 /* Fixtures (AAP 0.5.2, AAP 0.5.3) */
@@ -802,6 +885,95 @@ describe('the relay dialogue', () => {
       await capped.close();
     }
   });
+
+  /**
+   * The two framings of an utterance that outgrows the classification window (AAP 0.5.6): the pieces
+   * that together pass it, and one `last` frame that does so on its own. Only the framing differs, so
+   * both are rows of one case — and both owe the same answer, because the relay holds neither.
+   */
+  const OVERLONG_ROWS: readonly {
+    readonly name: string;
+    readonly pieces: readonly number[];
+  }[] = [
+    { name: 'prompt frames that together outgrow the window', pieces: [900, 900, 900, 40] },
+    { name: 'one last frame that outgrows the window on its own', pieces: [2_100] },
+  ];
+
+  it.each(rows(OVERLONG_ROWS))(
+    'answers $name with the retry line and no model request',
+    async (row) => {
+      const call = await menuCall();
+      const relay = await openConversation(call);
+      try {
+        expect(relay.spoken()).toEqual([ptPT['ask.cheapest_main']]);
+        const before = { counted: llm.calls.counted.length, sent: llm.calls.sent.length };
+
+        row.pieces.forEach((length, index) => {
+          relay.send({
+            type: 'prompt',
+            voicePrompt: 'z'.repeat(length),
+            lang: 'pt-PT',
+            last: index === row.pieces.length - 1,
+          });
+        });
+
+        // The call is not left listening: the turn is answered, in the call's own language, and the
+        // socket stays open for the next question (AAP 0.5.6).
+        expect(
+          await relay.waitForSpoken((line) => line === ptPT['retry.unclear'], 'the retry line'),
+        ).toBe(ptPT['retry.unclear']);
+        expect(relay.spoken()).toEqual([ptPT['ask.cheapest_main'], ptPT['retry.unclear']]);
+        expect(relay.socket.readyState).toBe(WebSocket.OPEN);
+
+        // Nothing of the overlong utterance reached the provider: no request was counted or sent for
+        // that turn, so nothing was charged to the call's dialogue budget (AAP 0.5.6).
+        expect(llm.calls.counted).toHaveLength(before.counted);
+        expect(llm.calls.sent).toHaveLength(before.sent);
+      } finally {
+        await relay.close();
+      }
+      // The socket going settles the call the relay's own way, and nothing the cut utterance carried
+      // reaches the recorded result (AAP 0.5.3).
+      expect((await settledAttempt(call.attemptId, 'no_answer')).outcome).toBe('no_answer');
+    },
+    DIALOGUE_TIMEOUT_MS,
+  );
+
+  it(
+    'keeps the words a provider error frame carries out of the call',
+    async () => {
+      const call = await stayCall();
+      const relay = await openConversation(call);
+      try {
+        await relay.waitForSpoken(
+          (line) => line.includes(BOOKING_NAME),
+          'the question naming the guest',
+        );
+
+        // Twilio's documented 64111 payload, verbatim in shape: the application's own unspoken tokens,
+        // which on a stay call are the question naming the guest and the two dates (AAP 0.5.2, 0.11.1).
+        relay.send({
+          type: 'error',
+          description: `Error converting tokens to speech, code: 64111, error: , tokens: ${BOOKING_NAME} staying 10 November 2026 to 14 November 2026`,
+        });
+
+        // The frame ends nothing and changes nothing about the call: the guest's answers are still
+        // classified and the dialogue still reaches its own ending (AAP 0.5.6).
+        for (const turn of yesScenario.turns) {
+          relay.send({ type: 'prompt', voicePrompt: turn.say, lang: 'pt-PT', last: true });
+        }
+        expect(
+          await relay.waitForSpoken((line) => line === ptPT['closing.thanks'], 'the closing line'),
+        ).toBe(ptPT['closing.thanks']);
+      } finally {
+        await relay.close();
+      }
+      // The call reached its own outcome, so the frame the provider sent ended nothing on this side
+      // (AAP 0.5.3, 0.5.6).
+      expect((await settledAttempt(call.attemptId, 'completed')).outcome).toBe('completed');
+    },
+    DIALOGUE_TIMEOUT_MS,
+  );
 });
 
 /* The scenario fixtures (AAP 0.5.3, AAP 0.5.6) */

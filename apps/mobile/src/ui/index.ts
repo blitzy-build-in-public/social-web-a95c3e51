@@ -10,6 +10,8 @@ export { Button } from './Button';
 export type { ButtonProps, ButtonVariant } from './Button';
 export { Card } from './Card';
 export type { CardProps } from './Card';
+export { Chip } from './Chip';
+export type { ChipProps } from './Chip';
 export { ListItem } from './ListItem';
 export type { ListItemProps } from './ListItem';
 export { Screen } from './Screen';

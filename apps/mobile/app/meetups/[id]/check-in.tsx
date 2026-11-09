@@ -1,11 +1,13 @@
 /** Check in at the venue (AAP 0.5.8): the console's six digits and the device's coordinates go to
- * `POST /meetups/:id/check-in` (AAP 0.5.4, 0.5.7), where the server's own window decides. */
+ * `POST /meetups/:id/check-in` (AAP 0.5.4, 0.5.7), where the server's own window decides. The code
+ * is typed, or read off the venue's QR form by `src/checkin/venue-scanner`, which is the camera on
+ * iOS and Android and nothing at all in the browser: manual entry is the guaranteed path on every
+ * browser, so this screen renders the scanner unconditionally and never asks which platform it is
+ * on (AAP 0.3.4). */
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import type { BarcodeScanningResult, CameraViewProps } from 'expo-camera';
 import {
   CHECK_IN_CLOSES_AFTER_MINUTES,
   CHECK_IN_OPENS_BEFORE_MINUTES,
@@ -13,7 +15,7 @@ import {
   MINUTE_MS,
   colors,
   fontWeights,
-  radii,
+  isFinalMeetupStatus,
   spacing,
   typography,
 } from '@tablemate/shared';
@@ -25,36 +27,30 @@ import { serverNow } from '../../../src/api/server-clock';
 import { LocationError, currentCoords } from '../../../src/checkin/location';
 import { holdCode, isOnline } from '../../../src/checkin/offline-code';
 import type { HeldCode } from '../../../src/checkin/offline-code';
-import { BOTH_CHECKED_IN_NOTICE, CHECKED_IN_NOTICE } from '../../../src/copy/strings';
+import { VenueScanner } from '../../../src/checkin/venue-scanner';
+import {
+  BOTH_CHECKED_IN_NOTICE,
+  CHECKED_IN_NOTICE,
+  CHECK_IN_CLOSED_NOTICE,
+} from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
 
 const SCREEN_TITLE = 'Check in';
-const CODE_PATTERN = new RegExp(`^\\d{${CODE_DIGITS}}$`);
 const OFFLINE_NOTICE =
   "You're offline. We'll send this code when you reconnect (up to 60 seconds).";
 const EXPIRED_NOTICE = "That code has expired. Enter the current code from the venue's screen.";
 const NOT_LOCKED_NOTICE = 'Check-in is available once the meetup is locked.';
-const NOT_A_CODE_NOTICE = "That isn't a venue code.";
 const LOADING_NOTICE = 'Loading…';
 const OPENING_SOON = 'Check-in opens in less than a minute.';
 const CLOSING_SOON = 'Less than a minute left to check in.';
-const CAMERA_STARTING_NOTICE = 'Starting the camera…';
-const CAMERA_DENIED_NOTICE = 'Camera access is off. You can type the code instead.';
 const SUBMIT_HINT = `Enter the ${CODE_DIGITS} digits from the venue's screen`;
-const SCAN_LABEL = "Scan the venue's QR code";
 const LOCATION_DENIED_NOTICE = 'Location permission is needed to check in at the venue.';
 const LOCATION_UNAVAILABLE_NOTICE = "We couldn't get your location. Try again at the venue.";
-const SCAN_PROPS = { label: SCAN_LABEL, variant: 'secondary', testID: 'checkin-scan' } as const;
-const CLOSE_PROPS = { label: 'Close scanner', testID: 'checkin-scan-close' } as const;
 const SUBMIT_PROPS = { label: 'Check in', hint: SUBMIT_HINT, testID: 'checkin-submit' } as const;
 const RETRY_PROPS = { label: 'Try again', testID: 'checkin-retry' } as const;
-const BAD_CODE = <Banner tone="error" message={NOT_A_CODE_NOTICE} testID="checkin-scan-invalid" />;
-const CAMERA_PROPS: Partial<CameraViewProps> = {
-  facing: 'back',
-  accessibilityLabel: 'Camera viewfinder',
-  barcodeScannerSettings: { barcodeTypes: ['qr'] },
-};
+/** The outcome card's container: the element focus moves to when the card replaces the form. */
+const RESULT_FOCUS_TEST_ID = 'checkin-result-focus';
 const FIELD_MODES = { inputMode: 'numeric', keyboardType: 'number-pad' } as const;
 const FIELD_AUTO = { autoComplete: 'one-time-code', textContentType: 'oneTimeCode' } as const;
 function windowText(now: number, startsAt: number): string {
@@ -103,48 +99,45 @@ function messageFor(error: unknown): string {
     return isApiError(error) ? userMessageFor(error.code) : userMessageFor('invalid_response');
   return error.code === 'location_denied' ? LOCATION_DENIED_NOTICE : LOCATION_UNAVAILABLE_NOTICE;
 }
-type NativeScannerProps = Readonly<{ onCode: (code: string) => void; onClose: () => void }>;
-function NativeScanner({ onCode, onClose }: NativeScannerProps): ReactElement {
-  const [permission, requestPermission] = useCameraPermissions();
-  const [invalid, setInvalid] = useState(false);
-  const lastPayload = useRef<string | null>(null);
-  const asked = useRef(false);
-  useEffect(() => {
-    const undecided = permission !== null && !permission.granted && permission.canAskAgain;
-    if (!undecided || asked.current) return;
-    asked.current = true;
-    void requestPermission().catch(() => undefined);
-  }, [permission, requestPermission]);
-  const handleScan = (scan: BarcodeScanningResult): void => {
-    const payload = scan.data.trim();
-    if (payload === lastPayload.current) return;
-    lastPayload.current = payload;
-    if (CODE_PATTERN.test(payload)) onCode(payload);
-    else {
-      setInvalid(true);
-      announce(NOT_A_CODE_NOTICE);
-    }
-  };
-  return (
-    <View style={styles.scanner}>
-      {permission === null ? (
-        <Text style={styles.notice}>{CAMERA_STARTING_NOTICE}</Text>
-      ) : permission.granted ? (
-        <CameraView style={styles.camera} {...CAMERA_PROPS} onBarcodeScanned={handleScan} />
-      ) : (
-        <Banner tone="error" message={CAMERA_DENIED_NOTICE} testID="checkin-camera-denied" />
-      )}
-      {invalid ? BAD_CODE : null}
-      <Button {...CLOSE_PROPS} variant="secondary" onPress={onClose} />
-    </View>
-  );
+/**
+ * Moves focus to the outcome card on the web (AAP 0.5.8).
+ *
+ * Submitting destroys the button that had focus, and the browser then falls back to the document
+ * body: a keyboard user lands at the top of the page, and react-native-web logs that it blocked
+ * `aria-hidden` on a container whose descendant — the destroyed control — still held focus. The
+ * card's container carries the result sentence as its accessible name, so this is where the reading
+ * and tab order both continue. Native needs nothing here: the platform keeps focus on the screen
+ * and the result is announced by `announce()`.
+ *
+ * `apps/mobile/app/settings/delete-account.tsx` moves focus the same way when its own step replaces
+ * a control.
+ */
+function focusOutcome(): void {
+  if (Platform.OS !== 'web') return;
+  try {
+    document.querySelector<HTMLElement>(`[data-testid="${RESULT_FOCUS_TEST_ID}"]`)?.focus();
+  } catch {
+    // No document to focus in: nothing to do.
+  }
 }
 type OutcomeProps = { title: string; testID: string; note?: string | null; onBack: () => void };
+/**
+ * The outcome card, and the container that receives focus when it replaces the form (AAP 0.5.8).
+ *
+ * The card is wrapped rather than made focusable itself, because `Card` renders its own surface and
+ * a control nested in a control cannot be reached by keyboard. This `View` is the programmatically
+ * focusable group: `tabIndex={-1}` puts it in the DOM without adding it to the tab order (React
+ * Native 0.76 declares the prop on `View`, and react-native-web writes the DOM attribute), and
+ * `accessibilityLabel` gives it the result sentence as its accessible name, so a screen reader
+ * announces where focus went. Its children keep their own names and positions underneath.
+ */
 const OutcomeCard = ({ title, testID, note, onBack }: OutcomeProps): ReactElement => (
-  <Card title={title} testID={testID}>
-    {note ?? null}
-    <Button label="Back to meetup" variant="secondary" testID="checkin-back" onPress={onBack} />
-  </Card>
+  <View testID={RESULT_FOCUS_TEST_ID} tabIndex={-1} role="group" accessibilityLabel={title}>
+    <Card title={title} testID={testID}>
+      {note ?? null}
+      <Button label="Back to meetup" variant="secondary" testID="checkin-back" onPress={onBack} />
+    </Card>
+  </View>
 );
 export default function CheckInScreen(): ReactElement {
   const params = useLocalSearchParams<{ id: string }>();
@@ -160,7 +153,6 @@ export default function CheckInScreen(): ReactElement {
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [holding, setHolding] = useState(false);
-  const [scanning, setScanning] = useState(false);
   const inFlight = useRef(false);
   const held = useRef<HeldCode | null>(null);
   // The tick only re-renders this screen; the reading itself comes from `serverNow()` at every
@@ -182,6 +174,15 @@ export default function CheckInScreen(): ReactElement {
   const errorMessage = failure ?? loadMessage;
   const canSubmit = code.length === CODE_DIGITS && !holding;
   const both = result !== null && result.bothCheckedIn ? BOTH_CHECKED_IN_NOTICE : null;
+  // The three states whose card stands in place of the form, and so the ones focus moves for
+  // (AAP 0.5.8). Derived here rather than read from the render, so the effect below runs exactly
+  // when the form is replaced — and once for a screen that opens straight onto an outcome.
+  const outcomeShown =
+    detail !== null && (result !== null || detail.checkedIn || detail.status !== 'locked');
+  useEffect(() => {
+    if (!outcomeShown) return;
+    requestAnimationFrame(focusOutcome);
+  }, [outcomeShown]);
   useEffect(() => {
     if (loadMessage !== null) announce(loadMessage);
   }, [loadMessage]);
@@ -198,11 +199,39 @@ export default function CheckInScreen(): ReactElement {
       queryClient.invalidateQueries({ queryKey: queryKeys.meetupsAll }),
     ]);
   };
+  /**
+   * Takes a `409 not_locked` refusal back to the meetup's own state (AAP 0.5.3, 0.5.4).
+   *
+   * The route answers `not_locked` for every status other than `locked`, so a meetup that has
+   * already reached a final status arrives looking exactly like one that has not been locked yet —
+   * and the copy this screen holds may be the `locked` one the refusal just contradicted. Only a
+   * fresh read of the meetup tells them apart, which is why it is forced past the cache with
+   * `staleTime: 0`. If that read fails, nothing has established a final status and the refusal keeps
+   * the sentence the error map gives it. If it reports one, the terminal card below carries
+   * `CHECK_IN_CLOSED_NOTICE` and the banner steps aside rather than repeating that sentence.
+   */
+  const resolveNotLocked = async (): Promise<void> => {
+    const fresh = await queryClient
+      .fetchQuery({
+        queryKey: queryKeys.meetup(meetupId),
+        queryFn: () => apiClient.getMeetup(meetupId),
+        staleTime: 0,
+      })
+      .catch(() => null);
+    if (fresh === null || !isFinalMeetupStatus(fresh.status)) return;
+    setFailure(null);
+    announce(CHECK_IN_CLOSED_NOTICE);
+  };
   const fail = (error: unknown): void => {
     const message = messageFor(error);
     setFailure(message);
     announce(message);
-    if (isApiError(error) && error.code === 'already_checked_in')
+    if (!isApiError(error)) return;
+    if (error.code === 'not_locked') {
+      void resolveNotLocked();
+      return;
+    }
+    if (error.code === 'already_checked_in')
       void queryClient.invalidateQueries({ queryKey: queryKeys.meetup(meetupId) });
   };
   const submit = (): void => {
@@ -248,7 +277,6 @@ export default function CheckInScreen(): ReactElement {
   };
   const onScanned = (scanned: string): void => {
     setCode(scanned);
-    setScanning(false);
     announce('Venue code filled in.');
   };
   const retry = (): void => void meetupQ.refetch();
@@ -274,11 +302,7 @@ export default function CheckInScreen(): ReactElement {
         onSubmitEditing={submit}
         testID="checkin-code"
       />
-      {Platform.OS === 'web' ? null : scanning ? (
-        <NativeScanner onCode={onScanned} onClose={() => setScanning(false)} />
-      ) : (
-        <Button {...SCAN_PROPS} onPress={() => setScanning(true)} />
-      )}
+      <VenueScanner onCode={onScanned} />
       <Button {...SUBMIT_PROPS} onPress={submit} busy={busy} disabled={!canSubmit} />
       {holding ? <Banner tone="info" message={OFFLINE_NOTICE} testID="checkin-offline" /> : null}
     </>
@@ -286,6 +310,16 @@ export default function CheckInScreen(): ReactElement {
   return (
     <Screen edges={['left', 'right', 'bottom']}>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
+      {detail === null ? null : (
+        <View style={styles.venueBlock}>
+          <Text testID="checkin-venue" style={styles.venue}>
+            {detail.venue.name}
+          </Text>
+          <Text testID="checkin-venue-address" style={styles.venueAddress}>
+            {detail.venue.address}
+          </Text>
+        </View>
+      )}
       {errorMessage === null ? null : (
         <Banner tone="error" message={errorMessage} testID="checkin-error" {...bannerProps} />
       )}
@@ -298,7 +332,11 @@ export default function CheckInScreen(): ReactElement {
       ) : detail.checkedIn ? (
         <OutcomeCard title={CHECKED_IN_NOTICE} testID="checkin-result" onBack={back} />
       ) : detail.status !== 'locked' ? (
-        <OutcomeCard title={NOT_LOCKED_NOTICE} testID="checkin-not-locked" onBack={back} />
+        <OutcomeCard
+          title={isFinalMeetupStatus(detail.status) ? CHECK_IN_CLOSED_NOTICE : NOT_LOCKED_NOTICE}
+          testID="checkin-not-locked"
+          onBack={back}
+        />
       ) : (
         form
       )}
@@ -310,6 +348,9 @@ const styles = StyleSheet.create({
   notice: { ...typography.body, color: colors.textMuted },
   timeLeft: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   caption: { ...typography.caption, color: colors.textMuted },
-  scanner: { gap: spacing.md },
-  camera: { width: '100%', aspectRatio: 1, borderRadius: radii.md, overflow: 'hidden' },
+  // The venue pair the meetup detail screen's terms card paints: its name in the label style at
+  // medium weight, its address in the muted body style (AAP 0.5.8).
+  venueBlock: { gap: spacing.xs },
+  venue: { ...typography.label, color: colors.text, fontWeight: fontWeights.medium },
+  venueAddress: { ...typography.body, color: colors.textMuted },
 });

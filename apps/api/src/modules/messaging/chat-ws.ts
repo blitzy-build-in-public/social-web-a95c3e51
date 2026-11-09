@@ -33,13 +33,18 @@
  *    frame each and this file acknowledges nothing separately (AAP 0.5.4). The meetup joins the
  *    writer's own socket before that frame is published, so a chat beyond the set the socket attached
  *    with is live for its sender too (AAP 0.5.1).
- *  - **A socket is bounded and is always given up.** Sixty accepted sends per rolling minute per
- *    socket, a 30-second ping/pong heartbeat that ends a socket which stopped answering, and a close
- *    or an error that stops the heartbeat and detaches the socket from the fan-out (AAP 0.3.2).
+ *  - **A socket is bounded and is always given up.** An account holds at most
+ *    `CHAT_MAX_SOCKETS_PER_USER` live sockets on one instance, and a socket that would exceed that
+ *    allowance is refused before it is attached rather than registered and then closed; sixty
+ *    accepted sends per rolling minute per socket; a 30-second ping/pong heartbeat that ends a
+ *    socket which stopped answering; and a close or an error that stops the heartbeat and detaches
+ *    the socket from the fan-out (AAP 0.3.2).
  *
- * Nothing here logs a message body, a token or a `Sec-WebSocket-Protocol` header: a refusal writes no
- * line at all, an internal failure writes the event, the meetup id and the error's name, and a stored
- * message writes at most one debug line carrying the event and the meetup id (AAP 0.11.1).
+ * Nothing here logs a message body, a token or a `Sec-WebSocket-Protocol` header: a frame that is
+ * refused writes no line at all, a socket refused for the account's allowance writes the event and
+ * the allowance it was measured against, an internal failure writes the event, the meetup id and the
+ * error's name, and a stored message writes at most one debug line carrying the event and the meetup
+ * id (AAP 0.11.1).
  *
  * @see AAP 0.3.2 for the stateless fan-out, the transaction and outbox rules and the socket bounds;
  *   0.3.3 for the subprotocol handshake; 0.5.1 for this file's place in the messaging component;
@@ -108,10 +113,11 @@ const CLOSE_INTERNAL_ERROR = 1011;
  *
  * A `Pick` of the app's own services type, narrowed to what a socket reads: the guarded database
  * client, the injected clock, the logger `transact` reports its own failures with, the outbox the
- * transaction helper kicks, and the pub/sub fan-out. Test doubles therefore stay small, and the app
- * container satisfies this structurally.
+ * transaction helper kicks, the pub/sub fan-out, and the validated configuration the account's socket
+ * allowance is read from. Test doubles therefore stay small, and the app container satisfies this
+ * structurally.
  */
-type ChatServices = Pick<AppServices, 'db' | 'clock' | 'logger' | 'outbox' | 'pubsub'>;
+type ChatServices = Pick<AppServices, 'db' | 'clock' | 'logger' | 'outbox' | 'pubsub' | 'env'>;
 
 /**
  * One `Message` row, as the insert hands it back and as the pair's history loads it (AAP 0.5.2).
@@ -421,12 +427,19 @@ async function receiveFrame(
  */
 
 /**
- * Serves one accepted socket for its whole life: attach it, keep it alive, and hand it its frames.
+ * Serves one accepted socket for its whole life: admit it, attach it, keep it alive, and hand it its
+ * frames.
  *
  * The attach query is what makes a message reach both participants — the socket is registered under
  * the caller, under the session the upgrade carried and under each meetup they may chat in — and a
  * failure there closes the socket with `1011` rather than leaving one open that no frame would ever
  * reach (AAP 0.3.2, 0.5.1).
+ *
+ * The account's socket allowance is decided inside that attach (AAP 0.3.2): a socket the account has
+ * no allowance left for is refused before it is attached, so nothing about it enters the registry and
+ * it never reaches `pubsub.detach`. It is refused by closing it with `WS_CLOSE.tooMany` (4429), this
+ * module's application code for an allowance that ends a socket, after one line naming the event and
+ * the account's allowance and nothing else (AAP 0.11.1).
  */
 async function serveSocket(
   services: ChatServices,
@@ -481,7 +494,22 @@ async function serveSocket(
 
   try {
     const meetupIds = await messageableMeetupIds(services.db, userId);
-    services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
+    const registered = services.pubsub.attach(socket, userId, connection.sessionId, meetupIds);
+
+    if (!registered) {
+      // The account already holds its allowance of live sockets on this instance, so this socket is
+      // refused instead of registered and closed: the newest one goes, which leaves the socket the
+      // account is already chatting on working (AAP 0.3.2). One line, carrying the event and the
+      // allowance it was measured against and nothing of the account, the session or the socket
+      // (AAP 0.11.1).
+      request.log.warn(
+        { event: 'chat_socket_cap', allowance: services.env.CHAT_MAX_SOCKETS_PER_USER },
+        'chat_socket_cap',
+      );
+      socket.close(WS_CLOSE.tooMany, 'too_many_sockets');
+      return;
+    }
+
     attached();
   } catch (error) {
     request.log.warn(

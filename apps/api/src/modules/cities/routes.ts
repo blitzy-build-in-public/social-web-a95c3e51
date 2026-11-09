@@ -3,9 +3,10 @@
  * venues, and one page of traveler discovery.
  *
  * `GET /cities` answers the launch cities in `config/cities.json` order, `GET /cities/:cityId/venues`
- * answers a city's active partner venues, and `GET /cities/:cityId/travelers` answers one page of
- * `Tier0Profile`s. The three differ in what they ask of a caller, and every difference is a rule of
- * AAP 0.5.4 and 0.5.8 rather than a choice made here:
+ * answers a city's active partner venues in (name, id) order and bounded by {@link CITY_VENUES_LIMIT},
+ * and `GET /cities/:cityId/travelers` answers one page of `Tier0Profile`s. The three differ in what
+ * they ask of a caller, and every difference is a rule of AAP 0.5.4 and 0.5.8 rather than a choice made
+ * here:
  *
  *  - The venue list requires no proof, so an unverified traveler browses where a meetup may be held
  *    while the traveler list keeps answering `403 no_valid_proof` and the client shows its import
@@ -28,9 +29,10 @@
  * `tier0Profiles` and are never re-serialized here.
  *
  * The instant a request is judged at is read once, from the injected clock, so the proof check and
- * the page it gates cannot straddle the boundary of a proof's validity (AAP 0.11.1). The only line
- * this module logs is the warning for a venue whose location was never written: no user id, proof
- * date or coordinate is ever logged (AAP 0.11.1).
+ * the page it gates cannot straddle the boundary of a proof's validity (AAP 0.11.1). The two lines
+ * this module logs are the warnings for a venue whose location was never written and for a venue list
+ * longer than {@link CITY_VENUES_LIMIT}: no user id, proof date or coordinate is ever logged
+ * (AAP 0.11.1).
  *
  * @see AAP 0.5.2 for the `City` and `Venue` models and the fixture rule, 0.5.4 for the three routes,
  *   their schemas, their errors and the guard scope, 0.5.7 for proof validity and the discovery
@@ -69,6 +71,31 @@ type CityListServices = Pick<AppServices, 'db'>;
 
 /** What the venue list reads: the client, the mode the fixture rule follows, and the logger. */
 type VenueListServices = Pick<AppServices, 'db' | 'env' | 'logger'>;
+
+/**
+ * The bound on the venue list {@link cityVenues} answers, and the largest number of venue ids that
+ * read therefore hands to `readPoints` as one `uuid[]` bind.
+ *
+ * AAP 0.5.4 fixes no cursor for `GET /cities/:cityId/venues` — the contract answers
+ * `{ items: VenueDto[] }` and carries no page parameter — so this read is capped rather than paged:
+ * the first {@link CITY_VENUES_LIMIT} venues in (name, id) order are answered, and a city holding
+ * more is reported through `city_venues_truncated` instead of being answered as if the list were
+ * complete. The growth of this list is operator-driven rather than ingestion-driven — venues are
+ * onboarded and configured — so the same bound the admin registry reads use
+ * (`ADMIN_REGISTRY_LIMIT` in `admin/onboarding.ts`) answers here.
+ *
+ * The bound changes nothing else: the response schema, the seven `VenueDto` fields, the errors and
+ * the ordering's primary key are as they were, and a city holding fewer venues than the bound
+ * answers exactly the rows it answered before, in the same order (AAP 0.5.4).
+ */
+export const CITY_VENUES_LIMIT = 200;
+
+/**
+ * A venue list that came back with more rows than the bound, logged under its own event so a
+ * truncated list is visible rather than silently read as a complete one. The line carries the bound
+ * and nothing else (AAP 0.11.1).
+ */
+const CITY_VENUES_TRUNCATED = 'city_venues_truncated';
 
 /**
  * Every stored city, in the order `config/cities.json` lists them (AAP 0.5.2, 0.5.4).
@@ -142,13 +169,21 @@ function compareCities(left: CityDto, right: CityDto, order: ReadonlyMap<string,
  * `422 venue_not_partner` is what rejects a proposal at any other place — which is why only active
  * partners are listed.
  *
+ * The list is bounded rather than paged, because AAP 0.5.4 fixes no cursor for this route: the read
+ * answers the first {@link CITY_VENUES_LIMIT} rows in (name, id) order, and a city holding more is
+ * reported through `city_venues_truncated` rather than answered as if the list were complete. The id
+ * breaks a same-name tie, so the capped read is one total order and two reads of the same city answer
+ * the same rows. A city holding fewer venues than the bound answers exactly what it answered before
+ * the bound existed (AAP 0.5.4, 0.11.1).
+ *
  * A venue whose `location` is NULL is left out of the list and logged: `VenueDto` carries the
  * coordinates the client maps the venue by and the 150 m check-in geofence is measured from
  * (AAP 0.5.7), and a null coordinate is not a shape the contract has.
  *
  * @param services - The guarded client, the mode the fixture rule follows and the logger.
  * @param cityId - The city slug from the path.
- * @returns The city's active partner venues, each as the seven fields of `VenueDto`.
+ * @returns The city's active partner venues, each as the seven fields of `VenueDto`: the first
+ *   {@link CITY_VENUES_LIMIT} of them in (name, id) order.
  * @throws AppError `city_not_found` (404) when no configured city carries `cityId`.
  */
 async function cityVenues(services: VenueListServices, cityId: string): Promise<VenuesResponse> {
@@ -159,11 +194,22 @@ async function cityVenues(services: VenueListServices, cityId: string): Promise<
   // The client's fixture guard narrows this read outside `test` and `demo`, so a fixture venue is
   // listed in those two environments alone (AAP 0.5.2). The select holds no secret column:
   // `secretLookupHash`, `secretCiphertext` and `secretIssuedAt` are never loaded (AAP 0.5.4).
-  const venues = await services.db.venue.findMany({
+  const rows = await services.db.venue.findMany({
     where: { cityId, isActivePartner: true },
     select: { id: true, cityId: true, name: true, address: true, isActivePartner: true },
-    orderBy: { name: 'asc' },
+    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    take: CITY_VENUES_LIMIT + 1,
   });
+
+  // The row past the bound is a sentinel: its presence says the city holds more venues than this read
+  // answers, and it is dropped here so the id list below can never exceed CITY_VENUES_LIMIT. A list
+  // silently cut to this many rows would read as a complete one, so the truncation is logged.
+  const truncated = rows.length > CITY_VENUES_LIMIT;
+  const venues = truncated ? rows.slice(0, CITY_VENUES_LIMIT) : rows;
+
+  if (truncated) {
+    services.logger.warn({ event: CITY_VENUES_TRUNCATED, limit: CITY_VENUES_LIMIT });
+  }
 
   // The geography column is `Unsupported` in the Prisma schema, so Prisma cannot select it and the
   // coordinates come from the PostGIS helper, which applies the fixture predicate to this table

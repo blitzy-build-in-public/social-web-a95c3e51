@@ -30,8 +30,9 @@
  *  - **Every route declares `schema.response`.** The composition root refuses to start with a
  *    non-WebSocket route that does not. The declared statuses are the ones AAP 0.5.4 lists for the
  *    route, plus `400 invalid_field` for a request its own schema rejects, `401 token_invalid` from
- *    the guard, and `429 rate_limited` / `503 service_unavailable` where the counters of AAP 0.5.4
- *    apply.
+ *    the guard, `429 rate_limited` / `503 service_unavailable` where the counters of AAP 0.5.4
+ *    apply, and `404 meetup_not_found` where a handler hides a meetup an id alone does not reveal
+ *    (a meetup read by id, cancellation, acceptance, decline, the hold retry, check-in and dispute).
  *
  * Two routes under this prefix deliberately live elsewhere: `GET /meetups/:id/messages`, registered
  * by `../messaging/routes.ts`, and `GET /meetups/:id/suggestions`, registered by
@@ -268,6 +269,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
           401: ErrorEnvelope,
           402: ErrorEnvelope,
           403: ErrorEnvelope,
+          404: ErrorEnvelope,
           409: ErrorEnvelope,
           410: ErrorEnvelope,
           429: ErrorEnvelope,
@@ -299,6 +301,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
           400: ErrorEnvelope,
           401: ErrorEnvelope,
           403: ErrorEnvelope,
+          404: ErrorEnvelope,
           409: ErrorEnvelope,
           429: ErrorEnvelope,
           503: ErrorEnvelope,
@@ -330,6 +333,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
           401: ErrorEnvelope,
           402: ErrorEnvelope,
           403: ErrorEnvelope,
+          404: ErrorEnvelope,
           409: ErrorEnvelope,
           429: ErrorEnvelope,
           503: ErrorEnvelope,
@@ -392,6 +396,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
           400: ErrorEnvelope,
           401: ErrorEnvelope,
           403: ErrorEnvelope,
+          404: ErrorEnvelope,
           409: ErrorEnvelope,
           410: ErrorEnvelope,
           422: ErrorEnvelope,
@@ -427,6 +432,7 @@ export default function meetupsRoutes(app: App): Promise<void> {
           400: ErrorEnvelope,
           401: ErrorEnvelope,
           403: ErrorEnvelope,
+          404: ErrorEnvelope,
           409: ErrorEnvelope,
           429: ErrorEnvelope,
           503: ErrorEnvelope,

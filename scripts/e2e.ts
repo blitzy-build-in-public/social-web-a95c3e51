@@ -98,6 +98,13 @@ const METRO_PORT = 8081;
 /** The ceiling on one captured command's output, generous enough for `compose config --format json`. */
 const CAPTURE_LIMIT = 32 * 1024 * 1024;
 
+/**
+ * How long an exit's drain may wait for the reader of stdout and stderr before the process is ended
+ * anyway (one second). The stack is down or kept by then, and a consumer that never reads — a stopped
+ * `tee`, a detached log collector — must not hold the run open.
+ */
+const EXIT_DRAIN_TIMEOUT_MS = 1_000;
+
 /** The published defaults of the compose stack's host ports, for a checkout with no `.env`. */
 export const DEFAULT_PORTS = {
   api: 3000,
@@ -1302,6 +1309,53 @@ async function performTeardown(): Promise<void> {
   });
 }
 
+/**
+ * End the process with `code` once every byte already written to stdout and stderr has reached its
+ * consumer.
+ *
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
+ * queued — and under `| tee` or a CI log collector that is the last line this run exists to print,
+ * the record of what the interrupt did. An empty write queued behind the real ones calls back once
+ * they have been flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A
+ * consumer that has stopped reading closes the pipe instead (`| head`), which ends the drain the same
+ * way: the conventional status of an interrupt is what stands in either case.
+ *
+ * @param code - the status the explicit exit this replaces carried.
+ */
+function exitAfterFlush(code: number): void {
+  process.exitCode = code;
+
+  const draining = new Set<NodeJS.WriteStream>();
+  if (process.stdout.writableLength > 0) draining.add(process.stdout);
+  if (process.stderr.writableLength > 0) draining.add(process.stderr);
+
+  if (draining.size === 0) {
+    // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
+    process.exit(code);
+    return;
+  }
+
+  const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
+  bound.unref();
+
+  const finish = (stream: NodeJS.WriteStream): void => {
+    draining.delete(stream);
+    if (draining.size === 0) {
+      clearTimeout(bound);
+      process.exit(code);
+    }
+  };
+
+  for (const stream of [...draining]) {
+    stream.once('error', () => {
+      finish(stream);
+    });
+    stream.write('', () => {
+      finish(stream);
+    });
+  }
+}
+
 /** Tears the run down on Ctrl-C or a termination request, then exits with the conventional status. */
 function installSignalHandlers(): void {
   for (const [signal, code] of [
@@ -1310,7 +1364,7 @@ function installSignalHandlers(): void {
   ] as const) {
     process.once(signal, () => {
       process.stderr.write(`e2e: ${signal} received — tearing the stack down\n`);
-      void tearDown().finally(() => process.exit(code));
+      void tearDown().finally(() => exitAfterFlush(code));
     });
   }
 }

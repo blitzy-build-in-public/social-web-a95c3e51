@@ -9,7 +9,6 @@ import * as FileSystem from 'expo-file-system';
 import { Redirect, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Text } from 'react-native';
-import { base64ToBytes } from '@tablemate/circuits';
 import {
   ArtifactsManifest,
   FieldElement,
@@ -22,6 +21,7 @@ import {
 
 import { Banner, Screen } from '../../src/ui';
 import { artifactStore } from '../../src/zk/artifacts';
+import { loadCircuitApi } from '../../src/zk/circuits';
 import { artifactsFromManifest, errorCodeOf, prove } from '../../src/zk/prover.ts';
 import type { DownloadProgress, ProveConfig, ProveTimings } from '../../src/zk/prover.ts';
 import testIssuerJson from '../../../../config/issuers/tablemate-test.json';
@@ -101,6 +101,10 @@ async function loadFixtureBytes(): Promise<Uint8Array> {
     const encoded = await FileSystem.readAsStringAsync(asset.localUri ?? asset.uri, {
       encoding: FileSystem.EncodingType.Base64,
     });
+    // The decoder comes from the circuit API, never from a static import of the package: the bench
+    // route and the proving flow are two chunks, and a package both of them import is hoisted into the
+    // entry chunk they are both meant to stay out of.
+    const { base64ToBytes } = await loadCircuitApi();
     return base64ToBytes(encoded);
   } catch (error: unknown) {
     throw error instanceof BenchError ? error : new BenchError('asset_load_failed');

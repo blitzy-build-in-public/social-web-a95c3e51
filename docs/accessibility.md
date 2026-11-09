@@ -75,13 +75,13 @@ app carries, the web audit's result and the manual screen-reader checklists (AAP
 Serious, Critical and Other are the counts of violating rules at that impact. A run passes when it
 reports no serious and no critical violation.
 
-| Flow     | Screen                                                     | Serious | Critical | Other | Result  | Date | Commit |
-| -------- | ---------------------------------------------------------- | ------- | -------- | ----- | ------- | ---- | ------ |
-| Sign-in  | `app/(auth)/sign-in.tsx` · `/sign-in`                      | —       | —        | —     | pending | —    | —      |
-| Sign-in  | `app/(auth)/age-gate.tsx` · `/age-gate` (first sign-in)    | —       | —        | —     | pending | —    | —      |
-| Proposal | `app/meetups/propose.tsx` · `/meetups/propose`             | —       | —        | —     | pending | —    | —      |
-| Lock     | `app/meetups/[id]/index.tsx` · `/meetups/<id>`, Accept     | —       | —        | —     | pending | —    | —      |
-| Check-in | `app/meetups/[id]/check-in.tsx` · `/meetups/<id>/check-in` | —       | —        | —     | pending | —    | —      |
+| Flow     | Screen                                                     | Serious | Critical | Other | Result                                       | Date       | Commit  |
+| -------- | ---------------------------------------------------------- | ------- | -------- | ----- | -------------------------------------------- | ---------- | ------- |
+| Sign-in  | `app/(auth)/sign-in.tsx` · `/sign-in`                      | 0       | 0        | 0     | pass                                         | 2026-11-09 | 33bb261 |
+| Sign-in  | `app/(auth)/age-gate.tsx` · `/age-gate` (first sign-in)    | 0       | 0        | 0     | pass                                         | 2026-11-09 | 33bb261 |
+| Proposal | `app/meetups/propose.tsx` · `/meetups/propose`             | 0       | 0        | 0     | pass                                         | 2026-11-09 | 33bb261 |
+| Lock     | `app/meetups/[id]/index.tsx` · `/meetups/<id>`, Accept     | —       | —        | —     | Blocked — Stripe test-mode keys not supplied | —          | —       |
+| Check-in | `app/meetups/[id]/check-in.tsx` · `/meetups/<id>/check-in` | —       | —        | —     | Blocked — Stripe test-mode keys not supplied | —          | —       |
 
 The age-gate screen is audited inside the sign-in flow's test: the first sign-in passes through it
 before any feature is reachable.
@@ -94,11 +94,13 @@ How this table is filled:
 - Result is `pass` when that run reported no serious or critical violation and `fail` when it did;
   Date and Commit are the audit's date and the short commit it ran on. A `fail` row lists each
   violation id with its impact under the table, and the check is fixed before the row reads `pass`.
-- Lock and check-in need a stack holding Stripe test-mode keys, because both screens require a meetup
-  whose deposit decision is durable. Without those keys the suite skips those two flows and
-  `scripts/e2e.ts` writes for them the sentence it skips with: `blocked` — "Blocked — Stripe
-  test-mode keys not supplied". A row still to be run reads `pending` — "Pending — `pnpm test:e2e`
-  not yet run".
+- Lock and check-in need a stack holding Stripe test-mode keys, because both screens require a
+  meetup whose deposit decision is durable. Without those keys the spec skips that test itself, with
+  its `BLOCKED_REASON` sentence, and the two rows carry it: "Blocked — Stripe test-mode keys
+  not supplied". A skipped screen writes no such record. The result reaches
+  `docs/acceptance.md` as the `e2e` block's one `wcag` cell, "WCAG 2.1 AA — axe on core flows",
+  written by `scripts/e2e.ts` from whether the spec passed — no cell per screen, and the script
+  reads no record. A row still to be run reads `pending` — "Pending — `pnpm test:e2e` not yet run".
 
 ## Manual screen-reader checklist
 

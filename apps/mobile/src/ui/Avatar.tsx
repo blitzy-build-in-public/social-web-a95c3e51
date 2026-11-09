@@ -17,8 +17,15 @@
  * tier dropped, a second refusal, a network error, bytes that do not decode — falls back to the
  * pattern silently, with nothing about the failure logged (AAP 0.5.5). Colours, radius and size come
  * from `@tablemate/shared`'s tokens, and the palette names only pairs recorded in `CONTRAST_PAIRS`.
+ *
+ * The web load is deferred by viewport distance, because the browser's own `loading="lazy"` cannot
+ * apply here: the bytes are fetched with the bearer header and shown from an object URL, so the
+ * browser never sees a remote URL it could defer, and no attribute on the drawn element defers the
+ * effect's own request. A frame starts its fetch only once it comes within `LAZY_ROOT_MARGIN` of the
+ * viewport, so a list of avatars requests the rows a reader can reach rather than every row at mount;
+ * where no `IntersectionObserver` exists, the photo loads as it always has.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, Platform, StyleSheet, View } from 'react-native';
 import type { ImageSourcePropType, ViewProps } from 'react-native';
 import { Rect, Svg } from 'react-native-svg';
@@ -207,6 +214,13 @@ function photoRequest(userId: string): { url: string; headers: Record<string, st
 const UNAUTHORIZED = 401;
 
 /**
+ * How far outside the viewport a frame may sit and still start its web photo request, in CSS px: a
+ * list row of lead-in, so a photo is in place by the time a reader scrolls to it while the rows below
+ * the fold are never requested.
+ */
+const LAZY_ROOT_MARGIN = '200px';
+
+/**
  * Sends one photo request and reads its answer as bytes.
  *
  * Only the fields this module reads are named, so the answer stays structural and the browser's and
@@ -291,6 +305,11 @@ async function loadPhotoBytes(userId: string, signal: AbortSignal): Promise<Blob
  * The frame reserves exactly `size` × `size` and clips to a circle, so a list of avatars lines up on
  * whatever is drawn inside, and no text in it has to follow the reader's font size.
  *
+ * On web the photo request waits until the frame is within `LAZY_ROOT_MARGIN` of the viewport: the
+ * browser's `loading="lazy"` cannot defer it, because the bytes are fetched with the bearer header and
+ * shown from an object URL, so no remote URL reaches the element for the browser to defer. What is
+ * deferred instead is the effect's own fetch, by viewport distance.
+ *
  * @param props - {@link AvatarProps}.
  * @returns The avatar element.
  */
@@ -323,8 +342,40 @@ export function Avatar({
   // previous row's photo is never drawn over the next one's pattern while it loads.
   const [webPhoto, setWebPhoto] = useState<{ userId: string; url: string } | null>(null);
 
+  // Whether this frame has come near the viewport, which is what defers the web fetch below. Starts
+  // true off web, where nothing is deferred and no native branch reads it.
+  const [nearViewport, setNearViewport] = useState(Platform.OS !== 'web');
+
+  // The frame the observer watches. react-native-web forwards a ref to the DOM node the frame renders,
+  // which is the element an `IntersectionObserver` observes.
+  const frame = useRef<View | null>(null);
+
   useEffect(() => {
-    if (Platform.OS !== 'web' || photoUserId === null) return undefined;
+    if (Platform.OS !== 'web' || photoUserId === null || nearViewport) return undefined;
+    // `View`'s ref is the host node on web and React Native's own handle on native, and only the web
+    // branch reads it, so the DOM element an observer needs is reached through this one assertion.
+    const node = frame.current as unknown as Element | null;
+    // Neither an observer to measure with nor a node to watch: the photo loads as it always has,
+    // because a deferral is never worth losing the photo over.
+    if (typeof IntersectionObserver === 'undefined' || node === null) {
+      setNearViewport(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setNearViewport(true);
+        // One load is the whole of what this frame wants, and the cleanup below disconnects the rest.
+        observer.disconnect();
+      },
+      { rootMargin: LAZY_ROOT_MARGIN },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [nearViewport, photoUserId]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || photoUserId === null || !nearViewport) return undefined;
     const controller = new AbortController();
     let objectUrl: string | null = null;
     let live = true;
@@ -347,7 +398,7 @@ export function Avatar({
       controller.abort();
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [photoUserId]);
+  }, [nearViewport, photoUserId]);
 
   /**
    * Reacts to a native image load that failed, by joining the session's rotation once for this
@@ -395,6 +446,7 @@ export function Avatar({
   return (
     <View
       {...frameAccessibility(decorative, handle)}
+      ref={frame}
       style={[
         styles.frame,
         { backgroundColor: colors[pattern.background], height: size, width: size },

@@ -16,12 +16,15 @@
  *     storage, a query parameter or a header.
  *   - No frame is trusted and none is echoed: every inbound frame is parsed with the shared
  *     {@link ServerFrame} and an unreadable one is dropped, while {@link send} validates its own
- *     frame with {@link ClientFrame} so what leaves is exactly what was checked. The server is the
- *     authority on access — messaging opens only once both deposits are locked (AAP 0.5.4).
+ *     frame with {@link ClientFrame} so what leaves is exactly what was checked. It writes only to
+ *     an open socket while the runtime is online ({@link isOnline}), so a frame nothing can deliver
+ *     is refused instead of left in a buffer nothing flushes. The server is the authority on access
+ *     — messaging opens only once both deposits are locked (AAP 0.5.4).
  *   - Nothing is logged: no frame, no message body, no token, no close or error event (AAP 0.11.1).
  *   - Importing this module has no side effect and touches no platform global until {@link connect}
  *     runs, so a Node test can import it with no environment configured.
  */
+import { onlineManager } from '@tanstack/react-query';
 import { ClientFrame, ServerFrame, WS_BEARER_SUBPROTOCOL } from '@tablemate/shared';
 import type { ChatSend } from '@tablemate/shared';
 
@@ -155,19 +158,47 @@ export function connect(): void {
 }
 
 /**
+ * Whether the runtime currently has a connection — the app's one connectivity answer (AAP 0.3.3).
+ *
+ * It is deliberately the query layer's own answer rather than a second opinion: `onlineManager` is
+ * the connectivity signal React Query itself consults, and `QueryClientProvider` mounting the client
+ * is what registers its `window` `online` and `offline` listeners — so this answer and the one the
+ * query layer acts on cannot disagree.
+ *
+ * On a platform that raises no such events the manager reports online and the socket's own
+ * `readyState` is what refuses a write; {@link send} reads both, and refuses when either says so.
+ *
+ * @returns True while the runtime reports a connection.
+ */
+export function isOnline(): boolean {
+  return onlineManager.isOnline();
+}
+
+/**
  * Sends one chat message for a meetup (AAP 0.3.3, AAP 0.5.4, `ChatSend`).
  *
- * The frame is validated with the shared {@link ClientFrame} before it is written, so a body that is
- * empty, whitespace-only or longer than the contract's limit is refused here rather than answered by
- * the server. There is no local echo and no offline queue: the server answers with a `message` frame
- * fanned out to both participants, or with an {@link ErrorFrame} the listeners receive.
+ * The frame is written only to an open socket while the runtime is online ({@link isOnline}), and
+ * only once it has been validated with the shared {@link ClientFrame}, so a body that is empty,
+ * whitespace-only or longer than the contract's limit is refused here rather than answered by the
+ * server. There is no local echo and no offline queue, and nothing is buffered either: a socket kept
+ * open by a lost connection accepts a write into its own send buffer and then drops it with the
+ * browser tab, so a caller refused here keeps its text and reports the failure. The server answers
+ * with a `message` frame fanned out to both participants, or with an {@link ErrorFrame} the
+ * listeners receive.
  *
- * @returns True when the frame was written to an open socket, false when it was invalid or the
- * socket was not open — the caller may then tell the traveler to try again.
+ * @returns True when the frame was written to an open socket while the runtime was online, false
+ * when it was invalid, the socket was not open, or the runtime was offline — the caller may then
+ * tell the traveler to try again, keeping what they typed.
  */
 export function send(meetupId: string, body: string): boolean {
   const open = socket;
   if (open === null || open.readyState !== READY_STATE_OPEN) return false;
+
+  // A socket holds `readyState` 1 while the connection is down, so the write below would land in
+  // its send buffer: nothing would be delivered, the tab would lose the message, and the traveler
+  // would be told nothing. Refusing is what lets the chat screen keep the draft and report the
+  // failure (AAP 0.5.4).
+  if (!isOnline()) return false;
 
   const frame: ChatSend = { type: 'chat_send', meetupId, body };
   const checked = ClientFrame.safeParse(frame);

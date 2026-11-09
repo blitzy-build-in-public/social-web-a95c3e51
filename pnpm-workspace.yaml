@@ -11,7 +11,8 @@ packages:
 nodeLinker: hoisted
 # Exact version pins: every dependency is declared at its resolved version and no range.
 saveExact: true
-# The root scripts `test:stripe` and `perf` run `VAR=value cmd`, which needs shell emulation.
+# The root scripts `test:stripe` and `perf` set a variable for the commands they run, which needs
+# shell emulation.
 shellEmulator: true
 # pnpm 12 enforces the root `packageManager` pin itself and records the pnpm version it resolved
 # for the project in a leading "env" document of pnpm-lock.yaml, which turns that file into a

@@ -20,9 +20,10 @@
  * tier-0 profiles — the same shape a stranger sees in discovery, and never a room number, a stay
  * date, a booking field or a claim id (AAP 0.5.4). It answers a viewer who holds a valid proof for
  * the lodging's city, which the route checks before calling; here a deleted or deletion-requested
- * traveler, and every pair with a block in either direction, are absent from the list.
+ * traveler, and every pair with a block in either direction, are absent from the list. The list is
+ * bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, and the count shown beside it is what says so.
  *
- * Three invariants the SQL keeps:
+ * Four invariants the SQL keeps:
  *
  * - The toggle's claim lookup and the guest list share {@link currentStayPredicate}, so "active"
  *   means the lodging's local today in both and the two cannot disagree about who is staying: a
@@ -30,6 +31,10 @@
  *   in `apps/workers` gets round to turning the flag off.
  * - Both statements read `lodging`, and a raw query bypasses the guarded client's fixture extension,
  *   so each adds {@link fixturePredicate} for that alias (AAP 0.5.2), as `leaderboard.ts` does.
+ * - The guest list is bounded at {@link LODGING_GUEST_LIST_LIMIT} entries, the most recently
+ *   resolved stay first, and the bound is visible in the answer rather than silent: the DTO's own
+ *   `guestCount` counts every current verified guest, so a list shorter than that number reads as a
+ *   cut list rather than as a claim that nobody else is staying there (AAP 0.5.4, 0.5.7).
  * - The opt-in is written under a share lock on the claim row it names, so a claim deleted between
  *   the lookup and the upsert makes the upsert wait rather than fail on the foreign key.
  *
@@ -215,6 +220,24 @@ async function activeVerifiedClaimId(
 // ---------------------------------------------------------------------------------------------
 
 /**
+ * How many guests one lodging's detail lists (AAP 0.5.4, 0.5.7).
+ *
+ * Without a bound the list would grow with the lodging's own opted-in population — a hostel's guest
+ * list is as large as the number of travelers who opted in while staying there — so one row's
+ * request would answer with a list as large as that population, and the payload a client renders
+ * would grow with the disclosure decisions of every traveler who ever stayed. Every other list the
+ * API answers is bounded the same way (`LODGING_DIRECTORY_LIMIT` in `lodgings/leaderboard.ts`,
+ * `ADMIN_CALL_TASKS_LIMIT` in `admin/call-tasks.ts`), and AAP 0.5.4 fixes no cursor for a guest
+ * list, so a cap is the resolution rather than a paging change.
+ *
+ * The statement reads one row beyond this bound and that row is dropped as a sentinel, so the list
+ * is cut at exactly this many guests and nothing is logged per request: the DTO's own `guestCount`
+ * already reports every current verified guest, and a list shorter than that number is what makes a
+ * partial list honest rather than a hidden one (AAP 0.5.7 "Lodging visibility").
+ */
+export const LODGING_GUEST_LIST_LIMIT = 100;
+
+/**
  * The opted-in travelers currently staying at one lodging, as tier-0 profiles (AAP 0.5.4, 0.5.7).
  *
  * One statement selects the traveler ids and {@link tier0Profiles} builds their profiles, so the
@@ -236,12 +259,18 @@ async function activeVerifiedClaimId(
  * not reshuffle between two reads of unchanged data. Nothing else about a guest leaves this function:
  * no stay dates, no room number, no booking field, no claim id, and no coordinates.
  *
+ * The list is bounded at {@link LODGING_GUEST_LIST_LIMIT} guests, the most recently resolved stays
+ * first, so the number of travelers one request answers with is a decision of ours rather than a
+ * property of the lodging. The bound never claims to be the whole guest list: the sibling
+ * `guestCount` of the same DTO counts every current verified guest, so a list shorter than that
+ * count is a cut list, and its first entries are the stays the lodging resolved most recently.
+ *
  * @param services - The app's services: database, keyring, logger and environment.
  * @param lodgingId - The lodging whose guest list is wanted; the route has already resolved it.
  * @param viewerId - The traveler looking, whose blocks are excluded in both directions.
  * @param now - The instant the city-local day is derived from; from the caller's injected clock.
- * @returns The opted-in guests' tier-0 profiles, most recently resolved stay first; empty when
- *   nobody has opted in.
+ * @returns The opted-in guests' tier-0 profiles, most recently resolved stay first, at most
+ *   {@link LODGING_GUEST_LIST_LIMIT} of them; empty when nobody has opted in.
  * @see AAP 0.5.7 for the visibility rule, 0.5.4 for `LodgingDetail.guests`, 0.5.2 for erasure.
  */
 export async function guestsFor(
@@ -271,11 +300,19 @@ export async function guestsFor(
            )
        AND ${fixturePredicate(services.env.APP_ENV, LODGING_ALIAS)}
      ORDER BY "c"."resolved_at" DESC, "c"."user_id"
+     LIMIT ${LODGING_GUEST_LIST_LIMIT + 1}
   `);
+
+  // The row past the bound is the sentinel the statement reads to know the list was cut: it is
+  // dropped here rather than listed. Nothing is logged for it, because the DTO's own `guestCount`
+  // already reports every current verified guest and is what makes the shorter list honest
+  // (`LODGING_GUEST_LIST_LIMIT`, AAP 0.5.7).
+  const listed =
+    rows.length > LODGING_GUEST_LIST_LIMIT ? rows.slice(0, LODGING_GUEST_LIST_LIMIT) : rows;
 
   return await tier0Profiles(
     services,
-    rows.map((row: GuestRow) => row.user_id),
+    listed.map((row: GuestRow) => row.user_id),
     now,
   );
 }

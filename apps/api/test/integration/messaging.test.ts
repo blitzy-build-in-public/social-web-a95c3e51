@@ -24,6 +24,9 @@
  *      frame, a body past the limit and the sixty-first send inside a minute are answered in place
  *      with an `ErrorFrame`, storing nothing. A meetup that locks while a socket is open pushes
  *      `meetup_status` to both participants and opens chat on that same socket, with no reconnect.
+ *      One account holds at most `CHAT_MAX_SOCKETS_PER_USER` sockets on an instance: the socket over
+ *      that allowance is refused with `4429` and the sockets the account already holds keep serving,
+ *      and one of them closing releases the allowance.
  *
  * Delivery happens only through the pub/sub subscription, so both apps are subscribed before a socket
  * opens: `pubsub.start()` is the call `startBackground` makes in production. Every socket wait has an
@@ -61,6 +64,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import WebSocket from 'ws';
 
 import { CHAT_SEND_LIMIT_PER_MINUTE } from '../../src/modules/messaging/chat-ws.ts';
+import { WS_CLOSE } from '../../src/plugins/websocket.ts';
 import { createTestApp } from '../support/app.ts';
 import {
   callRoute,
@@ -355,6 +359,30 @@ async function upgradeStatus(opening: Promise<ChatSocket>): Promise<number | nul
     if (error instanceof SocketRefused) return error.status;
     throw error;
   }
+}
+
+/**
+ * The code a socket is closed with, resolved from its own `close` event (AAP 0.3.2).
+ *
+ * A refusal the API answers by closing an already-upgraded socket is observable only here: there is
+ * no plain HTTP status to read, and the code is what tells the client whether to come back. The
+ * listener is attached as the socket is handed over, so a close that has already been queued is not
+ * missed, and the wait fails the case rather than hanging it.
+ */
+function closeCode(socket: WebSocket, timeoutMs = FRAME_TIMEOUT_MS): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off('close', onClose);
+      reject(new Error(`the socket was not closed within ${timeoutMs} ms`));
+    }, timeoutMs);
+
+    function onClose(code: number): void {
+      clearTimeout(timer);
+      resolve(code);
+    }
+
+    socket.once('close', onClose);
+  });
 }
 
 /* The frames a case waits for (AAP 0.5.4) */
@@ -793,6 +821,51 @@ describe('WS /v1/chat', () => {
     expect(bodies.size).toBe(CHAT_SEND_LIMIT_PER_MINUTE);
     expect(bodies.has(`message-${CHAT_SEND_LIMIT_PER_MINUTE}`)).toBe(true);
     expect(bodies.has(`message-${CHAT_SEND_LIMIT_PER_MINUTE + 1}`)).toBe(false);
+  });
+
+  it('refuses a socket over the account allowance and admits one when a socket closes', async () => {
+    const { initiator, meetupId } = await meeting('locked');
+
+    // The relay's own capacity case is the pattern (AAP 0.3.2): a second app against the same
+    // database, Redis and memoized secrets, with the allowance lowered so the boundary is one case
+    // away. Its registry is its own, so the sockets below are all the account holds on it.
+    const capped = await createTestApp({ env: { CHAT_MAX_SOCKETS_PER_USER: '2' } });
+    try {
+      const cappedBase = await capped.listen();
+      await Promise.all([
+        ready(capped.services.redis.client),
+        ready(capped.services.redis.subscriber),
+      ]);
+      await capped.services.pubsub.start();
+
+      const token = await t.tokenFor(initiator);
+      const first = await openSocket(cappedBase, token);
+      const second = await openSocket(cappedBase, token);
+      // Each socket answers a publish only once it is registered, so both are attached — and counted
+      // — before the third opens, which makes the third's refusal the allowance rather than an order
+      // the three attaches happened to run in.
+      await awaitFanOut(first, initiator.id, meetupId, LOCKED_PROBE);
+      await awaitFanOut(second, initiator.id, meetupId, LOCKED_PROBE);
+
+      const third = await openSocket(cappedBase, token);
+      const closedWith = closeCode(third.socket);
+
+      expect(await closedWith).toBe(WS_CLOSE.tooMany);
+      expect([first.socket.readyState, second.socket.readyState]).toEqual([
+        WebSocket.OPEN,
+        WebSocket.OPEN,
+      ]);
+
+      // The allowance bounds the sockets an account holds at once, so closing one releases the slot:
+      // the fourth socket is registered — proven by the publish reaching it — which a registration
+      // the refusal had leaked could never do.
+      await first.close();
+      const fourth = await openSocket(cappedBase, token);
+      await awaitFanOut(fourth, initiator.id, meetupId, LOCKED_PROBE);
+      expect(fourth.socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      await capped.close();
+    }
   });
 
   it('pushes the lock to both sockets and opens the chat on the same socket', async () => {

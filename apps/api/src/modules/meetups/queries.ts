@@ -438,15 +438,28 @@ function depositSide(meetupId: string, role: ParticipantRole): string {
 }
 
 /**
+ * The key one pass check-in is filed under: the meetup and the attendee who left it (AAP 0.5.7).
+ *
+ * Both ids are lowercased before they are compared, as {@link participantRole} does: the same uuid
+ * can arrive from a path, a token claim or a stored row, and none of them decides the comparison. A
+ * meetup has at most one pass check-in per attendee (AAP 0.5.2), so the pair identifies the row.
+ */
+function checkInKey(meetupId: string, userId: string): string {
+  return `${meetupId.toLowerCase()}:${userId.toLowerCase()}`;
+}
+
+/**
  * One page of `MeetupDto`s, in the order the rows arrived (AAP 0.5.4).
  *
  * The page costs a fixed number of queries however many rows it holds, and not one of them is issued
- * per row: the six reads of the `Promise.all` below — the deposits, the caller's passing check-ins,
- * the open disputes, the venues, the venue coordinates and the page's counterpart profiles — over one
- * pair-facts statement for every counterpart of the page, one `user` read per disclosure tier the
- * page actually holds (at most four, each carrying its own `selectForTier`), one reputation-counters
- * call and one current-proof read. A 20-meetup page therefore costs the same shape of work as a
- * single-row read, which is what lets the own-meetups list hold the read latency target (AAP 0.12.2).
+ * per row: the six reads of the `Promise.all` below — the deposits, the page's passing check-ins (the
+ * viewer's and the counterparts' in the one read that fills both `checkedIn` and
+ * `counterpartCheckedIn`), the open disputes, the venues, the venue coordinates and the page's
+ * counterpart profiles — over one pair-facts statement for every counterpart of the page, one `user`
+ * read per disclosure tier the page actually holds (at most four, each carrying its own
+ * `selectForTier`), one reputation-counters call and one current-proof read. A 20-meetup page
+ * therefore costs the same shape of work as a single-row read, which is what lets the own-meetups
+ * list hold the read latency target (AAP 0.12.2).
  *
  * Each field comes from the allowlist below rather than from a spread row, and nothing a DTO carries
  * can be a secret: no client secret, PaymentIntent id or card detail is read here, and a caller
@@ -456,8 +469,8 @@ function depositSide(meetupId: string, role: ParticipantRole): string {
  * @param services - The database, the environment that decides fixture visibility, and the keyring,
  *   logger and clock the disclosure layer reads.
  * @param rows - The meetups to serialize; every one of them the viewer's own.
- * @param viewerId - The caller: `role` and `checkedIn` are theirs and their tier decides
- *   `counterpart`.
+ * @param viewerId - The caller: `role` and `checkedIn` are theirs, `counterpartCheckedIn` is the
+ *   other attendee's, and their tier decides `counterpart`.
  * @param now - The instant the accept deadline and the check-in window are judged at, from the
  *   route's injected clock.
  * @returns One DTO per row, in input order; an empty page queries nothing.
@@ -492,6 +505,9 @@ export async function toMeetupDtos(
 
   const meetupIds = prepared.map((entry) => entry.meetup.id);
   const venueIds = [...new Set(prepared.map((entry) => entry.meetup.venueId))];
+  // Both sides of every row: the viewer's own pass check-in and each counterpart's are the rows
+  // `Meetup.bothCheckedInAt` is set from (AAP 0.5.7), so one read of the page fills both fields.
+  const checkInUserIds = [...new Set([viewerId, ...prepared.map((entry) => entry.counterpartId)])];
 
   const [deposits, passedCheckIns, openDisputes, venues, points, profiles] = await Promise.all([
     services.db.deposit.findMany({
@@ -499,8 +515,8 @@ export async function toMeetupDtos(
       select: MEETUP_DEPOSIT_SELECT,
     }),
     services.db.checkIn.findMany({
-      where: { meetupId: { in: meetupIds }, userId: viewerId, result: 'pass' },
-      select: { meetupId: true },
+      where: { meetupId: { in: meetupIds }, userId: { in: checkInUserIds }, result: 'pass' },
+      select: { meetupId: true, userId: true },
     }),
     services.db.dispute.findMany({
       where: { meetupId: { in: meetupIds }, status: 'open' },
@@ -525,7 +541,9 @@ export async function toMeetupDtos(
     depositBySide.set(depositSide(deposit.meetupId, deposit.role), deposit);
   }
 
-  const checkedInIds = new Set(passedCheckIns.map((row) => row.meetupId));
+  const passedCheckInKeys = new Set(
+    passedCheckIns.map((row) => checkInKey(row.meetupId, row.userId)),
+  );
   const disputeMeetupIds = new Set(openDisputes.map((row) => row.meetupId));
   const venueById = new Map(venues.map((venue) => [venue.id, venue]));
 
@@ -540,7 +558,8 @@ export async function toMeetupDtos(
     const initiatorDeposit = depositBySide.get(depositSide(meetup.id, 'initiator')) ?? null;
     const recipientDeposit = depositBySide.get(depositSide(meetup.id, 'recipient')) ?? null;
     const own = role === 'initiator' ? initiatorDeposit : recipientDeposit;
-    const checkedIn = checkedInIds.has(meetup.id);
+    const checkedIn = passedCheckInKeys.has(checkInKey(meetup.id, viewerId));
+    const counterpartCheckedIn = passedCheckInKeys.has(checkInKey(meetup.id, entry.counterpartId));
 
     return {
       id: meetup.id,
@@ -555,6 +574,7 @@ export async function toMeetupDtos(
       recipientHold: holdView(recipientDeposit),
       lateCancelFrom: lateCancelFrom(meetup.startsAt).toISOString(),
       checkedIn,
+      counterpartCheckedIn,
       disputeOpen: disputeMeetupIds.has(meetup.id),
       nextAction: computeNextAction({
         role,

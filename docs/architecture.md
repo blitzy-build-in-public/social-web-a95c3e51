@@ -319,7 +319,7 @@ hold.
 pnpm 12.16.1 reads only authentication settings from `.npmrc` and ignores the `pnpm` field of
 `package.json`, so the workspace settings are declared in `pnpm-workspace.yaml`: `nodeLinker: hoisted`
 (Expo SDK 52's Metro and native autolinking need it), `saveExact: true`, `shellEmulator: true` (the root
-`test:stripe` and `perf` scripts run `VAR=value cmd`), and `pmOnFail: ignore`, which keeps
+`test:stripe` and `perf` scripts set a variable for the commands they run), and `pmOnFail: ignore`, which keeps
 `pnpm-lock.yaml` a single YAML document that SBOM and licence scanners can read. The setting bypasses
 pnpm's own check of the pin, so the root `package.json`'s `preinstall` script enforces it instead,
 failing any install that runs under another package manager or pnpm version. The same file carries
@@ -368,8 +368,8 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
-substitutions below. The run added thirty-three tracked paths the table does not name, each required by an AAP
-requirement or by the toolchain and every one of them recorded here: the thirty-two in the list below, and
+substitutions below. The run added forty-four tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the forty-three in the list below, and
 `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -380,6 +380,12 @@ requirement or by the toolchain and every one of them recorded here: the thirty-
   `20261104000000_init` row: 27 single-column indexes the retention, metric and reference predicates need, plus
   the `price_record` money CHECK Prisma 6.19.3 cannot express; a second directory is required because
   `prisma migrate deploy` skips an applied migration by name.
+- **`packages/db/src/lodging-activity.ts`** — supplements the
+  `packages/db/src/{client,spatial,fixtures-guard,index}.ts` row: the one covering-meetup statement
+  AAP 0.5.7's leaderboard rule is read through, which the API's `recordActivityForVerifiedClaim` and
+  the workers' `backfillActivityFacts` both run — `workers` must not import `@tablemate/api`, and
+  this is the package both processes already depend on, so stating it once is what makes the two
+  paths' `activityScore` values impossible to drift apart.
 - **`apps/mobile/{babel,metro}.config.cjs`** — stand for, and supersede the spelling of, the plan's
   `apps/mobile/{babel,metro}.config.js` rows: both manifests declare `"type": "module"`, so a `.js` config would
   load as ESM and its `module.exports` would throw.
@@ -427,6 +433,59 @@ requirement or by the toolchain and every one of them recorded here: the thirty-
   pair into `document.head` — and `RouteHead.native.tsx` is its documented no-op native half, a device having no
   document head to write; the fifth is the table's unit suite, which pins its rows and walks every route file
   under `app/` so a screen added without an entry fails the suite.
+
+- **`apps/mobile/src/checkin/venue-scanner.{native,web}.tsx`** — supplement the
+  `apps/mobile/src/checkin/{location,offline-code}.ts` row: the platform pair the check-in screen's
+  extensionless `src/checkin/venue-scanner` import resolves to, which is why that screen renders one
+  `VenueScanner` and never asks which platform it runs on. The native half opens `expo-camera` 16.0.18 with the
+  foreground permission the config plugin declares and reads the venue console's QR form of the same six digits
+  the manual field takes, refusing a payload that is not exactly `CODE_DIGITS` digits and ignoring a code it has
+  already seen, with no frame, image or payload stored or logged; the web half renders nothing, because that
+  package's web scanner builds its worker around a jsDelivr `jsQR` URL at module load, which the delivered
+  `worker-src 'self' blob:` and `script-src 'self'` policy refuses, and AAP 0.3.4 asks camera scanning only where
+  `expo-camera` web scanning works — so the manual field stays the browser's whole code entry (AAP 0.3.4, 0.5.8,
+  0.12.2).
+- **`apps/mobile/src/zk/circuits.ts`, `apps/mobile/src/zk/circuits.web.ts`, `apps/mobile/test/circuits.test.ts`**
+  — supplement the plan's `apps/mobile/src/zk` row: the pair that hands a screen the client-side witness input
+  generator without keeping it in the bundle the first paint waits on. The neutral half, which an extensionless
+  `./circuits` import resolves to on iOS, Android and in a Node test process, imports `@tablemate/circuits`
+  statically, because a React Native bundle cannot split its route graph; the web half reaches the same package
+  through one dynamic `import()`, which is what gives the generator and the Poseidon hash it carries — the bulk
+  of what the package weighs — a chunk of their own, fetched by whichever proof attempt needs it. Both halves
+  answer the generator's error the way the caller reads it: native tests membership of the class, the web tests
+  the shape the class gives itself, so the proving flow's own code is decided without the package being in the
+  starting bundle; the third path is the pair's suite, which pins both recognitions against the real error and
+  exercises the deferred load (AAP 0.5.5, 0.8.1).
+- **`apps/mobile/src/ui/{Chip.tsx,HeaderBackButton.tsx}`** — supplement the
+  `apps/mobile/src/ui/{Screen,Button,TextField,Card,ListItem,Banner,Avatar}.tsx` row: the one selectable chip
+  every city, filter, variant, queue-category and lodging-kind choice is placed with — six painted states, one
+  `radii.pill` silhouette, the reserved `borderWidths.control` band for the focus ring so focus moves no layout,
+  the chosen option reported to assistive technology through `aria-checked` on the `role="radio"` the control
+  carries and never by colour alone, and Space answered on web where react-native-web answers it only for a
+  button — and the web header's back control, which draws the chevron with the `react-native-svg` already in the
+  web bundle instead of the navigator's bundled 96x96 PNG, so a header of the web stack requests and downscales
+  no image, and which `renderWebHeaderLeft` spreads into a navigator's screen options under
+  `Platform.OS === 'web'` alone (AAP 0.5.8).
+- **`apps/api/test/unit/voice-relay.test.ts`** — a fourteenth suite beside the twelve the plan's
+  `apps/api/test/unit` row names: the bound `relayErrorCode` puts on what may be taken from a ConversationRelay
+  `error` frame, the one place on the relay socket where the provider hands this API its own free-form text —
+  Twilio's documented 64111 description carries the application's own unspoken tokens, which on a
+  `lodging_stay_verification` call are the disclosure question naming the guest and the stay dates — so the relay
+  keeps the provider's numeric code and nothing else, and no amount of free text around it reaches the result;
+  the socket's other bound, the utterance cap, is driven in `voice-dialogue.test.ts` (AAP 0.5.2, 0.12.2).
+- **`apps/workers/test/unit/fx-prime.test.ts`** — a tenth suite beside the eight the plan's
+  `apps/workers/test/unit` row names: the one-off `fx-refresh` run `apps/workers/src/main.ts` enqueues at startup
+  while no run has written the `FxRate` table, which a stack younger than the schedule's first 00:30 UTC run
+  needs because AAP 0.5.6 converts a price at the capture day's rate; the suite pins that the prime adds the
+  scheduled job's own name, data and options and returns without writing a rate, so no price is guessed on this
+  path.
+- **`packages/shared/test/admin-schemas.test.ts`** — a third suite beside the two the plan's
+  `packages/shared/test/{copy,tiers}.test.ts` row names: the operator request shape stated at the one layer that
+  can state it, `ResolveCallTask` accepting `prices` with `completed` alone, because that is the only outcome
+  AAP 0.5.3 stores them as `operator_entry` under — a body carrying them with `refused`, `do_not_call` or
+  `unreachable` is refused as `400 invalid_field` through the route rather than answered `200` with the array
+  dropped, while the handler still validates the outcome value itself and answers `422 invalid_outcome` for a
+  lifecycle question no schema decides (AAP 0.5.4).
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

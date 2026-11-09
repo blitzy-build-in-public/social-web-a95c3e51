@@ -1,8 +1,8 @@
 /**
  * The workers process (AAP 0.5.1, 0.6.2, 0.8.1): every queue processor and recurring scheduler of
  * `@tablemate/workers`. It loads the `workers` environment, builds the context the jobs share,
- * starts one BullMQ worker per consumed queue, registers the schedulers, and stops what it started
- * on the first `SIGTERM` or `SIGINT`.
+ * starts one BullMQ worker per consumed queue, registers the schedulers, primes the FX table while
+ * no run has written it yet, and stops what it started on the first `SIGTERM` or `SIGINT`.
  *
  * Process separation is what this entry point delivers (AAP 0.3.2): telephony, crawling, menu
  * extraction and their language-model calls run here and never in a request path, so a failure in
@@ -38,7 +38,7 @@ import {
 } from '@tablemate/server-core';
 
 import { WORKER_QUEUES, closeWorkerContext, createWorkerContext, startWorkers } from './queues.ts';
-import { registerSchedulers } from './schedulers.ts';
+import { primeFxTable, registerSchedulers } from './schedulers.ts';
 
 import type { Logger, WorkersEnv } from '@tablemate/server-core';
 import type { WorkerContext } from './queues.ts';
@@ -88,7 +88,8 @@ let stopping = false;
 
 /**
  * Bring the process up (AAP 0.5.6): load and validate the configuration, build the context, start
- * every consumed queue and register the recurring schedulers.
+ * every consumed queue, register the recurring schedulers and prime the FX table when it is still
+ * empty.
  *
  * A failure of any of those steps is a start failure, not a job failure — nothing here would be
  * retried into working — so it is recorded once, what was opened is closed, and the process exits 1
@@ -110,6 +111,10 @@ async function main(): Promise<void> {
 
     running = { ctx, stop: startWorkers(ctx) };
     await registerSchedulers(ctx);
+
+    // A stack younger than its first 00:30 UTC holds no `FxRate` row, so every non-USD price entry
+    // would be refused until that run: the delivered job is enqueued once here (AAP 0.5.6).
+    await primeFxTable(ctx);
 
     // Mode names, queue names and a boolean: no URL, key or job payload is ever logged (AAP 0.11.1).
     activeLogger.info(

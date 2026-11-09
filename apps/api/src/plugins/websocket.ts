@@ -49,9 +49,11 @@ import type { App } from '../app.ts';
  *   from `modules/messaging/pubsub.ts` (AAP 0.3.2, 0.5.3). A frame that names its sessions closes
  *   the sockets those sessions were admitted with, which is what a logout publishes; one that names
  *   none closes every socket of the user, which is what an account that ended as a whole publishes.
- * - `tooMany` (4429): the caller is over an allowance that ends the socket — the relay's
- *   `VOICE_RELAY_MAX_SESSIONS` cap of 10 concurrent sessions, or a chat socket whose per-minute
- *   message allowance is spent (AAP 0.3.2).
+ * - `tooMany` (4429): the caller is over an allowance that ends the socket — the
+ *   `CHAT_MAX_SOCKETS_PER_USER` allowance of live chat sockets one account may hold on an API
+ *   instance (AAP 0.3.2). The relay's `VOICE_RELAY_MAX_SESSIONS` cap is not this code: it refuses a
+ *   further Twilio connection as plain HTTP `503 service_unavailable` before its upgrade, and a chat
+ *   socket's own send allowance is answered in place, per the paragraph below.
  *
  * A refusal answered without closing the socket (the single over-limit chat frame, answered in
  * place with a `rate_limited` frame) is delivered as a frame instead.

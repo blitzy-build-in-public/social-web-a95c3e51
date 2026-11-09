@@ -21,12 +21,19 @@ import { RouteHead } from '../src/seo/RouteHead';
 import { bindRealtimeInvalidation, queryClient } from '../src/state/meetup-store';
 import { useSession, type SessionSnapshot } from '../src/state/session-store';
 import { Banner, announce } from '../src/ui';
+import { renderWebHeaderLeft } from '../src/ui/HeaderBackButton';
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 const BENCH_BUILD = process.env.EXPO_PUBLIC_ZK_BENCH === '1';
 const OFFLINE_MESSAGE = userMessageFor('network_error');
 const NOTICE_EDGES = ['bottom', 'left', 'right'] as const;
 const NOTICE = { tone: 'error', message: OFFLINE_MESSAGE } as const;
-const HEADER = { headerBackTitle: 'Back', contentStyle: { backgroundColor: colors.background } };
+const HEADER = {
+  headerBackTitle: 'Back',
+  contentStyle: { backgroundColor: colors.background },
+  // Web only: the navigator's own back control is a bundled PNG, which every screen of this stack
+  // requests as soon as its header renders its back entry. Native keeps the platform header (AAP 0.5.8).
+  ...(Platform.OS === 'web' ? { headerLeft: renderWebHeaderLeft } : {}),
+};
 export const unstable_settings = { initialRouteName: '(tabs)' };
 const isOpenArea = (area: string | undefined): boolean =>
   area === '(auth)' || area === 'auth' || area === 'legal' || (BENCH_BUILD && area === 'dev');

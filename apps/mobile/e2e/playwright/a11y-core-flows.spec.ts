@@ -6,8 +6,10 @@
  *
  * The lock and check-in screens need a meetup whose deposit decision is durable, and no client
  * payment adapter is mocked (AAP 0.11.2), so both run only on a stack holding Stripe test-mode keys;
- * without them the test is skipped with `BLOCKED_REASON`, the sentence `scripts/e2e.ts` writes for
- * those flows into `docs/accessibility.md`.
+ * without them this test skips itself with `BLOCKED_REASON` — the sentence `docs/accessibility.md`
+ * records against those two rows — and a skipped screen writes no record. The audit's result reaches
+ * `docs/acceptance.md` as the `e2e` block's one `wcag` cell, which `scripts/e2e.ts` writes from
+ * whether this spec passed.
  *
  * Every page is a hand-off context of `support/api-actor.ts` (one page per role, strictly serial),
  * selectors come only from the test-id contract of `apps/mobile/app`, and after the first load every

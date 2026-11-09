@@ -217,11 +217,14 @@ function reject(logger: VerifierLogger, code: ErrorCode): AppError {
 /**
  * Reads, parses and checks `verification_key.json` (AAP 0.4.2, 0.5.5).
  *
- * A missing file is a `503 service_unavailable` after one `warn` line, because proof submission has
- * no way to verify without it; `main.ts` requires it outright in staging and production, so this
- * state is reachable only where a build has not run or the mount is absent.
+ * A missing file, or one that is not the key, is a `503 service_unavailable`, because proof
+ * submission has no way to verify without it. The failure travels as the thrown error's `cause` —
+ * the `ENOENT` naming the file, or the `zk_vkey_invalid` marker an operator greps for with the parse
+ * failure beneath it — so the one line it is recorded by is the errors plugin's, which logs the code
+ * with the head of that chain (AAP 0.11.1). `main.ts` requires the file outright in staging and
+ * production, so this state is reachable only where a build has not run or the mount is absent.
  */
-async function readVerificationKey(logger: VerifierLogger): Promise<VerificationKey> {
+async function readVerificationKey(): Promise<VerificationKey> {
   const file = VERIFICATION_KEY_FILE;
   let text: string;
 
@@ -229,22 +232,28 @@ async function readVerificationKey(logger: VerifierLogger): Promise<Verification
     text = await readFile(circuitsBuildPath(file), 'utf8');
   } catch (error) {
     if (isNotFound(error)) {
-      logger.warn({ event: 'zk_artifacts_missing', file }, 'zk_artifacts_missing');
-      throw new AppError('service_unavailable');
+      throw new AppError('service_unavailable', undefined, { cause: error });
     }
     throw error;
   }
 
   let parsed: unknown;
+  let parseError: unknown;
+
   try {
     parsed = JSON.parse(text) as unknown;
-  } catch {
+  } catch (error) {
+    parseError = error;
     parsed = undefined;
   }
 
   if (!isVerificationKey(parsed)) {
-    logger.warn({ event: 'zk_vkey_invalid' }, 'zk_vkey_invalid');
-    throw new AppError('service_unavailable');
+    throw new AppError('service_unavailable', undefined, {
+      cause: new Error(
+        'zk_vkey_invalid',
+        parseError === undefined ? undefined : { cause: parseError },
+      ),
+    });
   }
   return parsed;
 }
@@ -257,15 +266,12 @@ async function readVerificationKey(logger: VerifierLogger): Promise<Verification
  * process started is picked up by the next proof submission, and a suite that never proves still
  * starts without the artefacts.
  *
- * @param services - The app's services, of which only the logger is read.
  * @returns The parsed verification key.
  * @throws {AppError} `service_unavailable` when the file is absent, is not JSON, or is not the
  *   Groth16 key over BN254 with seven public signals.
  */
-export async function loadVerificationKey(
-  services: Pick<VerifierServices, 'logger'>,
-): Promise<VerificationKey> {
-  const inFlight = keyLoad ?? readVerificationKey(services.logger);
+export async function loadVerificationKey(): Promise<VerificationKey> {
+  const inFlight = keyLoad ?? readVerificationKey();
   keyLoad = inFlight;
 
   try {
@@ -420,7 +426,7 @@ export async function verifyItineraryProof(
   const signals = PUBLIC_SIGNAL_NAMES.map((name) => canonical[name].toString());
 
   // 1. Groth16 verification against the mounted key.
-  const verificationKey = deps.verificationKey ?? (await loadVerificationKey(services));
+  const verificationKey = deps.verificationKey ?? (await loadVerificationKey());
   const verify = deps.verify ?? defaultVerify;
 
   if (deps.verify === undefined) {

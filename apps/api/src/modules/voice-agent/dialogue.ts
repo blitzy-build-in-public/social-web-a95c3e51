@@ -74,6 +74,7 @@ import { transact, writeOutbox, type AfterCommit, type TransactServices } from '
 import { lodgingStayVerificationScript } from './scripts/lodging-stay-verification.ts';
 import { menuPricesScript } from './scripts/menu-prices.ts';
 import {
+  UNCLEAR_CLASSIFICATION,
   classifyUtterance,
   describeClassificationFailure,
   type Classification,
@@ -847,9 +848,10 @@ export type FinalizeReason = 'completed' | 'socket_closed' | 'superseded' | 'app
  *  - **The task decides.** Before every turn the task's status and the attempt's `superseded` flag are
  *    re-read, so a task cancelled while the call runs ends the dialogue politely instead of talking to
  *    a caller nobody wants a result from (AAP 0.5.3).
- *  - **The budget bounds it.** No more than `LLM_MAX_TURNS_PER_CALL` classifications are made, and
- *    every turn is metered again the call's own reservation, so the reserved dialogue budget cannot be
- *    crossed (AAP 0.5.6).
+ *  - **The budget bounds it.** No more than `LLM_MAX_TURNS_PER_CALL` turns are taken — an utterance
+ *    the relay cut at its own byte bound counts as one without reaching the provider — and every turn
+ *    that is classified is metered against the call's own reservation, so the reserved dialogue
+ *    budget cannot be crossed (AAP 0.5.6).
  *  - **The closing line plays out.** `end` cuts buffered speech, so the session waits for the closing
  *    line, sends the frame, records the outcome and only then closes the socket.
  */
@@ -994,12 +996,15 @@ export class DialogueSession {
    * Handle one transcribed utterance (AAP 0.5.6).
    *
    * @param text - What the callee said, as ConversationRelay transcribed it.
+   * @param options - `overlong: true` for an utterance the relay itself cut at the classification
+   *   window's byte bound, which the dialogue answers as an unusable utterance rather than
+   *   classifying. Omitted by every other caller.
    * @returns A promise that resolves once this turn, and any closing line it began, has finished.
    */
-  onPrompt(text: string): Promise<void> {
+  onPrompt(text: string, options: { readonly overlong?: boolean } = {}): Promise<void> {
     this.chain = this.chain.then(async () => {
       try {
-        await this.handlePrompt(text);
+        await this.handlePrompt(text, options.overlong === true);
       } catch {
         // The turn loop never throws to the socket: the failure is recorded as a code and the call is
         // closed politely, so a socket that is still open hears an ending rather than silence.
@@ -1093,7 +1098,7 @@ export class DialogueSession {
   }
 
   /** The turn loop of one utterance (AAP 0.5.6). */
-  private async handlePrompt(text: string): Promise<void> {
+  private async handlePrompt(text: string, overlong: boolean): Promise<void> {
     if (this.closed) {
       return;
     }
@@ -1129,31 +1134,44 @@ export class DialogueSession {
       return;
     }
 
-    this.appendCallee(text);
+    // An overlong utterance is nothing the callee said: it is this socket's own bound having been
+    // reached, so none of it is appended — it would otherwise enter the classification window and a
+    // menu call's transcript as speech nobody spoke (AAP 0.5.6).
+    if (!overlong) {
+      this.appendCallee(text);
+    }
     this.classifications += 1;
 
     let classification: Classification;
-    try {
-      const turn = await classifyUtterance(
-        this.services,
-        this.classificationContext(context),
-        text,
-        this.expectedFor(step),
-      );
-      this.charge(turn.chargedMicros);
-      classification = turn.classification;
-    } catch (error) {
-      const failure = describeClassificationFailure(error, this.remainingMicros);
-      this.charge(failure.chargedMicros);
-      // A turn that did not fit the reservation never reached the provider; one that failed on the
-      // provider's side may have been billed. Both end the call politely, the task keeps whatever it
-      // has, and no other route is affected (AAP 0.5.6).
-      await this.close(
-        failure.kind === 'budget' ? 'closing.budget' : 'closing.thanks',
-        failure.kind === 'budget' ? BUDGET_ENDING : null,
-        'app_closing',
-      );
-      return;
+    if (overlong) {
+      // Unusable rather than classified: no request is counted, sent or charged against the dialogue
+      // budget, and the turn takes exactly the path an `unclear` classification takes below — the
+      // step's `accept` is handed no usable answer, so the callee hears the retry line, or the script
+      // advances once the step's tries are spent (AAP 0.5.6).
+      classification = UNCLEAR_CLASSIFICATION;
+    } else {
+      try {
+        const turn = await classifyUtterance(
+          this.services,
+          this.classificationContext(context),
+          text,
+          this.expectedFor(step),
+        );
+        this.charge(turn.chargedMicros);
+        classification = turn.classification;
+      } catch (error) {
+        const failure = describeClassificationFailure(error, this.remainingMicros);
+        this.charge(failure.chargedMicros);
+        // A turn that did not fit the reservation never reached the provider; one that failed on the
+        // provider's side may have been billed. Both end the call politely, the task keeps whatever it
+        // has, and no other route is affected (AAP 0.5.6).
+        await this.close(
+          failure.kind === 'budget' ? 'closing.budget' : 'closing.thanks',
+          failure.kind === 'budget' ? BUDGET_ENDING : null,
+          'app_closing',
+        );
+        return;
+      }
     }
 
     // The turn's own label, written before the control check so a refusal and a do-not-call are

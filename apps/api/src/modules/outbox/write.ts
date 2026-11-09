@@ -29,8 +29,9 @@
  *  - **Callbacks never fail the request.** They run after the commit, so one that throws is logged
  *    and the next still runs.
  *
- * Log lines carry the fact that an after-commit callback failed and the failure itself, and nothing
- * else: no payload, no token, no coordinate (AAP 0.11.1).
+ * Log lines carry the fact that an after-commit callback failed and the failure's own short token —
+ * its `code`, else its name — and nothing else: never the error's message, its stack or any
+ * enumerable key, and no payload, no token, no coordinate (AAP 0.11.1).
  *
  * @see AAP 0.3.2 for the outbox's routing and idempotency rules, 0.5.1 for the Outbox component,
  *   0.5.3 for the account-deletion write fence, 0.5.6 for the dispatcher's polling, and 0.8.1 for
@@ -193,7 +194,10 @@ export async function transact<T>(
     } catch (err) {
       // The commit already happened, so a callback's failure is recorded and never rethrown: the
       // outbox poller and the settlement sweeper are the backstops (AAP 0.3.2).
-      services.logger.warn({ event: 'after_commit_failed', err }, 'after_commit_failed');
+      services.logger.warn(
+        { event: 'after_commit_failed', code: failureToken(err) },
+        'after_commit_failed',
+      );
     }
   }
 
@@ -262,4 +266,35 @@ export async function writeOutbox<K extends OutboxKind>(
 
   state.wroteOutbox = true;
   return row.id;
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its `code` (`ECONNREFUSED`, `P2028`) or its class name
+ * (`QueuePayloadError`), and never its message or stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack as strings that key-based redaction cannot rewrite, and an ioredis
+ * failure's text names the host it dialled, so the thrown value itself must not reach an
+ * `after_commit_failed` line. A token that is not a plain short identifier becomes `Error`, so nothing
+ * a thrown value happens to say can reach a log through this path.
+ *
+ * The copy lives here rather than in `./dispatcher.ts` because this file imports only the modules its
+ * own work names, the course `../settlement/queue.ts` documents: `./dispatcher.ts` enters the runtime
+ * graph through `app.ts` alone, which builds `services.outbox` from it, so this module reaches it as a
+ * type only.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

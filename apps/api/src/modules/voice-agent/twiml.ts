@@ -45,10 +45,12 @@
  *   dialogue rules, and 0.8.1 for this file.
  */
 
+import { z } from 'zod';
 import formbody from '@fastify/formbody';
 
 import { isUniqueViolation, type CallAttempt, type DbTx } from '@tablemate/db';
 import {
+  ErrorEnvelope,
   TwilioTwimlRequest,
   VOICE_ATTEMPT_PARAMETER,
   VoiceCallbackQuery,
@@ -88,6 +90,12 @@ const VOICE_TAG = 'webhooks';
 
 /** The media type a TwiML document is served as, rather than the JSON every other route answers. */
 const TWIML_CONTENT_TYPE = 'text/xml; charset=utf-8';
+
+/**
+ * That media type without its `charset` parameter, which is the form an OpenAPI content key carries:
+ * the key this route's `200` is declared under in the emitted document (AAP 0.11.2).
+ */
+const TWIML_MEDIA_TYPE = TWIML_CONTENT_TYPE.replace(/;.*$/, '');
 
 /** The XML declaration every document here opens with, encoding included. */
 const DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>';
@@ -348,11 +356,15 @@ function registerTwimlRoute(app: App): void {
         tags: [VOICE_TAG],
         querystring: VoiceCallbackQuery,
         body: TwilioTwimlRequest,
-        // No `response`: the answer is XML that no Zod schema describes, and a declared response
-        // would type `reply.send` on that schema — while a declared `200` would put a JSON
-        // serializer in front of the document. `config.rawResponse` is the composition root's
-        // marker for the two routes that answer bytes, and the shared envelope still answers
-        // `400 bad_signature` and `400 invalid_field` (AAP 0.5.4).
+        // The document describes what this route answers (AAP 0.11.2): the `200` under the media
+        // type the reply carries, and the one refusal the signature hook raises before the schemas.
+        // The `200` is a content-typed entry — the shape that keeps the success answer in the
+        // document for a body no Zod schema describes — and it never touches the reply, which sends
+        // its XML string as it is. Naming only the `400` would drop the emitted `200` entirely.
+        response: {
+          200: { content: { [TWIML_MEDIA_TYPE]: { schema: z.string() } } },
+          400: ErrorEnvelope,
+        },
       },
       config: RAW_XML_RESPONSE,
     },

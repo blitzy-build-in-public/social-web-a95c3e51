@@ -21,6 +21,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { coveringMeetupStatement } from '@tablemate/db';
+
 import {
   DAY_MS,
   GUEST_COUNT_BELOW_LABEL,
@@ -29,6 +31,7 @@ import {
   LEADERBOARD_PAIR_DEDUPE_DAYS,
   LEADERBOARD_WINDOW_DAYS,
   toGuestCount as sharedToGuestCount,
+  type AppEnv,
   type GuestCount as GuestCountValue,
 } from '@tablemate/shared';
 
@@ -306,5 +309,83 @@ describe('compareForLeaderboard', () => {
     expect([...entries].sort(compareForLeaderboard).map((_, index) => index + 1)).toEqual([
       1, 2, 3,
     ]);
+  });
+});
+
+/**
+ * The one covering-meetup statement both processes run, pinned at the place it is stated
+ * (AAP 0.5.2, 0.5.7).
+ *
+ * These rows assert on `@tablemate/db`'s builder itself: it is the statement the API's
+ * `recordActivityForVerifiedClaim` and the workers' `backfillActivityFacts` share, so there is no
+ * second copy to keep in step with it, and nothing in this suite runs SQL. The rows it returns, and
+ * the facts written from them, are covered by the integration suites.
+ */
+
+/** The claim every statement row is built for: one traveler, one five-day stay. */
+const COVERAGE = {
+  userId: '11111111-1111-4111-8111-111111111111',
+  stayFrom: '2026-11-01',
+  stayTo: '2026-11-05',
+} as const;
+
+/** One environment the statement is built for, and the fixture clause its text must close with. */
+interface StatementCase {
+  /** Reads as the environment the row builds for. */
+  readonly name: string;
+  readonly appEnv: AppEnv;
+  /** The predicate `fixturePredicate` gives that environment (AAP 0.5.2). */
+  readonly fixtureClause: string;
+}
+
+const STATEMENT_CASES: readonly StatementCase[] = [
+  { name: 'test', appEnv: 'test', fixtureClause: 'AND TRUE' },
+  { name: 'demo', appEnv: 'demo', fixtureClause: 'AND TRUE' },
+  { name: 'staging', appEnv: 'staging', fixtureClause: 'AND "v"."is_fixture" = false' },
+  { name: 'production', appEnv: 'production', fixtureClause: 'AND "v"."is_fixture" = false' },
+];
+
+/** The statement's text for `appEnv`, its whitespace collapsed, so a row reads the clauses alone. */
+function statementSql(appEnv: AppEnv): string {
+  return coveringMeetupStatement(appEnv, COVERAGE, NOW).sql.replace(/\s+/g, ' ').trim();
+}
+
+describe('coveringMeetupStatement', () => {
+  it.each(STATEMENT_CASES)("$name: reads the covering rule over the venue's city", ({ appEnv }) => {
+    const sql = statementSql(appEnv);
+
+    // The meetup, its venue and that venue's city, joined so the local date is the meetup's own.
+    expect(sql).toContain('FROM "meetup" AS "m"');
+    expect(sql).toContain('JOIN "venue" AS "v" ON "v"."id" = "m"."venue_id"');
+    expect(sql).toContain('JOIN "city" AS "ci" ON "ci"."id" = "v"."city_id"');
+    // Completed, settled, and inside the activity window the caller passes in.
+    expect(sql).toContain('"m"."status" = \'completed\'');
+    expect(sql).toContain('"m"."settled_at" IS NOT NULL');
+    expect(sql).toContain('"m"."settled_at" > ?');
+    // The meetup's local date in that city, against both ends of the stay.
+    expect(sql).toContain('(("m"."starts_at" AT TIME ZONE "ci"."timezone")::date');
+    expect(sql).toContain('BETWEEN CAST(? AS date) AND CAST(? AS date)');
+    // The claimant, matched against either participant of the meetup.
+    expect(sql).toContain('("m"."initiator_id" = ?::uuid OR "m"."recipient_id" = ?::uuid)');
+  });
+
+  it.each(STATEMENT_CASES)("$name: ends on its environment's fixture predicate", (row) => {
+    expect(statementSql(row.appEnv).endsWith(row.fixtureClause)).toBe(true);
+  });
+
+  it('binds every value and interpolates none of them into its text', () => {
+    const statement = coveringMeetupStatement('staging', COVERAGE, NOW);
+
+    expect(statement.values).toEqual([
+      NOW,
+      COVERAGE.userId,
+      COVERAGE.userId,
+      COVERAGE.stayFrom,
+      COVERAGE.stayTo,
+    ]);
+
+    for (const value of [COVERAGE.userId, COVERAGE.stayFrom, COVERAGE.stayTo]) {
+      expect(statement.sql).not.toContain(value);
+    }
   });
 });

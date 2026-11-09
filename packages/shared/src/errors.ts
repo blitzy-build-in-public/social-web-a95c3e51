@@ -12,6 +12,8 @@ import { z } from 'zod';
  * 0.11.1). `service_unavailable` is the rate limiter's Redis outage: every rate-limited route
  * answers it instead of running, because the limiter keeps `skipOnError: false` (AAP 0.3.2).
  * `suggestions_unavailable` is a failure confined to the suggestions route (AAP 0.3.2).
+ * `fx_rate_unavailable` is a price conversion whose currency has no rate for the capture day
+ * (AAP 0.5.6), confined to the operator price-entry route.
  */
 export const ErrorCode = z.enum([
   'invalid_email',
@@ -72,6 +74,7 @@ export const ErrorCode = z.enum([
   'rate_limited',
   'daily_cap_reached',
   'internal_error',
+  'fx_rate_unavailable',
   'payment_unavailable',
   'service_unavailable',
   'suggestions_unavailable',
@@ -146,6 +149,7 @@ export const ERROR_STATUS = {
   rate_limited: 429,
   daily_cap_reached: 429,
   internal_error: 500,
+  fx_rate_unavailable: 503,
   payment_unavailable: 503,
   service_unavailable: 503,
   suggestions_unavailable: 503,
@@ -161,7 +165,10 @@ export const ERROR_STATUS = {
  * caller, before any meetup or hold exists. `service_unavailable` reports the rate limiter's
  * Redis outage, which every rate-limited route answers instead of running (AAP 0.3.2).
  * `token_invalid` is original on `POST /auth/verify` and an addition on every other route,
- * which returns it for a write attempted after account deletion (AAP 0.5.3).
+ * which returns it for a write attempted after account deletion (AAP 0.5.3). `fx_rate_unavailable`
+ * is the operator price-entry route's own dependency error: a supplied currency has no `FxRate`
+ * row at or before the capture day (AAP 0.5.6), which the `fx-refresh` job writes (AAP 0.5.6), so
+ * the entry is refused as temporarily unavailable rather than mistaken for a lifecycle refusal.
  */
 export const ADDED_ERROR_CODES = [
   'payment_unavailable',
@@ -169,6 +176,7 @@ export const ADDED_ERROR_CODES = [
   'token_invalid',
   'self_proposal',
   'service_unavailable',
+  'fx_rate_unavailable',
 ] as const satisfies readonly ErrorCode[];
 
 /**

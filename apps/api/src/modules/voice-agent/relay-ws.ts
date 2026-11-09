@@ -32,8 +32,13 @@
  *
  * Nothing on either path is logged. A frame carries the callee's speech, `setup` carries the call's
  * two phone numbers, and a lodging call carries a booking name in the redacted classification
- * window alone, so a log line here holds an event name, an attempt id and a provider error's own
- * description — never a frame, a prompt, a number or a booking field (AAP 0.5.2, 0.11.1).
+ * window alone, so a log line here holds an event name, an attempt id and — of a provider `error`
+ * frame — only the five-digit code that frame's free-form `description` happens to carry. The
+ * description itself is never logged: Twilio documents error 64111 as putting the application's own
+ * unspoken tokens there, which on a `lodging_stay_verification` call are the disclosure question
+ * naming the guest and the stay dates, and no key-based redaction can rewrite a name embedded in
+ * another field's string. So a log line here carries never a frame, a prompt, a number or a booking
+ * field (AAP 0.5.2, 0.11.1).
  *
  * @see AAP 0.3.2 for the one language-model exception, the concurrent-session cap and the
  *   containment rules; 0.3.3 for the Twilio integration row and the signature check; 0.5.3 for the
@@ -48,6 +53,7 @@ import {
   RelayOutboundFrame,
   Uuid,
   VOICE_ATTEMPT_PARAMETER,
+  utf8ByteLength,
   type RelaySetupFrame,
 } from '@tablemate/shared';
 
@@ -57,6 +63,7 @@ import { WS_CLOSE } from '../../plugins/websocket.ts';
 
 import { DialogueSession, isStripped, loadCallContext, type RelayIo } from './dialogue.ts';
 import { twilioSignatureHook } from './signature.ts';
+import { CLASSIFICATION_WINDOW_MAX_BYTES } from './understanding.ts';
 
 import type { FastifyRequest, preValidationAsyncHookHandler } from 'fastify';
 import type { WebSocket } from 'ws';
@@ -274,8 +281,13 @@ async function serveConnection(
   let ended = false;
   /** Whether a `setup` frame has been acted on; a second one belongs to the same socket. */
   let setupSeen = false;
-  /** The pieces of an utterance whose transcription has not finished yet. */
+  /**
+   * The pieces of an utterance whose transcription has not finished yet. Never longer than
+   * {@link CLASSIFICATION_WINDOW_MAX_BYTES}: past that bound the pieces are dropped rather than held.
+   */
   let buffered = '';
+  /** Whether the utterance being assembled outgrew that bound, so its turn is an unusable one. */
+  let overlong = false;
 
   /**
    * End the connection once: record what the call produced, forget it, and give its slot back
@@ -425,7 +437,9 @@ async function serveConnection(
    *
    * `prompt` is the only frame that reaches the dialogue: `partialPrompts` is off in the TwiML, so a
    * prompt is final, and a piece that is not is held until the one that is — an utterance is never
-   * halved or dropped. A prompt before `setup` belongs to no dialogue and is ignored. `dtmf` asks for
+   * halved, except at the classification window's own byte bound (AAP 0.5.6), past which it is held
+   * no further and its turn reaches the dialogue as an unusable utterance rather than as a text to
+   * classify. A prompt before `setup` belongs to no dialogue and is ignored. `dtmf` asks for
    * nothing, because no keypad menu is served, and `info` is a session diagnostic whose payload this
    * API does not read.
    */
@@ -441,16 +455,35 @@ async function serveConnection(
 
       case 'prompt': {
         if (!frame.last) {
-          buffered += frame.voicePrompt;
+          // Bounded by the very window the dialogue counts its turns against (AAP 0.5.6): while the
+          // pieces fit inside it they are held as they arrive, and the first piece that would push
+          // the utterance past the bound is not held at all — so what one connection accumulates for
+          // a call is that window plus the one frame being read, whatever a signature-valid socket
+          // sends for the length of the call. Nothing is lost with the dropped pieces: the `last`
+          // frame below hands the turn to the dialogue as an unusable utterance, which is the path a
+          // classification the model could not read already takes.
+          if (!overlong) {
+            const held = buffered + frame.voicePrompt;
+            if (utf8ByteLength(held) > CLASSIFICATION_WINDOW_MAX_BYTES) {
+              overlong = true;
+              buffered = '';
+            } else {
+              buffered = held;
+            }
+          }
           return;
         }
         const text = buffered + frame.voicePrompt;
+        // A single `last` frame whose own prompt outgrows the window is the same case as pieces that
+        // together do, and neither is classified.
+        const cut = overlong || utf8ByteLength(text) > CLASSIFICATION_WINDOW_MAX_BYTES;
         buffered = '';
+        overlong = false;
         const session = connection.session;
         if (session === null) return;
         // The session chains its turns, so the socket never needs to await one: the next prompt is
         // answered after the current turn, whatever order the frames arrive in.
-        void session.onPrompt(text).catch(fail);
+        void session.onPrompt(text, { overlong: cut }).catch(fail);
         return;
       }
 
@@ -465,20 +498,29 @@ async function serveConnection(
       case 'info':
         return;
 
-      case 'error':
-        // Twilio's own report of a message the session rejected: it carries the provider's code and
-        // its own description and no speech, so it is logged as it stands. The dialogue ends the call
-        // on its own terms — a model failure hears the closing line and leaves the task for retry
-        // (AAP 0.5.6).
+      case 'error': {
+        // Twilio's own report of a message the session rejected. Its `description` is free-form, and
+        // Twilio documents error 64111 as carrying the application's own unspoken tokens in it —
+        // the `menu_prices` questions, or the `lodging_stay_verification` question that names the
+        // guest and the stay dates — so none of it may reach a log line (AAP 0.5.2, 0.11.1). What
+        // is kept is the provider's numeric code alone, which is what an operator reads to tell one
+        // relay failure from another; `relayErrorCode` is the whole of that extraction. The dialogue
+        // ends the call on its own terms — a model failure hears the closing line and leaves the
+        // task for retry (AAP 0.5.6).
+        const code = relayErrorCode(frame.description);
         log.warn(
           {
             event: 'voice_relay_error',
             attemptId: connection.attemptId,
-            description: frame.description,
+            // The code is left out rather than set to null when the description names none: an
+            // absent field is what the workspace's log lines carry for an absent optional value
+            // (AAP 0.11.1).
+            ...(code === null ? {} : { code }),
           },
           'voice_relay_error',
         );
         return;
+      }
     }
   };
 
@@ -554,3 +596,33 @@ function messageText(data: unknown): string {
   if (Array.isArray(data)) return Buffer.concat(data as readonly Uint8Array[]).toString('utf8');
   return '';
 }
+
+/**
+ * The provider's own error code inside a relay `error` frame's `description`, or `null`
+ * (AAP 0.5.2, 0.11.1).
+ *
+ * Twilio's `error` frame carries a free-form description, and the payload Twilio documents for
+ * error 64111 — `Error converting tokens to speech, code: 64111, error: , tokens: <tokens>` — puts
+ * the application's own unspoken tokens in that same field, which on a `lodging_stay_verification`
+ * call are the disclosure question naming the guest and the stay dates. Nothing of the description
+ * may therefore be logged, and this function is the whole of what may: the five-digit code such a
+ * message carries, returned alone, with every other byte of it discarded. A description naming no
+ * code reads as `null`, so the caller leaves the field out rather than logging an empty one.
+ *
+ * Exported so the extraction is unit-tested on Twilio's documented payloads rather than only
+ * through a live socket.
+ *
+ * @param description - The `description` of the relay `error` frame, exactly as Twilio sent it.
+ * @returns The code's own digits — `64111`, `64107` — or `null` when the description names none.
+ */
+export function relayErrorCode(description: string): string | null {
+  return RELAY_ERROR_CODE_RE.exec(description)?.[1] ?? null;
+}
+
+/**
+ * The one thing taken from a relay `error` frame's description (AAP 0.11.1): the provider's code,
+ * as Twilio writes it inside its own message. Not global, so `exec` carries no state between calls,
+ * and the trailing `\b` is what keeps a longer run of digits — or a code-shaped number in the free
+ * text — from matching past five of them.
+ */
+const RELAY_ERROR_CODE_RE = /\bcode:\s*(\d{5})\b/;

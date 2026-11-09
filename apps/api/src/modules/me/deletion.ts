@@ -347,7 +347,7 @@ async function cancelOpenMeetups(
     } catch (error) {
       counts.failed += 1;
       services.logger.warn(
-        { event: 'account_deletion_meetup_failed', meetupId, err: error },
+        { event: 'account_deletion_meetup_failed', meetupId, code: failureToken(error) },
         'account_deletion_meetup_failed',
       );
     }
@@ -416,4 +416,37 @@ async function lockUserRow(tx: DbTx, userId: string): Promise<LockedUserRow> {
   }
 
   return row;
+}
+
+/** The safe shape a logged failure token may have: a short identifier and nothing else. */
+const FAILURE_TOKEN_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/**
+ * A failure's own short token, for a log line: its driver code (`P2028`, `resource_missing`) or its
+ * class name (`PaymentUnavailableError`), and never its message or stack (AAP 0.11.1).
+ *
+ * pino writes a message and a stack as strings that key-based redaction cannot rewrite, and the
+ * Prisma or Stripe failure this walk swallows can quote what it concerns: a driver's message names
+ * the column and the value it refused, and a provider's names the email address or the customer the
+ * call carried — the values this module's own documentation says no line of it holds. A token that
+ * is not a plain short identifier becomes `Error`, so nothing a thrown value happens to say can
+ * reach a log through this path.
+ *
+ * The copy lives here rather than in `../settlement/sweeper.ts` because this file imports only the
+ * modules its disposition names (`../lodgings/claims.ts`, `../meetups/cancel.ts`, `../outbox/write.ts`,
+ * `../payments/holds.ts`, `../payments/operations.ts`) — the same course `../settlement/timers.ts`
+ * took with its own `errorTokenOf`.
+ */
+function failureToken(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return 'Error';
+  }
+
+  const { code, name } = error as { code?: unknown; name?: unknown };
+  const token = typeof code === 'string' && code.length > 0 ? code : name;
+
+  if (typeof token !== 'string' || !FAILURE_TOKEN_PATTERN.test(token)) {
+    return 'Error';
+  }
+  return token;
 }

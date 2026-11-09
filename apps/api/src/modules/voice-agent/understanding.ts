@@ -262,8 +262,15 @@ const ClassificationSchema = z.strictObject({
   priceText: z.string().nullable(),
 });
 
-/** The one classification an unusable reply produces: no label read, no values. */
-const UNCLEAR: Classification = Object.freeze({
+/**
+ * The one `unclear` classification this module produces: no label read, no values (AAP 0.5.6).
+ *
+ * Two producers share it, which is why it is exported and frozen: {@link readClassification} for a
+ * reply that cannot be used, and `dialogue.ts` for an utterance the relay cut at the classification
+ * window's own byte bound, which is as little a thing to classify as a reply that read as nothing.
+ * Both then say `unclear` from one definition rather than from two that could drift apart.
+ */
+export const UNCLEAR_CLASSIFICATION: Classification = Object.freeze({
   label: 'unclear',
   dish: null,
   drink: null,
@@ -507,7 +514,7 @@ export function describeClassificationFailure(
 function readClassification(json: unknown): Classification {
   const parsed = ClassificationSchema.safeParse(json);
   if (!parsed.success) {
-    return UNCLEAR;
+    return UNCLEAR_CLASSIFICATION;
   }
 
   const { label, dish, drink, priceAmount, priceText } = parsed.data;

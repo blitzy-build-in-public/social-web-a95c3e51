@@ -15,6 +15,7 @@ import {
   EMAIL_STAYS_ON_DEVICE,
   UNSUPPORTED_ISSUER,
   supportedIssuersText,
+  unsupportedIssuersText,
 } from '../../src/copy/strings';
 import { queryKeys } from '../../src/state/meetup-store';
 import { resetProof, useProofState } from '../../src/state/proof-store';
@@ -46,7 +47,6 @@ const PICK_TEXT = { label: PICK_LABEL, hint: PICK_HINT };
 const LOADING_SUPPORT = 'Loading supported booking sites…';
 const RETRY_LABEL = 'Try again';
 
-const NOT_SUPPORTED_PREFIX = 'Not yet supported: ';
 const INTAKE_FAILED =
   "We couldn't read that file. Choose the booking confirmation saved as an .eml file.";
 
@@ -104,7 +104,7 @@ export default function ProofImportScreen(): ReactElement {
   const issuers = support === null ? null : supportedIssuersText(support.supported);
   const instruction = Platform.OS === 'web' ? INSTRUCTION : `${INSTRUCTION}${SHARE_INSTRUCTION}`;
   const sites = support?.unsupported ?? [];
-  const unsupported = sites.length > 0 ? `${NOT_SUPPORTED_PREFIX}${sites.join(', ')}.` : null;
+  const unsupported = sites.length > 0 ? unsupportedIssuersText(sites) : null;
   const retry = { label: RETRY_LABEL, onPress: () => void refetch(), testID: 'proof-config-retry' };
   useEffect(() => {
     if (configError !== null) announce(configError);

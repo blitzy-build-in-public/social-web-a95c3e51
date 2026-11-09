@@ -45,7 +45,7 @@ import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import type { ClientErrorCode } from '../../src/api/errors';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
-import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
+import { Banner, Button, Card, Chip, Screen, TextField, announce } from '../../src/ui';
 
 const SCREEN_TITLE = 'Operator queues';
 const SAVED_NOTICE = 'Saved.';
@@ -215,26 +215,6 @@ function spaceActivates(activate: () => void): { onKeyDown?: (event: KeyEvent) =
 }
 
 type ConfirmSpec = Readonly<{ hint: string; label: string; variant?: 'primary' | 'secondary' }>;
-type ChipProps = { label: string; onSelect: () => void; selected: boolean; testID: string };
-function Chip({ label, selected, testID, onSelect }: ChipProps): ReactElement {
-  const [focused, setFocused] = useState(false);
-  const labelStyle = [styles.controlLabel, selected ? styles.controlLabelSelected : null];
-  return (
-    <Pressable
-      {...spaceActivates(onSelect)}
-      role="radio"
-      aria-checked={selected}
-      aria-label={label}
-      onPress={onSelect}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      testID={testID}
-      style={controlStyle(selected, focused, false, false)}
-    >
-      <Text style={labelStyle}>{label}</Text>
-    </Pressable>
-  );
-}
 interface ChoiceGroupProps<V extends string> {
   readonly groupLabel: string;
   readonly options: readonly { readonly value: V; readonly label: string }[];
@@ -254,7 +234,7 @@ function ChoiceGroup<V extends string>(props: ChoiceGroupProps<V>): ReactElement
             label={option.label}
             selected={value === option.value}
             testID={`${testIDPrefix}-${option.value}`}
-            onSelect={() => onSelect(option.value)}
+            onPress={() => onSelect(option.value)}
           />
         ))}
       </View>
@@ -1141,7 +1121,6 @@ const styles = StyleSheet.create({
   controlSelected: { borderColor: colors.primary },
   controlFocused: { borderColor: colors.focusRing },
   controlLabel: { ...typography.label, color: colors.text },
-  controlLabelSelected: { ...SELECTED_LABEL },
   tabLabelSelected: { ...SELECTED_LABEL, textDecorationLine: 'underline' },
   panel: { gap: spacing.md },
   row: { gap: spacing.sm },

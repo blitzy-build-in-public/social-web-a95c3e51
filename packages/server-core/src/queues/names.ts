@@ -180,6 +180,13 @@ export function callDispatchSchedulerId(cityId: string): string {
 /** The `upsertJobScheduler` id of the daily FX refresh at 00:30 UTC (AAP 0.5.6). */
 export const FX_REFRESH_SCHEDULER_ID = 'fx-refresh';
 
+/**
+ * The custom id of the one-off `fx-refresh` run a `workers` process enqueues at startup while the
+ * table is still empty, so a stack younger than its first 00:30 UTC can convert a price at all
+ * (AAP 0.5.6). A stable id keeps two processes starting together from priming the table twice.
+ */
+export const FX_REFRESH_PRIME_JOB_ID = 'fx-refresh-prime';
+
 /** The `upsertJobScheduler` id of the hourly data-expiry run (AAP 0.5.6). */
 export const DATA_EXPIRY_HOURLY_SCHEDULER_ID = 'data-expiry-hourly';
 

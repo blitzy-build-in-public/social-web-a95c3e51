@@ -2,8 +2,9 @@
  * Metro configuration for the Tablemate client, which bundles for iOS, Android and the web
  * export from this one app directory.
  *
- * Three settings here are not Expo SDK 52 defaults, and each follows from the way this
- * workspace consumes its own packages:
+ * Four settings here are not Expo SDK 52 defaults: the first three follow from the way this
+ * workspace consumes its own packages, the fourth keeps a bench-only asset out of every other
+ * bundle, and each is explained where it is set.
  *
  *  1. `resolver.unstable_enablePackageExports` is off in Metro 0.81.5 and Expo leaves it off,
  *     so every installed package's `exports` map would be ignored. The internal packages
@@ -20,6 +21,12 @@
  *     proving benchmark screen bundles resolves as an asset. It has to stay out of
  *     `sourceExts`: Expo drops any asset extension that is also a source extension, and a
  *     module extension wins over an asset one.
+ *  4. `resolver.resolveRequest` answers Metro's own empty module for that booking-confirmation
+ *     fixture whenever `EXPO_PUBLIC_ZK_BENCH` is not `1`, so every other bundle leaves the asset
+ *     out of its graph. A literal `require` is collected from the module's syntax tree whatever
+ *     the runtime guard around it says, so the flag cannot remove the asset by itself, and the
+ *     screen the fixture serves is unreachable unless the flag is `1`. The exclusion is
+ *     conditional on the flag, so a `bench` export still bundles the fixture it proves.
  *
  * One consequence of the first two is worth knowing before chasing a failed native bundle.
  * `snarkjs` declares only `node`, `browser` and `umd` entries, so web gets its browser build
@@ -77,5 +84,24 @@ config.resolver.unstable_conditionNames = [
 
 // The ZK benchmark screen bundles a booking-confirmation `.eml` as a fixture asset.
 config.resolver.assetExts = withValue(config.resolver.assetExts, 'eml');
+
+// The file that asset resolves to, whoever asks for it.
+const BENCH_FIXTURE = path.resolve(
+  monorepoRoot,
+  'packages/circuits/fixtures/test-issuer/valid.eml',
+);
+
+// Keeps that fixture out of a non-bench bundle (see the header). Metro still reads the literal
+// `require` in app/dev/zk-bench.tsx, so the runtime guard around it is not enough; answering the
+// empty module for this one request drops the asset while every other request is resolved as usual.
+if (process.env.EXPO_PUBLIC_ZK_BENCH !== '1') {
+  config.resolver.resolveRequest = (context, moduleName, platform) => {
+    // Resolved the way Metro resolves a relative or absolute specifier: against the directory of
+    // the module asking for it, which an absolute specifier replaces outright.
+    const requested = path.resolve(path.dirname(context.originModulePath), moduleName);
+    if (requested === BENCH_FIXTURE) return { type: 'empty' };
+    return context.resolveRequest(context, moduleName, platform);
+  };
+}
 
 module.exports = config;

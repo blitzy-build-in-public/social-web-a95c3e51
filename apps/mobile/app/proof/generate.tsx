@@ -25,6 +25,7 @@ import {
   UNSUPPORTED_ISSUER,
   formatCalendarDate,
   supportedIssuersText,
+  unsupportedIssuersText,
 } from '../../src/copy/strings';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
 import { resetProof, useProofState } from '../../src/state/proof-store';
@@ -54,7 +55,6 @@ const SCREEN_EDGES = ['bottom', 'left', 'right'] as const;
 
 const PREPARING = 'Preparing verification…';
 const UNVERIFIABLE = "On-device verification isn't available in this build.";
-const NOT_SUPPORTED_PREFIX = 'Not yet supported: ';
 
 /** Every control's visible label, which is also its accessible name (AAP 0.5.8). */
 const START_LABEL = 'Download and verify';
@@ -359,7 +359,7 @@ export default function ProofGenerateScreen(): ReactElement {
   const notSupported =
     support === null || support.unsupported.length === 0
       ? null
-      : `${NOT_SUPPORTED_PREFIX}${support.unsupported.join(', ')}.`;
+      : unsupportedIssuersText(support.unsupported);
   const unsupportedText =
     support === null
       ? failureMessage('unsupported_issuer')

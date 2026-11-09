@@ -51,9 +51,6 @@ import type { FastifyRequest } from 'fastify';
 /** The tag this route groups under: a member of the document's own vocabulary. */
 const SUGGESTIONS_TAG = 'suggestions' satisfies OpenApiTag;
 
-/** The one line a failed suggestion read writes; its payload names the meetup and nothing else. */
-const SUGGESTIONS_FAILED_EVENT = 'suggestions_failed';
-
 /**
  * The authenticated caller's id, or a refusal.
  *
@@ -216,13 +213,11 @@ export default function suggestionsRoutes(app: App): Promise<void> {
 
         // Any other failure of the read — a statement row that does not match its shape, a venue in a
         // city the configuration does not name, an unreadable hours value, the database itself —
-        // stays on this route (AAP 0.3.2). The line names the meetup and the failure, never a budget,
-        // a coordinate or a place list.
-        request.log.error(
-          { err, event: SUGGESTIONS_FAILED_EVENT, meetupId: meetup.id },
-          SUGGESTIONS_FAILED_EVENT,
-        );
-        throw new AppError('suggestions_unavailable');
+        // stays on this route (AAP 0.3.2). It travels as the thrown error's `cause`, which the errors
+        // plugin walks for the log alone, so the failure is recorded once: by that plugin's narrowed
+        // 503 line, which carries the request id, the code, the sanitized message and the head of the
+        // cause chain, and never a budget, a coordinate or a place list (AAP 0.11.1).
+        throw new AppError('suggestions_unavailable', undefined, { cause: err });
       }
 
       // Field by field, never a spread: the response carries places, their estimate and the

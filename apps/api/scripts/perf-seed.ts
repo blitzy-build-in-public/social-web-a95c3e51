@@ -177,6 +177,13 @@ const OPTIONS_SEPARATOR = '--';
  */
 const CLOSE_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
+ * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
+ * hold the run open once the seed file is written and the summary is reported.
+ */
+const EXIT_DRAIN_TIMEOUT_MS = 1_000;
+
 /** The usage line, written for a missing, unknown or unterminated argument. */
 const USAGE_LINE = `usage: ${COMMAND} [${API_URL_FLAG} <url>] [${OUT_FLAG} <path>]\n`;
 
@@ -257,7 +264,54 @@ class SeedFailure extends Error {
  * The command
  */
 
-process.exit(await run(process.argv.slice(2)));
+/**
+ * End the process with `code` once every byte already written to stdout and stderr has reached its
+ * consumer.
+ *
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
+ * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
+ * script exists to print. An empty write queued behind the real ones calls back once they have been
+ * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
+ * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
+ * this script decided is what stands in either case.
+ *
+ * @param code - the status the explicit exit this replaces carried.
+ */
+function exitAfterFlush(code: number): void {
+  process.exitCode = code;
+
+  const draining = new Set<NodeJS.WriteStream>();
+  if (process.stdout.writableLength > 0) draining.add(process.stdout);
+  if (process.stderr.writableLength > 0) draining.add(process.stderr);
+
+  if (draining.size === 0) {
+    // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
+    process.exit(code);
+    return;
+  }
+
+  const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
+  bound.unref();
+
+  const finish = (stream: NodeJS.WriteStream): void => {
+    draining.delete(stream);
+    if (draining.size === 0) {
+      clearTimeout(bound);
+      process.exit(code);
+    }
+  };
+
+  for (const stream of [...draining]) {
+    stream.once('error', () => {
+      finish(stream);
+    });
+    stream.write('', () => {
+      finish(stream);
+    });
+  }
+}
+
+exitAfterFlush(await run(process.argv.slice(2)));
 
 /**
  * Parse, seed and report in one call, and answer the process exit code.

@@ -267,6 +267,19 @@ export const noFaults: FaultInjector = Object.freeze({
  */
 
 /**
+ * How long {@link ApiRedis.close} gives a connection that is still opening to reach `ready` before
+ * it stops waiting and drops it (two seconds).
+ *
+ * The wait covers a socket that is milliseconds from ready — the dial and the handshake of a Redis
+ * that is up — and it is bounded because the same call closes connections during a shutdown, when a
+ * Redis that is down must not hold the process. It sits inside the bound of every caller that closes
+ * the app: the `apps/api/scripts/*.ts` that do race `app.close()` against five seconds, and `main.ts`
+ * against ten. {@link ApiRedis.close} closes the connections in parallel, so a holder spends the wait
+ * once rather than once per connection.
+ */
+const CLOSE_REDIS_READY_TIMEOUT_MS = 2_000;
+
+/**
  * The API's Redis connections, one per role, created on first use (AAP 0.3.2).
  *
  * Three roles, matching `createRedisConnection`'s own: a `client` connection for the rate-limit
@@ -295,6 +308,12 @@ export interface ApiRedis {
    * Quit every connection this holder created, each one falling back to `disconnect()` when `quit`
    * fails — a socket that is already gone, or a Redis that went away during the shutdown. Idempotent
    * in effect: a second call finds the same connections already closed.
+   *
+   * A connection whose socket is still opening is given a bounded moment to become `ready` first:
+   * this holder creates connections lazily, so the last one a process needs can be milliseconds old
+   * when the process closes it, and ending that socket under ioredis' own handshake is reported as a
+   * connection failure by a Redis that is up and serving. The connections close in parallel, so the
+   * wait is bounded once for the holder rather than once per connection.
    */
   close(): Promise<void>;
 }
@@ -327,8 +346,36 @@ export function createApiRedis(url: string, logger: Logger): ApiRedis {
   let producer: Redis | undefined;
   const workers = new Set<Redis>();
 
-  /** Close one connection, falling back to `disconnect()` when `quit` cannot complete. */
+  /**
+   * Close one connection, without ending a socket that is still opening under ioredis' handshake.
+   *
+   * A fail-fast connection rejects a command issued before its first `ready` (`enableOfflineQueue:
+   * false`), so a `QUIT` sent to a connection whose socket is still opening is rejected, and the
+   * `disconnect()` fallback then ends that socket while ioredis is dialing or running its ready
+   * check. ioredis treats the resulting write error as fatal: it reports it through the connection's
+   * own `'error'` listener — the throttled `redis_unavailable` warning {@link createApiRedis}
+   * documents — and reconnects the connection it was just told to close. Nothing about Redis failed
+   * in that case, so the failure line is false and the process is left with a socket it will not
+   * close. Waiting for the connection's own first `ready` is what removes it: the socket answers the
+   * `QUIT` and ends, and a connection that does not become ready in {@link
+   * CLOSE_REDIS_READY_TIMEOUT_MS} is dropped exactly as before.
+   *
+   * The wait is taken only while ioredis has a socket that is open and not yet writable: its
+   * `connecting`, the dial, and its `connect`, the handshake and the ready check. Every other status
+   * has nothing left to finish. `ready` takes the `QUIT` at once; `end` is closed already, so a
+   * second close must not be delayed by it; and `reconnecting`, `close` and `wait` hold a socket that
+   * is already gone, whose failure the connection's own listener has reported — this close is a
+   * shutdown by then, so those are dropped rather than waited for.
+   */
   async function closeConnection(connection: Redis): Promise<void> {
+    if (connection.status === 'end') {
+      return;
+    }
+
+    if (connection.status === 'connecting' || connection.status === 'connect') {
+      await waitForRedisReady(connection, CLOSE_REDIS_READY_TIMEOUT_MS).catch(() => undefined);
+    }
+
     try {
       await connection.quit();
     } catch {

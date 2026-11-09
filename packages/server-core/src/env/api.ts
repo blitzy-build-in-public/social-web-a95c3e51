@@ -73,6 +73,7 @@ const API_ONLY_ENV_SHAPE = {
   RATE_LIMIT_IP_PER_MIN: envInt({ min: 1, default: '600' }),
   TERMS_VERSION: envString({ max: 64 }),
   VOICE_RELAY_MAX_SESSIONS: envInt({ min: 1, default: '10' }),
+  CHAT_MAX_SOCKETS_PER_USER: envInt({ min: 1, default: '5' }),
   PILOT_LOCK_RATE_THRESHOLD: envDecimal({ min: 0, max: 1, maxFractionDigits: 4, default: '0.5' }),
   PILOT_COMPLETION_THRESHOLD: envDecimal({ min: 0, max: 1, maxFractionDigits: 4, default: '0.7' }),
 } as const;
@@ -113,6 +114,12 @@ export type ApiEnv = CommonEnv & {
   readonly RATE_LIMIT_IP_PER_MIN: number;
   readonly TERMS_VERSION: string;
   readonly VOICE_RELAY_MAX_SESSIONS: number;
+  /**
+   * How many live chat sockets one account may hold on one API instance (AAP 0.3.2, 0.5.4): the
+   * socket that would exceed it is refused before it is attached, and the allowance is released as
+   * a socket closes.
+   */
+  readonly CHAT_MAX_SOCKETS_PER_USER: number;
   readonly PILOT_LOCK_RATE_THRESHOLD: number;
   readonly PILOT_COMPLETION_THRESHOLD: number;
   readonly stripe: EnvStripeConfig;
@@ -167,6 +174,7 @@ export function loadApiEnv(raw: RawEnv = process.env): ApiEnv {
       RATE_LIMIT_IP_PER_MIN: values.RATE_LIMIT_IP_PER_MIN,
       TERMS_VERSION: values.TERMS_VERSION,
       VOICE_RELAY_MAX_SESSIONS: values.VOICE_RELAY_MAX_SESSIONS,
+      CHAT_MAX_SOCKETS_PER_USER: values.CHAT_MAX_SOCKETS_PER_USER,
       PILOT_LOCK_RATE_THRESHOLD: values.PILOT_LOCK_RATE_THRESHOLD.value,
       PILOT_COMPLETION_THRESHOLD: values.PILOT_COMPLETION_THRESHOLD.value,
       stripe: buildStripe(values),

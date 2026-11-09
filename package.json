@@ -17,7 +17,7 @@
     "test": "vitest run",
     "test:stripe": "STRIPE_MODE=test vitest run --project integration",
     "test:e2e": "tsx --conditions=tablemate-source scripts/e2e.ts",
-    "perf": "RATE_LIMIT_IP_PER_MIN=1000000 docker compose up -d --wait && docker compose run --rm migrate pnpm --filter @tablemate/api perf:seed && docker compose --profile perf run --rm k6",
+    "perf": "export RATE_LIMIT_IP_PER_MIN=1000000 && docker compose up -d --wait && docker compose exec -T api printenv RATE_LIMIT_IP_PER_MIN | grep -qx 1000000 && docker compose run --rm migrate pnpm --filter @tablemate/api perf:seed && docker compose --profile perf run --rm k6",
     "loc": "tsx scripts/count-lines.ts",
     "db:generate": "pnpm --filter @tablemate/db generate",
     "db:migrate": "pnpm --filter @tablemate/db migrate:dev",

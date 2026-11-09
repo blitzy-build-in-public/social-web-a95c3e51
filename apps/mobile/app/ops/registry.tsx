@@ -1,16 +1,8 @@
 /** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
  * venue and lodging onboarding, console secrets and price jobs. */
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import {
-  Platform,
-  Pressable,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
-  useWindowDimensions,
-} from 'react-native';
-import type { SwitchProps, ViewStyle } from 'react-native';
+import { Platform, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
+import type { SwitchProps } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -32,7 +24,7 @@ import type { AdminLodgingDto, AdminVenueDto, CityDto, PriceJobKind } from '@tab
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { queryClient, queryKeys } from '../../src/state/meetup-store';
-import { Banner, Button, Card, Screen, TextField, announce } from '../../src/ui';
+import { Banner, Button, Card, Chip, Screen, TextField, announce } from '../../src/ui';
 
 const SCREEN_TITLE = 'Operator registry';
 const NO_FIELD_ERRORS: FieldErrors = {};
@@ -65,7 +57,6 @@ const LODGING_SECRET_HINT =
   'Issuing a console secret makes this lodging a partner and adds nearby places to the price pipeline.';
 const LODGING_KIND_LABEL = { guesthouse: 'Guest house', hostel: 'Hostel', hotel: 'Hotel' };
 const SECTION_HEADING = { 'aria-level': 2, role: 'heading' } as const;
-const webFocusRingReset = (Platform.OS === 'web' ? { outlineStyle: 'none' } : {}) as ViewStyle;
 const BLANK_DRAFT = { address: '', cityId: '', lat: '', lng: '', name: '' };
 const EMPTY_VENUE_DRAFT: VenueDraft = { ...BLANK_DRAFT, isActivePartner: true };
 const EMPTY_LODGING_DRAFT: LodgingDraft = { ...BLANK_DRAFT, kind: 'hostel', phone: '' };
@@ -202,38 +193,6 @@ function fieldRow(spec: FieldSpec, wiring: FieldWiring): ReactElement {
     value: values[spec.key] ?? '',
   };
   return <TextField key={spec.key} {...props} {...spec.input} />;
-}
-type WebKeyEvent = Readonly<{ key?: string; repeat?: boolean; preventDefault?: () => void }>;
-/** react-native-web answers Space only for a native button or role="button", so a radio takes it. */
-function spaceActivates(activate: () => void): { onKeyDown?: (event: WebKeyEvent) => void } {
-  if (Platform.OS !== 'web') return {};
-  const onKeyDown = (event: WebKeyEvent): void => {
-    if (event.repeat === true || (event.key !== ' ' && event.key !== 'Spacebar')) return;
-    event.preventDefault?.();
-    activate();
-  };
-  return { onKeyDown };
-}
-type ChipProps = { label: string; onPress: () => void; selected: boolean; testID: string };
-
-function Chip({ label, selected, onPress, testID }: ChipProps): ReactElement {
-  const [focused, setFocused] = useState(false);
-  const aria = { 'aria-checked': selected, 'aria-label': label, role: 'radio' as const };
-  const focus = { onBlur: () => setFocused(false), onFocus: () => setFocused(true) };
-  const base = [styles.chip, webFocusRingReset];
-  const look = [...base, selected && styles.chipSelected, focused && styles.chipFocused];
-  return (
-    <Pressable
-      {...aria}
-      {...spaceActivates(onPress)}
-      {...focus}
-      onPress={onPress}
-      style={look}
-      testID={testID}
-    >
-      <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{label}</Text>
-    </Pressable>
-  );
 }
 type CityChipsProps = {
   readonly all?: boolean;
@@ -673,21 +632,6 @@ const styles = StyleSheet.create({
   badges: { alignItems: 'flex-end', gap: spacing.xs },
   cards: { gap: spacing.lg },
   cardsRow: { flexDirection: 'row', flexWrap: 'wrap' },
-  chip: {
-    alignItems: 'center',
-    backgroundColor: colors.background,
-    borderColor: colors.border,
-    borderRadius: radii.pill,
-    borderWidth: borderWidths.control,
-    justifyContent: 'center',
-    minHeight: MIN_TOUCH_TARGET,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  chipFocused: { borderColor: colors.focusRing },
-  chipLabel: LABEL_STYLE,
-  chipLabelSelected: { color: colors.onPrimary },
-  chipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   meta: { ...typography.body, color: colors.textMuted },
   section: { gap: spacing.lg },

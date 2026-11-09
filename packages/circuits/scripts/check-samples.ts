@@ -75,6 +75,13 @@ const DIGEST_PREFIX = 8;
 const FIELD_INDEXES = [0, 1, 2, 3] as const;
 
 /**
+ * How long a drain may wait for the reader of stdout and stderr before the process is ended anyway
+ * (one second). A consumer that never reads — a stopped `tee`, a detached log collector — must not
+ * hold the sample check open.
+ */
+const EXIT_DRAIN_TIMEOUT_MS = 1_000;
+
+/**
  * The one part of snarkjs 0.7.6 this script uses, narrowed here because the package ships no
  * declarations. `verify` takes the parsed verification key object rather than the path to it.
  */
@@ -486,6 +493,53 @@ function parseArgs(argv: readonly string[]): string | undefined {
 }
 
 /**
+ * End the process with `code` once every byte already written to stdout and stderr has reached its
+ * consumer.
+ *
+ * A write to a pipe is completed by the event loop, so `process.exit()` discards whatever is still
+ * queued — and under `| tee` or a CI log collector that is the last, machine-readable line this
+ * script exists to print. An empty write queued behind the real ones calls back once they have been
+ * flushed, and {@link EXIT_DRAIN_TIMEOUT_MS} bounds a consumer that never drains. A consumer that has
+ * stopped reading closes the pipe instead (`| head`), which ends the drain the same way: the status
+ * this script decided is what stands in either case.
+ *
+ * @param code - the status the explicit exit this replaces carried.
+ */
+function exitAfterFlush(code: number): void {
+  process.exitCode = code;
+
+  const draining = new Set<NodeJS.WriteStream>();
+  if (process.stdout.writableLength > 0) draining.add(process.stdout);
+  if (process.stderr.writableLength > 0) draining.add(process.stderr);
+
+  if (draining.size === 0) {
+    // Nothing is queued: every byte reached its consumer as it was written (a terminal, a file).
+    process.exit(code);
+    return;
+  }
+
+  const bound = setTimeout(() => process.exit(code), EXIT_DRAIN_TIMEOUT_MS);
+  bound.unref();
+
+  const finish = (stream: NodeJS.WriteStream): void => {
+    draining.delete(stream);
+    if (draining.size === 0) {
+      clearTimeout(bound);
+      process.exit(code);
+    }
+  };
+
+  for (const stream of [...draining]) {
+    stream.once('error', () => {
+      finish(stream);
+    });
+    stream.write('', () => {
+      finish(stream);
+    });
+  }
+}
+
+/**
  * Runs the command line. Every failure is reported as `check-samples: <message>` with exit code 1,
  * and no failure prints a stack trace or a byte of a sample.
  */
@@ -499,8 +553,9 @@ async function main(): Promise<void> {
   }
 
   // snarkjs and ffjavascript keep worker threads alive, so node is ended explicitly: setting
-  // process.exitCode alone would leave the process hanging.
-  process.exit(code);
+  // process.exitCode alone would leave the process hanging. Draining first is what keeps the last
+  // line of the run from being discarded with the process when stdout is a pipe.
+  exitAfterFlush(code);
 }
 
 if (
