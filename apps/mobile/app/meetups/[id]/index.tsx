@@ -84,6 +84,15 @@ const COPY = {
   resultCredit: "Your counterpart didn't make it. You receive Table Credit equal to the deposit.",
   counterpartCheckedIn: (handle: string): string => `@${handle} is checked in.`,
   counterpartPending: (handle: string): string => `Waiting for @${handle} to check in.`,
+  /**
+   * The forfeit sentence for the hold combinations the two above do not cover: the viewer's own hold
+   * is not `captured`, and it is not the released-own with `captured`-counterpart pair that
+   * `resultCredit` and the Table Credit notice already explain. It states the forfeit itself and
+   * nothing about the viewer's own card, because a `forfeited` meetup writes its capture and release
+   * operations durably while each deposit keeps reading its earlier state until that operation runs.
+   */
+  resultForfeitSettled:
+    "One of you didn't show up or cancelled late, so this meetup ended with a deposit forfeit.",
   disputeOpen: 'A problem report is open',
 } as const;
 const CANCEL_CONFIRM = { label: 'Cancel meetup', variant: 'danger' as const };
@@ -166,11 +175,22 @@ export function pollIsSatisfied(kind: PollKind, meetup: MeetupDto): boolean {
     ? meetup.status === 'locked' || own !== 'requires_action'
     : own !== 'pending';
 }
+/**
+ * The sentence the result card states for a settled meetup, or null when there is nothing settled
+ * to state: a proposal, a lock, or a hold that ended before the meetup could settle.
+ *
+ * Only a `forfeited` meetup has more than one, because the viewer's own hold decides it: `captured`
+ * states the capture on their own card, `wonTableCredit`'s pair is left to the Table Credit
+ * sentence and notice, and every other combination — including the holdings settlement has written
+ * but the executor has not yet advanced — states the forfeit itself, so a settled money outcome is
+ * never left unexplained.
+ */
 export const resultTextFor = (meetup: MeetupDto): string | null => {
   const { status } = meetup;
   if (status === 'proposed' || status === 'locked' || status === 'lock_lost') return null;
-  if (status === 'forfeited') return ownHoldOf(meetup) === 'captured' ? COPY.resultForfeit : null;
-  return RESULT_TEXT[status];
+  if (status !== 'forfeited') return RESULT_TEXT[status];
+  if (ownHoldOf(meetup) === 'captured') return COPY.resultForfeit;
+  return wonTableCredit(meetup) ? null : COPY.resultForfeitSettled;
 };
 export const wonTableCredit = (meetup: MeetupDto): boolean =>
   meetup.status === 'forfeited' &&
@@ -268,11 +288,25 @@ const SafetyNotice = (): ReactElement => (
     </View>
   </Card>
 );
+/**
+ * The pair every deposit screen of an unsettled meetup carries: the viewer's variant's sentence
+ * about their own amount, then the safety notice.
+ *
+ * A fragment and not a wrapper column, so both stay direct children of the caller's own
+ * `styles.block` view and its gaps fall exactly where they did before, whatever the caller renders
+ * beside them. `DepositCopyLine` is nothing on its own when the viewer has no variant or the
+ * amount is not a deposit level, so the pair needs no further guard.
+ */
+const DepositFraming = (props: DepositProps): ReactElement => (
+  <>
+    <DepositCopyLine variant={props.variant} depositCents={props.depositCents} />
+    <SafetyNotice />
+  </>
+);
 type CardRetryProps = DepositProps & { readonly onCardDone: (result: CardSetupResult) => void };
 const CardRetryPanel = (props: CardRetryProps): ReactElement => (
   <View style={styles.block} testID="meetup-card-panel">
-    <DepositCopyLine variant={props.variant} depositCents={props.depositCents} />
-    <SafetyNotice />
+    <DepositFraming variant={props.variant} depositCents={props.depositCents} />
     <CardSetup onDone={props.onCardDone} />
   </View>
 );
@@ -280,8 +314,7 @@ type AcceptProps = BusyProps & { readonly onAccept: () => void; readonly onDecli
 const DECLINE = { label: COPY.decline, variant: 'secondary' as const, testID: 'meetup-decline' };
 const AcceptActions = (props: AcceptProps): ReactElement => (
   <View style={styles.block}>
-    <DepositCopyLine variant={props.variant} depositCents={props.depositCents} />
-    <SafetyNotice />
+    <DepositFraming variant={props.variant} depositCents={props.depositCents} />
     <Button label={COPY.accept} testID="meetup-accept" busy={props.busy} onPress={props.onAccept} />
     <Button {...DECLINE} disabled={props.busy} onPress={props.onDecline} />
   </View>
@@ -333,12 +366,29 @@ function PrimaryAction(props: PrimaryProps): ReactElement | null {
     case 'accept':
       return role === 'recipient' && status === 'proposed' ? <AcceptActions {...accept} /> : null;
     case 'confirm_hold':
-      return <Button {...CONFIRM_HOLD} busy={busy} onPress={onDepositStep} />;
+      // The one deposit step that asks the viewer to act on their card, so it frames the deposit the
+      // way the retry panel does; the safety notice is not repeated here, the proposal step carries
+      // it and this branch is a repeat of the same hold call.
+      return (
+        <View style={styles.block}>
+          <DepositCopyLine variant={variant} depositCents={depositCents} />
+          <Button {...CONFIRM_HOLD} busy={busy} onPress={onDepositStep} />
+        </View>
+      );
     case 'check_in':
       return <Button label={COPY.checkIn} testID="meetup-check-in" onPress={checkIn} />;
     case 'none':
     default:
-      return null;
+      // The initiator of a proposed meetup whose own hold is already placed is offered nothing to
+      // do (`nextAction: none`), but the meetup is still a deposit screen: their variant's sentence
+      // with this meetup's amount and the safety notice belong on it, as they do for the recipient.
+      // Every other state reaching here — settled, declined, lapsed, a hold being recovered — keeps
+      // the bare null.
+      return role === 'initiator' && status === 'proposed' ? (
+        <View style={styles.block}>
+          <DepositFraming variant={variant} depositCents={depositCents} />
+        </View>
+      ) : null;
   }
 }
 type Notice = { readonly message: string; readonly tone: BannerTone };

@@ -32,9 +32,11 @@ trace (`plugins/errors.ts`). An unknown path is `404 not_found`. A request-schem
 `400 invalid_email` on `POST /auth/magic-link`. Where several failures apply, a route checks them in the
 order its row lists.
 
-`503 service_unavailable` carries three meanings in this API: the rate limiter's Redis outage
+`503 service_unavailable` carries four meanings in this API: the rate limiter's Redis outage
 (**Addition**, every limited route), a missing circuit artefact (`POST /itinerary-proofs`,
-`GET /zk/config`), and the ConversationRelay concurrent-session cap (`WS /webhooks/voice/relay`).
+`GET /zk/config`), the ConversationRelay concurrent-session cap (`WS /webhooks/voice/relay`), and the
+language-model suspension flag's store being unreachable when an operator re-enables use
+(`POST /admin/language-model/re-enable`, **Addition**).
 
 **Authentication.** `Authorization: Bearer <JWT>` — HS256, a 15-minute lifetime, claims `sub`, `role`
 and `sid`. Refresh tokens rotate, and a reused one revokes its session. The consoles send
@@ -265,12 +267,13 @@ can never turn a listed lodging into `404 lodging_not_found`. A guest list is bo
 | `POST /admin/venues`                                    | operator | `admin/onboarding.ts`                        | `201 AdminVenueDto`                                                                    | `404 city_not_found`; `404 not_found` (an unknown `placeId`)                                                                                                                                                                               | `admin.test.ts`      | **Addition**                      |
 | `PATCH /admin/venues/:id`                               | operator | `admin/onboarding.ts`                        | `200 AdminVenueDto`                                                                    | `400 invalid_field` (one of `lat`/`lng` alone, or neither and the venue has no location); `404 not_found`                                                                                                                                  | `admin.test.ts`      | **Addition**                      |
 | `POST /admin/venues/:id/secret`                         | operator | `admin/onboarding.ts`, `consoles/secrets.ts` | `200 SecretIssued { secret }`, shown once, `Cache-Control: no-store`                   | `404 not_found`                                                                                                                                                                                                                            | `admin.test.ts`      | **Addition**                      |
-| `GET /admin/lodgings`                                   | operator | `admin/onboarding.ts`                        | `200 AdminLodgingsResponse`                                                            | —                                                                                                                                                                                                                                          | `admin.test.ts`      | **Addition**                      |
+| `GET /admin/lodgings?cityId=&q=&limit=&cursor=`         | operator | `admin/onboarding.ts`                        | `200 AdminLodgingsResponse { items, total, nextCursor }`, one page a read              | `400 invalid_field` (a cursor this API did not write, a `limit` outside 1–500, or a parameter the route does not carry)                                                                                                                    | `admin.test.ts`      | **Addition** (paging and filters) |
 | `POST /admin/lodgings`                                  | operator | `admin/onboarding.ts`                        | `201 AdminLodgingDto`                                                                  | `404 city_not_found`                                                                                                                                                                                                                       | `admin.test.ts`      | **Addition**                      |
 | `POST /admin/lodgings/:id/secret`                       | operator | `admin/onboarding.ts`, `consoles/secrets.ts` | `200 SecretIssued { secret }`, shown once, `Cache-Control: no-store`                   | `404 not_found`                                                                                                                                                                                                                            | `admin.test.ts`      | **Addition**                      |
 | `GET /admin/reports`                                    | operator | `admin/reports.ts`                           | `200 AdminReportsResponse`                                                             | —                                                                                                                                                                                                                                          | `admin.test.ts`      | **Addition**                      |
 | `GET /admin/crawl-domains`                              | operator | `admin/crawl-domains.ts`                     | `200 AdminCrawlDomainsResponse`                                                        | —                                                                                                                                                                                                                                          | `admin.test.ts`      | **Addition**                      |
 | `PATCH /admin/crawl-domains/:domain`                    | operator | `admin/crawl-domains.ts`                     | `200 AdminCrawlDomainDto`                                                              | `422 invalid_outcome` (an unknown decision, or `uncertain`, which is where an unreviewed domain already sits)                                                                                                                              | `admin.test.ts`      | **Addition**                      |
+| `POST /admin/language-model/re-enable`                  | operator | `admin/metrics.ts`                           | `200 AdminLlmSuspension { suspended, mismatches }`                                     | `403 operator_only`; `503 service_unavailable` (the flag's store cannot be reached)                                                                                                                                                        | `admin.test.ts`      | **Addition**                      |
 
 The paging fields and filters on `GET /admin/call-tasks` are an **Addition**: the body AAP 0.5.4 fixes
 for that row, `{ items: AdminCallTaskDto[] }`, neither counts the tasks a request matches nor carries
@@ -337,6 +340,9 @@ request's route table.
   meetup id.
 - **Booking details** — the operator's manual verification call, audited by `OperatorAccessLog`.
 - **Crawl domains** — an operator's review of a site's terms, which must happen before any crawl.
+- **The language-model re-enable** — AAP 0.5.6 suspends language-model use in every city on a
+  counted-versus-reported input-token mismatch and ends that suspension only when an operator
+  re-enables it, which is the one write that ends it.
 - **The call-task queue's paging and filters** — the operator queue holds thousands of tasks, far more
   than one answer can carry, so the read names a page (`limit`, default 200) and continues from the
   `nextCursor` it answered, narrowing by status, kind and a search over the target's name and reporting
@@ -361,8 +367,8 @@ request's route table.
   `locked`.
 - **The five added error codes** — `503 payment_unavailable` and `409 hold_pending` carry the
   lost-response recovery for a card hold, `401 token_invalid` the write fence behind account deletion,
-  `422 self_proposal` the proposal whose recipient is its caller, and `503 service_unavailable` the rate
-  limiter's Redis outage.
+  `422 self_proposal` the proposal whose recipient is its caller, and `503 service_unavailable` the
+  rate limiter's Redis outage and the suspension flag's store being unreachable on the re-enable.
 
 ## Regenerating the OpenAPI document
 

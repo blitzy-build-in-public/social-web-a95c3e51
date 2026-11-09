@@ -88,8 +88,10 @@ function available(): boolean {
  * @param signal - Aborts the attempt, which terminates the Worker.
  * @throws A `ZkClientError`: `artifact_download_failed` when the resolved set carries no WASM,
  *   `cancelled` on an abort, `worker_unavailable` in a browser with no Worker or a script that will
- *   not load, `worker_failed` on a frame that will not serialize, and otherwise the code the Worker
- *   reported — `artifact_hash_mismatch`, `artifact_storage_unavailable`, `out_of_memory`, …
+ *   not load, `worker_failed` when the Worker goes silent past `runWorker`'s deadline — a browser
+ *   killing it under the memory the whole key takes (AAP 0.3.4) — or on a frame that will not
+ *   serialize, and otherwise the code the Worker reported — `artifact_hash_mismatch`,
+ *   `artifact_storage_unavailable`, `out_of_memory`, …
  */
 async function generate(
   inputsJson: string,

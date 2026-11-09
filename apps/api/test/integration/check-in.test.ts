@@ -1,7 +1,10 @@
 /**
  * The witnessed check-in of AAP 0.5.4 and criterion 6 (AAP 0.8.1): the venue's rotating code, the
  * 150 m geofence, the window from `startsAt − 15 min` to `startsAt + 45 min`, and what an attempt
- * leaves behind.
+ * leaves behind. The geofence's own edge is probed as well, not only the distances either side of
+ * it: its boundary cases stand where the database's `ST_Project` places them and are pinned with the
+ * metres the route's own `ST_Distance` reports back, which is the one place an implementation
+ * comparing `< 150` can be caught (a degree offset cannot stand there — see {@link projected}).
  *
  * Three contracts are pinned, each of them a rule the product depends on:
  *
@@ -33,6 +36,7 @@ import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { distanceFrom } from '@tablemate/db';
 import {
   CODE_DIGITS,
   CODE_STEP_SECONDS,
@@ -89,10 +93,13 @@ const CITY_ID = 'lisbon';
 const VENUE_LOCATION: LatLng = { lat: 38.7123456, lng: -9.139337 };
 
 /** Metres in one degree of latitude, for offsets of at most a few hundred metres: the geodesic
- * distance of a northward offset lands within a metre of the metres asked for. */
+ * distance of a northward offset lands within a metre of the metres asked for. A metre of slack is
+ * enough for every distance below, but not for the geofence's inclusive edge, which {@link projected}
+ * places instead (AAP 0.5.7). */
 const METERS_PER_DEGREE_LAT = 111_320;
 
-/** Distances either side of the two boundaries of AAP 0.5.7, each with a margin it cannot drift over. */
+/** Distances either side of the two boundaries of AAP 0.5.7, each with a margin it cannot drift
+ * over. The geofence's own edge is not among them: it is a projected coordinate, not an offset. */
 const NEAR_METERS = DISTANCE_BUCKET_SPLIT_METERS - 20; // 30 m: inside the geofence, bucket `lt_50`
 const MID_METERS = DISTANCE_BUCKET_SPLIT_METERS + 70; // 120 m: bucket `m50_150`
 const FRINGE_METERS = GEOFENCE_METERS - 10; // 140 m: still inside the geofence
@@ -178,6 +185,69 @@ function offsetMeters(origin: LatLng, meters: number): LatLng {
   return { lat: origin.lat + meters / METERS_PER_DEGREE_LAT, lng: origin.lng };
 }
 
+/**
+ * A coordinate `meters` due north of `venue`, projected on the spheroid by the database's own
+ * `ST_Project`, for a case that must stand on a measured boundary rather than near one (AAP 0.5.7).
+ *
+ * {@link offsetMeters} cannot do this job at the geofence: `METERS_PER_DEGREE_LAT` is a fixed
+ * 111,320 metres per degree of latitude, while the route measures distance with PostGIS's spheroid,
+ * so the table's own 150 m offset is measured at 149.58230029 m — 0.42 m short of the boundary. A
+ * probe there is accepted by a correct implementation and by one comparing `distance < 150` alike,
+ * so it discriminates nothing. A point `ST_Project` places at {@link GEOFENCE_METERS} and
+ * `ST_Distance` measures back at exactly the geofence is the only one such an implementation refuses.
+ *
+ * @param venue - The venue the probe is projected from; its coordinates are bound parameters of this
+ *   statement and of nothing else.
+ * @param meters - How far due north of the venue the probe stands.
+ * @returns The projected coordinate pair.
+ * @throws Error when the statement returns no row, which no coordinate pair can make it do.
+ */
+async function projected(venue: VenueFixture, meters: number): Promise<LatLng> {
+  const rows = await t.services.db.$queryRaw<{ lat: number; lng: number }[]>`
+    SELECT ST_Y(p::geometry) AS "lat", ST_X(p::geometry) AS "lng"
+      FROM (
+        SELECT ST_Project(
+                 ST_SetSRID(
+                   ST_MakePoint(${venue.lng}::double precision, ${venue.lat}::double precision),
+                   4326
+                 )::geography,
+                 ${meters}::double precision,
+                 0::double precision
+               ) AS p
+      ) AS projected
+  `;
+
+  const row = rows[0];
+  if (row === undefined) {
+    throw new Error(`ST_Project returned no coordinate ${meters} m north of the venue`);
+  }
+
+  return { lat: row.lat, lng: row.lng };
+}
+
+/**
+ * The metres the route itself measures between `venue` and `point`: the same `distanceFrom` statement
+ * `check-in.ts` compares with {@link GEOFENCE_METERS} and derives its bucket from (AAP 0.5.7).
+ *
+ * A boundary case reads its probe back through this, so the case pins what the product measures
+ * rather than what it asked the database to place: a probe that drifted off the edge would fail the
+ * pin instead of quietly stopping discriminating.
+ *
+ * @param venue - The venue to measure from, through its own stored location.
+ * @param point - The coordinate to measure to.
+ * @returns The distance in metres.
+ * @throws Error when the venue row carries no location, which no fixture venue does: `makeVenue`
+ *   always writes one, and a null here means the row this case measures from is not the fixture's.
+ */
+async function measuredMeters(venue: VenueFixture, point: LatLng): Promise<number> {
+  const meters = await distanceFrom(t.services.db, 'venue', venue.id, point, t.env.APP_ENV);
+
+  if (meters === null) {
+    throw new Error('the venue carries no location to measure the probe from');
+  }
+  return meters;
+}
+
 /** The code the venue's console displays at the clock's current instant (AAP 0.5.4). */
 async function displayedCode(secret: string): Promise<string> {
   const response = await callRoute(t.app, {
@@ -219,16 +289,22 @@ interface AttemptOptions {
   readonly code?: string;
   /** How far from the venue the device stands, due north. Default {@link NEAR_METERS}. */
   readonly distanceM?: number;
+  /** The exact coordinates to submit, for a case that must stand on a measured boundary; the
+   * {@link offsetMeters} of `distanceM` otherwise (AAP 0.5.7). */
+  readonly point?: LatLng;
 }
 
-/** Submit one check-in for `base`'s meetup as `user`, from `distanceM` metres away (AAP 0.5.7). */
+/**
+ * Submit one check-in for `base`'s meetup as `user`, from `distanceM` metres away or from the exact
+ * coordinates a boundary case hands in (AAP 0.5.7).
+ */
 async function attemptCheckIn(
   base: Base,
   user: ActorRef,
   options: AttemptOptions = {},
 ): Promise<RouteResponse> {
   const code = options.code ?? (await displayedCode(issued(base.venue.secret)));
-  const at = offsetMeters(base.venue, options.distanceM ?? NEAR_METERS);
+  const at = options.point ?? offsetMeters(base.venue, options.distanceM ?? NEAR_METERS);
   const meetupId = options.meetupId ?? base.meetup.id;
 
   // The access token is signed at the clock's current instant, so a case that jumped an hour
@@ -395,6 +471,14 @@ const REJECTIONS: readonly RejectionRow[] = [
     code: 'outside_geofence',
     attempt: async (base) => attemptCheckIn(base, base.initiator, { distanceM: OUTSIDE_METERS }),
   },
+  {
+    label: 'a valid code submitted one metre beyond the geofence',
+    code: 'outside_geofence',
+    attempt: async (base) =>
+      attemptCheckIn(base, base.initiator, {
+        point: await projected(base.venue, GEOFENCE_METERS + 1),
+      }),
+  },
 ];
 
 it.each(rows(REJECTIONS))('answers 422 $code for $label', async ({ code, attempt }) => {
@@ -484,6 +568,28 @@ describe('an accepted check-in', () => {
 
     expect(expectAccepted(response)).toEqual({ status: 'locked', bothCheckedIn: false });
     expect(await checkInRow(base.meetup.id, base.recipient)).toEqual({
+      result: 'pass',
+      distanceBucket: 'm50_150',
+      failureCode: null,
+    });
+  });
+
+  it('is accepted at the geofence itself, which an exclusive comparison would refuse', async () => {
+    const base = await lockedPair();
+
+    // AAP 0.5.7 accepts `ST_Distance(venue.location, point) <= 150` m, so the edge belongs to the
+    // accepted side, and the only probe an implementation comparing `< 150` refuses is one the
+    // database measures at exactly the geofence. The pin below is the point of this case: it reads
+    // the metres back through the statement the route itself compares with, so a probe that drifted
+    // off the edge fails here rather than silently stopping discriminating.
+    const onEdge = await projected(base.venue, GEOFENCE_METERS);
+    expect(await measuredMeters(base.venue, onEdge)).toBe(GEOFENCE_METERS);
+
+    expect(expectAccepted(await attemptCheckIn(base, base.initiator, { point: onEdge }))).toEqual({
+      status: 'locked',
+      bothCheckedIn: false,
+    });
+    expect(await checkInRow(base.meetup.id, base.initiator)).toEqual({
       result: 'pass',
       distanceBucket: 'm50_150',
       failureCode: null,

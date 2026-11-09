@@ -25,6 +25,7 @@ import {
   AdminCrawlDomainDto,
   AdminCrawlDomainsResponse,
   AdminDisputesResponse,
+  AdminLlmSuspension,
   AdminLodgingClaimsResponse,
   AdminLodgingDto,
   AdminLodgingsResponse,
@@ -63,6 +64,7 @@ import {
 } from '@tablemate/shared';
 import type {
   AdminCallTasksQuery,
+  AdminLodgingsQuery,
   CheckInRequest,
   ClientEventRequest,
   ConsentsRequest,
@@ -762,9 +764,17 @@ export const apiClient = {
     issueVenueSecret: (id: string): Promise<SecretIssued> =>
       request('POST', `/admin/venues/${enc(id)}/secret`, { response: SecretIssued }),
 
-    /** `GET /admin/lodgings` — the lodging registry, including `phoneSource` and `doNotCall`. */
-    listLodgings: (): Promise<AdminLodgingsResponse> =>
-      request('GET', '/admin/lodgings', { response: AdminLodgingsResponse }),
+    /**
+     * `GET /admin/lodgings` — one page of the lodging registry, in (city, name, id) order, narrowed
+     * by the filters it is given (AAP 0.5.4). A filter that is not set is left out of the request
+     * rather than sent empty, so the server reads its own default page of 200 lodgings, and `cursor`
+     * continues from the page a previous read answered.
+     */
+    listLodgings: (query: AdminLodgingsQuery = {}): Promise<AdminLodgingsResponse> =>
+      request('GET', '/admin/lodgings', {
+        response: AdminLodgingsResponse,
+        query: { cityId: query.cityId, q: query.q, limit: query.limit, cursor: query.cursor },
+      }),
 
     /** `POST /admin/lodgings` — manual lodging entry, stored with `phoneSource = operator`. */
     createLodging: (body: CreateLodgingRequest): Promise<AdminLodgingDto> =>
@@ -777,6 +787,15 @@ export const apiClient = {
     /** `POST /admin/price-jobs` — queues menu ingestion or its phone fallback for a city. */
     enqueuePriceJob: (body: PriceJobRequest): Promise<PriceJobResponse> =>
       request('POST', '/admin/price-jobs', { body, response: PriceJobResponse }),
+
+    /**
+     * `POST /admin/language-model/re-enable` — ends the suspension a counted-versus-reported
+     * input-token mismatch set, so menu ingestion and call dispatch resume in every city, and answers
+     * the flag as it then stands beside the cumulative mismatch count (AAP 0.5.6). That count is the
+     * evidence the spend panel shows, so it is read here and never reset by the call.
+     */
+    reEnableLanguageModel: (): Promise<AdminLlmSuspension> =>
+      request('POST', '/admin/language-model/re-enable', { response: AdminLlmSuspension }),
   },
 } as const;
 

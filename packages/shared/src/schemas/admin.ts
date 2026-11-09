@@ -233,6 +233,28 @@ export const MetricsDto = z.object({
 export type MetricsDto = z.infer<typeof MetricsDto>;
 
 // ---------------------------------------------------------------------------------------------
+// The language-model suspension (AAP 0.5.6)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The answer of `POST /admin/language-model/re-enable` (AAP 0.5.4, 0.5.6): the suspension flag as
+ * the operator's own clear left it, with the mismatch count the spend panel reports beside it.
+ *
+ * AAP 0.5.6 suspends language-model use in every city on a counted-versus-reported input-token
+ * mismatch and ends that suspension only when an operator re-enables it, so the answer is the flag
+ * read back after the clear rather than an assumed `false`: it is false whenever the clear was the
+ * last write to the flag, and true again if a further mismatch landed while the request was in
+ * flight. `mismatches` is the cumulative `llm:count_mismatches` counter — the evidence the operator
+ * establishes the cause from — which the re-enable leaves standing, because only the flag is the
+ * suspension.
+ */
+export const AdminLlmSuspension = z.object({
+  suspended: z.boolean(),
+  mismatches: Count,
+});
+export type AdminLlmSuspension = z.infer<typeof AdminLlmSuspension>;
+
+// ---------------------------------------------------------------------------------------------
 // Operator queues: disputes, call tasks, lodging claims and reports (AAP 0.5.3, 0.5.4)
 // ---------------------------------------------------------------------------------------------
 
@@ -516,8 +538,44 @@ export const AdminLodgingDto = z.object({
 });
 export type AdminLodgingDto = z.infer<typeof AdminLodgingDto>;
 
-/** The body of `GET /admin/lodgings`, the lodging registry (AAP 0.5.4, requirement 15). */
-export const AdminLodgingsResponse = z.object({ items: z.array(AdminLodgingDto) });
+/**
+ * The query string of `GET /admin/lodgings`, the operator's lodging registry (AAP 0.5.4).
+ *
+ * A strict object, so a parameter this contract does not carry is `400 invalid_field` rather than
+ * ignored, which is what keeps a client's misspelled filter from silently reading the whole
+ * registry.
+ *
+ * `cityId` narrows the registry to one city. `q` searches the lodging's name, case-insensitively,
+ * and is trimmed before it is bounded, so padding around a term never fails a check the term itself
+ * passes. `limit` is the page size and defaults to the read's own bound; `cursor` is the
+ * `nextCursor` a previous page answered (AAP 0.5.4).
+ */
+export const AdminLodgingsQuery = z.strictObject({
+  cityId: CitySlug.optional(),
+  q: z.string().trim().min(1).max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  cursor: Cursor.optional(),
+});
+export type AdminLodgingsQuery = z.infer<typeof AdminLodgingsQuery>;
+
+/**
+ * One page of the body of `GET /admin/lodgings`, the lodging registry (AAP 0.5.4, requirement 15):
+ * the current lodgings in (city, name, id) order — city first, then the name, with the id breaking a
+ * same-name tie — with the rows an OpenStreetMap refresh found missing left out, because a lodging
+ * that carries `osmMissingAt` has left the public directory too (AAP 0.5.6).
+ *
+ * `total` counts every lodging the request's filters match with the cursor ignored, so an operator
+ * reads how many rows the page leaves behind; it counts matching rows rather than DTOs, so a row the
+ * guarded client cannot render leaves `items` one element shorter than `total` (AAP 0.5.2). `nextCursor`
+ * continues the read and is null on the last page. Both fields are additive and `items` with the
+ * (city, name, id) order is unchanged, so a client that sends no query at all still reads one page of
+ * `ADMIN_REGISTRY_LIMIT` (200) lodgings in the same order it always did (AAP 0.5.4).
+ */
+export const AdminLodgingsResponse = z.object({
+  items: z.array(AdminLodgingDto),
+  total: Count,
+  nextCursor: Cursor.nullable(),
+});
 export type AdminLodgingsResponse = z.infer<typeof AdminLodgingsResponse>;
 
 /**

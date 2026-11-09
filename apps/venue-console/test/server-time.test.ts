@@ -20,8 +20,14 @@ import {
   serverNowMs,
 } from '../src/server-time.ts';
 
-/** Tolerance around the current step: the server accepts T-1, T and T+1 (AAP 0.5.7). */
-const TOLERANCE_MS = CODE_STEP_SECONDS * CODE_TOLERANCE_STEPS * 1000;
+/**
+ * One step of tolerance: the server accepts T-1, T and T+1, so a code just replaced is still valid
+ * for 60 s of server clock beyond the step it was derived from (AAP 0.5.7). Written out rather than
+ * computed from `CODE_STEP_SECONDS * CODE_TOLERANCE_STEPS`, so the `isStale` rows below fail when
+ * either constant changes instead of moving with it; the pin inside that describe holds the two
+ * constants to this figure.
+ */
+const TOLERANCE_MS = 60_000;
 
 /**
  * The server instant the sampled response was handled, 700 ms into its second deliberately: a `Date`
@@ -163,5 +169,12 @@ describe('isStale', () => {
 
   it.each(CASES)('server clock at %i -> %s', (serverNow, expected) => {
     expect(isStale(EXPIRES_AT_MS, serverNow)).toBe(expected);
+  });
+
+  // The rows above are written against the literal step of tolerance, so the constants the boundary
+  // belongs to are held to it here: a code is accepted for T-1, T and T+1 (AAP 0.5.7), one step of
+  // 60 s each. A change to either constant must fail this case rather than silently move the rows.
+  it('pins one step of tolerance of 60 s per counter', () => {
+    expect(CODE_STEP_SECONDS * CODE_TOLERANCE_STEPS).toBe(TOLERANCE_MS / 1000);
   });
 });

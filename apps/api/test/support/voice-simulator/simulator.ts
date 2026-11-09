@@ -141,12 +141,17 @@ export function twilioSignature(
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The scripts one call can play, in `./scenarios/<name>.json` (AAP 0.8.1). The twelve names AAP 0.5.6
- * lists first — three price calls, a lodging yes and no, an unanswered line, a busy line, a drop
- * mid-script, a refusal, a do-not-call request, a switch to English, a dialogue that never progresses
- * and a down vendor — then the three the trigger set and the label vocabulary need beyond them: an
- * answering machine and a call dropped before any data, the two remaining `no_answer` triggers of
- * AAP 0.5.3, and a callee who asks for a person (AAP 0.5.6).
+ * The scripts one call can play, in `./scenarios/<name>.json` (AAP 0.8.1). Every one of the twelve
+ * names AAP 0.8.1's canonical inventory lists — `prices-high`, `prices-low`, `yes`, `no`, `no-answer`,
+ * `busy`, `drop-mid-script`, `stop`, `do-not-call`, `english-switch`, `budget-exhaustion` and
+ * `vendor-down` — has its fixture here. The three after them in {@link SCENARIO_NAMES}, `machine`,
+ * `drop-before-prompt` and `wants-human`, are accepted additions to that inventory: kept deliberately
+ * rather than by accident, each because it is the fixture of an AAP-named rule the twelve do not
+ * reach. An answering machine and a call dropped before any data are the two remaining `no_answer`
+ * triggers of AAP 0.5.3's call-task table, and a callee who asks for a person is the request
+ * AAP 0.5.6 answers with `closing.refused` and outcome `refused`. All three are played end to end by
+ * `apps/api/test/integration/webhooks-voice.test.ts`'s fixture table, which holds each of them to the
+ * ending its rule gives it.
  */
 export const SCENARIO_NAMES = [
   'prices-high',

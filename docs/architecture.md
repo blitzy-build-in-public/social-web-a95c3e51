@@ -368,8 +368,8 @@ that withholds one fails that feature alone.
 ## Delivered inventory: the plan's rows and their additions
 
 AAP 0.8.1's table is the plan's inventory, and every path it names exists under that name but for the two `.cjs`
-substitutions below. The run added forty-four tracked paths the table does not name, each required by an AAP
-requirement or by the toolchain and every one of them recorded here: the forty-three in the list below, and
+substitutions below. The run added forty-seven tracked paths the table does not name, each required by an AAP
+requirement or by the toolchain and every one of them recorded here: the forty-six in the list below, and
 `packages/server-core/src/llm/contract.ts`, which the language-model Deviation above records.
 
 - **`patches/{metro@0.81.5,query-string@7.1.3,tar@7.5.21,xcode@3.0.1}.patch`** — supplements the root tooling
@@ -486,6 +486,27 @@ requirement or by the toolchain and every one of them recorded here: the forty-t
   `unreachable` is refused as `400 invalid_field` through the route rather than answered `200` with the array
   dropped, while the handler still validates the outcome value itself and answers `422 invalid_outcome` for a
   lifecycle question no schema decides (AAP 0.5.4).
+- **`apps/api/test/unit/admin-llm-suspension.test.ts`** — a fifteenth suite beside the twelve the plan's
+  `apps/api/test/unit` row names: the unit suite of the planned `apps/api/src/modules/admin/metrics.ts` at the
+  boundary of the operator re-enable AAP 0.5.6 requires, the only surface that ends the suspension its mismatch
+  check raises — the flag it clears, the cumulative `llm:count_mismatches` counter it leaves standing, the
+  store it resolves exactly as the metrics read does, and the one refusal it raises when that store fails while
+  Redis otherwise answers, a `503 service_unavailable` an operator can act on rather than the `500` an unstated
+  outage would give; the store failure is pinned here rather than through the route, which the rate limiter
+  answers before the handler is reached, and the route end to end is a case of the planned
+  `apps/api/test/integration/admin.test.ts` (AAP 0.5.6, 0.11.1).
+- **`apps/mobile/test/artifacts-web.test.ts`, `apps/mobile/test/prover-preflight.test.ts`** — two suites
+  beside the one the plan's `apps/mobile/test/eml-intake.test.ts` row names: the first is the suite of the
+  planned `apps/mobile/src/zk/artifacts.web.ts`, whose page side launches the proving Worker and reclaims the
+  partial artefact a cancelled or failed attempt leaves in the Origin Private File System, through a bounded,
+  retrying sweep that removes an entry only when its size differs from the published declaration and never a
+  record or a right-sized entry, so no abandoned bytes outlive the rule of AAP 0.5.5 that a partial artefact is
+  never trusted; the second is the suite of the pre-flight refusal in the planned
+  `apps/mobile/src/zk/prover.ts`, which builds the witness inputs from the picked bytes before
+  `resolveArtifacts` begins the ~1.6 GB download, so `eml_malformed` for a file that is not a booking
+  confirmation and `unsupported_issuer` for a booking site the published configuration lists as not yet
+  supported are each raised with zero bytes fetched, while an email the configuration does support still
+  reaches proving and submission (AAP 0.5.5, 0.5.8).
 
 With the two `.cjs` substitutions, every other path of the plan's inventory is present under its planned name.
 

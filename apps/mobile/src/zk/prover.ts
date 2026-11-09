@@ -23,7 +23,7 @@
  * Artefact downloads happen before it, so network time cannot distort a proving measurement. Client
  * state keeps only `{ status, issuerId?, errorCode? }` and a numeric download progress.
  */
-import type { CircuitInputErrorCode, SupportedIssuer } from '@tablemate/circuits';
+import type { CircuitInputErrorCode, CircuitInputs, SupportedIssuer } from '@tablemate/circuits';
 import { PUBLIC_SIGNAL_NAMES, ProofSubmission } from '@tablemate/shared';
 import type {
   ArtifactRef,
@@ -224,10 +224,33 @@ export interface ProveResult {
   readonly timings: ProveTimings;
 }
 
+/**
+ * The witness inputs of one attempt, built before any artefact is fetched.
+ *
+ * An email that is not a booking confirmation and one whose issuer the published configuration does
+ * not support are both refused by the input generator, and the message's own `d=`/`s=` tags against
+ * `ZkConfig.issuers` settle the second of those. Building the inputs first — which is what the import
+ * flow does, through {@link ProveOptions.built} — therefore refuses an unusable email without
+ * downloading the ~1.6 GB artefact set (AAP 0.5.5, AAP 0.5.8).
+ */
+export interface BuiltInputs {
+  /** The witness, ready for `JSON.stringify`. */
+  readonly inputs: CircuitInputs;
+
+  /** The registry issuer id the proof names, the circuit's public `issuerId` output. */
+  readonly issuerId: number;
+
+  /** How long the build took: the `inputMs` component of {@link ProveTimings}. */
+  readonly inputMs: number;
+}
+
 /** What {@link prove} may be told besides the email bytes and the configuration. */
 export interface ProveOptions {
   /** The proving engine; defaults to this platform's. */
   engine?: ProverEngine;
+
+  /** Inputs already built from these bytes, which are proved instead of being built again. */
+  built?: BuiltInputs;
 
   /** Artefacts already resolved, which skips the download entirely. */
   artifacts?: ResolvedArtifacts;
@@ -524,17 +547,50 @@ async function resolveArtifacts(
 /* --- Proving -------------------------------------------------------------------------------- */
 
 /**
+ * Builds the witness inputs from the in-memory email bytes, yielding once first so a status can paint
+ * before the synchronous work below blocks the JS thread, and measuring how long the build took.
+ *
+ * It is split out of {@link prove} so the import flow can run it *before* it fetches anything: the
+ * generator refuses a file that is not an email, one whose DKIM domain matches no supported issuer and
+ * every other input it cannot use, so refusing first costs ~1.6 GB less than refusing after the
+ * artefacts (AAP 0.5.5, AAP 0.5.8).
+ */
+async function buildInputs(emlBytes: Uint8Array, config: ProveConfig): Promise<BuiltInputs> {
+  // Let a status paint before the input generation below blocks the JS thread, which under Hermes is
+  // the whole window in which a screen can render that step.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+  // The generator is loaded before the span starts: on the web this call fetches the package's chunk,
+  // the one download a first attempt on the entry route pays, and a figure measured across it would
+  // not be the span AAP 0.5.5 defines. Every caller reaches the generator through here — `prove` when
+  // it is asked to build, and `importAndProve` before it downloads the artefacts — so the load happens
+  // once, on whichever path builds the witness, and always outside the measured span.
+  const { buildCircuitInputs } = await loadCircuitApi();
+
+  const startedAt = now();
+  const { inputs, issuerId } = buildCircuitInputs(emlBytes, config.issuers, config.registry, {
+    nullifierSalt: config.nullifierSalt,
+  });
+  return { inputs, issuerId, inputMs: now() - startedAt };
+}
+
+/**
  * Builds the witness inputs from the in-memory email bytes, proves them on this device and returns a
  * schema-validated proof (AAP 0.5.1, AAP 0.5.5).
  *
  * The DKIM key comes from the published registry through the signature's own `d=` and `s=` tags, so
  * nothing is looked up over the network and the email never leaves the device. `timings.totalMs` is
  * the measured span — input construction on the in-memory bytes, witness generation and proving —
- * while a download triggered here runs before the timer starts.
+ * while a download triggered here runs before the timer starts. Inputs the caller already built
+ * ({@link ProveOptions.built}) are proved as they are, which is how {@link importAndProve} refuses an
+ * unusable email before the download and still measures the same span: the build's own duration plus
+ * the proving span.
  *
  * @param emlBytes - The picked confirmation email, held by the caller and never copied into state.
- * @param options - An engine and store to use instead of this platform's, resolved artefacts, an abort
- *   signal and a download-progress reporter.
+ * @param options - An engine and store to use instead of this platform's, inputs already built from
+ *   these bytes, resolved artefacts, an abort signal and a download-progress reporter.
  * @throws A {@link ProofErrorCode}: `prover_unavailable` with no usable engine,
  *   `artifact_download_failed`, `cancelled`, an input generator code, `proof_output_invalid`, or
  *   whatever the engine reports.
@@ -558,34 +614,26 @@ export async function prove(
 
   if (options.signal?.aborted === true) throw new ZkError('cancelled');
 
-  // Let a 'proving' state paint before the input generation below blocks the JS thread, which under
-  // Hermes is the whole window in which a screen can render that step.
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 0);
-  });
-
-  // The generator is loaded before the span starts: on the web this call fetches the package's chunk,
-  // the one download a first attempt on the entry route pays, and a figure measured across it would
-  // not be the span AAP 0.5.5 defines.
-  const { buildCircuitInputs } = await loadCircuitApi();
+  const built = options.built ?? (await buildInputs(emlBytes, config));
 
   const startedAt = now();
-  const { inputs, issuerId } = buildCircuitInputs(emlBytes, config.issuers, config.registry, {
-    nullifierSalt: config.nullifierSalt,
-  });
-  const inputMs = now() - startedAt;
   // The engine reads exactly this string: decimal field elements under the circuit's signal names.
-  const inputsJson = JSON.stringify(inputs);
+  const inputsJson = JSON.stringify(built.inputs);
 
   const output = await engine.generate(inputsJson, artifacts, options.signal);
-  const totalMs = now() - startedAt;
-  const submission = validatedSubmission(output, config, issuerId);
+  const totalMs = built.inputMs + (now() - startedAt);
+  const submission = validatedSubmission(output, config, built.issuerId);
 
   return {
     proof: submission.proof,
     publicSignals: submission.publicSignals,
-    issuerId,
-    timings: { inputMs, witnessMs: output.witnessMs, proveMs: output.proveMs, totalMs },
+    issuerId: built.issuerId,
+    timings: {
+      inputMs: built.inputMs,
+      witnessMs: output.witnessMs,
+      proveMs: output.proveMs,
+      totalMs,
+    },
   };
 }
 
@@ -607,17 +655,23 @@ export function submitProof(
 }
 
 /** The options {@link prove} is called with, carrying only what the caller actually supplied. */
-function proveOptions(options: ImportAndProveOptions, artifacts: ResolvedArtifacts): ProveOptions {
-  const built: ProveOptions = { artifacts };
-  if (options.engine !== undefined) built.engine = options.engine;
-  if (options.artifactStore !== undefined) built.artifactStore = options.artifactStore;
-  if (options.signal !== undefined) built.signal = options.signal;
-  return built;
+function proveOptions(
+  options: ImportAndProveOptions,
+  artifacts: ResolvedArtifacts,
+  built?: BuiltInputs,
+): ProveOptions {
+  const resolved: ProveOptions = { artifacts };
+  if (options.engine !== undefined) resolved.engine = options.engine;
+  if (options.artifactStore !== undefined) resolved.artifactStore = options.artifactStore;
+  if (options.signal !== undefined) resolved.signal = options.signal;
+  if (built !== undefined) resolved.built = built;
+  return resolved;
 }
 
 /**
- * The whole flow behind the generate screen: read the picked file, fetch and verify the artefacts,
- * prove, submit, and release the app-owned copy on every path (AAP 0.5.5, AAP 0.5.8).
+ * The whole flow behind the generate screen: read the picked file, build the witness inputs, fetch and
+ * verify the artefacts, prove, submit, and release the app-owned copy on every path (AAP 0.5.5,
+ * AAP 0.5.8).
  *
  * It drives `../state/proof-store` one step at a time — `reading`, `downloading` with a 0-1 progress
  * fraction, `proving`, `submitting`, `accepted` — and ends a refused attempt as `error` with one code,
@@ -625,6 +679,11 @@ function proveOptions(options: ImportAndProveOptions, artifacts: ResolvedArtifac
  * byte, a field value or a proof. One attempt runs at a time: a second concurrent call releases its
  * own handle and fails with `proof_in_progress`, rather than interleaving two proofs over one artefact
  * set.
+ *
+ * The inputs are built before the artefacts are fetched, so a file that is not a booking confirmation
+ * and an email whose issuer the published configuration does not support — the case an issuer awaiting
+ * samples is in, since it has no registry leaf to name (AAP 0.5.5) — are refused as the import states
+ * AAP 0.5.8 requires without downloading the ~1.6 GB artefact set.
  *
  * @param handle - The picked `.eml`; released here, so the caller must not use it afterwards.
  * @param zkConfig - The published configuration, as `GET /v1/zk/config` returned it.
@@ -648,6 +707,12 @@ export async function importAndProve(
     resetProof();
     setProofStatus('reading');
 
+    // Build the witness before fetching anything (AAP 0.5.5, AAP 0.5.8): an email that is not a
+    // booking confirmation, or one whose issuer the published configuration does not support, is
+    // refused here by the generator reading the signature's own `d=`/`s=` tags against
+    // `zkConfig.issuers`, so it costs no download of the ~1.6 GB artefact set.
+    const built = await buildInputs(handle.bytes, zkConfig);
+
     setProofStatus('downloading', { downloadProgress: 0 });
     const artifacts = await resolveArtifacts(
       zkConfig.artifacts,
@@ -659,7 +724,7 @@ export async function importAndProve(
     );
 
     setProofStatus('proving');
-    const result = await prove(handle.bytes, zkConfig, proveOptions(options, artifacts));
+    const result = await prove(handle.bytes, zkConfig, proveOptions(options, artifacts, built));
     issuerId = result.issuerId;
 
     setProofStatus('submitting', { issuerId });

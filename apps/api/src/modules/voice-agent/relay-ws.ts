@@ -246,7 +246,13 @@ export function registerVoiceRelay(app: App): void {
    */
   app.addHook('onClose', async () => {
     for (const connection of [...sessions.values()]) {
-      await connection.session?.finalize('app_closing');
+      const session = connection.session;
+      // The same wait as the socket teardown's: the turns the call had already received are part of
+      // what it collected, and this hook records the call with what it collected (AAP 0.5.3).
+      if (session !== null) {
+        if (session.finalizedBy === null) await session.awaitTurns();
+        await session.finalize('app_closing');
+      }
       connection.socket.close(CLOSE_GOING_AWAY);
     }
     sessions.clear();
@@ -302,7 +308,13 @@ async function serveConnection(
 
     const session = connection.session;
     try {
-      if (session !== null) await session.finalize('socket_closed');
+      if (session !== null) {
+        // A socket that goes mid-turn: the confirmation the callee had already spoken is part of what
+        // the call collected, so it is recorded rather than lost (AAP 0.5.3). A session its own
+        // closing path already finalized keeps today's teardown latency.
+        if (session.finalizedBy === null) await session.awaitTurns();
+        await session.finalize('socket_closed');
+      }
     } finally {
       // Released whatever the finalize did: a registry entry left behind would refuse every later
       // connection for this attempt as a duplicate, and a slot left held would shrink the cap by one

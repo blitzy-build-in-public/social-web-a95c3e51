@@ -1,6 +1,6 @@
 /**
  * The operator dashboard's metrics (AAP 0.5.1 `admin/metrics.ts`, 0.5.4 `GET /admin/metrics`,
- * 0.5.7 "Metric definitions").
+ * 0.5.7 "Metric definitions") and the language-model re-enable of AAP 0.5.6.
  *
  * One call of {@link computeMetrics} answers the whole dashboard — the headline completion rate the
  * pilot is judged by, the pilot's two reference lines, the deposit funnel, the lifecycle counts, the
@@ -14,11 +14,12 @@
  * and `bothCheckedInAt` and never `status`, so a later hold loss, `no_fault` resolution or
  * late-cancel compensation cannot rewrite the rate.
  *
- * Read-only: no transaction, no row lock, and not one of the state-writing reads, so the
- * account-deletion write fence does not apply (AAP 0.5.3). Time arrives as the `now` argument — the
- * route passes `request.receivedAt` — never from the process or SQL `now()`, so a test can cross the
- * 45-minute settlement window. The check-in window end is therefore computed in JavaScript as
- * `now - 45 min`, and no interval arithmetic binds a parameter.
+ * The dashboard is read-only: no transaction, no row lock, and not one of the state-writing reads, so
+ * the account-deletion write fence does not apply (AAP 0.5.3). Time arrives as the `now` argument —
+ * the route passes `request.receivedAt` — never from the process or SQL `now()`, so a test can cross
+ * the 45-minute settlement window. The check-in window end is therefore computed in JavaScript as
+ * `now - 45 min`, and no interval arithmetic binds a parameter. The file's one write is
+ * {@link reEnableLanguageModel}, which reaches the shared suspension flag and no table at all.
  *
  * Three measures are live rather than range-bound, because their tables carry no meetup timestamp:
  * `activeProofsByCity` counts the proofs valid at `now`, and both calls panels are current
@@ -41,10 +42,13 @@
  * (AAP 0.5.7), with {@link medianOf} stating the same rule in one place for tests.
  *
  * Nothing here returns a user id, a handle, an email address, a coordinate or a row that was not
- * named field by field, and no log line carries a row, a reason or any other value (AAP 0.11.1).
+ * named field by field, and no log line carries a row, a reason or any other value: the re-enable's
+ * success line names the acting operator's id, and every failure line carries the failure's own short
+ * code (AAP 0.11.1).
  *
  * @see AAP 0.5.2 for the `AnalyticsEvent` fields and the caps, 0.5.3 for the statuses and forfeit
- *   reasons, 0.5.6 for the calls and spend panel and the suspension flag, 0.8.1 for this file.
+ *   reasons, 0.5.6 for the calls and spend panel, the suspension flag and the operator's re-enable,
+ *   0.8.1 for this file.
  */
 
 import { Prisma, SQL_IDENTIFIER, fixturePredicate, geoColumn, withinMeters } from '@tablemate/db';
@@ -61,6 +65,7 @@ import {
   SUGGESTION_RADIUS_METERS,
 } from '@tablemate/shared';
 import type {
+  AdminLlmSuspension,
   AnalyticsEventName,
   BlockedReason,
   CallAttemptOutcome,
@@ -86,8 +91,11 @@ export interface AdminMetricsServices {
   readonly db: Pick<DbClient, '$queryRaw'>;
   /** The API's validated configuration (AAP 0.6.2): the environment, the caps and the thresholds. */
   readonly env: AdminMetricsEnv;
-  /** The process logger, read for the one warning an unreadable suspension flag raises. */
-  readonly logger: Pick<Logger, 'warn'>;
+  /**
+   * The process logger: the warning a read that cannot reach the suspension flag raises, the
+   * warning and the one success line the operator's re-enable writes.
+   */
+  readonly logger: Pick<Logger, 'info' | 'warn'>;
   /**
    * The language-model suspension flag, when the composition root exposes it directly (AAP 0.5.6).
    * Preferred over {@link AdminMetricsServices.redis}, because it is the store the relay writes.
@@ -172,6 +180,64 @@ async function readSuspension(services: AdminMetricsServices): Promise<Suspensio
   } catch (error) {
     services.logger.warn({ event: 'metrics_suspension_unreadable', code: errorCodeOf(error) });
     return { suspended: true, mismatches: 0 };
+  }
+}
+
+/** The message an operator reads when the suspension flag cannot be reached at all. */
+const SUSPENSION_CLEAR_FAILED_MESSAGE = 'The language-model suspension could not be cleared.';
+
+/**
+ * The one refusal {@link reEnableLanguageModel} raises: one narrowed line naming the failure's own
+ * short code, and the shared `503` the operator answers for rather than an uncounted `500`
+ * (AAP 0.11.1). No message, no stack and no key value reaches the line.
+ */
+function suspensionClearFailed(services: AdminMetricsServices, code: string): AppError {
+  services.logger.warn({ event: 'llm_suspension_clear_failed', code });
+  return new AppError('service_unavailable', SUSPENSION_CLEAR_FAILED_MESSAGE);
+}
+
+/**
+ * Re-enable language-model use after a mismatch suspended it (AAP 0.5.6): the operator surface the
+ * clause "until an operator re-enables it" needs. `SuspensionStore.clear` deletes the `llm:suspended`
+ * flag `api` and `workers` share, so menu ingestion and call dispatch resume in every city at once.
+ *
+ * The store is resolved exactly as {@link readSuspension} resolves it, so both routes read one
+ * composition root rather than each building its own view of it. The cumulative `llm:count_mismatches`
+ * counter is deliberately left standing: it is the evidence the spend panel shows and the operator
+ * establishes the cause from, and only the flag is the suspension.
+ *
+ * A store that is absent, a clear that fails and a read that fails are one
+ * `llm_suspension_clear_failed` warning plus an `AppError('service_unavailable')` refusal, so a Redis
+ * outage reads as a refusal the operator can act on rather than as an internal failure. The clear is
+ * idempotent: a flag that is already absent answers the same way, with nothing to undo.
+ *
+ * @param services - The app's services; only the suspension flag or Redis connection and the logger
+ *   are read (see {@link AdminMetricsServices}).
+ * @param operatorId - The acting operator, named on the one success line so the re-enable is
+ *   attributable.
+ * @returns The flag and the mismatch count read back after the clear (see {@link AdminLlmSuspension}).
+ * @throws AppError `service_unavailable` (503) when the flag's store is absent or cannot be used.
+ */
+export async function reEnableLanguageModel(
+  services: AdminMetricsServices,
+  operatorId: string,
+): Promise<AdminLlmSuspension> {
+  const store = suspensionStoreOf(services);
+
+  if (store === null) {
+    throw suspensionClearFailed(services, 'no_store');
+  }
+
+  try {
+    await store.clear();
+    const [suspended, mismatches] = await Promise.all([store.isSuspended(), store.mismatchCount()]);
+
+    // One line, the event and the acting operator, and nothing else (AAP 0.11.1).
+    services.logger.info({ event: 'llm_suspension_cleared', operatorId });
+
+    return { suspended, mismatches };
+  } catch (error) {
+    throw suspensionClearFailed(services, errorCodeOf(error));
   }
 }
 

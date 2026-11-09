@@ -16,6 +16,7 @@ import {
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
 import { signOut } from '../../src/auth/session';
+import { DELETE_CONFIRM_ANNOUNCEMENT } from '../../src/copy/strings';
 import { Banner, Button, Card, Screen, announce } from '../../src/ui';
 
 const SCREEN_EDGES = ['bottom', 'left', 'right'] as const;
@@ -31,6 +32,14 @@ const CONSEQUENCES: readonly string[] = [
   'Pseudonymous payment and settlement records are kept, as our privacy policy describes.',
 ];
 const CARD_TITLE = 'What happens when you delete your account';
+type HeadingProps = TextProps & Readonly<{ 'aria-level': number }>;
+/**
+ * The card's own section heading. `Card` paints a `title` as plain text, which leaves this section
+ * out of the page's outline, so the headline is rendered here as a heading instead. Level 2,
+ * because the navigation header already renders the page's single level-1 heading ("Delete
+ * account"); a second `<h1>` would leave the page with two (WCAG 1.3.1, 2.4.6).
+ */
+const CARD_TITLE_HEADING: HeadingProps = { role: 'heading', 'aria-level': 2 };
 const CLOSING_LINE = "You'll be signed out on every device. This can't be undone.";
 /** The refusal that proves only that the session ended (AAP 0.5.3, AAP 0.3.3). */
 const SESSION_ENDED_NOTICE =
@@ -78,7 +87,7 @@ export default function DeleteAccountScreen(): ReactElement {
   const inFlight = useRef(false);
   useEffect(() => {
     if (step !== 'confirm') return;
-    announce('Press Permanently delete my account to confirm.');
+    announce(DELETE_CONFIRM_ANNOUNCEMENT);
     requestAnimationFrame(focusFinalConfirm);
   }, [step]);
   async function sendDeletion(): Promise<void> {
@@ -114,7 +123,8 @@ export default function DeleteAccountScreen(): ReactElement {
     <>
       <Stack.Screen options={{ title: 'Delete account' }} />
       <Screen edges={SCREEN_EDGES} testID="delete-account">
-        <Card title={CARD_TITLE} testID="delete-account-consequences">
+        <Card testID="delete-account-consequences">
+          <Text {...CARD_TITLE_HEADING} style={styles.cardTitle} children={CARD_TITLE} />
           <View role="list" style={styles.list}>
             {CONSEQUENCES.map((item) => (
               <View key={item} role="listitem" style={styles.item}>
@@ -144,6 +154,9 @@ export default function DeleteAccountScreen(): ReactElement {
 }
 
 const styles = StyleSheet.create({
+  // The type scale and weight `Card` paints its own `title` with, so the headline this screen
+  // renders as a heading is the one the card would have drawn.
+  cardTitle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   list: { gap: spacing.sm },
   item: { flexDirection: 'row', gap: spacing.sm },
   bullet: { ...typography.body, color: colors.text },

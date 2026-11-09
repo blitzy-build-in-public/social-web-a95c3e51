@@ -1031,6 +1031,21 @@ export class DialogueSession {
   }
 
   /**
+   * Resolves once every turn {@link onPrompt} has received has finished (AAP 0.5.3).
+   *
+   * A socket that goes mid-turn leaves a turn already queued on {@link onPrompt}'s chain: the value
+   * the callee had confirmed by then is still on its way into `collected`, and {@link finalize} reads
+   * what the call collected synchronously. Without this wait that value never reaches the recorded
+   * result, and a call dropped mid-script is recorded as one that collected nothing rather than as
+   * the partial data AAP 0.5.3 sends to the operator queue. Only a caller that observes the call's
+   * end from outside the dialogue awaits it — the relay's socket teardown and the app's shutdown
+   * hook; the engine's own closing path runs inside this chain and must not wait on itself.
+   */
+  async awaitTurns(): Promise<void> {
+    await this.chain.catch(() => undefined);
+  }
+
+  /**
    * Record what the call produced and end it (AAP 0.5.6).
    *
    * Idempotent: the first call wins, and a second one — a socket that closes while the closing line

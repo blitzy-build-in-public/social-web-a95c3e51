@@ -5,9 +5,10 @@
  * the dispute windows -- is built from the shared constants rather than typed out, so the copy
  * cannot drift from what the API enforces. A string another module owns stays there: the framing
  * copy in `depositCopy`, the lock-loss copy in `LOCK_LOST_COPY` and the low guest count in
- * `GUEST_COUNT_BELOW_LABEL` are never repeated here. Every string is copied character for
- * character from AAP 0.5.8. No `Intl`, `Date`, React Native or Node API is used, so the e2e support
- * scripts and Vitest also load this module under plain Node.
+ * `GUEST_COUNT_BELOW_LABEL` are never repeated here. Every string AAP 0.5.8 states is copied
+ * character for character from it, and the announcements the plan does not enumerate are moved here
+ * unchanged from the screens that speak them. No `Intl`, `Date`, React Native or Node API is used,
+ * so the e2e support scripts and Vitest also load this module under plain Node.
  */
 import {
   DEPOSIT_LEVELS_CENTS,
@@ -338,6 +339,9 @@ export const BOTH_CHECKED_IN_NOTICE = "You're both checked in.";
  */
 export const CHECK_IN_CLOSED_NOTICE = 'This meetup has finished, so check-in is closed.';
 
+/** Spoken on `app/meetups/[id]/check-in.tsx` when the scanner fills the code field. */
+export const VENUE_CODE_FILLED_NOTICE = 'Venue code filled in.';
+
 // --- Empty states (AAP 0.5.8, verbatim) ---------------------------------------------------------
 
 /** The Discover tab with no travelers holding a valid proof for the city (AAP 0.5.8). */
@@ -378,3 +382,14 @@ export const SUGGESTIONS_EMPTY = {
  * PaymentSheet have nothing to initialize. Card holds need a test-mode key.
  */
 export const CARD_PAYMENTS_UNAVAILABLE = 'Card payments are not configured in this environment.';
+
+// --- Announcements: screen-reader notices for a change with no page load ------------------------
+
+/**
+ * Spoken on `app/meetups/[id]/chat.tsx` when the chat header's More menu opens, because the menu
+ * covers the block and report actions without a page change.
+ */
+export const CHAT_MENU_ANNOUNCEMENT = 'More options: report or block.';
+
+/** Spoken on `app/settings/delete-account.tsx` when its confirmation step appears. */
+export const DELETE_CONFIRM_ANNOUNCEMENT = 'Press Permanently delete my account to confirm.';

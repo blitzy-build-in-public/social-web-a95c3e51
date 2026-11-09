@@ -33,7 +33,7 @@ export default function SafetyScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: TITLE }} />
-      <Screen title={TITLE} testID="legal-safety">
+      <Screen testID="legal-safety">
         <Banner tone="warning" message={SAFETY_NOTICE} testID="safety-page-notice" />
         <Card>
           <Text {...TIPS_HEADING}>{SAFETY_TIPS_TITLE}</Text>

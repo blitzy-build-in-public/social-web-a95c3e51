@@ -29,7 +29,7 @@ import {
   subscribeConnectionState,
 } from '../../../src/api/ws';
 import type { ConnectionState } from '../../../src/api/ws';
-import { MESSAGES_EMPTY } from '../../../src/copy/strings';
+import { CHAT_MENU_ANNOUNCEMENT, MESSAGES_EMPTY } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { useSession } from '../../../src/state/session-store';
 import { Avatar, Banner, Button, Screen, TextField, announce } from '../../../src/ui';
@@ -271,7 +271,7 @@ export default function ChatScreen(): ReactElement {
   }, [errorText]);
   useEffect(() => {
     if (!menuOpen) return;
-    announce('More options: report or block.');
+    announce(CHAT_MENU_ANNOUNCEMENT);
     requestAnimationFrame(() => {
       if (Platform.OS !== 'web') return;
       try {
@@ -312,7 +312,7 @@ export default function ChatScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
-      <Screen edges={SCREEN_EDGES} title={SCREEN_TITLE} scroll={false} testID="chat">
+      <Screen edges={SCREEN_EDGES} scroll={false} testID="chat">
         {closedText !== undefined ? (
           <>
             <Banner tone="error" message={closedText} testID="chat-error" />

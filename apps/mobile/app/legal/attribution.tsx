@@ -57,7 +57,7 @@ export default function AttributionScreen(): ReactElement {
   return (
     <>
       <Stack.Screen options={{ title: PAGE_TITLE }} />
-      <Screen title={PAGE_TITLE} scroll>
+      <Screen scroll>
         <Card>
           <Text {...{ ...HEADING, style: styles.heading }}>{OSM_HEADING}</Text>
           <ExternalLink label={OSM_ATTRIBUTION} url={OSM_COPYRIGHT_URL} testID="osm-attribution" />

@@ -245,16 +245,16 @@ still inside their check-in window stay in the denominator, and their number is 
 `PILOT_LOCK_RATE_THRESHOLD` and `PILOT_COMPLETION_THRESHOLD` draw reference lines on the two rate
 bars, labelled as reference values the build reports against and never enforces.
 
-| Panel                     | What it shows                                                                                                                                                                                                                                                                |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deposit funnel            | Proposals sent, viewed by the recipient, accepted, both holds locked, both checked in, and the accepted-to-locked rate                                                                                                                                                       |
-| Counts                    | No-shows (late cancellations included), early cancellations, late cancellations, holds lost, disputes opened                                                                                                                                                                 |
-| Active proofs per city    | Travelers with a proof valid now, by city                                                                                                                                                                                                                                    |
-| Meetups per partner venue | The pilot's venue distribution                                                                                                                                                                                                                                               |
-| Prices and suggestions    | Places with a fresh price per city, partner-venue neighbourhoods with at least 10 priced places, meetups with suggestions viewed, places opened                                                                                                                              |
-| Calls                     | Outcomes (completed, refused, do not call, unreachable, needs review, no answer), the lifecycle panel (queued without an outcome, in progress, cancelled, blocked by reason), calls per day against the cap, language-model spend against the cap, and the suspension banner |
-| Lodging claims            | Submitted, verified, rejected, unreachable, and the median time to resolve                                                                                                                                                                                                   |
-| Signups (secondary)       | Accounts created, below the fold                                                                                                                                                                                                                                             |
+| Panel                     | What it shows                                                                                                                                                                                                                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deposit funnel            | Proposals sent, viewed by the recipient, accepted, both holds locked, both checked in, and the accepted-to-locked rate                                                                                                                                                                                            |
+| Counts                    | No-shows (late cancellations included), early cancellations, late cancellations, holds lost, disputes opened                                                                                                                                                                                                      |
+| Active proofs per city    | Travelers with a proof valid now, by city                                                                                                                                                                                                                                                                         |
+| Meetups per partner venue | The pilot's venue distribution                                                                                                                                                                                                                                                                                    |
+| Prices and suggestions    | Places with a fresh price per city, partner-venue neighbourhoods with at least 10 priced places, meetups with suggestions viewed, places opened                                                                                                                                                                   |
+| Calls                     | Outcomes (completed, refused, do not call, unreachable, needs review, no answer), the lifecycle panel (queued without an outcome, in progress, cancelled, blocked by reason), calls per day against the cap, language-model spend against the cap, and the suspension banner with the control that re-enables use |
+| Lodging claims            | Submitted, verified, rejected, unreachable, and the median time to resolve                                                                                                                                                                                                                                        |
+| Signups (secondary)       | Accounts created, below the fold                                                                                                                                                                                                                                                                                  |
 
 ## 5. Queues (`/ops/queues`)
 
@@ -359,6 +359,12 @@ an operator writes another.
    a console secret, a fixture or a manually entered row. Issuing a console secret makes the lodging
    a partner lodging for price ingestion, and enqueues the same refresh.
 
+   Finding a lodging: the list answers one page of 200 rows at a time, with a name search and a city
+   filter that the server applies to the whole registry rather than to the page on screen, a
+   `Showing X of Y lodgings` line saying how many rows the filters match, and a `Load more lodgings`
+   control that continues from the page's own cursor. A lodging entered by hand is put in the search
+   for you, so the row just created is on screen whatever the registry holds.
+
 3. **Price jobs.** Per city, `Run menu ingestion` (`menus`) fans out the menu pipeline and
    `Run price calls` (`calls`) queues the phone work; both answer `202` with a job id, which the row
    shows as `Queued (job …)`. `429 daily_cap_reached` means the city's local day has used up the cap
@@ -384,11 +390,25 @@ request was reserved for is charged in full, logged as `llm_count_mismatch`, and
 language-model use in every city: menu jobs defer, and a call that cannot reserve its next turn ends
 politely. The dashboard's Calls panel shows the banner and the mismatch count. The flag is the Redis
 key `llm:suspended`, which `api` and `workers` share and which holds `{"since","reason"}`, and
-`llm:count_mismatches` counts the mismatches; the implemented re-enable step removes that key. **No
-admin route and no script calls it today**, so there is no supported operator surface for clearing the
-suspension — recorded here as a gap for `apps/api` and `packages/server-core`, whose owner must add
-one. Until then, do not clear the flag from a shell without first establishing why the count changed:
-the suspension is what stops spend the cap can no longer bound.
+`llm:count_mismatches` counts the mismatches.
+
+Re-enable use from the Calls panel of `/ops`: **Re-enable language model** clears the flag, and the
+dashboard refreshes so the banner and the spend figures report the state the call answered. The same
+step from a shell, with an operator's bearer token:
+
+```bash
+curl -sS -X POST http://localhost:3000/v1/admin/language-model/re-enable \
+  -H "Authorization: Bearer $OPERATOR_ACCESS_TOKEN"
+```
+
+The route answers the flag as it then stands and the cumulative mismatch count (`suspended`,
+`mismatches`), `403 operator_only` for a traveler's token, and `503 service_unavailable` when the
+flag's store cannot be reached — a refusal, not a silent success. Establish why the count changed
+before re-enabling: the suspension is what stops spend the cap can no longer bound, so clearing it
+with the cause unknown re-opens the spend the mismatch exposed. Only the flag is cleared —
+`llm:count_mismatches` is the evidence the spend panel shows and is never reset. Do not clear the key
+from a shell instead: the route is what the dashboard, the operator's token and the
+`llm_suspension_cleared` line agree on.
 
 ## 8. Delivery status
 

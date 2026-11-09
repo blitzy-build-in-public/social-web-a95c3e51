@@ -170,7 +170,7 @@ export default function DisputeScreen(): ReactElement {
   );
   const detail: MeetupDto | null = meetup.data ?? null;
   return (
-    <Screen title={SCREEN_TITLE}>
+    <Screen>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
       {errorMessage === null ? null : (
         <Banner {...ERROR_BANNER} message={errorMessage} {...retry} />

@@ -6,7 +6,8 @@
  *
  * Six groups, in the order `admin/routes.ts` registers its routes: the guard every `/admin/*` route
  * shares, the dashboard, the dispute queue, the call-task queue, the lodging-claim queue with its
- * audited booking-details read, and the crawl-domain, onboarding, report and client-event routes.
+ * audited booking-details read, and the crawl-domain, onboarding, report and client-event routes,
+ * followed by the language-model re-enable AAP 0.5.6 requires.
  * The real app `createTestApp` builds runs against real PostgreSQL with PostGIS and real Redis, so
  * every assertion reads what a handler wrote: the status a resolution applied, the release
  * operations a `no_fault` planned, the prices an outcome stored, the audit row the booking-details
@@ -19,8 +20,9 @@
  * does not carry fails the case rather than passing an assertion nobody wrote.
  *
  * @see AAP 0.5.4 for the routes, their guards and their errors, 0.5.3 for the lifecycles the
- *   resolutions apply, 0.5.7 for the metric definitions, 0.5.2 for the encrypted fields and the audit
- *   log, 0.3.2 for the after-commit enqueue, 0.11.2 for the harness, and 0.8.1 for this file.
+ *   resolutions apply, 0.5.6 for the language-model suspension the re-enable clears, 0.5.7 for the
+ *   metric definitions, 0.5.2 for the encrypted fields and the audit log, 0.3.2 for the after-commit
+ *   enqueue, 0.11.2 for the harness, and 0.8.1 for this file.
  */
 
 import { Buffer } from 'node:buffer';
@@ -29,7 +31,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Prisma } from '@tablemate/db';
-import { QUEUE } from '@tablemate/server-core';
+import { LLM_COUNT_MISMATCHES_KEY, LLM_SUSPENDED_KEY, QUEUE } from '@tablemate/server-core';
 import {
   CLAIM_EXPIRY_HOURS,
   DAY_MS,
@@ -42,6 +44,7 @@ import {
   AdminCrawlDomainsResponse,
   AdminDisputeDto,
   AdminDisputesResponse,
+  AdminLlmSuspension,
   AdminLodgingClaimDto,
   AdminLodgingClaimsResponse,
   AdminLodgingDto,
@@ -1780,6 +1783,94 @@ describe('the crawl-domain review (AAP 0.5.4, 0.5.6)', () => {
   });
 });
 
+/* The lodging registry's own helpers (AAP 0.5.4, 0.11.1 density: one builder per shape) */
+
+/** How many lodgings one page of the registry holds when the read names no `limit`. */
+const REGISTRY_PAGE = 200;
+
+/** `GET /admin/lodgings` as the operator, parsed into the contract's own page (AAP 0.5.4). */
+async function lodgings(query: Record<string, string> = {}): Promise<AdminLodgingsResponse> {
+  const response = await asOperator('GET', '/v1/admin/lodgings', { query });
+  expect(response.status, response.body).toBe(200);
+  return AdminLodgingsResponse.parse(response.json());
+}
+
+/** One fixture lodging under a name the read's own (city, name, id) order is known by. */
+async function namedLodging(cityId: string, name: string): Promise<LodgingFixture> {
+  const row = await makeLodging(t, { cityId });
+  await t.services.db.lodging.update({ where: { id: row.id }, data: { name } });
+  return { ...row, name };
+}
+
+/**
+ * The registry the filter cases narrow: three named lodgings in Lisbon and one in Mexico City, whose
+ * names fix the order the answer must come back in without any case reading an id back.
+ */
+interface RegistryFixture {
+  readonly central: LodgingFixture;
+  readonly miradouro: LodgingFixture;
+  readonly alfama: LodgingFixture;
+  readonly roma: LodgingFixture;
+}
+
+async function registryFixture(): Promise<RegistryFixture> {
+  return {
+    central: await namedLodging(LISBON, 'Albergue Central'),
+    miradouro: await namedLodging(LISBON, 'Hostel Miradouro'),
+    alfama: await namedLodging(LISBON, 'Pensão Alfama'),
+    roma: await namedLodging(MEXICO_CITY, 'Hostal Roma Norte'),
+  };
+}
+
+/** One filter over that registry: the query it sends and the rows that must come back. */
+const REGISTRY_FILTERS = rows<{
+  readonly name: string;
+  readonly query: (fixture: RegistryFixture) => Record<string, string>;
+  readonly expected: (fixture: RegistryFixture) => readonly string[];
+}>([
+  {
+    name: 'the city the lodging stands in',
+    query: () => ({ cityId: MEXICO_CITY }),
+    expected: (fixture) => [fixture.roma.id],
+  },
+  {
+    name: "the lodging's name, in whatever case it is typed",
+    query: () => ({ q: 'ALFAMA' }),
+    expected: (fixture) => [fixture.alfama.id],
+  },
+  {
+    name: 'a city and a search term together',
+    query: () => ({ cityId: LISBON, q: 'hostel' }),
+    expected: (fixture) => [fixture.miradouro.id],
+  },
+]);
+
+/**
+ * Queries the registry read refuses before it runs (AAP 0.5.4): a cursor this read did not write — the
+ * queue read's own payload shape, an id that is not an id, and an id no lodging carries — a page size
+ * outside the contract's own bound, and a parameter the registry does not carry, which its strict
+ * schema answers rather than ignoring.
+ */
+const REGISTRY_BAD_QUERIES = rows<{
+  readonly name: string;
+  readonly query: Record<string, string>;
+}>([
+  { name: 'a cursor that is not a cursor', query: { cursor: 'not-a-cursor' } },
+  {
+    name: "a cursor of the call queue's shape",
+    query: { cursor: cursorShaped({ t: null, i: randomUUID() }) },
+  },
+  { name: 'a cursor whose id is not an id', query: { cursor: cursorShaped({ i: 'nope' }) } },
+  {
+    name: 'a cursor naming no lodging the registry lists',
+    query: { cursor: cursorShaped({ i: randomUUID() }) },
+  },
+  { name: 'a page size below the one the contract allows', query: { limit: '0' } },
+  { name: 'a page size above the one the contract allows', query: { limit: '501' } },
+  { name: 'a page size that is not a number', query: { limit: 'many' } },
+  { name: 'a parameter the registry does not carry', query: { city: LISBON } },
+]);
+
 describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
   it('onboards a venue, refreshes its city and issues its console secret once', async () => {
     const created = await asOperator('POST', '/v1/admin/venues', {
@@ -1900,6 +1991,142 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     const unknown = await asOperator('POST', `/v1/admin/lodgings/${randomUUID()}/secret`);
     expectError(unknown, 404, 'not_found');
   });
+
+  it('answers every lodging when the registry fits one page, in (city, name, id) order', async () => {
+    const fixture = await registryFixture();
+
+    // No query at all, which is what a client that knows none of the filters sends: one page in the
+    // read's own order — city first, then the name — with the count the filters match and no cursor,
+    // because the page holds the whole registry (AAP 0.5.4).
+    const page = await lodgings();
+
+    expect(page.total).toBe(5);
+    expect(page.nextCursor).toBeNull();
+    expect(page.items.map((item) => item.name)).toEqual([
+      fixture.central.name,
+      lodging.name,
+      fixture.miradouro.name,
+      fixture.alfama.name,
+      fixture.roma.name,
+    ]);
+    expect(page.items.map((item) => item.cityId)).toEqual([
+      LISBON,
+      LISBON,
+      LISBON,
+      LISBON,
+      MEXICO_CITY,
+    ]);
+  });
+
+  it.each(REGISTRY_FILTERS)('narrows the registry by $name', async (row) => {
+    const fixture = await registryFixture();
+    const expected = row.expected(fixture);
+
+    const page = await lodgings(row.query(fixture));
+
+    expect(page.items.map((item) => item.id)).toEqual(expected);
+    // The count is of the rows the filters match, never of the rows the page happens to hold.
+    expect(page.total).toBe(expected.length);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it.each(REGISTRY_BAD_QUERIES)('refuses $name with 400 invalid_field', async (row) => {
+    const response = await asOperator('GET', '/v1/admin/lodgings', { query: row.query });
+
+    expectError(response, 400, 'invalid_field');
+  });
+
+  it('pages a registry larger than one page, so the lodging just entered stays reachable', async () => {
+    for (let seeded = 0; seeded < REGISTRY_PAGE - 1; seeded += 1) {
+      await makeLodging(t, { cityId: LISBON });
+    }
+
+    // One row of a later city, so the walk below crosses a city boundary and the city filter has two
+    // cities to choose between.
+    const elsewhere = await namedLodging(MEXICO_CITY, 'Hostal Roma Norte');
+
+    // The row the QA report could not reach: entered through the route an operator uses, with a long
+    // name that sorts after every fixture name, so it is the 201st Lisbon row and no first page holds
+    // it. The registry the report walked held 612 lodgings; one page more than the bound is what the
+    // defect needs to show itself.
+    const entered = await asOperator('POST', '/v1/admin/lodgings', {
+      body: {
+        cityId: LISBON,
+        name: `zz QA Long Name ${randomUUID().slice(0, 8)} ${'Lodging '.repeat(6)}`,
+        kind: 'hostel',
+        address: '5 Fixture Street',
+        phone: null,
+        lat: 38.72,
+        lng: -9.15,
+      },
+    });
+    expect(entered.status, entered.body).toBe(201);
+    const created = AdminLodgingDto.parse(entered.json());
+    const total = REGISTRY_PAGE + 2;
+
+    const first = await lodgings();
+
+    // One page holds exactly the bound, in (city, name, id) order, and says how many rows it leaves
+    // behind: the count is of the whole registry, not of the page (AAP 0.5.4).
+    expect(first.items).toHaveLength(REGISTRY_PAGE);
+    expect(first.total).toBe(total);
+    expect(first.nextCursor).not.toBeNull();
+    const cities = first.items.map((item) => item.cityId);
+    const names = first.items.map((item) => item.name);
+    expect(cities).toEqual([...cities].sort());
+    expect(names).toEqual([...names].sort());
+    expect(first.items.map((item) => item.id)).not.toContain(created.id);
+
+    // The search is what makes a row reachable whatever the registry holds, which is the read the
+    // registry screen sends once a lodging has been entered (AAP 0.5.4).
+    const searched = await lodgings({ q: created.name });
+
+    expect(searched.total).toBe(1);
+    expect(searched.items.map((item) => item.id)).toEqual([created.id]);
+
+    // The city filter narrows the registry itself rather than one page of it: Lisbon holds the bound
+    // plus the row just entered, so it still pages, and the later city holds its one row.
+    const lisbon = await lodgings({ cityId: LISBON });
+    expect(lisbon.total).toBe(REGISTRY_PAGE + 1);
+    expect(lisbon.items).toHaveLength(REGISTRY_PAGE);
+    expect(lisbon.nextCursor).not.toBeNull();
+
+    const mexico = await lodgings({ cityId: MEXICO_CITY });
+    expect(mexico.total).toBe(1);
+    expect(mexico.items.map((item) => item.id)).toEqual([elsewhere.id]);
+    expect(mexico.nextCursor).toBeNull();
+
+    // A page size the query names is the page the read answers, while the count stays the registry's.
+    const limited = await lodgings({ limit: '3' });
+    expect(limited.items).toHaveLength(3);
+    expect(limited.total).toBe(total);
+    expect(limited.nextCursor).not.toBeNull();
+
+    // Walking the cursor reproduces the whole registry row for row: the read answered in one page is
+    // the yardstick, so a cursor that skipped, repeated or reordered a row fails here, and the walk
+    // reaches the row the first page left out and ends on a null cursor (AAP 0.5.4).
+    const whole = await lodgings({ limit: '500' });
+    expect(whole.items).toHaveLength(total);
+    expect(whole.nextCursor).toBeNull();
+
+    const seen = first.items.map((item) => item.id);
+    let cursor: string | null = first.nextCursor;
+
+    // One iteration per remaining page and one more, so a cursor that never ends fails on the loop's
+    // own bound rather than hanging.
+    for (let page = 0; page <= total; page += 1) {
+      const answer = await lodgings(cursor === null ? {} : { cursor });
+      expect(answer.total).toBe(total);
+      seen.push(...answer.items.map((item) => item.id));
+      cursor = answer.nextCursor;
+      if (cursor === null) break;
+    }
+
+    expect(seen).toEqual(whole.items.map((item) => item.id));
+    expect(seen).toContain(created.id);
+    expect(new Set(seen).size).toBe(total);
+    expect(cursor).toBeNull();
+  });
 });
 
 describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
@@ -1998,5 +2225,68 @@ describe('the report queue and the client event (AAP 0.5.2, 0.5.4)', () => {
     expectError(notAMember, 400, 'invalid_field');
 
     expect(await t.services.db.analyticsEvent.count()).toBe(1);
+  });
+});
+
+/* Group 7 — the operator's language-model re-enable (AAP 0.5.6) */
+
+/**
+ * The re-enable AAP 0.5.6 requires and only an operator can make: a counted-versus-reported
+ * input-token mismatch suspends language-model use in every city, and pressing the Calls panel's
+ * control is what ends the suspension. The flag lives in the Redis the app and the suite share, so a
+ * case sets it exactly as `SuspensionStore.suspend` does, then reads what the route left behind.
+ *
+ * The route's own refusal, a `503 service_unavailable` when the flag's store cannot be answered, is
+ * not staged here: a Redis that answers nothing is refused at the limiter first, so this suite could
+ * only assert the limiter's refusal. `apps/api/test/unit/admin-llm-suspension.test.ts` covers it.
+ */
+describe('the language-model re-enable (AAP 0.5.6)', () => {
+  const reEnableUrl = '/v1/admin/language-model/re-enable';
+
+  /** The suspension a mismatch sets: the shared flag, and a cumulative counter worth noticing. */
+  async function suspendLanguageModel(mismatches: number): Promise<void> {
+    await t.services.redis.client.set(
+      LLM_SUSPENDED_KEY,
+      JSON.stringify({ since: t.clock.now().toISOString(), reason: 'llm_count_mismatch' }),
+    );
+    await t.services.redis.client.set(LLM_COUNT_MISMATCHES_KEY, String(mismatches));
+  }
+
+  it('clears the flag the dashboard reports and leaves the mismatch counter standing', async () => {
+    await suspendLanguageModel(3);
+
+    const before = await metrics();
+    expect(before.calls.llmSuspended).toBe(true);
+    expect(before.calls.llmCountMismatches).toBe(3);
+
+    const response = await asOperator('POST', reEnableUrl);
+    expect(response.status, response.body).toBe(200);
+
+    // The answer is the flag as the clear left it, beside the counter: the count is the spend panel's
+    // evidence, and only the flag is the suspension (AAP 0.5.6).
+    expect(AdminLlmSuspension.parse(response.json())).toEqual({ suspended: false, mismatches: 3 });
+    expect(await t.services.redis.client.get(LLM_SUSPENDED_KEY)).toBeNull();
+    expect(await t.services.redis.client.get(LLM_COUNT_MISMATCHES_KEY)).toBe('3');
+
+    const after = await metrics();
+    expect(after.calls.llmSuspended).toBe(false);
+    expect(after.calls.llmCountMismatches).toBe(3);
+  });
+
+  it('answers a flag that is already clear, so a second press is harmless', async () => {
+    // `resetState` flushed the flag with the rest of Redis, which is the state an operator reaches by
+    // pressing the control after the suspension has gone.
+    const response = await asOperator('POST', reEnableUrl);
+    expect(response.status, response.body).toBe(200);
+    expect(AdminLlmSuspension.parse(response.json())).toEqual({ suspended: false, mismatches: 0 });
+  });
+
+  it('refuses a traveler and an anonymous caller', async () => {
+    const asTraveler = await callRoute(t.app, { method: 'POST', url: reEnableUrl, as: traveler });
+    expectError(asTraveler, 403, 'operator_only');
+
+    // No bearer at all: refused as a token failure, before any role is considered.
+    const anonymous = await callRoute(t.app, { method: 'POST', url: reEnableUrl });
+    expectError(anonymous, 401, 'token_invalid');
   });
 });

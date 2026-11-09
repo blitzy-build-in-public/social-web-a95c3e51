@@ -3,7 +3,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
@@ -321,6 +321,16 @@ interface QueueSpec<T> {
   readonly emptyText: string;
   readonly header?: (items: readonly T[]) => ReactNode;
 }
+/**
+ * One queue's panel: the queue's own header — its overdue notice, its error banner and its loading or
+ * empty line — over a virtualised list of one Card per row, which owns the scrolling the screen used to
+ * do as a whole.
+ *
+ * The list keeps the framework's default window rather than a tight one on purpose: a row holds the
+ * operator's own unsaved state — a half-typed price form, an armed confirmation, revealed booking
+ * details — and a window of a couple of viewports would unmount a Card the operator had scrolled away
+ * from and lose it.
+ */
 function QueuePanel<T>({ spec }: { readonly spec: QueueSpec<T> }): ReactElement {
   const query: UseQueryResult<{ readonly items: readonly T[] }, Error> = useQuery(spec);
   const items = query.data?.items ?? [];
@@ -334,17 +344,23 @@ function QueuePanel<T>({ spec }: { readonly spec: QueueSpec<T> }): ReactElement 
   const showEmpty = items.length === 0 && errorMessage === null && !query.isPending;
   const retry = { ...RETRY_ACTION, onPress: () => void query.refetch() };
   return (
-    <>
-      {spec.header?.(items) ?? null}
-      {errorMessage === null ? null : (
-        <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
-      )}
-      {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
-      {showEmpty ? <Facts>{spec.emptyText}</Facts> : null}
-      {items.map((item) => (
-        <Card key={spec.keyOf(item)}>{spec.renderItem(item)}</Card>
-      ))}
-    </>
+    <FlatList
+      data={items}
+      keyExtractor={(item) => spec.keyOf(item)}
+      renderItem={({ item }) => <Card>{spec.renderItem(item)}</Card>}
+      ListHeaderComponent={
+        <View style={styles.panelHeader}>
+          {spec.header?.(items) ?? null}
+          {errorMessage === null ? null : (
+            <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
+          )}
+          {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
+          {showEmpty ? <Facts>{spec.emptyText}</Facts> : null}
+        </View>
+      }
+      contentContainerStyle={styles.listContent}
+      style={styles.fill}
+    />
   );
 }
 
@@ -909,7 +925,9 @@ function callTasksQuery(
  * invalidates — so a new filter starts a fresh page and drops the pages before it. The count line
  * says how many of the tasks the filters match are on screen, and the control below the rows loads
  * the next page while the answer still carries a cursor. The rows themselves, with their resolve
- * controls, are the ones the other queues render.
+ * controls, are the ones the other queues render, and they are a virtualised list too: the filters and
+ * the count sit in its header, the page control in its footer, and its window stays the framework's
+ * default for the reason given on {@link QueuePanel}.
  */
 function CallTasksPanel(): ReactElement {
   const [search, setSearch] = useState('');
@@ -983,40 +1001,50 @@ function CallTasksPanel(): ReactElement {
     );
 
   return (
-    <>
-      <TextField
-        label={CALL_TASKS_SEARCH_LABEL}
-        value={search}
-        onChangeText={changeSearch}
-        testID="ops-call-tasks-search"
-      />
-      <ChoiceGroup
-        groupLabel={CALL_TASKS_STATUS_LABEL}
-        options={CALL_TASKS_STATUS_FILTERS}
-        value={status}
-        testIDPrefix="ops-call-tasks-status"
-        onSelect={setStatus}
-      />
-      <ChoiceGroup
-        groupLabel={CALL_TASKS_KIND_LABEL}
-        options={CALL_TASKS_KIND_FILTERS}
-        value={kind}
-        testIDPrefix="ops-call-tasks-kind"
-        onSelect={setKind}
-      />
-      {countLine}
-      {errorMessage === null ? null : (
-        <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
-      )}
-      {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
-      {showEmpty ? <Facts>{CALL_TASKS_EMPTY_TEXT}</Facts> : null}
-      {rows.map((task) => (
-        <Card key={task.id}>
-          <CallTaskRow task={task} currency={currencies.get(task.cityId) ?? ''} />
+    <FlatList
+      data={rows}
+      keyExtractor={(task) => task.id}
+      renderItem={({ item }) => (
+        <Card>
+          <CallTaskRow task={item} currency={currencies.get(item.cityId) ?? ''} />
         </Card>
-      ))}
-      {queue.hasNextPage ? <Button {...more} testID="ops-call-tasks-more" /> : null}
-    </>
+      )}
+      ListHeaderComponent={
+        <View style={styles.panelHeader}>
+          <TextField
+            label={CALL_TASKS_SEARCH_LABEL}
+            value={search}
+            onChangeText={changeSearch}
+            testID="ops-call-tasks-search"
+          />
+          <ChoiceGroup
+            groupLabel={CALL_TASKS_STATUS_LABEL}
+            options={CALL_TASKS_STATUS_FILTERS}
+            value={status}
+            testIDPrefix="ops-call-tasks-status"
+            onSelect={setStatus}
+          />
+          <ChoiceGroup
+            groupLabel={CALL_TASKS_KIND_LABEL}
+            options={CALL_TASKS_KIND_FILTERS}
+            value={kind}
+            testIDPrefix="ops-call-tasks-kind"
+            onSelect={setKind}
+          />
+          {countLine}
+          {errorMessage === null ? null : (
+            <Banner tone="error" message={errorMessage} testID="ops-queue-error" action={retry} />
+          )}
+          {showLoading ? <Facts>{LOADING_NOTICE}</Facts> : null}
+          {showEmpty ? <Facts>{CALL_TASKS_EMPTY_TEXT}</Facts> : null}
+        </View>
+      }
+      ListFooterComponent={
+        queue.hasNextPage ? <Button {...more} testID="ops-call-tasks-more" /> : null
+      }
+      contentContainerStyle={styles.listContent}
+      style={styles.fill}
+    />
   );
 }
 
@@ -1068,7 +1096,7 @@ export default function OpsQueuesScreen(): ReactElement {
   const { label } = QUEUE_TABS[tab];
   const panelID = `ops-queue-panel-${tab}`;
   return (
-    <Screen title={SCREEN_TITLE}>
+    <Screen title={SCREEN_TITLE} scroll={false}>
       <Stack.Screen options={{ title: SCREEN_TITLE }} />
       <View role="tablist" aria-label={SCREEN_TITLE} style={styles.choices} testID="ops-queue-tabs">
         {TAB_ORDER.map((id) => (
@@ -1122,7 +1150,13 @@ const styles = StyleSheet.create({
   controlFocused: { borderColor: colors.focusRing },
   controlLabel: { ...typography.label, color: colors.text },
   tabLabelSelected: { ...SELECTED_LABEL, textDecorationLine: 'underline' },
-  panel: { gap: spacing.md },
+  // The active panel is the list that owns the scrolling, so it takes the height the tablist leaves.
+  panel: { flex: 1 },
+  // The step the panel's own children kept when the screen scrolled as a whole: the list header's
+  // controls and the list's cells each carry it, and a row's own state keeps its Card.
+  panelHeader: { gap: spacing.md },
+  listContent: { gap: spacing.md },
+  fill: { flex: 1 },
   row: { gap: spacing.sm },
   rowTitle: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   facts: { ...typography.body, color: colors.textMuted },

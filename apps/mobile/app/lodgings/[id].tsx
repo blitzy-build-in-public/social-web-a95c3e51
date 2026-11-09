@@ -119,8 +119,15 @@ export default function LodgingDetailScreen(): ReactElement {
   if (code === 'lodging_not_found')
     return (
       <LodgingScreen title={title}>
-        <Text style={styles.note} testID="lodging-not-found" children={NOT_FOUND_MESSAGE} />
-        <Button label="Back to lodgings" onPress={goBack} testID="lodging-back" />
+        <Card testID="lodging-not-found">
+          <Text style={styles.note} children={NOT_FOUND_MESSAGE} />
+          <Button
+            label="Back to lodgings"
+            variant="secondary"
+            onPress={goBack}
+            testID="lodging-back"
+          />
+        </Card>
       </LodgingScreen>
     );
   if (code !== null)

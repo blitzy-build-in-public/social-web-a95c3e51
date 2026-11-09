@@ -582,10 +582,14 @@ async function download(
   const hasher = sha256.create();
   let offset = 0;
   let failure: unknown;
+  // Declared out here because the catch below has to release it: a body still being pulled when the
+  // transfer fails would keep fetching in this Worker until the page terminates it, and nothing else
+  // stops it. It stays null until the body arrives, because the fetch itself can fail first.
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   try {
     handle.truncate(0);
     const body = await fetchArtifact(ref.url);
-    const reader = body.getReader();
+    reader = body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -600,6 +604,11 @@ async function download(
     }
     handle.flush();
   } catch (err) {
+    // Every failure releases the transfer, as {@link streamArtifact} does, and not only the oversize
+    // one: what threw may be a write to storage, the reader's own rejection or the flush. Cancelling
+    // a body whose oversize branch already cancelled it is harmless — a closed stream has nothing
+    // left to cancel.
+    if (reader !== null) await reader.cancel().catch(() => undefined);
     failure = err;
   } finally {
     handle.close();

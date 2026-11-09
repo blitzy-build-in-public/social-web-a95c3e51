@@ -1,7 +1,7 @@
 /** The Meetups tab (AAP 0.5.8, AAP 0.8.1): the caller's own meetups, newest first, and the entry
  * point to every meetup screen (proposal detail, accept and lock, check-in, chat, report, day plan). */
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { colors, fontWeights, spacing, typography } from '@tablemate/shared';
@@ -13,6 +13,12 @@ import { CHECKED_IN_NOTICE } from '../../src/copy/strings';
 import { meetupsInPages, queryKeys, useMeetups } from '../../src/state/meetup-store';
 import { Avatar, Banner, Button, Chip, ListItem, Screen, announce } from '../../src/ui';
 const CITIES_STALE_TIME_MS = 60 * 60 * 1000;
+/**
+ * How many viewports of rows the tab keeps mounted: the rows on screen plus about half a screen either
+ * side of them. The list grows with every page the reader loads, so the tab mounts a couple of screens
+ * of it rather than every meetup loaded so far.
+ */
+const LIST_WINDOW_SIZE = 2;
 const START_TIME_FORMAT: Intl.DateTimeFormatOptions = {
   weekday: 'short',
   month: 'short',
@@ -95,7 +101,6 @@ function meetupRow(meetup: MeetupDto, cityZones: ReadonlyMap<string, string>): R
   if (meetup.checkedIn) subtitle.push(CHECKED_IN_NOTICE);
   return (
     <ListItem
-      key={meetup.id}
       testID={`meetup-${meetup.id}`}
       role="link"
       onPress={() => router.push(`/meetups/${meetup.id}`)}
@@ -139,32 +144,50 @@ export default function MeetupsScreen(): ReactElement {
     if (errorMessage !== null) announce(errorMessage);
   }, [errorMessage]);
   return (
-    <Screen edges={['left', 'right']}>
-      <View role="radiogroup" aria-label={FILTER_GROUP_LABEL} style={styles.filters}>
-        {FILTER_ORDER.map((id) => (
-          <Chip
-            key={id}
-            label={MEETUP_FILTERS[id].label}
-            selected={id === filter}
-            onPress={() => setFilter(id)}
-            testID={MEETUP_FILTERS[id].testID}
-          />
-        ))}
-      </View>
-      {errorMessage === null ? null : (
-        <Banner tone="error" message={errorMessage} action={retryAction} testID="meetups-error" />
-      )}
-      {hasRows ? items.map((meetup) => meetupRow(meetup, cityZones)) : null}
-      {showLoading ? <Text style={styles.notice}>Loading…</Text> : null}
-      {showEmpty ? (
-        <View style={styles.emptyState}>
-          <Text style={styles.notice}>No meetups yet.</Text>
-          <ListItem {...DISCOVER} role="link" onPress={() => router.navigate('/discover')} />
-        </View>
-      ) : null}
-      {meetups.hasNextPage ? (
-        <Button {...SHOW_MORE} variant="secondary" busy={paging} onPress={showMore} />
-      ) : null}
+    <Screen edges={['left', 'right']} scroll={false}>
+      <FlatList
+        data={items}
+        keyExtractor={(meetup) => meetup.id}
+        renderItem={({ item }) => meetupRow(item, cityZones)}
+        ListHeaderComponent={
+          <View style={styles.header}>
+            <View role="radiogroup" aria-label={FILTER_GROUP_LABEL} style={styles.filters}>
+              {FILTER_ORDER.map((id) => (
+                <Chip
+                  key={id}
+                  label={MEETUP_FILTERS[id].label}
+                  selected={id === filter}
+                  onPress={() => setFilter(id)}
+                  testID={MEETUP_FILTERS[id].testID}
+                />
+              ))}
+            </View>
+            {errorMessage === null ? null : (
+              <Banner
+                tone="error"
+                message={errorMessage}
+                action={retryAction}
+                testID="meetups-error"
+              />
+            )}
+            {showLoading ? <Text style={styles.notice}>Loading…</Text> : null}
+            {showEmpty ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.notice}>No meetups yet.</Text>
+                <ListItem {...DISCOVER} role="link" onPress={() => router.navigate('/discover')} />
+              </View>
+            ) : null}
+          </View>
+        }
+        ListFooterComponent={
+          meetups.hasNextPage ? (
+            <Button {...SHOW_MORE} variant="secondary" busy={paging} onPress={showMore} />
+          ) : null
+        }
+        contentContainerStyle={styles.listContent}
+        style={styles.fill}
+        windowSize={LIST_WINDOW_SIZE}
+      />
     </Screen>
   );
 }
@@ -180,4 +203,10 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     textAlign: 'right',
   },
+  fill: { flex: 1 },
+  // The screen's content container spaces its children by one `lg` step, and a FlatList's own
+  // container does not: the header and the list body each carry it so every block of the screen keeps
+  // the spacing it had when the screen scrolled as a whole.
+  header: { gap: spacing.lg },
+  listContent: { gap: spacing.lg },
 });

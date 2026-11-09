@@ -261,9 +261,6 @@ async function expectNoRawUserIds(target: TestApp): Promise<void> {
 
 beforeAll(async () => {
   app = await newApp();
-  // The population cases build on one another, so the reset happens once, before the first of them.
-  await app.resetState();
-  await app.seedCities();
 });
 
 afterAll(async () => {
@@ -271,6 +268,15 @@ afterAll(async () => {
 });
 
 describe('the population of new accounts', () => {
+  beforeAll(async () => {
+    // The population cases build on one another, so the reset belongs to their own group rather
+    // than to the file: the first case signs the population in, and each case that reads it asserts
+    // it first, so a missing population fails on its own terms instead of cascading into whichever
+    // case ran next.
+    await app.resetState();
+    await app.seedCities();
+  });
+
   it(
     'assigns a thousand accounts once each and lands the social share inside its band',
     { timeout: POPULATION_TIMEOUT_MS },
@@ -303,6 +309,12 @@ describe('the population of new accounts', () => {
   );
 
   it('leaves every stored variant, assignment id and assignment time as the first sign-in wrote it', async () => {
+    // The population this case reads and the maps the first case filled: named first, so a missing
+    // population fails as itself rather than as a mismatch against an assignment that is not there.
+    expect(await app.services.db.user.count(), 'the population the first case signed in').toBe(
+      POPULATION,
+    );
+
     const signedIn = await signInAll(app, SAMPLED_EMAILS);
     expect(signedIn.size).toBe(SAMPLED_EMAILS.length);
 
@@ -320,6 +332,12 @@ describe('the population of new accounts', () => {
   it('keeps the stored assignments when the split changes, and assigns new accounts under it', async () => {
     await rebuildApp({ EXPERIMENT_SOCIAL_SHARE: SOCIAL_ONLY });
     try {
+      // The population this case starts from, the same one the first case signed in: asserted here
+      // so a missing one fails before the sign-ins that would otherwise report it as nothing.
+      expect(await app.services.db.user.count(), 'the population the first case signed in').toBe(
+        POPULATION,
+      );
+
       const signedIn = await signInAll(app, SAMPLED_EMAILS);
       const stored = await storedAssignments(app);
       expect(stored.size).toBe(POPULATION);
@@ -347,6 +365,13 @@ describe('the population of new accounts', () => {
     'stores a thousand account_created events with no raw user id on any of them',
     { timeout: POPULATION_TIMEOUT_MS },
     async () => {
+      // What the scan is about: the population the first case signed in, plus the accounts the
+      // split-change case created after it, each of which wrote an `account_created` event.
+      expect(
+        await app.services.db.user.count(),
+        'the population the first case signed in and the accounts the split-change case added',
+      ).toBe(POPULATION + NEW_ACCOUNTS);
+
       await expectNoRawUserIds(app);
     },
   );

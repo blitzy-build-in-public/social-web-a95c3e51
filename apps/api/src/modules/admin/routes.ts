@@ -1,13 +1,14 @@
 /**
  * The operator routes of `/v1/admin/*` (AAP 0.5.1 `admin/routes.ts`, 0.5.4, 0.8.1): the dashboard,
  * the four operator queues with the resolutions that act on them, the price-job trigger, venue and
- * lodging onboarding with their console-secret issue routes, the report queue and the crawl-domain
- * review queue.
+ * lodging onboarding with their console-secret issue routes, the report queue, the crawl-domain
+ * review queue and the language-model re-enable of AAP 0.5.6.
  *
  * Every handler here is a call and nothing else. The rule each route exposes is decided in the
- * module beside it — `metrics.ts` (`computeMetrics`), `disputes.ts` (`listDisputes`,
- * `resolveDispute`), `call-tasks.ts` (`listCallTasks`, `resolveCallTask`), `lodging-claims.ts`
- * (`listLodgingClaims`, `resolveLodgingClaim`, `bookingDetails`), `price-jobs.ts`
+ * module beside it — `metrics.ts` (`computeMetrics`, `reEnableLanguageModel`),
+ * `disputes.ts` (`listDisputes`, `resolveDispute`), `call-tasks.ts` (`listCallTasks`,
+ * `resolveCallTask`), `lodging-claims.ts` (`listLodgingClaims`, `resolveLodgingClaim`,
+ * `bookingDetails`), `price-jobs.ts`
  * (`enqueuePriceJob`), `onboarding.ts` (`listVenues`, `createVenue`, `updateVenue`,
  * `issueVenueSecret`, `listLodgings`, `createLodging`, `issueLodgingSecret`), `reports.ts`
  * (`listReports`) and `crawl-domains.ts` (`listCrawlDomains`, `decideCrawlDomain`) — and a handler
@@ -55,18 +56,20 @@
  *   or issued a secret is best served by the state their click produced.
  * - **The routes are ordered as the contract lists them** — the dashboard, then the disputes, call
  *   tasks, lodging claims, price jobs, venues, lodgings, reports and crawl domains — so the
- *   registrations and the emitted document read in the same order as AAP 0.5.4.
+ *   registrations and the emitted document read in the same order as AAP 0.5.4. The re-enable route
+ *   has no row in the contract's tables, so it stands after that sequence rather than inside it.
  *
  * Registration is synchronous, as in every other plugin the composition root installs, so the
  * returned promise is already resolved; `return Promise.resolve()` states that rather than relying
  * on the absence of an `await` (AAP 0.11.2: `@typescript-eslint/require-await`).
  *
  * @see AAP 0.5.4 for the routes, their schemas, their errors, the guard scope, the limits and the
- *   additive `booking-details` route, 0.5.1 for the admin component and the functions each handler
- *   calls, 0.5.3 for the dispute, call-task and claim lifecycles those functions own, 0.5.7 for the
- *   dashboard figures and the crawl policy, 0.3.2 for the rate limiting, the outbox and the console
- *   secrets, 0.5.2 for the booking fields and the audit log, 0.11.1 for the injected clock and the
- *   logging rules, 0.11.2 for the response-schema rule, and 0.8.1 for this file.
+ *   additive `booking-details` route, 0.5.6 for the suspension the re-enable clears, 0.5.1 for the
+ *   admin component and the functions each handler calls, 0.5.3 for the dispute, call-task and claim
+ *   lifecycles those functions own, 0.5.7 for the dashboard figures and the crawl policy, 0.3.2 for
+ *   the rate limiting, the outbox and the console secrets, 0.5.2 for the booking fields and the audit
+ *   log, 0.11.1 for the injected clock and the logging rules, 0.11.2 for the response-schema rule,
+ *   and 0.8.1 for this file.
  */
 
 import {
@@ -77,9 +80,11 @@ import {
   AdminCrawlDomainsResponse,
   AdminDisputeDto,
   AdminDisputesResponse,
+  AdminLlmSuspension,
   AdminLodgingClaimDto,
   AdminLodgingClaimsResponse,
   AdminLodgingDto,
+  AdminLodgingsQuery,
   AdminLodgingsResponse,
   AdminReportsResponse,
   AdminVenueDto,
@@ -111,7 +116,7 @@ import { listCallTasks, resolveCallTask } from './call-tasks.ts';
 import { decideCrawlDomain, listCrawlDomains } from './crawl-domains.ts';
 import { listDisputes, resolveDispute } from './disputes.ts';
 import { bookingDetails, listLodgingClaims, resolveLodgingClaim } from './lodging-claims.ts';
-import { computeMetrics } from './metrics.ts';
+import { computeMetrics, reEnableLanguageModel } from './metrics.ts';
 import {
   createLodging,
   createVenue,
@@ -243,9 +248,9 @@ export default function adminRoutes(app: App): Promise<void> {
   );
 
   // 4-5. The call queue and one operator outcome on a `menu_prices` task (AAP 0.5.4, 0.5.3). The read
-  // is the contract's only paginated operator queue: its strict query string carries the queue's own
-  // filters and its cursor, and a malformed cursor — like any other unusable value in that query —
-  // answers `400 invalid_field`. A lodging-verification task is refused by `resolveCallTask` with
+  // pages: its strict query string carries the queue's own filters and its cursor, and a malformed
+  // cursor — like any other unusable value in that query — answers `400 invalid_field`. The lodging
+  // registry below pages the same way. A lodging-verification task is refused by `resolveCallTask` with
   // `422 invalid_outcome`, because a claim is resolved through its own route below.
   app.get(
     '/admin/call-tasks',
@@ -530,6 +535,9 @@ export default function adminRoutes(app: App): Promise<void> {
   );
 
   // 14-16. The lodging registry, the hand-entered lodging and its console secret (AAP 0.5.4, 0.5.6).
+  // The registry read is the one here that pages: its strict query string carries a city filter, a
+  // name search, a page size and its cursor, and any unusable value in it — a cursor this API did not
+  // write, a `limit` outside 1-500, a parameter the route does not carry — answers `400 invalid_field`.
   // Issuing a secret is what makes a lodging a partner, which is why the place refresh is enqueued
   // there and not when the row was created.
   app.get(
@@ -538,10 +546,16 @@ export default function adminRoutes(app: App): Promise<void> {
       schema: {
         tags: [ADMIN_TAG],
         security: OPENAPI_SECURITY.bearer,
-        response: { 200: AdminLodgingsResponse, 401: ErrorEnvelope, 403: ErrorEnvelope },
+        querystring: AdminLodgingsQuery,
+        response: {
+          200: AdminLodgingsResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+        },
       },
     },
-    async (request) => listLodgings(request.server.services),
+    async (request) => listLodgings(request.server.services, request.query),
   );
 
   app.post(
@@ -666,6 +680,32 @@ export default function adminRoutes(app: App): Promise<void> {
         request.body,
         request.receivedAt,
       ),
+  );
+
+  // 20. The operator's re-enable of language-model use (AAP 0.5.6). A mismatch suspends use in every
+  // city "until an operator re-enables it", so this is the write that ends the suspension the
+  // dashboard's Calls panel shows: it clears the shared `llm:suspended` flag and answers the flag as
+  // it then stands, beside the cumulative mismatch count it leaves untouched. It has no row in the
+  // contract's tables, which is why it stands after their sequence rather than inside it (see the
+  // ordering note above); the module's refusal is a `503 service_unavailable` when the flag's store
+  // cannot be reached, which the operator reads as a refusal rather than as an internal failure.
+  app.post(
+    '/admin/language-model/re-enable',
+    {
+      ...mutatingLimits(app),
+      schema: {
+        tags: [ADMIN_TAG],
+        security: OPENAPI_SECURITY.bearer,
+        response: {
+          200: AdminLlmSuspension,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+          429: ErrorEnvelope,
+          503: ErrorEnvelope,
+        },
+      },
+    },
+    async (request) => reEnableLanguageModel(request.server.services, operatorAuth(request).userId),
   );
 
   return Promise.resolve();

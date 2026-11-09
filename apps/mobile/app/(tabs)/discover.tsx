@@ -3,7 +3,7 @@
  * works with or without one (AAP 0.5.8, AAP 0.7.1 row 3).
  */
 import { useEffect, type ReactElement } from 'react';
-import { StyleSheet, Text, View, type TextProps } from 'react-native';
+import { FlatList, StyleSheet, Text, View, type TextProps } from 'react-native';
 import { router } from 'expo-router';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
@@ -23,6 +23,12 @@ type Heading = TextProps & Readonly<{ 'aria-level': number }>;
 const SECTION_HEADING: Heading = { role: 'heading', 'aria-level': 2 };
 const LOADING = 'Loading…';
 const NO_CITY = '';
+/**
+ * How many viewports of rows the tab keeps mounted: the rows on screen plus about half a screen either
+ * side of them. The traveler list grows with every page the reader loads, so the tab mounts a couple of
+ * screens of it rather than every traveler loaded so far.
+ */
+const LIST_WINDOW_SIZE = 2;
 const IMPORT_ACTION = { label: 'Verify my stay', onPress: () => router.push('/proof/import') };
 const LOAD_MORE = { variant: 'secondary' as const, label: 'Show more travelers' };
 function errorCodeOf(error: unknown): ClientErrorCode {
@@ -116,41 +122,63 @@ export default function DiscoverScreen(): ReactElement {
   const citiesItems = cities.data?.items ?? [];
   const venuesLabel = `See partner venues in ${cityLabel ?? NO_CITY}`;
   const openVenues = () => router.push(`/cities/${proofCityId ?? NO_CITY}`);
+  // The city picker's own section, rendered once whichever of the two blocks above it applies: it
+  // starts one `lg` step below whatever precedes it — a row of travelers, the load-more control or the
+  // empty state — while the list body spaces its own cells by `sm`.
+  const citiesBlock = (
+    <View style={[styles.section, styles.citiesSpacing]}>
+      <Text {...SECTION_HEADING} style={styles.heading}>
+        {cityLabel === undefined ? 'Browse cities' : 'Browse other cities'}
+      </Text>
+      {cityNote !== undefined && <Banner tone="error" message={cityNote} action={retryCities} />}
+      {cities.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
+      {citiesItems.map((city) => (
+        <ListItem key={city.id} {...cityRow(city)} />
+      ))}
+    </View>
+  );
   return (
-    <Screen edges={SCREEN_EDGES}>
-      {cityLabel === undefined ? (
-        <Banner testID="proof-banner" tone="info" message={IMPORT_BANNER} action={IMPORT_ACTION} />
-      ) : (
-        <View style={styles.section}>
-          <Text {...travelersHeading}>{`Travelers in ${cityLabel}`}</Text>
-          {travelersMessage !== undefined && travelersCode !== 'no_valid_proof' && (
-            <Banner tone="error" message={travelersMessage} action={retryTravelers} />
-          )}
-          {travelers.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
-          {rows.map((profile) => (
-            <ListItem key={profile.id} {...travelerRow(profile)} />
-          ))}
-          {travelers.hasNextPage && (
-            <Button {...LOAD_MORE} busy={travelers.isFetchingNextPage} onPress={loadMore} />
-          )}
-          {travelers.isSuccess && rows.length === 0 && (
-            <>
-              <Text style={styles.body}>{DISCOVERY_EMPTY}</Text>
-              <ListItem role="link" label={venuesLabel} onPress={openVenues} />
-            </>
-          )}
-        </View>
-      )}
-      <View style={styles.section}>
-        <Text {...SECTION_HEADING} style={styles.heading}>
-          {cityLabel === undefined ? 'Browse cities' : 'Browse other cities'}
-        </Text>
-        {cityNote !== undefined && <Banner tone="error" message={cityNote} action={retryCities} />}
-        {cities.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
-        {citiesItems.map((city) => (
-          <ListItem key={city.id} {...cityRow(city)} />
-        ))}
-      </View>
+    <Screen edges={SCREEN_EDGES} scroll={false}>
+      <FlatList
+        data={rows}
+        keyExtractor={(profile) => profile.id}
+        renderItem={({ item }) => <ListItem {...travelerRow(item)} />}
+        ListHeaderComponent={
+          cityLabel === undefined ? (
+            <Banner
+              testID="proof-banner"
+              tone="info"
+              message={IMPORT_BANNER}
+              action={IMPORT_ACTION}
+            />
+          ) : (
+            <View style={styles.section}>
+              <Text {...travelersHeading}>{`Travelers in ${cityLabel}`}</Text>
+              {travelersMessage !== undefined && travelersCode !== 'no_valid_proof' && (
+                <Banner tone="error" message={travelersMessage} action={retryTravelers} />
+              )}
+              {travelers.isPending ? <Text style={styles.body}>{LOADING}</Text> : null}
+            </View>
+          )
+        }
+        ListFooterComponent={
+          <View style={styles.section}>
+            {travelers.hasNextPage && (
+              <Button {...LOAD_MORE} busy={travelers.isFetchingNextPage} onPress={loadMore} />
+            )}
+            {travelers.isSuccess && rows.length === 0 && (
+              <View style={styles.section}>
+                <Text style={styles.body}>{DISCOVERY_EMPTY}</Text>
+                <ListItem role="link" label={venuesLabel} onPress={openVenues} />
+              </View>
+            )}
+            {citiesBlock}
+          </View>
+        }
+        contentContainerStyle={styles.listContent}
+        style={styles.fill}
+        windowSize={LIST_WINDOW_SIZE}
+      />
     </Screen>
   );
 }
@@ -159,4 +187,7 @@ const styles = StyleSheet.create({
   section: { gap: spacing.sm },
   heading: { ...typography.title, color: colors.text, fontWeight: fontWeights.bold },
   body: { ...typography.body, color: colors.textMuted },
+  fill: { flex: 1 },
+  listContent: { gap: spacing.sm },
+  citiesSpacing: { paddingTop: spacing.sm },
 });

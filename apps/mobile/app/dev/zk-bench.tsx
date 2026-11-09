@@ -254,9 +254,24 @@ function ZkBench(): ReactElement {
   }, [plan]);
   return (
     <Screen title="Proving benchmark" testID="zk-bench-screen">
-      <Text testID="zk-bench-status" style={styles.status} children={status} />
-      <Text testID="zk-bench-result" selectable style={styles.result} children={result} />
-      <Text style={styles.phase}>{phase}</Text>
+      {/* The three lines below change while the screen is open, so each one is a polite live region
+          (WCAG 4.1.3): react-native-web renders the prop as `aria-live="polite"` on web, Android
+          reads it as its live region, and iOS has no equivalent in React Native, which is why
+          `polite` is the right setting. */}
+      <Text
+        testID="zk-bench-status"
+        accessibilityLiveRegion="polite"
+        style={styles.status}
+        children={status}
+      />
+      <Text
+        testID="zk-bench-result"
+        accessibilityLiveRegion="polite"
+        selectable
+        style={styles.result}
+        children={result}
+      />
+      <Text accessibilityLiveRegion="polite" style={styles.phase} children={phase} />
       <Banner tone="info" title={CONDITIONS_TITLE} message={CONDITIONS_NOTE} />
     </Screen>
   );

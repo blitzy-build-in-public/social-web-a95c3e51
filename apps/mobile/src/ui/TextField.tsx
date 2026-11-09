@@ -80,12 +80,14 @@ export interface TextFieldProps extends Omit<
 const ERROR_PREFIX = 'Error: ';
 
 /**
- * The two attributes that link the input to its hint and error text on web.
+ * The three attributes that link the input to its visible label, its hint and its error text on web.
  *
- * `react-native-web` 0.19 forwards both to the DOM, but React Native 0.76's `TextInputProps`
- * declares neither, so they are spread from this explicitly typed object rather than through a cast.
+ * `react-native-web` 0.19 forwards all three to the DOM, but React Native 0.76's `TextInputProps`
+ * declares none of them, so they are spread from this explicitly typed object rather than through a
+ * cast.
  */
 interface WebInputAria {
+  'aria-labelledby'?: string;
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
 }
@@ -188,7 +190,8 @@ export function TextField({
 
   // `useId()` yields a token such as `:r0:` in the client renderer and `R0` on the server: a valid
   // HTML id, but not a valid CSS selector, so the punctuation is stripped before the label, input,
-  // hint and error ids are composed from it. The value stays unique per field instance.
+  // hint and error ids are composed from it. The value stays unique per field instance, and the
+  // label id is the input's `aria-labelledby` target on web.
   const uid = useId().replace(/[^A-Za-z0-9_-]/g, '');
   const labelId = `${uid}-label`;
   const inputId = `${uid}-input`;
@@ -214,6 +217,9 @@ export function TextField({
 
   const webAria: WebInputAria = {};
   if (Platform.OS === 'web') {
+    // On web the visible label names the field: `aria-labelledby` outranks the `aria-label` below,
+    // which iOS and Android read and which repeats the same sentence, so no announced name changes.
+    webAria['aria-labelledby'] = labelId;
     if (describedByIds.length > 0) webAria['aria-describedby'] = describedByIds.join(' ');
     if (errorText !== '') webAria['aria-invalid'] = true;
   }

@@ -764,6 +764,44 @@ describe('the relay dialogue', () => {
     DIALOGUE_TIMEOUT_MS,
   );
 
+  /**
+   * The relay-side half of AAP 0.5.3's drop rule: a peer that disappears mid-dialogue leaves the task
+   * with what the call had collected and confirmed, and with nothing the call never heard — what
+   * `apps/workers` then applies to the task is the rule's other half, covered in
+   * `apps/workers/test/integration/call-results.test.ts`.
+   *
+   * The fixture drops the socket on the turn that answered the first read-back: the callee's "sim" to
+   * the cheapest main was delivered before the socket went, so the value it confirmed is part of what
+   * the call collected even though the dialogue never got to record it itself. The relay waits for the
+   * turn it had already received before it records the ending, and invents nothing beyond it: the two
+   * questions the call never reached contribute no item (AAP 0.5.3, AAP 0.5.6).
+   */
+  it(
+    'keeps only what a call dropped mid-dialogue collected',
+    async () => {
+      const call = await menuCall();
+      const played = await playCall(call, 'drop-mid-script');
+
+      // The peer vanished before the dialogue could close the session itself, so no `end` was sent and
+      // nothing on the way was reported as a failure of its own (AAP 0.3.2).
+      expect(played.endReceived).toBe(false);
+      expect(played.failures).toEqual([]);
+
+      const row = await settledAttempt(call.attemptId, 'needs_review');
+      expect(row.state).toBe('ended');
+      expect(row.confidence).toBe('low');
+      // The one value the call had collected and confirmed survives the drop: the cheapest main the
+      // callee named, and no item for either question the call never asked (AAP 0.5.3, AAP 0.5.6).
+      const menu = menuFields(row);
+      expect(menu.items.map((item) => item.slot)).toEqual(['cheapest_main']);
+      expect(menu.items.every((item) => item.confirmed)).toBe(true);
+      expect(row.summary).not.toBeNull();
+      // One application of what it recorded: the drop invents no outcome of its own (AAP 0.3.2).
+      expect(await resultRows()).toHaveLength(1);
+    },
+    DIALOGUE_TIMEOUT_MS,
+  );
+
   it(
     'switches a Thai call to English when the callee asks',
     async () => {

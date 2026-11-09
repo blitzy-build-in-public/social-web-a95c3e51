@@ -1,10 +1,13 @@
 /** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
- * venue and lodging onboarding, console secrets and price jobs. */
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
+/** Operator registry, route `/ops/registry` (AAP 0.5.4, 0.5.6, 0.8.1, requirements 10, 14 and 15):
+ * venue and lodging onboarding, console secrets and price jobs. The lodging list is the registry's one
+ * paged read: its city filter and search run on the server and its rows continue with the read's own
+ * cursor, so a registry holding more rows than one page shows is still reachable (AAP 0.5.4). */
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Platform, StyleSheet, Switch, Text, View, useWindowDimensions } from 'react-native';
 import type { SwitchProps } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import {
   CreateLodgingRequest,
   CreateVenueRequest,
@@ -19,7 +22,13 @@ import {
   spacing,
   typography,
 } from '@tablemate/shared';
-import type { AdminLodgingDto, AdminVenueDto, CityDto, PriceJobKind } from '@tablemate/shared';
+import type {
+  AdminLodgingDto,
+  AdminLodgingsQuery,
+  AdminVenueDto,
+  CityDto,
+  PriceJobKind,
+} from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
@@ -48,6 +57,15 @@ const ACTIVE_PARTNER_LABEL = 'Active partner';
 const FIXTURE_BADGE = 'Fixture';
 const SECRET_COPIED = 'Secret copied.';
 const LODGINGS_EMPTY = 'No lodgings in this city. Add one below, or wait for the weekly refresh.';
+const LODGINGS_SEARCH_LABEL = 'Search by name';
+// How long typing pauses before the search term is sent to the server, so one search reads one page
+// rather than one per keystroke (the call-task queue waits the same 300 ms).
+const LODGINGS_SEARCH_DEBOUNCE_MS = 300;
+// The most a search term may carry, which is the bound the contract's own schema puts on `q`. A
+// lodging's name runs to 120 characters, so a term is cut here rather than answered with `400
+// invalid_field`; the cut term is a prefix of the name, which matches the same row.
+const LODGINGS_SEARCH_MAX = 80;
+const LODGINGS_MORE = { label: 'Load more lodgings', variant: 'secondary' } as const;
 const SECRET_COPY_FAILED = 'Copy failed. Select the text and copy it yourself.';
 const VENUES_EMPTY = 'No venues in this city. Add one below.';
 const LODGING_CREATE_ID = 'ops-lodging-create';
@@ -83,8 +101,6 @@ const CHIP_GROUPS = {
   venueNew: { label: CITY_LABEL, prefix: 'ops-venue-new-city' },
 } as const;
 
-const LODGINGS_QUERY = { queryFn: apiClient.admin.listLodgings, queryKey: queryKeys.adminLodgings };
-
 type ChipGroup = { readonly all?: boolean; readonly label: string; readonly prefix: string };
 type ChipOption = { readonly id: string | null; readonly name: string };
 const ALL_CITIES: ChipOption = { id: null, name: 'All cities' };
@@ -105,6 +121,33 @@ type LodgingDraft = Readonly<typeof BLANK_DRAFT & { kind: LodgingKind; phone: st
 function messageFor(error: unknown): string {
   const code = isApiError(error) ? error.code : 'invalid_response';
   return REGISTRY_MESSAGES[code] ?? userMessageFor(code);
+}
+function createCountFormatter(): Intl.NumberFormat | null {
+  try {
+    return new Intl.NumberFormat();
+  } catch {
+    return null;
+  }
+}
+const COUNT_FORMATTER = createCountFormatter();
+/** A count as an operator reads it, grouped by the runtime's locale where it has number formats. */
+function formatCount(value: number): string {
+  return COUNT_FORMATTER?.format(value) ?? String(value);
+}
+/**
+ * The lodging registry's query string: only the filters that are actually set, because the route
+ * validates the query with a strict schema and answers `400 invalid_field` for a value it cannot read,
+ * and because `exactOptionalPropertyTypes` forbids handing it an empty one. `limit` is left out on
+ * purpose: the read's own page of 200 is the page this screen has always shown, and the control below
+ * the rows continues from it (AAP 0.5.4).
+ */
+function lodgingsQuery(cityId: string | null, term: string): AdminLodgingsQuery {
+  const query: AdminLodgingsQuery = {};
+
+  if (cityId !== null) query.cityId = cityId;
+  if (term !== '') query.q = term;
+
+  return query;
 }
 function failFields(errors: FieldErrors, setErrors: (errors: FieldErrors) => void): void {
   setErrors(errors);
@@ -297,10 +340,27 @@ export default function OperatorRegistryScreen(): ReactElement {
   const cardsStyle = [styles.cards, wide ? styles.cardsRow : null];
   const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
   const venues = useQuery({ queryFn: apiClient.admin.listVenues, queryKey: queryKeys.adminVenues });
-  const lodgings = useQuery(LODGINGS_QUERY);
-  const cityList: readonly CityDto[] = cities.data?.items ?? [];
   const [venueFilter, setVenueFilter] = useState<string | null>(null);
   const [lodgingFilter, setLodgingFilter] = useState<string | null>(null);
+  const [lodgingSearch, setLodgingSearch] = useState('');
+  const [lodgingTerm, setLodgingTerm] = useState('');
+  const pendingLodgingSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The filters travel to the server, so the city chips narrow the registry itself rather than a page
+  // of it: a page holds at most 200 rows, and a city past the first page was invisible before.
+  const lodgingQuery = useMemo(
+    () => lodgingsQuery(lodgingFilter, lodgingTerm),
+    [lodgingFilter, lodgingTerm],
+  );
+  const lodgings = useInfiniteQuery({
+    queryKey: [...queryKeys.adminLodgings, lodgingQuery],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      apiClient.admin.listLodgings(
+        pageParam === undefined ? lodgingQuery : { ...lodgingQuery, cursor: pageParam },
+      ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const cityList: readonly CityDto[] = cities.data?.items ?? [];
   const [reveal, setReveal] = useState<SecretReveal | null>(null);
   const [secretError, setSecretError] = useState<string | null>(null);
   const [secretBusyId, setSecretBusyId] = useState<string | null>(null);
@@ -316,15 +376,34 @@ export default function OperatorRegistryScreen(): ReactElement {
   const writeVenue = fieldWriter(setVenueDraft);
   const writeLodging = fieldWriter(setLodgingDraft);
   const venueRows: readonly AdminVenueDto[] = venues.data?.items ?? [];
-  const lodgingRows: readonly AdminLodgingDto[] = lodgings.data?.items ?? [];
+  const lodgingRows = (lodgings.data?.pages ?? []).flatMap((page) => page.items);
+  const lodgingTotal = lodgings.data?.pages[0]?.total ?? 0;
   const venueShown = venueRows.filter((row) => venueFilter === null || row.cityId === venueFilter);
-  const lodgingShown = lodgingRows.filter(
-    (row) => lodgingFilter === null || row.cityId === lodgingFilter,
-  );
   const venuesEmpty = !venues.isPending && venues.error === null && venueShown.length === 0;
-  const lodgingsEmpty = !lodgings.isPending && lodgings.error === null && lodgingShown.length === 0;
+  const lodgingsEmpty = !lodgings.isPending && lodgings.error === null && lodgingRows.length === 0;
+  // What the page holds against what the filters match, which is what tells an operator that the list
+  // is one page of a larger registry rather than the whole of it (AAP 0.5.4). No line when the filters
+  // match a single lodging: it is on screen already, and the line would report one of one.
+  const lodgingsCountLine =
+    lodgingTotal <= 1 ? null : (
+      <Text style={styles.meta} testID="ops-lodgings-count">
+        {`Showing ${formatCount(lodgingRows.length)} of ${formatCount(lodgingTotal)} lodgings`}
+      </Text>
+    );
+  const lodgingsMore = {
+    ...LODGINGS_MORE,
+    busy: lodgings.isFetchingNextPage,
+    onPress: () => void lodgings.fetchNextPage(),
+  };
   // The secret leaves with the screen's focus, whether the operator navigates away or the component unmounts (AAP 0.3.2).
   useFocusEffect(useCallback(() => () => setReveal(null), []));
+  // A pending search pause is dropped with the component, so no timer outlives the screen.
+  useEffect(
+    () => () => {
+      if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
+    },
+    [],
+  );
   const createVenue = useMutation({
     mutationFn: (body: CreateVenueRequest) => apiClient.admin.createVenue(body),
     onSuccess: () => {
@@ -340,9 +419,10 @@ export default function OperatorRegistryScreen(): ReactElement {
   });
   const createLodging = useMutation({
     mutationFn: (body: CreateLodgingRequest) => apiClient.admin.createLodging(body),
-    onSuccess: () => {
+    onSuccess: (created) => {
       setLodgingDraft(EMPTY_LODGING_DRAFT);
       setLodgingErrors(NO_FIELD_ERRORS);
+      showLodging(created.name);
       succeed('Lodging created.', queryKeys.adminLodgings);
     },
   });
@@ -360,6 +440,37 @@ export default function OperatorRegistryScreen(): ReactElement {
   }
   const edited = (): void => succeed('Venue updated.', undefined, () => setEdit(null));
   const refetchLodgings = (): void => void lodgings.refetch();
+  /**
+   * The search term is applied from the change handler after a pause in typing, never from an effect,
+   * so one search reads one page rather than one per keystroke. Trimming here rather than at the
+   * request keeps the field as the operator typed it.
+   */
+  function changeLodgingSearch(text: string): void {
+    setLodgingSearch(text);
+    if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
+    pendingLodgingSearch.current = setTimeout(() => {
+      pendingLodgingSearch.current = null;
+      setLodgingTerm(text.trim().slice(0, LODGINGS_SEARCH_MAX));
+    }, LODGINGS_SEARCH_DEBOUNCE_MS);
+  }
+  /**
+   * Puts one lodging on the screen. The registry is paged in (city, name, id) order, so the row an
+   * operator has just entered sits wherever its name falls among pages of the whole table: the city
+   * filter is dropped — the list's filter is not the city the form entered the row in — and the search
+   * is left naming that row, which is what makes the read answer it whatever the registry holds
+   * (AAP 0.5.4). A search pause still pending is dropped with the term it would have applied.
+   */
+  function showLodging(name: string): void {
+    const term = name.trim().slice(0, LODGINGS_SEARCH_MAX);
+
+    if (pendingLodgingSearch.current !== null) {
+      clearTimeout(pendingLodgingSearch.current);
+      pendingLodgingSearch.current = null;
+    }
+    setLodgingFilter(null);
+    setLodgingSearch(term);
+    setLodgingTerm(term);
+  }
   const secretControls = (row: AdminVenueDto | AdminLodgingDto, kind: SecretTarget['kind']) => ({
     busy: secretBusyId === row.id,
     confirming: reissueFor === row.id,
@@ -594,11 +705,19 @@ export default function OperatorRegistryScreen(): ReactElement {
         </View>
         <View style={styles.section}>
           <Text {...{ ...SECTION_HEADING, style: styles.sectionTitle }}>{LODGINGS_HEADING}</Text>
+          <TextField
+            label={LODGINGS_SEARCH_LABEL}
+            onChangeText={changeLodgingSearch}
+            testID="ops-lodgings-search"
+            value={lodgingSearch}
+          />
           {chips(CHIP_GROUPS.lodgingCity, lodgingFilter, setLodgingFilter)}
+          {lodgingsCountLine}
           {readState(lodgings.error, lodgings.isPending, refetchLodgings, 'ops-lodgings')}
           {errorBanner(lodgingFailureMessage, 'ops-lodgings-failure')}
-          <View style={cardsStyle}>{lodgingShown.map(renderLodging)}</View>
+          <View style={cardsStyle}>{lodgingRows.map(renderLodging)}</View>
           {lodgingsEmpty ? <Text style={styles.meta}>{LODGINGS_EMPTY}</Text> : null}
+          {lodgings.hasNextPage ? <Button {...lodgingsMore} testID="ops-lodgings-more" /> : null}
           {renderLodgingForm()}
         </View>
         <View style={styles.section}>

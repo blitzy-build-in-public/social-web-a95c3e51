@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import type { TextProps } from 'react-native';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { colors, fontWeights, radii, spacing, typography } from '@tablemate/shared';
@@ -42,6 +43,9 @@ const VERIFY_ACTION = { label: 'Verify my stay', onPress: () => router.push('/pr
 const LOADING = { accessibilityLabel: 'Loading profile', color: colors.primary } as const;
 const CITY_LIST_ROOT = queryKeys.cities.slice(0, 1);
 const MEETUP_ROOT = queryKeys.meetup('').slice(0, 1);
+type HeadingProps = TextProps & Readonly<{ 'aria-level': number }>;
+/** The handle: the navigator header names the page, so this body heading sits at level 2. */
+const HANDLE_HEADING: HeadingProps = { role: 'heading', 'aria-level': 2 };
 type ProofDates = NonNullable<Tier0Profile['proofDates']>;
 function errorCodeOf(error: unknown): ClientErrorCode {
   return isApiError(error) ? error.code : 'invalid_response';
@@ -214,7 +218,9 @@ export default function TravelerProfileScreen(): ReactElement {
       <View style={styles.identity}>
         <Avatar {...avatarProps} {...photo} />
         <View style={styles.identityText}>
-          <Text accessibilityRole="header" style={styles.handle}>{`@${person.handle}`}</Text>
+          <Text {...HANDLE_HEADING} style={styles.handle}>
+            {`@${person.handle}`}
+          </Text>
           {placeLines.map((line) => (
             <Text key={line} style={styles.muted}>
               {line}

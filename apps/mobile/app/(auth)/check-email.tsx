@@ -14,11 +14,14 @@ const DEVICE_NOTICE = 'Open it on this device to sign in.';
 const MISSING_NOTICE = "Didn't get it? Check your spam folder, or use a different email.";
 const CHANGE_EMAIL_LABEL = 'Use a different email';
 const SIGN_IN_PATH = '/sign-in';
-// `accessibilityRole="header"` is iOS's header trait and Android's heading role, and `aria-level`
-// is what react-native-web 0.19 reads to render a real `<h1>` rather than an unlevelled span.
+// `role: 'heading'` is iOS's header trait and Android's heading role, and `aria-level` is what
+// react-native-web 0.19 reads to render a real heading element rather than an unlevelled span. The
+// level is 2 because the `(auth)` layout's navigation header already renders this page's single
+// level-1 heading ("Check your email"): the card's sentence is a body heading below it, and a
+// second level-1 heading here would leave the page carrying two `<h1>`s.
 const MESSAGE_HEADING: TextProps & Readonly<{ 'aria-level': number }> = {
-  accessibilityRole: 'header',
-  'aria-level': 1,
+  role: 'heading',
+  'aria-level': 2,
 };
 const HEADER = <Stack.Screen options={{ title: PAGE_TITLE }} />;
 export default function CheckEmailScreen(): ReactElement {

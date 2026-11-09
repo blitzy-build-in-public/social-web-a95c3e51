@@ -32,6 +32,7 @@ import {
   BOTH_CHECKED_IN_NOTICE,
   CHECKED_IN_NOTICE,
   CHECK_IN_CLOSED_NOTICE,
+  VENUE_CODE_FILLED_NOTICE,
 } from '../../../src/copy/strings';
 import { queryClient, queryKeys, useMeetup } from '../../../src/state/meetup-store';
 import { Banner, Button, Card, Screen, TextField, announce } from '../../../src/ui';
@@ -277,7 +278,7 @@ export default function CheckInScreen(): ReactElement {
   };
   const onScanned = (scanned: string): void => {
     setCode(scanned);
-    announce('Venue code filled in.');
+    announce(VENUE_CODE_FILLED_NOTICE);
   };
   const retry = (): void => void meetupQ.refetch();
   const bannerProps = loadMessage === null ? {} : { action: { ...RETRY_PROPS, onPress: retry } };

@@ -1,13 +1,14 @@
 /**
- * The proving Worker's second artefact source: the artefacts' published URLs, for an engine whose
- * origin private file system cannot be used (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1, AAP 0.12.2).
+ * The proving Worker's two artefact sources, from the page's side: the artefacts' published URLs, for
+ * an engine whose origin private file system cannot be used, and the origin private file system's own
+ * download, on the failure path a write takes (AAP 0.3.4, AAP 0.5.5, AAP 0.8.1, AAP 0.12.2).
  *
- * A Node process has no `navigator.storage` at all, which is exactly the environment this source
+ * A Node process has no `navigator.storage` at all, which is exactly the environment the URL source
  * exists for: the Worker's first attempt at the origin private file system is
  * `artifact_storage_unavailable`, and `ensure` then has to answer from the URLs the artefacts are
- * published at. That storage is therefore deliberately left alone — stubbing it would remove the case
- * under test — and so is snarkjs, because this suite is about where the Worker gets the artefact bytes
- * from and not about the proof it makes with them.
+ * published at. That storage is therefore deliberately left alone everywhere but the one case at the
+ * end — which stubs it to reach the download — and so is snarkjs, because this suite is about where
+ * the Worker gets the artefact bytes from and not about the proof it makes with them.
  *
  * Everything else is the Worker's own code: `self` is stubbed with the scope it registers its message
  * listener on and posts its frames to, `fetch` with a server that answers the ranged GET and the
@@ -493,5 +494,82 @@ describe('a declaration the Worker cannot confirm', () => {
 
     expect(frame).toEqual({ type: 'error', id: 1, code: 'artifact_hash_mismatch' });
     expect(worker.requests).toEqual([]);
+  });
+});
+
+/* --- `ensure` over the origin private file system: the download a write interrupts -------------- */
+
+/**
+ * The origin private file system, stubbed: a directory that answers a probe with `NotFoundError`, so
+ * both artefacts count as absent and are downloaded, and a synchronous access handle whose every call
+ * a case owns. `write` is the one that carries the case: the bytes it accepts, or the failure it
+ * raises, which is how a write that fails part-way through a transfer — a full origin, a refused
+ * handle — is reproduced here, the artefact being far too large to serve in this suite.
+ */
+function opfsStorage(write: (chunk: Uint8Array) => number): unknown {
+  const file = {
+    createSyncAccessHandle: (): Promise<unknown> =>
+      Promise.resolve({
+        read: (): number => 0,
+        write,
+        truncate: (): void => undefined,
+        getSize: (): number => 0,
+        flush: (): void => undefined,
+        close: (): void => undefined,
+      }),
+  };
+  const directory = {
+    getFileHandle: (_name: string, options?: { readonly create?: boolean }): Promise<unknown> =>
+      options?.create === true
+        ? Promise.resolve(file)
+        : Promise.reject(new DOMException('no such entry', 'NotFoundError')),
+    removeEntry: (): Promise<void> => Promise.resolve(),
+  };
+  return {
+    storage: {
+      getDirectory: (): Promise<unknown> =>
+        Promise.resolve({
+          getDirectoryHandle: (_name: string, _options?: unknown): Promise<unknown> =>
+            Promise.resolve(directory),
+        }),
+    },
+  };
+}
+
+describe('ensure where a write fails part-way through a download', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('answers the failure that storage reported, with the transfer released', async () => {
+    const worker = await loadWorker(() => ({
+      status: 200,
+      chunks: [WASM_BYTES.subarray(0, 32), WASM_BYTES.subarray(32)],
+    }));
+    // The origin runs out of room on the second chunk: the first is written, and the write that
+    // follows is refused with the name Chromium gives a full origin — a failure of no phase's own
+    // making, and not the oversize body the download already refuses for itself.
+    let writes = 0;
+    vi.stubGlobal(
+      'navigator',
+      opfsStorage((chunk) => {
+        writes += 1;
+        if (writes > 1) throw new DOMException('the origin is full', 'QuotaExceededError');
+        return chunk.byteLength;
+      }),
+    );
+
+    const reply = worker.reply(1);
+    worker.send(ensureFrame(1));
+    const frame = await reply;
+
+    expect(frame).toEqual({ type: 'error', id: 1, code: 'artifact_insufficient_storage' });
+    // One reply and nothing else: the single report of the transfer is below the step a frame needs.
+    expect(worker.frames).toEqual([frame]);
+    expect(worker.requests).toEqual([{ url: WASM.url, range: null }]);
+    expect(writes).toBe(2);
+    // The transfer was released rather than left pulling: the body was read as far as the write that
+    // failed and then cancelled, so nothing keeps fetching in a Worker the page is about to kill.
+    expect(worker.bodies).toEqual({ cancelled: 1, pulled: 2 });
   });
 });

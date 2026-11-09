@@ -54,6 +54,14 @@ export interface ListItemProps {
   disabled?: boolean;
   /** Test handle, forwarded to the root element (`traveler-<id>`, `lodging-<id>`, ...). */
   testID?: string;
+
+  /**
+   * Opt-in minimum width for the text column, in points / CSS px. Set, the row wraps and `trailing`
+   * moves to a line of its own once it can no longer sit beside a column this wide, so a narrow row
+   * stacks instead of squeezing `label` and `subtitle` into mid-token breaks. Omitted, the row is the
+   * single-line row every other call site renders.
+   */
+  textMinWidth?: number;
 }
 
 /**
@@ -64,6 +72,9 @@ export interface ListItemProps {
  * wrap instead of truncating, so scaled text stays readable. A pressable row is one
  * accessible element — its children are grouped under the row's accessible name, so `leading`
  * and `trailing` carry decoration and status text, never a control of their own.
+ *
+ * A caller that passes `textMinWidth` gets the wrapping variant that prop describes; every other
+ * caller gets the single-line row unchanged.
  */
 export function ListItem({
   label,
@@ -74,14 +85,26 @@ export function ListItem({
   role = 'button',
   disabled = false,
   testID,
+  textMinWidth,
 }: ListItemProps): JSX.Element {
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
 
+  // The opt-in narrow-width rule: `flexWrap` on the row, a minimum width on the text column.
+  // `trailing` keeps its intrinsic width either way (React Native's default `flexShrink` is 0), so
+  // once the column can no longer hold `textMinWidth` beside it the trailing node takes a line of its
+  // own and the column takes the whole row instead of absorbing the shortfall.
+  const rowBase: StyleProp<ViewStyle> =
+    textMinWidth === undefined ? styles.row : [styles.row, styles.rowWrapping];
+  const textColumn: StyleProp<ViewStyle> = [
+    styles.textColumn,
+    textMinWidth === undefined ? null : { minWidth: textMinWidth },
+  ];
+
   const children = (
     <>
       {leading}
-      <View style={styles.textColumn}>
+      <View style={textColumn}>
         <Text style={[styles.label, disabled ? styles.textDisabled : null]}>{label}</Text>
         {subtitle ? (
           <Text style={[styles.subtitle, disabled ? styles.textDisabled : null]}>{subtitle}</Text>
@@ -93,7 +116,7 @@ export function ListItem({
 
   if (onPress === undefined) {
     return (
-      <View style={styles.row} testID={testID}>
+      <View style={rowBase} testID={testID}>
         {children}
       </View>
     );
@@ -119,7 +142,7 @@ export function ListItem({
       : {};
 
   const rowStyle = ({ pressed }: PressableStateCallbackType): StyleProp<ViewStyle> => [
-    styles.row,
+    rowBase,
     hovered && !disabled ? styles.rowHovered : null,
     pressed && !disabled ? styles.rowPressed : null,
     focused ? styles.rowFocused : null,
@@ -186,6 +209,11 @@ const styles = StyleSheet.create({
     minHeight: MIN_TOUCH_TARGET,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
+  },
+  // The wrapping variant the `textMinWidth` opt-in turns on: the row breaks between the text column
+  // and `trailing` instead of squeezing the column below its own minimum.
+  rowWrapping: {
+    flexWrap: 'wrap',
   },
   // Disabled rows dim to `textMuted`, a measured pair, rather than dropping opacity, which
   // would put the text below every contrast record; the Pressable already refuses presses.

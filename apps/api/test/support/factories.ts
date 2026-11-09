@@ -2470,6 +2470,12 @@ export function expectError(
     assert.fail(`the body is not the error envelope: ${response.body}`);
   }
 
+  assert.equal(
+    parsed.data.error.code,
+    code,
+    `expected ${code}, received ${parsed.data.error.code}`,
+  );
+
   return parsed.data;
 }
 

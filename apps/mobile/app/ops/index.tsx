@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import Svg, { Line, Rect } from 'react-native-svg';
 import {
   BlockedReason,
@@ -18,7 +18,7 @@ import type { CityDto, MetricsDto, MetricsQuery } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor, type ClientErrorCode } from '../../src/api/errors';
-import { queryKeys } from '../../src/state/meetup-store';
+import { queryClient, queryKeys } from '../../src/state/meetup-store';
 import { Banner, Button, Card, Chip, Screen, TextField, announce } from '../../src/ui';
 
 const PAGE_TITLE = 'Operator dashboard';
@@ -32,6 +32,9 @@ const RANGE_ORDER_ERROR = 'The end date must not be before the start date.';
 const CITY_GROUP_LABEL = 'City';
 const VARIANT_GROUP_LABEL = 'Variant pairing';
 const LLM_SUSPENDED_MESSAGE = 'Language-model use is suspended after a token-count mismatch';
+/** The control that ends that suspension, and the news a screen reader hears when it lands. */
+const RE_ENABLE_LABEL = 'Re-enable language model';
+const RE_ENABLED_NOTICE = 'Language-model use is re-enabled.';
 const CALL_OUTCOMES: { key: keyof MetricsDto['calls']['byOutcome']; label: string }[] = [
   { key: 'completed', label: 'Completed' },
   { key: 'refused', label: 'Refused' },
@@ -66,7 +69,17 @@ type Filters = { from: string; to: string; cityId: string | null; variant: Varia
 type RangeError = { field: DateField; message: string };
 type MetricRowProps = { label: string; value: string; bar?: ReactElement | undefined };
 type StatRowsProps = { items: readonly Stat[]; empty?: string | undefined };
-type DashboardProps = { metrics: MetricsDto; cities: readonly CityDto[] };
+/** How the Calls panel reaches the re-enable the screen owns: its action, flight and refusal. */
+type ReEnableControl = {
+  readonly onPress: () => void;
+  readonly busy: boolean;
+  readonly failure: string | null;
+};
+type DashboardProps = {
+  metrics: MetricsDto;
+  cities: readonly CityDto[];
+  reEnable: ReEnableControl;
+};
 type CityCount = { cityId: string; count: number };
 type BarProps = { label: string; value: number; max: number; reference?: number | undefined };
 type BarRowProps = { label: string; text: string; value: number; max: number; reference?: number };
@@ -213,7 +226,7 @@ const Panel = ({ title, rows, testID, children }: PanelProps): ReactElement => (
   </View>
 );
 /** Every panel of the dashboard, in the order an operator reads them, signups last (AAP 0.1.1). */
-function Dashboard({ metrics, cities }: DashboardProps): ReactElement {
+function Dashboard({ metrics, cities, reEnable }: DashboardProps): ReactElement {
   const { completion, thresholds, funnel, prices, calls } = metrics;
   const lockRate =
     funnel.proposalsAccepted === 0 ? null : funnel.bothLocked / funnel.proposalsAccepted;
@@ -261,9 +274,22 @@ function Dashboard({ metrics, cities }: DashboardProps): ReactElement {
         </Panel>
         <Panel title="Calls">
           {calls.llmSuspended ? (
-            <Banner tone="warning" message={LLM_SUSPENDED_MESSAGE}>
-              {`${countText(calls.llmCountMismatches)} ${calls.llmCountMismatches === 1 ? 'mismatch' : 'mismatches'} recorded`}
-            </Banner>
+            <View style={styles.suspension}>
+              <Banner tone="warning" message={LLM_SUSPENDED_MESSAGE}>
+                {`${countText(calls.llmCountMismatches)} ${calls.llmCountMismatches === 1 ? 'mismatch' : 'mismatches'} recorded`}
+              </Banner>
+              {/* AAP 0.5.6 suspends use in every city until an operator re-enables it, so the one
+                  control that ends the suspension sits with the banner that reports it. */}
+              <Button
+                label={RE_ENABLE_LABEL}
+                busy={reEnable.busy}
+                onPress={reEnable.onPress}
+                testID="ops-llm-re-enable"
+              />
+              {reEnable.failure === null ? null : (
+                <Banner tone="error" message={reEnable.failure} />
+              )}
+            </View>
           ) : null}
           <Text style={styles.subheading}>By outcome</Text>
           <StatRows items={outcomeRows(metrics)} />
@@ -293,10 +319,25 @@ export default function OpsDashboardScreen(): ReactElement {
   const [draftFrom, setDraftFrom] = useState(filters.from);
   const [draftTo, setDraftTo] = useState(filters.to);
   const [rangeError, setRangeError] = useState<RangeError | null>(null);
+  const [reEnableFailure, setReEnableFailure] = useState<string | null>(null);
   const query = metricsQuery(filters);
   const fetchMetrics = (): Promise<MetricsDto> => apiClient.admin.getMetrics(query);
   const metrics = useQuery({ queryKey: queryKeys.adminMetrics(query), queryFn: fetchMetrics });
   const cities = useQuery({ queryKey: queryKeys.cities, queryFn: () => apiClient.listCities() });
+  // The operator's re-enable (AAP 0.5.6): the flag is cleared server-side, the news is spoken, and
+  // the dashboard is re-read so the banner and the spend figures report the state it answered.
+  const reEnable = useMutation({
+    mutationFn: () => apiClient.admin.reEnableLanguageModel(),
+    onSuccess: () => {
+      setReEnableFailure(null);
+      announce(RE_ENABLED_NOTICE);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminMetrics(query) });
+    },
+    onError: (error: unknown) => {
+      const code: ClientErrorCode = isApiError(error) ? error.code : 'network_error';
+      setReEnableFailure(userMessageFor(code));
+    },
+  });
   let failure: string | null = null;
   if (metrics.error !== null) {
     const code: ClientErrorCode = isApiError(metrics.error) ? metrics.error.code : 'network_error';
@@ -304,6 +345,10 @@ export default function OpsDashboardScreen(): ReactElement {
   }
   useEffect(() => (failure === null ? undefined : announce(failure)), [failure]);
   useEffect(() => (rangeError === null ? undefined : announce(rangeError.message)), [rangeError]);
+  useEffect(
+    () => (reEnableFailure === null ? undefined : announce(reEnableFailure)),
+    [reEnableFailure],
+  );
   function applyDates(): void {
     const f = draftFrom.trim();
     const t = draftTo.trim();
@@ -320,6 +365,11 @@ export default function OpsDashboardScreen(): ReactElement {
   const noCity = filters.cityId === null;
   const noVariant = filters.variant === null;
   const retry = { label: 'Retry', onPress: () => void metrics.refetch() };
+  const reEnableControl: ReEnableControl = {
+    onPress: () => reEnable.mutate(),
+    busy: reEnable.isPending,
+    failure: reEnableFailure,
+  };
   const cityItems = cities.data?.items ?? [];
   const dateFields = [
     ['from', 'From (YYYY-MM-DD)', 'ops-from', draftFrom, setDraftFrom],
@@ -381,7 +431,7 @@ export default function OpsDashboardScreen(): ReactElement {
         {failure === null ? null : <Banner tone="error" message={failure} action={retry} />}
         {metrics.isPending ? <Text style={styles.body}>{'Loading metrics…'}</Text> : null}
         {metrics.data === undefined ? null : (
-          <Dashboard metrics={metrics.data} cities={cityItems} />
+          <Dashboard cities={cityItems} metrics={metrics.data} reEnable={reEnableControl} />
         )}
       </Screen>
     </>
@@ -413,6 +463,8 @@ const styles = StyleSheet.create({
   body: { ...typography.body, color: colors.text },
   caption: { ...typography.caption, color: colors.textMuted },
   subheading: { ...typography.label, color: colors.text, fontWeight: fontWeights.bold },
+  // The suspension notice and the control that ends it, stacked with the panel's own spacing.
+  suspension: { gap: spacing.sm },
   row: { gap: spacing.xs },
   rowHead: { ...WRAP, alignItems: 'baseline', gap: spacing.sm, justifyContent: 'space-between' },
   rowLabel: { ...typography.body, color: colors.text, flexShrink: 1 },

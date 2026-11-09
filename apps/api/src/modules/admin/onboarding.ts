@@ -5,6 +5,13 @@
  * The route guard answers `403 operator_only` before any function here runs (AAP 0.5.4); none of them
  * reads `role`.
  *
+ * **The lodging registry pages (AAP 0.5.4).** `GET /admin/lodgings` is the one registry read whose
+ * route carries a query — a city filter, a name search, a page size and a cursor — because the weekly
+ * refresh adds a row to that table with every element it finds (AAP 0.5.6), and a bound would leave
+ * the operator unable to reach a lodging it hid. {@link listLodgings} answers one page in its own
+ * (city, name, id) order with the number of rows its filters match; {@link listVenues} is unchanged
+ * and keeps its own bound and its own warning.
+ *
  * **Console secrets (AAP 0.3.2).** The issue routes mint 32 random bytes through
  * `consoles/secrets.ts`, store them as a SHA-256 lookup hash beside an AES-256-GCM ciphertext — the
  * shape the seed writes for seeded consoles — and answer the plaintext once in `SecretIssued`, with
@@ -41,13 +48,16 @@
  */
 
 import type { Queue } from 'bullmq';
+import { z } from 'zod';
 
 import { readPoints, setPoint } from '@tablemate/db';
-import type { DbClient } from '@tablemate/db';
+import type { DbClient, Prisma } from '@tablemate/db';
 import { JOB, QUEUE, jobOptionsFor, parseJobData } from '@tablemate/server-core';
 import type { Clock, CommonEnv, FieldKeyring, Logger, QueueName } from '@tablemate/server-core';
+import { Uuid } from '@tablemate/shared';
 import type {
   AdminLodgingDto,
+  AdminLodgingsQuery,
   AdminLodgingsResponse,
   AdminVenueDto,
   AdminVenuesResponse,
@@ -105,29 +115,29 @@ const PLACE_REFRESH_ENQUEUE_FAILED = 'place_refresh_enqueue_failed';
 // event so the defect is visible rather than silent.
 const VENUE_LOCATION_MISSING = 'admin_venue_location_missing';
 const LODGING_LOCATION_MISSING = 'admin_lodging_location_missing';
-// A registry read that came back with more rows than the bound below, logged under its own event
-// so a truncated registry is visible rather than silently read as a complete one. The line carries
-// the bound and nothing else (AAP 0.11.1).
+// A venue registry that came back with more rows than the bound below, logged under its own event so
+// a truncated venue list is visible rather than silently read as a complete one. The line carries the
+// bound and nothing else (AAP 0.11.1). The lodging registry needs no such line: it pages, so a page
+// of it is no longer a truncation.
 const ADMIN_VENUES_TRUNCATED = 'admin_venues_truncated';
-const ADMIN_LODGINGS_TRUNCATED = 'admin_lodgings_truncated';
 
 /**
- * The bound on both registry reads, {@link listVenues} and {@link listLodgings}, and the largest id
- * list either of them hands to `readPoints` as one `uuid[]` bind.
+ * The venue registry's bound, and the page size {@link listLodgings} answers when its query names no
+ * `limit` — the same batch size the sibling operator queue reads use (`ADMIN_CALL_TASKS_LIMIT` in
+ * `admin/call-tasks.ts`, `ADMIN_LODGING_CLAIMS_LIMIT` in `admin/lodging-claims.ts`). It is also the
+ * longest id list {@link listVenues} hands to `readPoints` as one `uuid[]` bind; the lodging read binds
+ * the ids of the page its query asked for, which the contract bounds at 500.
  *
- * The operator queue reads in the sibling admin modules use the same batch size
- * (`ADMIN_CALL_TASKS_LIMIT` in `admin/call-tasks.ts`, `ADMIN_LODGING_CLAIMS_LIMIT` in
- * `admin/lodging-claims.ts`). Both registries here answer in (city, name, id) order, so this bound
- * answers deterministically: the same rows come back from every read, and an operator that needs
- * an older row reads it in the database. The call-task queue's limit is a page size continued by a
- * keyset cursor over that queue's own order (`?limit=&cursor=`, `nextCursor`, `total`), while the
- * lodging-claim queue and both registries are capped: AAP 0.5.4 fixes no cursor for them, so a cap
- * is the resolution there rather than a contract change.
+ * Both registries answer in (city, name, id) order, so a bound on it answers deterministically: the
+ * same rows come back from every read. For {@link listVenues} that bound is still the whole answer —
+ * AAP 0.5.4 carries no query for the venue registry — so a larger one is made visible through
+ * {@link ADMIN_VENUES_TRUNCATED}. {@link listLodgings} reads the same order as the page size of a
+ * read continued by a keyset cursor (`?cityId=&q=&limit=&cursor=`, `nextCursor`, `total`), so every
+ * lodging is reachable and the row past the page is what says another page follows (AAP 0.5.4).
  *
- * Each read asks for one row beyond this bound and treats that row as a sentinel: it is dropped
- * before the ids reach `readPoints`, and its presence is what reports the truncation. A registry
- * silently cut to this many rows would read as a complete one, so the bound is made visible the
- * same way a row whose location is NULL is (AAP 0.5.4, 0.5.6, 0.11.1).
+ * Each read asks for one row beyond its bound and treats that row as a sentinel: it is dropped before
+ * the ids reach `readPoints`, and its presence is what reports the truncation — or, for the lodging
+ * read, what the next page's cursor is built from.
  */
 const ADMIN_REGISTRY_LIMIT = 200;
 
@@ -247,10 +257,10 @@ export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLod
  * guard narrows this read to `isFixture: false` everywhere else (AAP 0.5.2). `readPoints` applies the
  * same rule, so both reads agree on what exists.
  *
- * The contract carries no cursor and no filter (AAP 0.5.4), so the read is bounded instead of paged:
- * the first {@link ADMIN_REGISTRY_LIMIT} rows in the (city, name, id) order above are answered, and a
- * registry holding more than that is reported through `admin_venues_truncated` rather than answered as
- * if it were complete (AAP 0.11.1).
+ * The venue registry's route carries no query at all (AAP 0.5.4), so this read is bounded rather than
+ * paged: the first {@link ADMIN_REGISTRY_LIMIT} rows in the (city, name, id) order above are answered,
+ * and a registry holding more than that is reported through `admin_venues_truncated` rather than
+ * answered as if it were complete (AAP 0.11.1).
  *
  * @param services - The app's services (see {@link OnboardingServices}).
  * @returns The first {@link ADMIN_REGISTRY_LIMIT} venues the process may see, in (city, name, id)
@@ -297,37 +307,191 @@ export async function listVenues(services: OnboardingServices): Promise<AdminVen
   return { items };
 }
 
+// ---------------------------------------------------------------------------------------------
+// The lodging read's keyset cursor (AAP 0.5.4)
+// ---------------------------------------------------------------------------------------------
+
 /**
- * The lodging registry.
+ * The one payload shape of a lodging cursor: the id of the row the page ended on.
+ *
+ * A strict object, so a cursor carrying a second key — or a payload of any other shape — is refused
+ * rather than interpreted, and the field is named `i` to keep the encoded form short as the shared
+ * keyset codecs do. The id alone is all the cursor can hold: `Cursor` is bounded at 200 characters
+ * and a lodging's name runs to 120, so a payload carrying the row's whole sort key would not survive
+ * the bound. The row's own `(city, name)` are read back from the database instead, for the reason
+ * {@link lodgingCursorBoundary} states.
+ */
+const LodgingsCursor = z.strictObject({ i: Uuid });
+
+/** Where a lodging page continues from: the boundary row's sort key, resolved against the database. */
+interface LodgingsCursorPosition {
+  /** The boundary row's city, the first column of the read's order. */
+  readonly cityId: string;
+  /** The boundary row's name, the second column of the read's order. */
+  readonly name: string;
+  /** The boundary row's id, the tie-breaker under the name. */
+  readonly id: string;
+}
+
+/**
+ * The JSON value one cursor's text carries, or `null` for a value that is not one this read wrote.
+ *
+ * A cursor is client-supplied text, so both steps are checked rather than trusted: the text has to be
+ * the canonical base64url of what it decodes to, because a value this read did not write re-encodes
+ * to something else, and what it decodes to has to be JSON. Nothing is trusted beyond that here; the
+ * payload's own shape is checked by the caller's schema.
+ *
+ * @param value - The `cursor` query parameter.
+ * @returns The payload it carries, or null when the value is not canonical base64url of JSON.
+ */
+function decodeCursorPayload(value: string): unknown {
+  const text = Buffer.from(value, 'base64url').toString('utf8');
+
+  if (Buffer.from(text, 'utf8').toString('base64url') !== value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encodes the row a page ended on as the opaque cursor that continues the read.
+ *
+ * @param id - The boundary row's id.
+ * @returns The cursor that continues after that row.
+ */
+function encodeLodgingsCursor(id: string): string {
+  return Buffer.from(JSON.stringify(LodgingsCursor.parse({ i: id })), 'utf8').toString('base64url');
+}
+
+/**
+ * The row one cursor continues after, with the sort key the next page's bound compares.
+ *
+ * The key is read from the row rather than carried in the cursor, which is what the call-task queue
+ * does with the exact instant of the row a page ended on: what reaches the statement as a bound is
+ * this row's stored `(cityId, name)`, never text the client supplied, so no caller can steer the next
+ * page to a position the previous one did not end at.
+ *
+ * @param services - The app's services (see {@link OnboardingServices}).
+ * @param id - The id the cursor carries.
+ * @returns The boundary row's city, name and id.
+ * @throws {AppError} `invalid_field` (400) when the cursor names no lodging the process may read,
+ *   which is the contract's answer for a query value it cannot use — a row a refresh removed, or a
+ *   fixture row outside `test` and `demo`, leaves a cursor this read cannot continue from (AAP 0.5.2).
+ */
+async function lodgingCursorBoundary(
+  services: OnboardingServices,
+  id: string,
+): Promise<LodgingsCursorPosition> {
+  const row = await services.db.lodging.findUnique({
+    where: { id },
+    select: { cityId: true, name: true },
+  });
+
+  if (row === null) {
+    throw new AppError('invalid_field', 'The cursor names no lodging this registry lists.');
+  }
+
+  return { cityId: row.cityId, name: row.name, id };
+}
+
+/**
+ * The keyset half of the lodging read: every row ordered after `position` by `(cityId asc, name asc,
+ * id asc)` (AAP 0.5.4).
+ *
+ * A row of a later city comes next, then a row of the same city under a later name, then a row of the
+ * same city and name under a larger id — exactly the order the read states, so a page continued from
+ * this bound holds the rows that follow the boundary one and none of the rows before it.
+ */
+function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhereInput {
+  return {
+    OR: [
+      { cityId: { gt: position.cityId } },
+      { cityId: position.cityId, name: { gt: position.name } },
+      { cityId: position.cityId, name: position.name, id: { gt: position.id } },
+    ],
+  };
+}
+
+/**
+ * One page of the lodging registry, in (city, name, id) order, narrowed by the request's filters.
  *
  * A lodging an OpenStreetMap refresh found missing carries `osmMissingAt` and has left the public
  * directory, so it is left out here too; its claims, activity facts and console secret stay attached,
  * and it returns when the element reappears in a refresh. A manually entered lodging has no
  * `osmType`, no `osmId` and `phoneSource = operator`, which is what keeps the refresh from replacing
- * its phone number or removing it (AAP 0.5.6). Ordered and bounded exactly as {@link listVenues} is:
- * the first {@link ADMIN_REGISTRY_LIMIT} rows in (city, name, id) order are answered, and a larger
- * registry is reported through `admin_lodgings_truncated`. The bound is what keeps this read off a
- * table the weekly refresh adds to with every element it finds (AAP 0.5.6).
+ * its phone number or removing it (AAP 0.5.6).
+ *
+ * The filter is one `AND` list so each piece stands on its own and the fixtures guard's own narrowing
+ * composes with it rather than replacing it, which is what keeps a row the guard hides out of both the
+ * page and the count (`packages/db/src/fixtures-guard.ts`, AAP 0.5.2). `q` matches the name
+ * case-insensitively, so an operator finds a lodging by whatever part of its name they remember, and
+ * `cityId` narrows the registry to one city. `limit + 1` rows are read, so the presence of a next page
+ * is known without a second query: the extra row proves another page follows and is not returned, and
+ * the cursor is built from the page's last row read whether or not its DTO could be built, so paging
+ * can never stand still on a row it cannot carry.
+ *
+ * `total` counts the lodgings the request's filters match with the cursor ignored, so an operator reads
+ * how many rows the page leaves behind. A row whose location is NULL has no `AdminLodgingDto` — the DTO
+ * requires `lat` and `lng` — so it is left out of the answer and reported under
+ * {@link LODGING_LOCATION_MISSING} with its own id, which makes `items` one element shorter than
+ * `total`; the page it sits in still counts toward the bound, so the row after it is reached.
  *
  * @param services - The app's services (see {@link OnboardingServices}).
- * @returns The first {@link ADMIN_REGISTRY_LIMIT} current lodgings the process may see, in
- *   (city, name, id) order, with their coordinates and phone facts.
+ * @param query - The parsed query string: the city, name, page size and cursor filters.
+ * @returns One page of current lodgings the process may see in (city, name, id) order with their
+ *   coordinates and phone facts, the number of lodgings the filters match, and the cursor that
+ *   continues the read — null on the last page.
+ * @throws {AppError} `invalid_field` (400) for a cursor this read did not write, or one naming a
+ *   lodging it can no longer continue from.
  */
-export async function listLodgings(services: OnboardingServices): Promise<AdminLodgingsResponse> {
-  const rows = await services.db.lodging.findMany({
-    where: { osmMissingAt: null },
-    select: LODGING_SELECT,
-    orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
-    take: ADMIN_REGISTRY_LIMIT + 1,
-  });
+export async function listLodgings(
+  services: OnboardingServices,
+  query: AdminLodgingsQuery,
+): Promise<AdminLodgingsResponse> {
+  const limit = query.limit ?? ADMIN_REGISTRY_LIMIT;
+  const filters: Prisma.LodgingWhereInput[] = [{ osmMissingAt: null }];
 
-  // The sentinel row, dropped before the ids reach `readPoints`, exactly as in {@link listVenues}.
-  const truncated = rows.length > ADMIN_REGISTRY_LIMIT;
-  const page = truncated ? rows.slice(0, ADMIN_REGISTRY_LIMIT) : rows;
-
-  if (truncated) {
-    services.logger.warn({ event: ADMIN_LODGINGS_TRUNCATED, limit: ADMIN_REGISTRY_LIMIT });
+  if (query.cityId !== undefined) {
+    filters.push({ cityId: query.cityId });
   }
+
+  if (query.q !== undefined) {
+    filters.push({ name: { contains: query.q, mode: 'insensitive' } });
+  }
+
+  // Taken before the keyset half joins the list, and as a copy of it: `total` is how many lodgings the
+  // request's filters match, never how many of them follow the cursor (AAP 0.5.4).
+  const matching: Prisma.LodgingWhereInput = { AND: [...filters] };
+
+  if (query.cursor !== undefined) {
+    const payload = LodgingsCursor.safeParse(decodeCursorPayload(query.cursor));
+
+    if (!payload.success) {
+      throw new AppError('invalid_field', 'The cursor is malformed.');
+    }
+
+    filters.push(afterLodgingCursor(await lodgingCursorBoundary(services, payload.data.i)));
+  }
+
+  const [rows, total] = await Promise.all([
+    services.db.lodging.findMany({
+      where: { AND: filters },
+      select: LODGING_SELECT,
+      orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+      take: limit + 1,
+    }),
+    services.db.lodging.count({ where: matching }),
+  ]);
+
+  // The row past the page is the sentinel: its presence says another page follows, it is dropped
+  // before the ids reach `readPoints`, and the cursor continues after the last row the page holds.
+  const page = rows.slice(0, limit);
+  const boundary = rows.length > limit ? page[page.length - 1] : undefined;
 
   const points = await readPoints(
     services.db,
@@ -349,7 +513,11 @@ export async function listLodgings(services: OnboardingServices): Promise<AdminL
     items.push(toAdminLodgingDto(row, point));
   }
 
-  return { items };
+  return {
+    items,
+    total,
+    nextCursor: boundary === undefined ? null : encodeLodgingsCursor(boundary.id),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
