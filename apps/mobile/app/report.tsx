@@ -50,6 +50,10 @@ export default function ReportScreen(): ReactElement {
   const [reason, setReason] = useState('');
   const targetId = reportTarget(params.userId);
   const meetupId = singleParam(params.meetupId);
+  // The chat header opens the screen with the meetup the report is filed from and the profile opens it
+  // with none, so only an id the shared schema accepts becomes the body's context (AAP 0.5.8).
+  const meetupContext =
+    meetupId !== undefined && Uuid.safeParse(meetupId).success ? meetupId : undefined;
   const submit = useMutation({
     mutationFn: (body: ReportRequest): Promise<void> =>
       targetId === null
@@ -63,7 +67,11 @@ export default function ReportScreen(): ReactElement {
   }, [meetupId, router]);
   const failure = submit.isError ? userMessageFor(errorCodeOf(submit.error)) : null;
   const trimmed = reason.trim();
-  const send = (): void => submit.mutate({ reason: trimmed });
+  const send = (): void =>
+    submit.mutate({
+      reason: trimmed,
+      ...(meetupContext === undefined ? {} : { meetupId: meetupContext }),
+    });
   useEffect(() => {
     if (targetId === null) announce(NO_TARGET_MESSAGE);
     else if (failure !== null) announce(failure);

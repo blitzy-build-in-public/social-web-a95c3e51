@@ -3,7 +3,8 @@
 How the API in `apps/api` behaves as this branch stands: the conventions every route follows, an index
 of every route the process serves, why the additive routes exist, and how `openapi.json` is
 regenerated. Routes the contract already defines carry no mark; the routes, error codes,
-response-envelope fields and query parameters this pilot adds to it are marked **Addition** below.
+request-body fields, response-envelope fields and query parameters this pilot adds to it are marked
+**Addition** below.
 
 ## Conventions
 
@@ -152,12 +153,12 @@ traveler still browses the cities and the venues, which is what AAP 0.5.8 requir
 
 ### Users and safety
 
-| Route                      | Auth     | Handler                                                          | Response                                   | Errors (in check order)                                                 | Test                   | Addition     |
-| -------------------------- | -------- | ---------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------- | ---------------------- | ------------ |
-| `GET /users/:userId`       | traveler | `users/routes.ts`, `users/disclosure/{tier,select,serialize}.ts` | `200 AnyTierProfile`, at the viewer's tier | `404 user_not_found` (unknown, deleted, or a block in either direction) | `disclosure.test.ts`   | —            |
-| `GET /users/:userId/photo` | traveler | `users/routes.ts`                                                | WebP bytes (`rawResponse`, no JSON schema) | `404 user_not_found` (also below tier 2)                                | `disclosure.test.ts`   | **Addition** |
-| `POST /users/:id/block`    | traveler | `users/routes.ts`, `users/safety.ts`                             | `204`                                      | `404 user_not_found`                                                    | `users-safety.test.ts` | —            |
-| `POST /users/:id/report`   | traveler | `users/routes.ts`, `users/safety.ts`                             | `204`                                      | `404 user_not_found`                                                    | `users-safety.test.ts` | —            |
+| Route                      | Auth     | Handler                                                          | Response                                   | Errors (in check order)                                                 | Test                   | Addition                  |
+| -------------------------- | -------- | ---------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------- | ---------------------- | ------------------------- |
+| `GET /users/:userId`       | traveler | `users/routes.ts`, `users/disclosure/{tier,select,serialize}.ts` | `200 AnyTierProfile`, at the viewer's tier | `404 user_not_found` (unknown, deleted, or a block in either direction) | `disclosure.test.ts`   | —                         |
+| `GET /users/:userId/photo` | traveler | `users/routes.ts`                                                | WebP bytes (`rawResponse`, no JSON schema) | `404 user_not_found` (also below tier 2)                                | `disclosure.test.ts`   | **Addition**              |
+| `POST /users/:id/block`    | traveler | `users/routes.ts`, `users/safety.ts`                             | `204`                                      | `404 user_not_found`                                                    | `users-safety.test.ts` | —                         |
+| `POST /users/:id/report`   | traveler | `users/routes.ts`, `users/safety.ts`                             | `204`                                      | `404 user_not_found`                                                    | `users-safety.test.ts` | **Addition** (`meetupId`) |
 
 A block also cancels any open meetup of the pair, with `cancelReason` `block`.
 
@@ -361,6 +362,10 @@ request's route table.
   limit and the 30-day anti-farming rule without waiting.
 - **`kind` on the dispute body** — free text cannot reliably mark a `venue_unavailable` dispute, which
   the operator resolves `no_fault` as the penalty-free exit.
+- **`meetupId` on the report body** — the report route names the reported traveler and nothing else, so
+  a report filed from a meetup's chat reached the operator queue with a null meetup; the field carries
+  the meetup the report was filed from, and the API records the pair's most recent shared meetup when
+  it is absent (AAP 0.5.2 `Report.meetupId`).
 - **`counterpartCheckedIn` on `MeetupDto`** — AAP 0.5.4's field list carries the caller's own check-in
   alone, so neither attendee could see whether the other showed up until the meetup settled; the field
   reports the counterpart's pass `CheckIn` row (AAP 0.5.7), which the meetup still holds while it is

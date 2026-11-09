@@ -121,7 +121,10 @@ export async function block(
  * A block in either direction does not prevent a report: the pair most likely to need one is the pair where
  * one side has already blocked the other. A report has no effect on the meetup, on a deposit or on any
  * reputation counter — an operator reads it through `GET /admin/reports` and acts — and it carries the
- * pair's most recent meetup as context, whichever status it holds and `null` when the two never met.
+ * meetup the report was filed from when the caller names one the pair shares, whichever status that meetup
+ * holds, and the pair's most recent shared meetup otherwise, `null` when the two never met (AAP 0.5.2
+ * `Report.meetupId`). A named meetup the pair does not share is ignored rather than refused, so the route
+ * never tells a caller whether a meetup id exists and a bad context never costs the report itself.
  * `createdAt` is written from the injected clock, because the 180-day reason-text clearance of AAP 0.5.2
  * ranges over that column.
  */
@@ -138,22 +141,35 @@ export async function report(
     services,
     async (tx): Promise<string> => {
       await lockLiveTarget(tx, reportedId);
-      const shared = await tx.meetup.findFirst({
-        where: {
-          OR: [
-            { initiatorId: reporterId, recipientId: reportedId },
-            { initiatorId: reportedId, recipientId: reporterId },
-          ],
-        },
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        select: { id: true },
-      });
+      // The pair's meetups in either direction, which is what every context read below is restricted to.
+      const pair: Prisma.MeetupWhereInput = {
+        OR: [
+          { initiatorId: reporterId, recipientId: reportedId },
+          { initiatorId: reportedId, recipientId: reporterId },
+        ],
+      };
+      const named =
+        body.meetupId === undefined
+          ? null
+          : await tx.meetup.findFirst({
+              where: { ...pair, id: body.meetupId },
+              select: { id: true },
+            });
+      // A meetup the pair does not share is no context of theirs, so only the inference below can name one;
+      // the report is still filed, because a bad context must never cost the safety report itself.
+      const context =
+        named ??
+        (await tx.meetup.findFirst({
+          where: pair,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          select: { id: true },
+        }));
       const created = await tx.report.create({
         data: {
           reporterId,
           reportedId,
           reason: body.reason,
-          meetupId: shared?.id ?? null,
+          meetupId: context?.id ?? null,
           createdAt: services.clock.now(),
         },
         select: { id: true },

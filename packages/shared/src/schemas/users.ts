@@ -105,8 +105,17 @@ export const PROFILE_SCHEMA_BY_TIER = {
  * The body of `POST /users/:id/report`, which answers `204` (AAP 0.5.4). The reason is free text
  * capped at `REASON_MAX_CHARS` (500) and is trimmed before it is stored (AAP 0.5.2
  * `Report.reason`); it is operator-only, so the report's own routes never return it.
+ *
+ * `meetupId` is the pilot's addition to the contract's `{ reason }` body: it names the meetup the
+ * report was filed from, which only the caller knows, since the report route carries the reported
+ * traveler's id and nothing else (AAP 0.5.2 `Report.meetupId`, AAP 0.5.8). It is optional, so the
+ * contract's own body still parses unchanged; when it is absent — or names a meetup the pair does
+ * not share — the handler infers the pair's most recent shared meetup instead. The handler answers
+ * `404 user_not_found` and refuses a body this schema rejects with `400 invalid_field`, which is how
+ * a `meetupId` that is not a UUID is refused (AAP 0.5.4).
  */
 export const ReportRequest = z.strictObject({
   reason: z.string().trim().min(1).max(REASON_MAX_CHARS),
+  meetupId: Uuid.optional(),
 });
 export type ReportRequest = z.infer<typeof ReportRequest>;

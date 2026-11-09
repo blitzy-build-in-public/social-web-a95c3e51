@@ -49,13 +49,20 @@ interface BadReportBody {
   readonly body: Record<string, unknown>;
 }
 
-/** The reason is trimmed and capped at `REASON_MAX_CHARS`, and an unknown key is not ignored. */
+/**
+ * The reason is trimmed and capped at `REASON_MAX_CHARS`, a `meetupId` must be a UUID, and an unknown
+ * key is not ignored.
+ */
 const BAD_REPORT_BODIES: readonly BadReportBody[] = [
   { name: 'an empty reason', body: { reason: '' } },
   { name: 'a reason that is only whitespace', body: { reason: '   ' } },
   {
     name: `a reason past the ${REASON_MAX_CHARS}-character cap`,
     body: { reason: 'x'.repeat(REASON_MAX_CHARS + 1) },
+  },
+  {
+    name: 'a meetup id that is not a UUID',
+    body: { reason: 'a fixture complaint', meetupId: 'not-a-uuid' },
   },
   {
     name: 'an unknown key beside the reason',
@@ -118,6 +125,15 @@ async function profileAs(viewer: ActorRef, targetId: string): Promise<RouteRespo
     url: `/v1/users/${targetId}`,
     as: await t.tokenFor(viewer),
   });
+}
+
+/** The meetup a stored report carries, read by the reason that tells the reports of one case apart. */
+async function reportContextOf(reason: string): Promise<string | null> {
+  const row = await t.services.db.report.findFirstOrThrow({
+    where: { reason },
+    select: { meetupId: true },
+  });
+  return row.meetupId;
 }
 
 async function reputationOf(actor: ActorRef) {
@@ -382,6 +398,73 @@ describe('users-safety: block and report (AAP 0.5.3, 0.5.4, 0.5.7)', () => {
         select: { meetupId: true },
       });
       expect(unrelated.meetupId).toBeNull();
+    });
+    it('records the meetup a report names, even when the pair shares a newer one', async () => {
+      const initiator = await makeUser(t, { card: 'none' });
+      const recipient = await makeUser(t, { card: 'none' });
+      const venue = await makeVenue(t, { cityId: CITY });
+      const filedFrom = await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
+      const newer = await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
+      // The inference is ordered by `createdAt` desc, so the second meetup is the one it names.
+      expect(newer.id).not.toBe(filedFrom.id);
+      expect(
+        (
+          await reportAs(initiator, recipient.id, {
+            reason: 'Fixture complaint from the older meetup',
+            meetupId: filedFrom.id,
+          })
+        ).status,
+      ).toBe(204);
+      expect(
+        (await reportAs(initiator, recipient.id, { reason: 'Fixture complaint naming none' }))
+          .status,
+      ).toBe(204);
+      expect(await reportContextOf('Fixture complaint from the older meetup')).toBe(filedFrom.id);
+      expect(await reportContextOf('Fixture complaint naming none')).toBe(newer.id);
+    });
+    it('ignores a named meetup the pair does not share, keeping the inference', async () => {
+      const initiator = await makeUser(t, { card: 'none' });
+      const recipient = await makeUser(t, { card: 'none' });
+      const stranger = await makeUser(t, { card: 'none' });
+      const venue = await makeVenue(t, { cityId: CITY });
+      const shared = await makeMeetup(t, { status: 'completed', initiator, recipient, venue });
+      // One meetup of each participant with the stranger: neither is a meetup of the pair under test.
+      const reportersOther = await makeMeetup(t, {
+        status: 'completed',
+        initiator,
+        recipient: stranger,
+        venue,
+      });
+      const reportedsOther = await makeMeetup(t, {
+        status: 'completed',
+        initiator: stranger,
+        recipient,
+        venue,
+      });
+      expect(
+        (
+          await reportAs(initiator, recipient.id, {
+            reason: "Fixture complaint naming the reporter's other meetup",
+            meetupId: reportersOther.id,
+          })
+        ).status,
+      ).toBe(204);
+      expect(await reportContextOf("Fixture complaint naming the reporter's other meetup")).toBe(
+        shared.id,
+      );
+      // A pair who share no meetup keep a null context even when one of them names their own.
+      const third = await makeUser(t, { card: 'none' });
+      expect(
+        (
+          await reportAs(third, recipient.id, {
+            reason: "Fixture complaint naming the reported traveler's other meetup",
+            meetupId: reportedsOther.id,
+          })
+        ).status,
+      ).toBe(204);
+      expect(
+        await reportContextOf("Fixture complaint naming the reported traveler's other meetup"),
+      ).toBeNull();
     });
   });
 });
