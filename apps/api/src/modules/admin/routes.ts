@@ -34,6 +34,7 @@ import {
   AdminLodgingsResponse,
   AdminReportsResponse,
   AdminVenueDto,
+  AdminVenuesQuery,
   AdminVenuesResponse,
   BookingDetailsDto,
   CitiesResponse,
@@ -347,10 +348,16 @@ export default function adminRoutes(app: App): Promise<void> {
       schema: {
         tags: [ADMIN_TAG],
         security: OPENAPI_SECURITY.bearer,
-        response: { 200: AdminVenuesResponse, 401: ErrorEnvelope, 403: ErrorEnvelope },
+        querystring: AdminVenuesQuery,
+        response: {
+          200: AdminVenuesResponse,
+          400: ErrorEnvelope,
+          401: ErrorEnvelope,
+          403: ErrorEnvelope,
+        },
       },
     },
-    async (request) => listVenues(request.server.services),
+    async (request) => listVenues(request.server.services, request.query),
   );
   app.post(
     '/admin/venues',

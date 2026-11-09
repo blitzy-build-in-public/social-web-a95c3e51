@@ -283,8 +283,20 @@ export const AdminVenueDto = VenueDto.extend({
   secretIssuedAt: IsoDateTime.nullable(),
 });
 export type AdminVenueDto = z.infer<typeof AdminVenueDto>;
-/** The body of `GET /admin/venues`, the venue registry (AAP 0.5.4, requirement 10). */
-export const AdminVenuesResponse = z.object({ items: z.array(AdminVenueDto) });
+/** The query string of `GET /admin/venues`, the operator's venue registry: a strict object, so a parameter this contract does not carry is `400 invalid_field` rather than ignored, which keeps a client's misspelled filter from silently reading the whole registry. `q` searches the venue's name and is trimmed before it is bounded; `limit` defaults to the read's own bound. */
+export const AdminVenuesQuery = z.strictObject({
+  cityId: CitySlug.optional(),
+  q: FreeText.trim().min(1).max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  cursor: Cursor.optional(),
+});
+export type AdminVenuesQuery = z.infer<typeof AdminVenuesQuery>;
+/** One page of `GET /admin/venues`, the venue registry (AAP 0.5.4, requirement 10): every venue in (city, name, id) order, an active partner and a paused one alike, because pausing a venue is a status change rather than a withdrawal from the registry. `total` counts every venue the filters match with the cursor ignored, and counts matching rows rather than DTOs, so a venue with no stored coordinate — which has no `AdminVenueDto`, the DTO requiring `lat` and `lng` — leaves `items` one element shorter than `total`; both extra fields are additive. */
+export const AdminVenuesResponse = z.object({
+  items: z.array(AdminVenueDto),
+  total: Count,
+  nextCursor: Cursor.nullable(),
+});
 export type AdminVenuesResponse = z.infer<typeof AdminVenuesResponse>;
 /** One lodging in the operator registry. `phoneSource` and `doNotCall` are the two operator-managed phone facts: the weekly OpenStreetMap refresh never overwrites a number whose source is `operator`, never clears `doNotCall`, and never touches a manually entered lodging at all. `secretIssuedAt` mirrors `Venue.secretIssuedAt`, the column `packages/db/prisma/schema.prisma` carries. */
 export const AdminLodgingDto = z.object({

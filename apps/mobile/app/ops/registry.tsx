@@ -1,4 +1,4 @@
-/** Operator registry, route `/ops/registry`: venue and lodging onboarding, console secrets and price jobs. The lodging list is the registry's one paged read: its city filter and search run on the server and its rows continue with the read's own cursor. */
+/** Operator registry, route `/ops/registry`: venue and lodging onboarding, console secrets and price jobs. Both lists are paged reads: their city filters and searches run on the server and their rows continue with the read's own cursor. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import type { ViewStyle } from 'react-native';
@@ -25,6 +25,7 @@ import type {
   AdminLodgingDto,
   AdminLodgingsQuery,
   AdminVenueDto,
+  AdminVenuesQuery,
   CityDto,
   PriceJobKind,
 } from '@tablemate/shared';
@@ -61,11 +62,13 @@ const FIXTURE_BADGE = 'Fixture';
 const SECRET_COPIED = 'Secret copied.';
 const LODGINGS_EMPTY = 'No lodgings in this city. Add one below, or wait for the weekly refresh.';
 const LODGINGS_SEARCH_LABEL = 'Search by name';
+const VENUES_SEARCH_LABEL = 'Search venues by name';
 // How long typing pauses before the search term is sent to the server, so one search reads one page rather than one per keystroke (the call-task queue waits the same 300 ms).
-const LODGINGS_SEARCH_DEBOUNCE_MS = 300;
-// The most a search term may carry, which is the bound the contract's own schema puts on `q`: a lodging's name runs to 120 characters, so a term is cut here rather than answered with `400 invalid_field`, and the cut term is a prefix of the name, which matches the same row.
-const LODGINGS_SEARCH_MAX = 80;
+const REGISTRY_SEARCH_DEBOUNCE_MS = 300;
+// The most a search term may carry, which is the bound the contract's own schema puts on `q`: a registry row's name runs to 120 characters, so a term is cut here rather than answered with `400 invalid_field`, and the cut term is a prefix of the name, which matches the same row.
+const REGISTRY_SEARCH_MAX = 80;
 const LODGINGS_MORE = { label: 'Load more lodgings', variant: 'secondary' } as const;
+const VENUES_MORE = { label: 'Load more venues', variant: 'secondary' } as const;
 const SECRET_COPY_FAILED = 'Copy failed. Select the text and copy it yourself.';
 const VENUES_EMPTY = 'No venues in this city. Add one below.';
 const LODGING_CREATE_ID = 'ops-lodging-create';
@@ -177,6 +180,8 @@ type CitySelect = (cityId: string | null) => void;
 type SecretTarget = Readonly<{ id: string; kind: 'venue' | 'lodging'; name: string }>;
 type VenueEdit = { draft: VenueDraft; errors: FieldErrors; id: string; original: VenueDraft };
 type SecretReveal = { kind: SecretTarget['kind']; name: string; secret: string };
+/** The filters both registry reads carry, so one query builder serves the two of them. */
+type RegistryQuery = AdminLodgingsQuery & AdminVenuesQuery;
 type VenueDraft = Readonly<typeof BLANK_DRAFT & { isActivePartner: boolean }>;
 type LodgingDraft = Readonly<typeof BLANK_DRAFT & { kind: LodgingKind; phone: string }>;
 
@@ -195,9 +200,9 @@ const COUNT_FORMATTER = createCountFormatter();
 function formatCount(value: number): string {
   return COUNT_FORMATTER?.format(value) ?? String(value);
 }
-/** The lodging registry's query string: only the filters that are actually set, because the route validates the query with a strict schema and `exactOptionalPropertyTypes` forbids handing it an empty one. `limit` is left out on purpose: the read's own page of 200 is the page this screen has always shown. */
-function lodgingsQuery(cityId: string | null, term: string): AdminLodgingsQuery {
-  const query: AdminLodgingsQuery = {};
+/** A registry's query string on this screen: the two reads carry the same filters, so one builder serves both. Only the filters that are actually set are sent, because each route validates the query with a strict schema and `exactOptionalPropertyTypes` forbids handing it an empty one. `limit` is left out on purpose: each read's own page of 200 is the page this screen has always shown. */
+function registryQuery(cityId: string | null, term: string): RegistryQuery {
+  const query: RegistryQuery = {};
 
   if (cityId !== null) query.cityId = cityId;
   if (term !== '') query.q = term;
@@ -454,17 +459,29 @@ export default function OperatorRegistryScreen(): ReactElement {
   // operator who has recorded no consents, which is precisely the session this area admits, and the
   // venue and lodging forms below select a city from it.
   const cities = useQuery({ queryKey: queryKeys.adminCities, queryFn: apiClient.admin.listCities });
-  const venues = useQuery({ queryFn: apiClient.admin.listVenues, queryKey: queryKeys.adminVenues });
   const [venueFilter, setVenueFilter] = useState<string | null>(null);
+  const [venueSearch, setVenueSearch] = useState('');
+  const [venueTerm, setVenueTerm] = useState('');
+  const pendingVenueSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [lodgingFilter, setLodgingFilter] = useState<string | null>(null);
   const [lodgingSearch, setLodgingSearch] = useState('');
   const [lodgingTerm, setLodgingTerm] = useState('');
   const pendingLodgingSearch = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The filters travel to the server, so the city chips narrow the registry itself rather than a page of it.
+  const venueQuery = useMemo(() => registryQuery(venueFilter, venueTerm), [venueFilter, venueTerm]);
   const lodgingQuery = useMemo(
-    () => lodgingsQuery(lodgingFilter, lodgingTerm),
+    () => registryQuery(lodgingFilter, lodgingTerm),
     [lodgingFilter, lodgingTerm],
   );
+  const venues = useInfiniteQuery({
+    queryKey: [...queryKeys.adminVenues, venueQuery],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      apiClient.admin.listVenues(
+        pageParam === undefined ? venueQuery : { ...venueQuery, cursor: pageParam },
+      ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
   const lodgings = useInfiniteQuery({
     queryKey: [...queryKeys.adminLodgings, lodgingQuery],
     initialPageParam: undefined as string | undefined,
@@ -493,12 +510,21 @@ export default function OperatorRegistryScreen(): ReactElement {
     setLodgingErrors((errors) => withoutField(errors, field));
   const writeVenue = fieldWriter(setVenueDraft, clearVenueError);
   const writeLodging = fieldWriter(setLodgingDraft, clearLodgingError);
-  const venueRows: readonly AdminVenueDto[] = venues.data?.items ?? [];
+  const venueRows: readonly AdminVenueDto[] = (venues.data?.pages ?? []).flatMap(
+    (page) => page.items,
+  );
   const lodgingRows = (lodgings.data?.pages ?? []).flatMap((page) => page.items);
+  const venueTotal = venues.data?.pages[0]?.total ?? 0;
   const lodgingTotal = lodgings.data?.pages[0]?.total ?? 0;
-  const venueShown = venueRows.filter((row) => venueFilter === null || row.cityId === venueFilter);
-  const venuesEmpty = !venues.isPending && venues.error === null && venueShown.length === 0;
+  const venuesEmpty = !venues.isPending && venues.error === null && venueRows.length === 0;
   const lodgingsEmpty = !lodgings.isPending && lodgings.error === null && lodgingRows.length === 0;
+  // What the page holds against what the filters match, which tells an operator that the list is one page of a larger registry. No line when the filters match a single venue: it is on screen already.
+  const venuesCountLine =
+    venueTotal <= 1 ? null : (
+      <Text style={styles.meta} testID="ops-venues-count">
+        {`Showing ${formatCount(venueRows.length)} of ${formatCount(venueTotal)} venues`}
+      </Text>
+    );
   // What the page holds against what the filters match, which tells an operator that the list is one page of a larger registry. No line when the filters match a single lodging: it is on screen already.
   const lodgingsCountLine =
     lodgingTotal <= 1 ? null : (
@@ -506,6 +532,11 @@ export default function OperatorRegistryScreen(): ReactElement {
         {`Showing ${formatCount(lodgingRows.length)} of ${formatCount(lodgingTotal)} lodgings`}
       </Text>
     );
+  const venuesMore = {
+    ...VENUES_MORE,
+    busy: venues.isFetchingNextPage,
+    onPress: () => void venues.fetchNextPage(),
+  };
   const lodgingsMore = {
     ...LODGINGS_MORE,
     busy: lodgings.isFetchingNextPage,
@@ -515,15 +546,17 @@ export default function OperatorRegistryScreen(): ReactElement {
   useFocusEffect(useCallback(() => () => setReveal(null), []));
   useEffect(
     () => () => {
+      if (pendingVenueSearch.current !== null) clearTimeout(pendingVenueSearch.current);
       if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
     },
     [],
   );
   const createVenue = useMutation({
     mutationFn: (body: CreateVenueRequest) => apiClient.admin.createVenue(body),
-    onSuccess: () => {
+    onSuccess: (created) => {
       setVenueDraft(EMPTY_VENUE_DRAFT);
       setVenueErrors(NO_FIELD_ERRORS);
+      showVenue(created.name);
       succeed('Venue created.', queryKeys.adminVenues);
     },
   });
@@ -554,19 +587,41 @@ export default function OperatorRegistryScreen(): ReactElement {
     if (refresh !== undefined) void queryClient.invalidateQueries({ queryKey: refresh });
   }
   const edited = (): void => succeed('Venue updated.', undefined, () => setEdit(null));
+  const refetchVenues = (): void => void venues.refetch();
   const refetchLodgings = (): void => void lodgings.refetch();
+  /** The search term is applied from the change handler after a pause in typing, never from an effect, so one search reads one page rather than one per keystroke; trimming here rather than at the request keeps the field as the operator typed it. */
+  function changeVenueSearch(text: string): void {
+    setVenueSearch(text);
+    if (pendingVenueSearch.current !== null) clearTimeout(pendingVenueSearch.current);
+    pendingVenueSearch.current = setTimeout(() => {
+      pendingVenueSearch.current = null;
+      setVenueTerm(text.trim().slice(0, REGISTRY_SEARCH_MAX));
+    }, REGISTRY_SEARCH_DEBOUNCE_MS);
+  }
   /** The search term is applied from the change handler after a pause in typing, never from an effect, so one search reads one page rather than one per keystroke; trimming here rather than at the request keeps the field as the operator typed it. */
   function changeLodgingSearch(text: string): void {
     setLodgingSearch(text);
     if (pendingLodgingSearch.current !== null) clearTimeout(pendingLodgingSearch.current);
     pendingLodgingSearch.current = setTimeout(() => {
       pendingLodgingSearch.current = null;
-      setLodgingTerm(text.trim().slice(0, LODGINGS_SEARCH_MAX));
-    }, LODGINGS_SEARCH_DEBOUNCE_MS);
+      setLodgingTerm(text.trim().slice(0, REGISTRY_SEARCH_MAX));
+    }, REGISTRY_SEARCH_DEBOUNCE_MS);
+  }
+  /** Puts one venue on the screen: the registry is paged in (city, name, id) order, so the city filter is dropped and the search is left naming the new row, which is what makes the read answer it whatever the registry holds. A search pause still pending is dropped with the term it would have applied. */
+  function showVenue(name: string): void {
+    const term = name.trim().slice(0, REGISTRY_SEARCH_MAX);
+
+    if (pendingVenueSearch.current !== null) {
+      clearTimeout(pendingVenueSearch.current);
+      pendingVenueSearch.current = null;
+    }
+    setVenueFilter(null);
+    setVenueSearch(term);
+    setVenueTerm(term);
   }
   /** Puts one lodging on the screen: the registry is paged in (city, name, id) order, so the city filter is dropped and the search is left naming the new row, which is what makes the read answer it whatever the registry holds. A search pause still pending is dropped with the term it would have applied. */
   function showLodging(name: string): void {
-    const term = name.trim().slice(0, LODGINGS_SEARCH_MAX);
+    const term = name.trim().slice(0, REGISTRY_SEARCH_MAX);
 
     if (pendingLodgingSearch.current !== null) {
       clearTimeout(pendingLodgingSearch.current);
@@ -811,15 +866,23 @@ export default function OperatorRegistryScreen(): ReactElement {
         {readState(cities.error, cities.isPending, () => void cities.refetch(), 'ops-cities')}
         <View style={styles.section}>
           <Text {...{ ...SECTION_HEADING, style: styles.sectionTitle }}>{VENUES_HEADING}</Text>
+          <TextField
+            label={VENUES_SEARCH_LABEL}
+            onChangeText={changeVenueSearch}
+            testID="ops-venues-search"
+            value={venueSearch}
+          />
           {chips(CHIP_GROUPS.venueCity, venueFilter, setVenueFilter)}
-          {readState(venues.error, venues.isPending, () => void venues.refetch(), 'ops-venues')}
+          {venuesCountLine}
+          {readState(venues.error, venues.isPending, refetchVenues, 'ops-venues')}
           {errorBanner(venueFailureMessage, 'ops-venues-failure')}
           {venues.isPending ? (
             <PendingGrid minHeight={viewportHeight} testID="ops-venues-pending" wide={wide} />
           ) : (
-            <View style={cardsStyle}>{venueShown.map(renderVenue)}</View>
+            <View style={cardsStyle}>{venueRows.map(renderVenue)}</View>
           )}
           {venuesEmpty ? <Text style={styles.meta}>{VENUES_EMPTY}</Text> : null}
+          {venues.hasNextPage ? <Button {...venuesMore} testID="ops-venues-more" /> : null}
           {renderVenueForm()}
         </View>
         <View style={styles.section}>

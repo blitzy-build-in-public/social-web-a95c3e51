@@ -27,6 +27,7 @@ import type {
   AdminLodgingsQuery,
   AdminLodgingsResponse,
   AdminVenueDto,
+  AdminVenuesQuery,
   AdminVenuesResponse,
   CreateLodgingRequest,
   CreateVenueRequest,
@@ -69,24 +70,15 @@ const PLACE_REFRESH_ENQUEUE_FAILED = 'place_refresh_enqueue_failed';
 // event so the defect is visible rather than silent.
 const VENUE_LOCATION_MISSING = 'admin_venue_location_missing';
 const LODGING_LOCATION_MISSING = 'admin_lodging_location_missing';
-// A venue registry that came back with more rows than the bound below, logged under its own event so a truncated venue
-// list is visible rather than silently read as a complete one. The line carries the bound and nothing else. The lodging
-// registry needs no such line: it pages, so a page of it is no longer a truncation.
-const ADMIN_VENUES_TRUNCATED = 'admin_venues_truncated';
 
 /**
- * The venue registry's bound, and the page size {@link listLodgings} answers when its query names no `limit` — the same
- * batch size the sibling operator queue reads use (`ADMIN_CALL_TASKS_LIMIT`, `ADMIN_LODGING_CLAIMS_LIMIT`). It is also
- * the longest id list {@link listVenues} hands to `readPoints` as one `uuid[]` bind; the lodging read binds the ids of
- * the page its query asked for, which the contract bounds at 500.
- * Both registries answer in (city, name, id) order, so a bound on it answers deterministically: the same rows come back
- * from every read. For {@link listVenues} that bound is still the whole answer — AAP 0.5.4 carries no query for the venue
- * registry — so a larger one is made visible through {@link ADMIN_VENUES_TRUNCATED}. {@link listLodgings} reads the same
- * order as the page size of a read continued by a keyset cursor, so every lodging is reachable and the row past the page
- * is what says another page follows.
- * Each read asks for one row beyond its bound and treats that row as a sentinel: it is dropped before the ids reach
- * `readPoints`, and its presence is what reports the truncation — or, for the lodging read, what the next page's cursor
- * is built from.
+ * The page size both registry reads answer when their query names no `limit` — the same batch size the sibling operator
+ * queue reads use (`ADMIN_CALL_TASKS_LIMIT`, `ADMIN_LODGING_CLAIMS_LIMIT`).
+ * Both registries answer in (city, name, id) order as the page size of a read continued by a keyset cursor, so a bound on
+ * it answers deterministically and every row stays reachable: each read asks for one row beyond its page and treats that
+ * row as a sentinel, which is dropped before the ids reach `readPoints` and is what the next page's cursor is built from.
+ * A page's ids — at most the `limit` its query names, which the contract bounds at 500 — are what reach `readPoints` as
+ * one `uuid[]` bind.
  */
 const ADMIN_REGISTRY_LIMIT = 200;
 
@@ -181,22 +173,46 @@ export function toAdminLodgingDto(row: AdminLodgingRow, point: LatLng): AdminLod
  * Ordered by city, then name, with the id breaking a same-name tie so two reads agree. Active partners and paused ones
  * are both listed — pausing a venue is a status change, not a withdrawal from the registry — and a fixture venue is
  * listed only in `test` and `demo`, because the fixture guard narrows this read to `isFixture: false` everywhere else.
- * The venue registry's route carries no query at all, so this read is bounded rather than paged: the first
- * {@link ADMIN_REGISTRY_LIMIT} rows in that order are answered, and a registry holding more than that is reported
- * through `admin_venues_truncated` rather than answered as if it were complete.
+ * Paged the way {@link listLodgings} is: `cityId` and `q` narrow the registry itself rather than one page of it, `total`
+ * says how many rows the filters match, and the row past the page is the sentinel the next page's cursor is built from, so
+ * every venue is reachable whatever the registry holds. A venue with no stored point has no DTO to answer with, so it is
+ * left out and reported under {@link VENUE_LOCATION_MISSING} while still counting toward the page it sits in.
+ * @throws {AppError} `invalid_field` (400) for a cursor this read did not write, or one naming a venue it can no longer
+ *   continue from.
  */
-export async function listVenues(services: OnboardingServices): Promise<AdminVenuesResponse> {
-  const rows = await services.db.venue.findMany({
-    select: VENUE_SELECT,
-    orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
-    take: ADMIN_REGISTRY_LIMIT + 1,
-  });
-  // The row past the bound is a sentinel: its presence says there are more venues than this read answers, and it is dropped here so the id list below can never exceed ADMIN_REGISTRY_LIMIT.
-  const truncated = rows.length > ADMIN_REGISTRY_LIMIT;
-  const page = truncated ? rows.slice(0, ADMIN_REGISTRY_LIMIT) : rows;
-  if (truncated) {
-    services.logger.warn({ event: ADMIN_VENUES_TRUNCATED, limit: ADMIN_REGISTRY_LIMIT });
+export async function listVenues(
+  services: OnboardingServices,
+  query: AdminVenuesQuery,
+): Promise<AdminVenuesResponse> {
+  const limit = query.limit ?? ADMIN_REGISTRY_LIMIT;
+  const filters: Prisma.VenueWhereInput[] = [];
+  if (query.cityId !== undefined) {
+    filters.push({ cityId: query.cityId });
   }
+  if (query.q !== undefined) {
+    filters.push({ name: { contains: query.q, mode: 'insensitive' } });
+  }
+  // Taken before the keyset half joins the list, and as a copy of it: `total` is how many venues the request's filters match, never how many of them follow the cursor.
+  const matching: Prisma.VenueWhereInput = { AND: [...filters] };
+  if (query.cursor !== undefined) {
+    const payload = RegistriesCursor.safeParse(decodeCursorPayload(query.cursor));
+    if (!payload.success) {
+      throw new AppError('invalid_field', 'The cursor is malformed.');
+    }
+    filters.push(afterVenueCursor(await venueCursorBoundary(services, payload.data.i)));
+  }
+  const [rows, total] = await Promise.all([
+    services.db.venue.findMany({
+      where: { AND: filters },
+      select: VENUE_SELECT,
+      orderBy: [{ cityId: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+      take: limit + 1,
+    }),
+    services.db.venue.count({ where: matching }),
+  ]);
+  // The row past the page is the sentinel: its presence says another page follows, it is dropped before the ids reach `readPoints`, and the cursor continues after the last row the page holds.
+  const page = rows.slice(0, limit);
+  const boundary = rows.length > limit ? page[page.length - 1] : undefined;
   const points = await readPoints(
     services.db,
     'venue',
@@ -213,19 +229,23 @@ export async function listVenues(services: OnboardingServices): Promise<AdminVen
     }
     items.push(toAdminVenueDto(row, point));
   }
-  return { items };
+  return {
+    items,
+    total,
+    nextCursor: boundary === undefined ? null : encodeRegistryCursor(boundary.id),
+  };
 }
 
 /**
  * A strict object, so a cursor carrying a second key — or a payload of any other shape — is refused rather than
  * interpreted, and the field is named `i` to keep the encoded form short as the shared keyset codecs do. The id alone is
- * all the cursor can hold: `Cursor` is bounded at 200 characters and a lodging's name runs to 120, so a payload carrying
- * the row's whole sort key would not survive the bound. The row's own `(city, name)` are read back from the database
- * instead, for the reason {@link lodgingCursorBoundary} states.
+ * all the cursor can hold: `Cursor` is bounded at 200 characters and a registry row's name runs to 120, so a payload
+ * carrying the row's whole sort key would not survive the bound. The row's own `(city, name)` are read back from the
+ * database instead, for the reason {@link venueCursorBoundary} and {@link lodgingCursorBoundary} state.
  */
-const LodgingsCursor = z.strictObject({ i: Uuid });
+const RegistriesCursor = z.strictObject({ i: Uuid });
 
-interface LodgingsCursorPosition {
+interface RegistryCursorPosition {
   readonly cityId: string;
   readonly name: string;
   readonly id: string;
@@ -249,8 +269,43 @@ function decodeCursorPayload(value: string): unknown {
   }
 }
 
-function encodeLodgingsCursor(id: string): string {
-  return Buffer.from(JSON.stringify(LodgingsCursor.parse({ i: id })), 'utf8').toString('base64url');
+function encodeRegistryCursor(id: string): string {
+  return Buffer.from(JSON.stringify(RegistriesCursor.parse({ i: id })), 'utf8').toString(
+    'base64url',
+  );
+}
+
+/**
+ * The key is read from the row rather than carried in the cursor: what reaches the statement as a bound is this row's
+ * stored `(cityId, name)`, never text the client supplied, so no caller can steer the next page to a position the
+ * previous one did not end at.
+ * @throws {AppError} `invalid_field` (400) when the cursor names no venue the process may read, which is the contract's
+ *   answer for a query value it cannot use — an id that names no venue, or a fixture venue outside `test` and `demo`,
+ *   leaves a cursor this read cannot continue from.
+ */
+async function venueCursorBoundary(
+  services: OnboardingServices,
+  id: string,
+): Promise<RegistryCursorPosition> {
+  const row = await services.db.venue.findUnique({
+    where: { id },
+    select: { cityId: true, name: true },
+  });
+  if (row === null) {
+    throw new AppError('invalid_field', 'The cursor names no venue this registry lists.');
+  }
+  return { cityId: row.cityId, name: row.name, id };
+}
+
+/** The keyset half of the venue read: every row ordered after `position` by `(cityId asc, name asc, id asc)`. */
+function afterVenueCursor(position: RegistryCursorPosition): Prisma.VenueWhereInput {
+  return {
+    OR: [
+      { cityId: { gt: position.cityId } },
+      { cityId: position.cityId, name: { gt: position.name } },
+      { cityId: position.cityId, name: position.name, id: { gt: position.id } },
+    ],
+  };
 }
 
 /**
@@ -264,7 +319,7 @@ function encodeLodgingsCursor(id: string): string {
 async function lodgingCursorBoundary(
   services: OnboardingServices,
   id: string,
-): Promise<LodgingsCursorPosition> {
+): Promise<RegistryCursorPosition> {
   const row = await services.db.lodging.findUnique({
     where: { id },
     select: { cityId: true, name: true },
@@ -276,7 +331,7 @@ async function lodgingCursorBoundary(
 }
 
 /** The keyset half of the lodging read: every row ordered after `position` by `(cityId asc, name asc, id asc)`. */
-function afterLodgingCursor(position: LodgingsCursorPosition): Prisma.LodgingWhereInput {
+function afterLodgingCursor(position: RegistryCursorPosition): Prisma.LodgingWhereInput {
   return {
     OR: [
       { cityId: { gt: position.cityId } },
@@ -313,7 +368,7 @@ export async function listLodgings(
   // Taken before the keyset half joins the list, and as a copy of it: `total` is how many lodgings the request's filters match, never how many of them follow the cursor.
   const matching: Prisma.LodgingWhereInput = { AND: [...filters] };
   if (query.cursor !== undefined) {
-    const payload = LodgingsCursor.safeParse(decodeCursorPayload(query.cursor));
+    const payload = RegistriesCursor.safeParse(decodeCursorPayload(query.cursor));
     if (!payload.success) {
       throw new AppError('invalid_field', 'The cursor is malformed.');
     }
@@ -349,7 +404,7 @@ export async function listLodgings(
   return {
     items,
     total,
-    nextCursor: boundary === undefined ? null : encodeLodgingsCursor(boundary.id),
+    nextCursor: boundary === undefined ? null : encodeRegistryCursor(boundary.id),
   };
 }
 

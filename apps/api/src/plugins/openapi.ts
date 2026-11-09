@@ -25,7 +25,8 @@ import type { App } from '../app.ts';
  * The tag every route groups under, in the order the document lists them. A route names one through `schema.tags`,
  * which keeps the emitted operations grouped the way `docs/api/README.md` indexes them; an untagged route still
  * appears, under no tag. The order below is document order: the public and account routes first, the partner consoles
- * and the operator area next, and the provider callbacks after them.
+ * and the operator area next, and the provider callbacks after them. Every name below is one an operation actually
+ * carries: a tag no route names reaches the document as an empty group in every generated client.
  */
 export const OPENAPI_TAGS = [
   'health',
@@ -35,7 +36,6 @@ export const OPENAPI_TAGS = [
   'proofs',
   'cities',
   'meetups',
-  'payments',
   'consoles',
   'messaging',
   'analytics',
@@ -43,7 +43,6 @@ export const OPENAPI_TAGS = [
   'lodgings',
   'admin',
   'webhooks',
-  'test',
 ] as const;
 
 export type OpenApiTag = (typeof OPENAPI_TAGS)[number];

@@ -52,6 +52,7 @@ import {
 import type {
   AdminCallTasksQuery,
   AdminLodgingsQuery,
+  AdminVenuesQuery,
   CheckInRequest,
   ClientEventRequest,
   ConsentsRequest,
@@ -612,8 +613,11 @@ export const apiClient = {
         response: AdminCrawlDomainDto,
       }),
 
-    listVenues: (): Promise<AdminVenuesResponse> =>
-      request('GET', '/admin/venues', { response: AdminVenuesResponse }),
+    listVenues: (query: AdminVenuesQuery = {}): Promise<AdminVenuesResponse> =>
+      request('GET', '/admin/venues', {
+        response: AdminVenuesResponse,
+        query: { cityId: query.cityId, q: query.q, limit: query.limit, cursor: query.cursor },
+      }),
 
     createVenue: (body: CreateVenueRequest): Promise<AdminVenueDto> =>
       request('POST', '/admin/venues', { body, response: AdminVenueDto }),

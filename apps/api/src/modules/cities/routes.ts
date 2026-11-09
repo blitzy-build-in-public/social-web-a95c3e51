@@ -48,8 +48,8 @@ type VenueListServices = Pick<AppServices, 'db' | 'env' | 'logger'>;
  *
  * AAP 0.5.4 fixes no cursor for `GET /cities/:cityId/venues`, so this read is capped rather than paged: the first
  * {@link CITY_VENUES_LIMIT} venues in (name, id) order are answered, and a city holding more is reported through
- * `city_venues_truncated`. The list is operator-driven rather than ingestion-driven, so the bound the admin registry reads
- * use (`ADMIN_REGISTRY_LIMIT`) answers here.
+ * `city_venues_truncated`. The list is operator-driven rather than ingestion-driven, so this read names the same default
+ * page size as the two admin registry reads (`ADMIN_REGISTRY_LIMIT`), which page on where this one stops.
  */
 export const CITY_VENUES_LIMIT = 200;
 

@@ -1784,6 +1784,103 @@ const REGISTRY_BAD_QUERIES = rows<{
   { name: 'a search term holding a NUL byte', query: { q: NUL_TEXT } },
 ]);
 
+/** `GET /admin/venues` as the operator, parsed into the contract's own page (AAP 0.5.4). */
+async function venueRegistry(query: Record<string, string> = {}): Promise<AdminVenuesResponse> {
+  const response = await asOperator('GET', '/v1/admin/venues', { query });
+  expect(response.status, response.body).toBe(200);
+  return AdminVenuesResponse.parse(response.json());
+}
+
+/** One fixture venue under a name of the test's own: {@link VenueFixture} plus the name its place in the read's order is known by. */
+interface NamedVenue extends VenueFixture {
+  readonly name: string;
+}
+
+/** One fixture venue under a name the read's own (city, name, id) order is known by. */
+async function namedVenue(cityId: string, name: string): Promise<NamedVenue> {
+  const row = await makeVenue(t, { cityId });
+  await t.services.db.venue.update({ where: { id: row.id }, data: { name } });
+  return { ...row, name };
+}
+
+/**
+ * The name the case's own venue — the one `beforeEach` created — is given, so the place the fifth row holds in the read's own
+ * order is known rather than guessed from its generated name. It sorts between the two Lisbon names the fixture adds around it.
+ */
+const HOME_VENUE_NAME = 'Pastelaria do Bairro';
+
+/**
+ * The registry the venue filter cases narrow: the case's own venue under a known name, three named venues in Lisbon and one in
+ * Mexico City, whose names fix the order the answer must come back in without any case reading an id back.
+ */
+interface VenueRegistryFixture {
+  readonly home: string;
+  readonly central: NamedVenue;
+  readonly miradouro: NamedVenue;
+  readonly alfama: NamedVenue;
+  readonly roma: NamedVenue;
+}
+
+async function venueRegistryFixture(): Promise<VenueRegistryFixture> {
+  await t.services.db.venue.update({ where: { id: venue.id }, data: { name: HOME_VENUE_NAME } });
+  return {
+    home: HOME_VENUE_NAME,
+    central: await namedVenue(LISBON, 'Cafe Central'),
+    miradouro: await namedVenue(LISBON, 'Bar Miradouro'),
+    alfama: await namedVenue(LISBON, 'Taberna Alfama'),
+    roma: await namedVenue(MEXICO_CITY, 'Cantina Roma Norte'),
+  };
+}
+
+/** One filter over that registry: the query it sends and the rows that must come back. */
+const VENUE_REGISTRY_FILTERS = rows<{
+  readonly name: string;
+  readonly query: (fixture: VenueRegistryFixture) => Record<string, string>;
+  readonly expected: (fixture: VenueRegistryFixture) => readonly string[];
+}>([
+  {
+    name: 'the city the venue stands in',
+    query: () => ({ cityId: MEXICO_CITY }),
+    expected: (fixture) => [fixture.roma.id],
+  },
+  {
+    name: "the venue's name, in whatever case it is typed",
+    query: () => ({ q: 'ALFAMA' }),
+    expected: (fixture) => [fixture.alfama.id],
+  },
+  {
+    name: 'a city and a search term together',
+    query: () => ({ cityId: LISBON, q: 'miradouro' }),
+    expected: (fixture) => [fixture.miradouro.id],
+  },
+]);
+
+/**
+ * Queries the venue registry read refuses before it runs (AAP 0.5.4): a cursor this read did not write — the queue read's own
+ * payload shape, an id that is not an id, and an id no venue carries — a page size outside the contract's bound, and a
+ * parameter the registry does not carry.
+ */
+const VENUE_REGISTRY_BAD_QUERIES = rows<{
+  readonly name: string;
+  readonly query: Record<string, string>;
+}>([
+  { name: 'a cursor that is not a cursor', query: { cursor: 'not-a-cursor' } },
+  {
+    name: "a cursor of the call queue's shape",
+    query: { cursor: cursorShaped({ t: null, i: randomUUID() }) },
+  },
+  { name: 'a cursor whose id is not an id', query: { cursor: cursorShaped({ i: 'nope' }) } },
+  {
+    name: 'a cursor naming no venue the registry lists',
+    query: { cursor: cursorShaped({ i: randomUUID() }) },
+  },
+  { name: 'a page size below the one the contract allows', query: { limit: '0' } },
+  { name: 'a page size above the one the contract allows', query: { limit: '501' } },
+  { name: 'a page size that is not a number', query: { limit: 'many' } },
+  { name: 'a parameter the registry does not carry', query: { city: LISBON } },
+  { name: 'a search term holding a NUL byte', query: { q: NUL_TEXT } },
+]);
+
 /** A venue an operator enters, with the two free-text fields left to the row that supplies them. */
 function venueEntry(name: string, address: string): Record<string, unknown> {
   return { cityId: LISBON, name, address, lat: 38.71, lng: -9.14 };
@@ -2058,6 +2155,120 @@ describe('venue and lodging onboarding (AAP 0.5.4, 0.5.6)', () => {
     // own bound rather than hanging.
     for (let page = 0; page <= total; page += 1) {
       const answer = await lodgings(cursor === null ? {} : { cursor });
+      expect(answer.total).toBe(total);
+      seen.push(...answer.items.map((item) => item.id));
+      cursor = answer.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(whole.items.map((item) => item.id));
+    expect(seen).toContain(created.id);
+    expect(new Set(seen).size).toBe(total);
+    expect(cursor).toBeNull();
+  });
+
+  it('answers every venue when the registry fits one page, in (city, name, id) order', async () => {
+    const fixture = await venueRegistryFixture();
+    // No query at all, which is what a client that knows none of the filters sends: one page in the
+    // read's own order — city first, then the name — with the count the filters match and no cursor,
+    // because the page holds the whole registry (AAP 0.5.4).
+    const page = await venueRegistry();
+    expect(page.total).toBe(5);
+    expect(page.nextCursor).toBeNull();
+    expect(page.items.map((item) => item.name)).toEqual([
+      fixture.miradouro.name,
+      fixture.central.name,
+      fixture.home,
+      fixture.alfama.name,
+      fixture.roma.name,
+    ]);
+    expect(page.items.map((item) => item.cityId)).toEqual([
+      LISBON,
+      LISBON,
+      LISBON,
+      LISBON,
+      MEXICO_CITY,
+    ]);
+  });
+
+  it.each(VENUE_REGISTRY_FILTERS)('narrows the venue registry by $name', async (row) => {
+    const fixture = await venueRegistryFixture();
+    const expected = row.expected(fixture);
+    const page = await venueRegistry(row.query(fixture));
+    expect(page.items.map((item) => item.id)).toEqual(expected);
+    // The count is of the rows the filters match, never of the rows the page happens to hold.
+    expect(page.total).toBe(expected.length);
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it.each(VENUE_REGISTRY_BAD_QUERIES)('refuses $name with 400 invalid_field', async (row) => {
+    const response = await asOperator('GET', '/v1/admin/venues', { query: row.query });
+    expectError(response, 400, 'invalid_field');
+  });
+
+  it('pages a venue registry larger than one page, so the venue just entered stays reachable', async () => {
+    for (let seeded = 0; seeded < REGISTRY_PAGE - 1; seeded += 1) {
+      await makeVenue(t, { cityId: LISBON });
+    }
+    // One row of a later city, so the walk below crosses a city boundary and the city filter has two
+    // cities to choose between.
+    const elsewhere = await namedVenue(MEXICO_CITY, 'Cantina Roma Norte');
+    // The row the QA report could not reach: entered through the route an operator uses, with a long name that sorts after every
+    // fixture name, so it is the 201st Lisbon row and no first page holds it.
+    const entered = await asOperator('POST', '/v1/admin/venues', {
+      body: {
+        cityId: LISBON,
+        name: `zz QA Long Name ${randomUUID().slice(0, 8)} ${'Venue '.repeat(8)}`,
+        address: '6 Fixture Street',
+        lat: 38.72,
+        lng: -9.15,
+      },
+    });
+    expect(entered.status, entered.body).toBe(201);
+    const created = AdminVenueDto.parse(entered.json());
+    const total = REGISTRY_PAGE + 2;
+    const first = await venueRegistry();
+    // One page holds exactly the bound, in (city, name, id) order, and says how many rows it leaves
+    // behind: the count is of the whole registry, not of the page (AAP 0.5.4).
+    expect(first.items).toHaveLength(REGISTRY_PAGE);
+    expect(first.total).toBe(total);
+    expect(first.nextCursor).not.toBeNull();
+    const cities = first.items.map((item) => item.cityId);
+    const names = first.items.map((item) => item.name);
+    expect(cities).toEqual([...cities].sort());
+    expect(names).toEqual([...names].sort());
+    expect(first.items.map((item) => item.id)).not.toContain(created.id);
+    // The search is what makes a row reachable whatever the registry holds, which is the read the
+    // registry screen sends once a venue has been entered (AAP 0.5.4).
+    const searched = await venueRegistry({ q: created.name });
+    expect(searched.total).toBe(1);
+    expect(searched.items.map((item) => item.id)).toEqual([created.id]);
+    // The city filter narrows the registry itself rather than one page of it: Lisbon holds the bound
+    // plus the row just entered, so it still pages, and the later city holds its one row.
+    const lisbon = await venueRegistry({ cityId: LISBON });
+    expect(lisbon.total).toBe(REGISTRY_PAGE + 1);
+    expect(lisbon.items).toHaveLength(REGISTRY_PAGE);
+    expect(lisbon.nextCursor).not.toBeNull();
+    const mexico = await venueRegistry({ cityId: MEXICO_CITY });
+    expect(mexico.total).toBe(1);
+    expect(mexico.items.map((item) => item.id)).toEqual([elsewhere.id]);
+    expect(mexico.nextCursor).toBeNull();
+    // A page size the query names is the page the read answers, while the count stays the registry's.
+    const limited = await venueRegistry({ limit: '3' });
+    expect(limited.items).toHaveLength(3);
+    expect(limited.total).toBe(total);
+    expect(limited.nextCursor).not.toBeNull();
+    // Walking the cursor reproduces the whole registry row for row: the read answered in one page is
+    // the yardstick, so a cursor that skipped, repeated or reordered a row fails here, and the walk
+    // reaches the row the first page left out and ends on a null cursor (AAP 0.5.4).
+    const whole = await venueRegistry({ limit: '500' });
+    expect(whole.items).toHaveLength(total);
+    expect(whole.nextCursor).toBeNull();
+    const seen = first.items.map((item) => item.id);
+    let cursor: string | null = first.nextCursor;
+    // One iteration per remaining page and one more, so a cursor that never ends fails on the loop's
+    // own bound rather than hanging.
+    for (let page = 0; page <= total; page += 1) {
+      const answer = await venueRegistry(cursor === null ? {} : { cursor });
       expect(answer.total).toBe(total);
       seen.push(...answer.items.map((item) => item.id));
       cursor = answer.nextCursor;

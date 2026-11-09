@@ -106,7 +106,7 @@ function toNativePath(pathOrUri: string): string | null {
   }
 }
 
-/** True when the value is exactly the seven public signals, every one of them a decimal string. */
+/** True when the value is exactly the seven public signals, every one of them a string; each signal's field-element form is `ProofSubmission`'s rule, applied in `apps/mobile/src/zk/prover.ts`. */
 function isSignalList(value: unknown): value is string[] {
   return (
     Array.isArray(value) &&

@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
+import { createPrismaClient, type DbClient } from '@tablemate/db';
 import { JOB, QUEUE, disputeEscalateJobId } from '@tablemate/server-core';
 import {
   AdminDisputesResponse,
@@ -53,6 +54,8 @@ import {
   type ProxyControl,
   type StripeEvent,
 } from '../support/stripe-proxy/state.ts';
+import type { AppServices } from '../../src/app.ts';
+import { listDisputes } from '../../src/modules/admin/disputes.ts';
 
 const CITY = 'lisbon';
 
@@ -442,6 +445,47 @@ describe(`${MODE} dispute deadline and escalation`, () => {
     // The meetup is untouched by the pass: an open dispute postpones it (AAP 0.5.3).
     expect((await meetupRow(pair.meetupId)).status).toBe('locked');
     expect(await overdueFlag(op, disputeId)).toBe(true);
+  });
+});
+
+/** The environment the second policy stands for: one that may neither write nor read fixture rows. */
+const REFUSING_ENV = 'staging' as const;
+
+/**
+ * The queue's fixture filter (AAP 0.5.2). `disputeSource` joins `venue`, and a raw statement is a read the guarded
+ * client's fixture extension does not reach, so that join carries the shared predicate itself.
+ *
+ * The refusing read drives the module's exported {@link listDisputes} over a client built for an environment outside
+ * `test` and `demo` rather than a second app, because the harness cannot build one: `buildApp` refuses a fault
+ * injector outside `APP_ENV=test` and the factory always supplies one.
+ */
+describe(`${MODE} dispute queue fixture policy`, () => {
+  let refusing: DbClient;
+
+  beforeAll(() => {
+    refusing = createPrismaClient({ databaseUrl: inject('databaseUrl'), appEnv: REFUSING_ENV });
+  });
+
+  afterAll(async () => {
+    await refusing.$disconnect();
+  });
+
+  it('lists a dispute at a fixture venue where fixtures are permitted and filters it out where they are not', async () => {
+    const pair = await lockedPair();
+    const op = await operator();
+    const filed = await fileAs(pair.initiator, pair.meetupId);
+    const disputeId = DisputeResponse.parse(filed.json()).disputeId;
+    // The app's own read answers at APP_ENV=test, where the fixture venue is served.
+    expect((await adminDisputes(op)).items.map((item) => item.id)).toContain(disputeId);
+    // The same statement through a process that may not read a fixture row at all.
+    const services: AppServices = {
+      ...t.services,
+      db: refusing,
+      env: { ...t.services.env, APP_ENV: REFUSING_ENV },
+    };
+    const filtered = await listDisputes(services, t.services.clock.now());
+    expect(filtered.items.filter((item) => item.id === disputeId)).toEqual([]);
+    expect(filtered.items).toEqual([]);
   });
 });
 

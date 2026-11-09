@@ -15,12 +15,13 @@
  * from a clock of this file's own.
  */
 
-import { Prisma, type DbTx } from '@tablemate/db';
+import { Prisma, fixturePredicate, type DbTx } from '@tablemate/db';
 import type { Dispute } from '@tablemate/db';
 import { DisputeOutcome } from '@tablemate/shared';
 import type {
   AdminDisputeDto,
   AdminDisputesResponse,
+  AppEnv,
   CheckInResult,
   DisputeKind,
   DisputeStatus,
@@ -145,8 +146,13 @@ function checkInResult(role: ParticipantRole): Prisma.Sql {
  * its deadline has passed, and a dispute the `dispute-escalate-<disputeId>` job has flagged stays flagged even
  * before the deadline. `now` binds as a parameter cast to `timestamptz`. `reason` is read only to be mapped, never
  * logged.
+ *
+ * The statement is raw SQL, which the guarded client's fixture filter does not reach, so the `venue` join carries
+ * the shared predicate itself: outside `test` and `demo` a meetup at a fixture venue is not listed and its dispute
+ * is not found (AAP 0.5.2). The predicate rides in the join's `ON` clause because this statement has no `WHERE` of
+ * its own — each caller appends its own — and an inner join filters identically either way.
  */
-function disputeSource(now: Date): Prisma.Sql {
+function disputeSource(now: Date, appEnv: AppEnv): Prisma.Sql {
   return Prisma.sql`
     SELECT
       "d"."id" AS "id",
@@ -166,7 +172,7 @@ function disputeSource(now: Date): Prisma.Sql {
       ${checkInResult('recipient')} AS "recipientCheckIn"
     FROM "dispute" "d"
     JOIN "meetup" "m" ON "m"."id" = "d"."meetup_id"
-    JOIN "venue" "v" ON "v"."id" = "m"."venue_id"
+    JOIN "venue" "v" ON "v"."id" = "m"."venue_id" AND ${fixturePredicate(appEnv, 'v')}
     LEFT JOIN "user" "ui" ON "ui"."id" = "m"."initiator_id"
     LEFT JOIN "user" "ur" ON "ur"."id" = "m"."recipient_id"
   `;
@@ -190,7 +196,7 @@ export async function listDisputes(
   now: Date,
 ): Promise<AdminDisputesResponse> {
   const rows = await services.db.$queryRaw<DisputeQueueRow[]>(Prisma.sql`
-    ${disputeSource(now)}
+    ${disputeSource(now, services.env.APP_ENV)}
     WHERE "d"."status" = 'open'
        OR "d"."id" IN (
          SELECT "r"."id"
@@ -212,7 +218,7 @@ async function findDisputeRow(
   now: Date,
 ): Promise<DisputeQueueRow | null> {
   const rows = await services.db.$queryRaw<DisputeQueueRow[]>(Prisma.sql`
-    ${disputeSource(now)}
+    ${disputeSource(now, services.env.APP_ENV)}
     WHERE "d"."id" = ${disputeId}::uuid
   `);
   return rows[0] ?? null;
