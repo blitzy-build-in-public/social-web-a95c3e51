@@ -12,10 +12,11 @@
  *
  * Three properties the cases below are built around:
  *
- *  - **Nothing is enumerated.** A known address and an unknown one are answered identically, so
- *    neither the request path's side effects nor its timing can tell them apart (AAP 0.5.4). The one
- *    answer that does vary with an address is the rate limiter's: five links an hour for a single
- *    address, refused `429 rate_limited` with `Retry-After`.
+ *  - **Nothing is enumerated.** A known address and an unknown one are answered identically: the
+ *    same `202` with no body, for a link written or, for an account that has requested deletion,
+ *    dropped by the write fence (AAP 0.5.3, 0.5.4). The one answer that does vary with an address is
+ *    the rate limiter's: five links an hour for a single address, refused `429 rate_limited` with
+ *    `Retry-After`.
  *  - **A session is a row, and a rotated token is undone by revocation.** The refresh pair rotates
  *    on every use, a rotated token presented again revokes the account's whole session family, and
  *    logout ends one session at once — which is why the access token stops working on the very next
@@ -276,6 +277,39 @@ describe('POST /v1/auth/magic-link', () => {
     expect(payload).not.toContain(email);
     expect(payload).not.toContain(token);
   });
+
+  it('drops the write for an account that has requested deletion, and serves the next address', async () => {
+    const deleting = testEmail();
+    const signedIn = await signIn(t, deleting);
+    await t.services.db.user.update({
+      where: { id: signedIn.userId },
+      data: { deletionRequestedAt: t.time.now() },
+    });
+
+    const written = (await linkRows(deleting)).map((row) => row.id);
+    const queued = await t.services.db.outboxMessage.count();
+
+    // The same bare `202` an unknown address gets: the write fence is a dropped write and never a
+    // refusal, so a caller cannot tell this address from one with no account (AAP 0.5.3, 0.5.4).
+    const answer = await postMagicLink(deleting);
+    expect(answer.status).toBe(202);
+    expect(answer.body).toBe('');
+
+    // Neither the row holding the address's ciphertext and lookup hash nor the outbox row that would
+    // mail its link: the ciphertext stays out of a table the erasure job does not reach (AAP 0.5.2,
+    // 0.5.3).
+    expect((await linkRows(deleting)).map((row) => row.id)).toEqual(written);
+    expect(await t.services.db.outboxMessage.count()).toBe(queued);
+
+    // The fence belongs to that one address: the next one still gets its row and its outbox row.
+    const fresh = await requestLink(testEmail());
+    const messages = await t.services.db.outboxMessage.findMany();
+    expect(messages).toHaveLength(queued + 1);
+    expect(messages.map((message) => message.payload)).toContainEqual({
+      kind: 'magic_link',
+      magicLinkTokenId: fresh.id,
+    });
+  });
 });
 
 describe('POST /v1/auth/verify', () => {
@@ -362,12 +396,14 @@ describe('POST /v1/auth/verify', () => {
   it('refuses a sign-in for an account that has requested deletion', async () => {
     const email = testEmail();
     const signedIn = await signIn(t, email);
+    // Requested while the account may still be written to: past the next line the request path drops
+    // the write under the same fence, which the dropped-write case above pins (AAP 0.5.3).
+    const row = await requestLink(email);
     await t.services.db.user.update({
       where: { id: signedIn.userId },
       data: { deletionRequestedAt: t.time.now() },
     });
 
-    const row = await requestLink(email);
     expectError(await postVerify(deliveryToken(row)), 401, 'token_invalid');
 
     // The refusal rolled its consumption back, so nothing the fence refused was written (AAP 0.5.3).

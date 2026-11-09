@@ -23,6 +23,7 @@ import {
   createLogger,
   createTestClock,
   loadApiEnv,
+  sanitizeLogMessage,
   systemClock,
 } from '@tablemate/server-core';
 
@@ -146,6 +147,13 @@ function loadEnvironment(): ApiEnv {
  * whose registries and issuer records disagree never begins accepting proofs it would verify against
  * the wrong root.
  *
+ * The refusal is logged under `detail`, never under `reason`: the logger's redaction list censors
+ * `reason` because a dispute or a report carries free text there, and the reason a process refused to
+ * start is the one thing an operator has to read back, so it travels under a name the list does not
+ * cover — the rule `guardReason` and `dropReason` follow (AAP 0.11.1). The text is an error's, and a
+ * check that compares files on disk quotes the file it read, so it passes through the shared
+ * sanitizer first: pino rewrites object fields and never a message.
+ *
  * @param env - the loaded configuration.
  * @param logger - the process logger.
  */
@@ -153,7 +161,10 @@ function assertZkConfiguration(env: ApiEnv, logger: Logger): void {
   try {
     checkZkConfiguration(env);
   } catch (error) {
-    logger.fatal({ event: ZK_CONFIG_INVALID, reason: errorMessage(error) }, ZK_CONFIG_INVALID);
+    logger.fatal(
+      { event: ZK_CONFIG_INVALID, detail: sanitizeLogMessage(errorMessage(error)) },
+      ZK_CONFIG_INVALID,
+    );
     process.exit(1);
   }
 }
@@ -173,7 +184,10 @@ function installFailureHandlers(app: App): void {
    * @param event - the event name for this failure's line.
    */
   async function fail(error: unknown, event: string): Promise<void> {
-    app.log.fatal({ event, name: errorName(error), message: errorMessage(error) }, event);
+    app.log.fatal(
+      { event, name: errorName(error), message: sanitizeLogMessage(errorMessage(error)) },
+      event,
+    );
 
     const timer = setTimeout(() => {
       process.exit(1);

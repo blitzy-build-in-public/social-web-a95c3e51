@@ -20,6 +20,10 @@ shellEmulator: true
 # record, so it writes one document holding all nine importers; corepack still activates the
 # pinned 12.16.1 from the root manifest's `packageManager` field, which is the install path the
 # images use.
+#
+# The pin stays enforced without this setting's help: the root package.json's `preinstall` script
+# reads that manifest's `packageManager` field and aborts any install that runs under another
+# manager or pnpm version, inline because the image builds copy only the manifests.
 pmOnFail: ignore
 
 # The snarkjs override replaces the git-hosted fork that @zk-email/helpers declares;

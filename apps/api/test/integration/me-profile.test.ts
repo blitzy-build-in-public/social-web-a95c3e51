@@ -10,7 +10,9 @@
  * `me/photo.ts` rather than the route's own 8 MiB body limit; photo storage, where a 2400x1600 JPEG
  * carrying IFD0 device tags and an IFD3 GPS position must land as a metadata-free WebP at the 1,024
  * px edge (AAP 0.5.2 — location is used for the check-in test alone); the tier fields, the encrypted
- * pair among them; and the push-token upsert with its four schema refusals.
+ * pair among them; and the push-token group, where a registration is refused four ways by the schema
+ * and in a fifth place by the ownership rule, because a token belongs to the account that registered
+ * it and is never reassigned (AAP 0.5.2).
  *
  * Time comes from `t.clock` and state from the tables the handlers wrote (AAP 0.11.1), never from a
  * second call to the route that wrote it. No case logs an address, a token or a photo byte.
@@ -473,6 +475,28 @@ describe('POST /v1/me/push-tokens', () => {
     expect(stored).toHaveLength(1);
     expect(stored[0]?.platform).toBe('android');
     expect(stored[0]?.userId).toBe(user.id);
+  });
+
+  it('refuses a token another account already owns', async () => {
+    const owner = await traveler();
+    const other = await traveler();
+    const token = 'ExponentPushToken[fixture-device-2]';
+
+    expect((await registerPush(owner, { token, platform: 'ios' })).status).toBe(204);
+
+    // The refusal names neither the token nor an account (AAP 0.11.1).
+    const refused = await registerPush(other, { token, platform: 'android' });
+    expectError(refused, 400, 'invalid_field');
+    expect(refused.body).not.toContain(token);
+    expect(refused.body).not.toContain(owner.id);
+
+    const stored = await t.services.db.pushToken.findMany({
+      where: { token },
+      select: { platform: true, userId: true },
+    });
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.platform).toBe('ios');
+    expect(stored[0]?.userId).toBe(owner.id);
   });
 
   it.each(INVALID_PUSH_ROWS)('refuses $name with 400 invalid_field', async (row) => {

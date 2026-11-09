@@ -1,7 +1,7 @@
 /**
  * Root ESLint configuration for the Tablemate workspace (flat config, ESLint 10, ESM).
  *
- * Four invariants are enforced here that no compiler can express, each because a violation would
+ * Five invariants are enforced here that no compiler can express, each because a violation would
  * show up only on a platform or in a mode the build never exercised:
  *
  *   - Client-safe code — `packages/circuits/src`, the mobile app's `app/` and `src/`, and the local
@@ -11,6 +11,8 @@
  *     `packages/server-core/src/telephony/twilio-client.ts` imports `twilio` (AAP 0.6.2, 0.11.1).
  *   - Server code reads the time from the injected clock, never `Date.now()` or an argument-less
  *     `new Date()` (AAP 0.11.1).
+ *   - Server code logs through the logger, never `console`, so no line reaches stdout or stderr
+ *     outside pino's redaction paths (AAP 0.3.2, 0.11.1).
  *   - Every React surface follows the Rules of React.
  *
  * Two orderings are load-bearing. A later object REPLACES an earlier one's options for the same rule
@@ -65,8 +67,9 @@ const CLIENT_SAFE_FILES = [
  */
 const SERVER_FILES = ['apps/**/src/**/*.{ts,tsx}', 'packages/**/src/**/*.{ts,tsx}'];
 
-/* The directories whose time must come from the injected clock (AAP 0.11.1). */
-const CLOCK_FILES = [
+/* The server trees, where time comes from the injected clock and output goes through the logger
+ * (AAP 0.3.2, 0.11.1). */
+const SERVER_TREES = [
   'apps/api/src/**/*.{ts,tsx}',
   'apps/workers/src/**/*.{ts,tsx}',
   'packages/server-core/src/**/*.{ts,tsx}',
@@ -203,10 +206,15 @@ export default tseslint.config(
     rules: { 'no-restricted-imports': ['error', { paths: [STRIPE_SEAM, TWILIO_SEAM] }] },
   },
 
-  /* Time is an injected dependency, so the test clock can move it (AAP 0.11.1). */
+  /* Server invariants. Time comes from the injected clock, so the test clock can move it, and output
+   * goes through the logger rather than `console`, so no line reaches stdout or stderr outside pino's
+   * redaction paths (AAP 0.3.2, 0.11.1). The browser surfaces stay outside this set on purpose: the
+   * venue console's once-per-page unreadable-`Date` warning and the mobile app's client-side push and
+   * proof notices are the user's console, not the server's. */
   {
-    files: CLOCK_FILES,
+    files: SERVER_TREES,
     rules: {
+      'no-console': 'error',
       'no-restricted-syntax': [
         'error',
         {

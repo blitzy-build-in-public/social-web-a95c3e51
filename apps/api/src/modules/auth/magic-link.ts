@@ -3,17 +3,19 @@
  * (AAP 0.1.1 requirement 1, 0.3.2, 0.5.1, 0.5.4).
  *
  * Sign-in is one path in two halves. {@link requestMagicLink} writes a `MagicLinkToken` row — never
- * a user, and never a read of one — and asks the transactional outbox to mail its link; the row
- * holds the address as AES-256-GCM ciphertext beside its keyed HMAC lookup hash, the token's
- * SHA-256 digest, the raw token encrypted for the mailer alone, and a 15-minute expiry (AAP 0.5.2).
- * {@link verifyMagicLink} consumes that row exactly once, resolves the account or creates it on
- * first use, and opens a session.
+ * a user — and asks the transactional outbox to mail its link; the row holds the address as
+ * AES-256-GCM ciphertext beside its keyed HMAC lookup hash, the token's SHA-256 digest, the raw
+ * token encrypted for the mailer alone, and a 15-minute expiry (AAP 0.5.2). {@link verifyMagicLink}
+ * consumes that row exactly once, resolves the account or creates it on first use, and opens a
+ * session.
  *
- * The load-bearing invariant is that the request path does identical work for a known address, an
- * unknown one and one whose account is already on its way out: it reads no `User` row, so neither
- * its side effects nor its timing can tell them apart, which is what lets `POST /auth/magic-link`
- * answer `202` for every address it accepts (AAP 0.5.4). Only the link itself says whether an
- * address had an account.
+ * The request path is fenced like every other mutation. It reads the account the address belongs to
+ * — if there is one — and takes `SELECT … FOR SHARE` on that row, so an account that has requested
+ * deletion and has not yet been erased writes no row and queues no mail (AAP 0.5.3). The fence is a
+ * dropped write and never a refusal, because `POST /auth/magic-link` answers `202` for every address
+ * it accepts (AAP 0.5.4): an unknown address has no row to take the lock on, and an erased one is a
+ * tombstone whose `emailLookupHash` is null, so both write their row and are answered the same way.
+ * Only the link itself says whether an address had an account.
  *
  * Delivery belongs to `apps/workers`, not to this process (AAP 0.3.2). The outbox row carries the
  * token row's id and nothing else; `jobs/notifications.ts` checks `expiresAt` before it sends
@@ -45,7 +47,7 @@ import {
   sha256Hex,
 } from '@tablemate/server-core';
 
-import { assertWritable } from '../../plugins/auth.ts';
+import { assertWritable, isWritable } from '../../plugins/auth.ts';
 import { AppError } from '../../plugins/errors.ts';
 import { emit } from '../analytics/emit.ts';
 import { assign } from '../experiment/assignment.ts';
@@ -77,7 +79,8 @@ interface VerifiedSession {
 }
 
 /**
- * Writes a magic-link token and asks the outbox to mail its link (AAP 0.3.2, 0.5.4).
+ * Writes a magic-link token and asks the outbox to mail its link, unless the address's account has
+ * requested deletion (AAP 0.3.2, 0.5.3, 0.5.4).
  *
  * The address is normalized once and then only ever stored transformed: AES-256-GCM ciphertext for
  * the mailer to read back, and the keyed HMAC of the normalized value as the look-up the verify
@@ -85,9 +88,12 @@ interface VerifiedSession {
  * not at all — `tokenHash` is its SHA-256 digest. Both encryptions and the digest are computed
  * before the transaction opens, so the transaction holds no lock across CPU work.
  *
- * No `User` is read, created or updated here, and the same row is written either way: the route's
- * `202` therefore holds for a known address, an unknown one and one whose account has requested
- * deletion. The per-address limit of 5 an hour is the rate-limit plugin's, which counts the same
+ * The account the address belongs to is read only to fence the write, and no `User` is ever created
+ * or updated here. An unknown address, an erased one and a known one whose account may still be
+ * written to write the same row and queue the same mail; only an account that has requested deletion
+ * writes neither, which keeps its address ciphertext out of a row the erasure job never sees
+ * (AAP 0.5.2, 0.5.3). The route's `202` holds for all of them, because this function never refuses
+ * (AAP 0.5.4). The per-address limit of 5 an hour is the rate-limit plugin's, which counts the same
  * HMAC in Redis and answers `429 rate_limited` before this function is reached.
  *
  * @param services - The app's services: the database, clock, logger and outbox dispatcher the
@@ -97,24 +103,34 @@ interface VerifiedSession {
  *   normalized here, so casing and surrounding whitespace reach one account.
  * @returns Nothing. Delivery is the `notifications` job's, after this transaction commits.
  * @throws Error when the insert or the outbox write fails, which rolls both back.
- * @see AAP 0.3.2 for the outbox hand-off, 0.5.2 for the row and its retention, 0.5.4 for the route.
+ * @see AAP 0.3.2 for the outbox hand-off, 0.5.2 for the row and its retention, 0.5.3 for the write
+ *   fence, 0.5.4 for the route.
  */
 export async function requestMagicLink(services: AppServices, email: string): Promise<void> {
   const normalized = normalizeEmail(email);
   const now = services.clock.now();
   const token = randomToken();
 
-  // Pure CPU work, outside the transaction: the insert below is the only statement this transaction
-  // holds open, and the ciphertexts are ready by the time it opens.
+  // Pure CPU work, outside the transaction: the fence read and the insert are the only statements
+  // this transaction holds open, and the ciphertexts are ready by the time it opens.
   const tokenHash = sha256Hex(token);
   const emailCiphertext = encryptField(services.keyring, normalized);
   const lookup = emailLookupHash(services.env.EMAIL_LOOKUP_PEPPER, normalized);
   const deliveryTokenCiphertext = encryptField(services.keyring, token);
   const expiresAt = new Date(now.getTime() + MAGIC_LINK_TTL_MS);
 
-  // Deliberately unfenced: no account need exist yet, so there is no acting user to take the fence
-  // lock on, and reading one to decide would make this path behave differently for a known address.
   await transact(services, async (tx) => {
+    // The write fence of AAP 0.5.3, taken on the row this address belongs to when there is one: an
+    // account that has requested deletion gets no row carrying its address ciphertext, and the
+    // refusal is this dropped write rather than a `401`, because the route answers `202` for every
+    // address it accepts (AAP 0.5.4). An erased address is a tombstone with no lookup hash, so it
+    // matches nothing here and writes its row like an address that never had an account (AAP 0.5.2).
+    const existing = await tx.user.findUnique({
+      where: { emailLookupHash: lookup },
+      select: { id: true },
+    });
+    if (existing !== null && !(await isWritable(tx, existing.id))) return;
+
     const row = await tx.magicLinkToken.create({
       data: {
         tokenHash,

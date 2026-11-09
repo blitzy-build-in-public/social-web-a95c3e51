@@ -24,10 +24,13 @@
  *    and a cached entry can never authorise a write, because every write runs behind the fence.
  *  - **The fence.** {@link assertWritable} takes `SELECT ... FOR SHARE` on the acting user's row
  *    inside the caller's transaction and refuses with `401 token_invalid` once
- *    `deletion_requested_at` or `deleted_at` is set (AAP 0.5.3). `DELETE /me` takes `FOR UPDATE` on
- *    the same row, so a mutation already in flight commits before the deletion and every mutation
- *    starting later is refused — nothing the erased account wrote can be recreated afterwards. It
- *    reads PostgreSQL, never the cache.
+ *    `deletion_requested_at` or `deleted_at` is set (AAP 0.5.3). {@link isWritable} is the same
+ *    statement as a predicate, for the one mutating path whose refusal must not be visible to its
+ *    caller: `POST /auth/magic-link` answers `202` for every address it accepts, so it drops the
+ *    write instead (AAP 0.5.4). `DELETE /me` takes `FOR UPDATE` on the same row, so a mutation
+ *    already in flight commits before the deletion and every mutation starting later is refused —
+ *    nothing the erased account wrote can be recreated afterwards. Both read PostgreSQL, never the
+ *    cache.
  *  - **The invalidation.** {@link dropCachedSessions}, {@link invalidateSession} and
  *    {@link invalidateUserSessions} are what make the two writes above visible at once: the first
  *    drops cache entries after a logout, a refresh-reuse revocation, a consent change or a role
@@ -813,9 +816,9 @@ export async function requireWebSocketBearer(request: FastifyRequest): Promise<v
  * recreated, and `account-erasure` runs only after the deletion committed.
  *
  * The check reads PostgreSQL, never the session cache: the cache may lag a revocation by up to
- * {@link SESSION_CACHE_SECONDS}, which is tolerable for a read and not for a write. It is spelled as
- * raw SQL because the row lock has no Prisma client equivalent, and `"user"` is quoted because it is
- * a reserved word.
+ * {@link SESSION_CACHE_SECONDS}, which is tolerable for a read and not for a write. The statement is
+ * {@link isWritable}'s, spelled as raw SQL there because the row lock has no Prisma client
+ * equivalent, with `"user"` quoted because it is a reserved word.
  *
  * @param tx - The caller's open transaction.
  * @param userId - The acting user, whose row is locked for the rest of the transaction.
@@ -824,6 +827,31 @@ export async function requireWebSocketBearer(request: FastifyRequest): Promise<v
  * @see AAP 0.5.2 for what erasure removes, 0.11.2 for the parameterized-SQL rule.
  */
 export async function assertWritable(tx: DbTx, userId: string): Promise<void> {
+  if (!(await isWritable(tx, userId))) throw new AppError('token_invalid');
+}
+
+/**
+ * Whether the row this account's writes hang off is still one a mutation may write to (AAP 0.5.3).
+ *
+ * The same statement {@link assertWritable} refuses on, as a predicate instead of a refusal: it
+ * locks the row `FOR SHARE` for the rest of the caller's transaction and answers true only when it
+ * exists and both `deletion_requested_at` and `deleted_at` are null. It exists for the one mutating
+ * path whose refusal must not be visible to its caller — `requestMagicLink` in
+ * `modules/auth/magic-link.ts`, whose route answers `202` for every address it accepts so accounts
+ * cannot be enumerated (AAP 0.5.4): a request made for an account that has requested deletion is a
+ * dropped write, never a response the caller can read, and this predicate is what tells the two
+ * cases apart. The `SELECT ... FOR SHARE` it takes is the lock ordering AAP 0.5.3 states, and it is
+ * the same statement `DELETE /me` orders against with its `FOR UPDATE` on that row: a write already
+ * in flight commits before the deletion, one starting later reads the flag and writes nothing.
+ *
+ * @param tx - The caller's open transaction, in which the share lock is held.
+ * @param userId - The account whose row is locked for the rest of the caller's transaction.
+ * @returns True when the row exists and neither deletion column is set; false when it is missing —
+ *   an id nothing holds, or a tombstone the financial purge has removed — or either column is set.
+ * @see AAP 0.5.2 for what erasure removes, 0.5.3 for the fence and its lock ordering, 0.5.4 for the
+ *   route that drops its write instead of refusing, 0.11.2 for the parameterized-SQL rule.
+ */
+export async function isWritable(tx: DbTx, userId: string): Promise<boolean> {
   const rows = await tx.$queryRaw<
     { deletion_requested_at: Date | null; deleted_at: Date | null }[]
   >(Prisma.sql`
@@ -834,9 +862,7 @@ export async function assertWritable(tx: DbTx, userId: string): Promise<void> {
   `);
 
   const row = rows[0];
-  if (row === undefined || row.deletion_requested_at !== null || row.deleted_at !== null) {
-    throw new AppError('token_invalid');
-  }
+  return row !== undefined && row.deletion_requested_at === null && row.deleted_at === null;
 }
 
 /**

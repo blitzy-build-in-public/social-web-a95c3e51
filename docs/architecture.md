@@ -308,8 +308,11 @@ exports `./test-support/*` for the system and workers integration suites.
   `Uint8Array`, with `@noble/hashes` and `poseidon-lite` for hashing.
 
 The root `eslint.config.js` enforces four of these mechanically — the client-safe import list, the two
-provider seams, the injected clock, and the Rules of React for the two React surfaces — and the rest are
-conventions the suites and review hold.
+provider seams, the injected clock, and the Rules of React for the two React surfaces. It also bans
+`console` in the four server trees (`apps/api/src`, `apps/workers/src`, `packages/server-core/src` and
+`packages/db`), so a log line cannot bypass pino's redaction paths, and it deliberately leaves the
+browser surfaces and the test harness outside that set. The rest are conventions the suites and review
+hold.
 
 ### pnpm settings live in `pnpm-workspace.yaml`
 
@@ -317,7 +320,9 @@ pnpm 12.16.1 reads only authentication settings from `.npmrc` and ignores the `p
 `package.json`, so the workspace settings are declared in `pnpm-workspace.yaml`: `nodeLinker: hoisted`
 (Expo SDK 52's Metro and native autolinking need it), `saveExact: true`, `shellEmulator: true` (the root
 `test:stripe` and `perf` scripts run `VAR=value cmd`), and `pmOnFail: ignore`, which keeps
-`pnpm-lock.yaml` a single YAML document that SBOM and licence scanners can read. The same file carries
+`pnpm-lock.yaml` a single YAML document that SBOM and licence scanners can read. The setting bypasses
+pnpm's own check of the pin, so the root `package.json`'s `preinstall` script enforces it instead,
+failing any install that runs under another package manager or pnpm version. The same file carries
 `overrides` — `snarkjs: 0.7.6`, which replaces the git-hosted fork `@zk-email/helpers` declares, plus
 `underscore` and the Expo-toolchain pins — `auditConfig.ignoreGhsas` for the four moderate or low
 advisories no patched release of the Expo chain fits, `allowBuilds` for the ten packages whose install

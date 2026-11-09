@@ -8,9 +8,10 @@
  *
  * It resolves in every case — a skipped build, a refusal, a failure included — because its caller
  * fires it once the session reaches `signed_in` and must never wait on it (AAP 0.3.2). Nothing is
- * retried either: the API upserts by token, so the next app start is the retry. The token is the
- * one thing that leaves the device and it is never logged; the body is exactly
- * `{ token, platform }` of `PushTokenRequest`, and a failure logs a code alone.
+ * retried either: a registration is stored once per token and re-registering that token only
+ * refreshes its platform, so the next app start is the retry. The token is the one thing that
+ * leaves the device and it is never logged; the body is exactly `{ token, platform }` of
+ * `PushTokenRequest`, and a failure logs a code alone.
  */
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';

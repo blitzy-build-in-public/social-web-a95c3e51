@@ -19,6 +19,13 @@
  * one level with no recursive form, so a caller holding a deeper structure logs the protected values
  * themselves rather than the whole wrapper.
  *
+ * Correlation travels in the ids a line carries, never through a tracing integration, which the plan
+ * excludes (AAP 0.7.2). A request's own lines carry the `reqId` Fastify binds, because `app.ts` hands
+ * this logger to the server as its `loggerInstance`; a worker processor's lines carry the job id
+ * {@link withJobId} binds before the processor runs (AAP 0.5.6); and work that outlives its request —
+ * the outbox dispatch after a commit, the sweeper, a settlement run — is followed by the ids those
+ * lines carry themselves (`outboxId`, `meetupId`, `depositId`, `operationId`).
+ *
  * Nothing here reads `process.env`: the level and the mode arrive as parameters from the scoped
  * environment schemas under `src/env/`, and only `process.stdout.isTTY` is inspected, to decide
  * whether a human is watching the output.
@@ -242,6 +249,73 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
  */
 export const LOGGER_REDACT_PATHS: readonly string[] = Object.freeze(redactPaths());
 
+/** The marker appended to a message longer than {@link MAX_LOG_MESSAGE_LENGTH}. */
+const LOG_TRUNCATION_MARKER = '…[truncated]';
+
+/** The longest message a log line carries before it is truncated: an error's text is unbounded. */
+const MAX_LOG_MESSAGE_LENGTH = 500;
+
+/**
+ * The email-address shape {@link sanitizeLogMessage} removes last, after the credentials above: one
+ * or more `local@domain` labels with a final label that carries no dot, as an address has.
+ */
+const EMAIL_ADDRESS_RE =
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/g;
+
+/**
+ * The backstop for text of unknown provenance: the credentials, keys and email addresses an error
+ * message can quote, removed before the message is logged (AAP 0.3.2, 0.11.1).
+ *
+ * It is a backstop and not the primary control — the primary control is that
+ * {@link LOGGER_REDACT_PATHS} censors these values by name and that a caller narrows an error before
+ * pino sees it, since pino writes an error's message and stack as strings that key-based redaction
+ * never rewrites — so a pattern recognizes a shape and nothing more: text carrying a credential in no
+ * recognizable shape still passes.
+ *
+ * It lives here rather than beside one caller because every process logs a message it did not author:
+ * `apps/api/src/plugins/errors.ts` narrows a thrown value with it, `apps/api/src/main.ts` and
+ * `apps/workers/src/main.ts` write the text of a start failure, an unhandled rejection and an
+ * uncaught exception — all of which are arbitrary — and `packages/db/seed/seed.ts` writes a driver's
+ * failure text, which can quote the connection string it refused.
+ *
+ * The rules overlap, so they run in the one order below, each tried before the rule that would
+ * otherwise swallow it: a password inside a `scheme://user:secret@host` URL is removed as a
+ * credential before the email rule could read the userinfo as an address, and a JWS is removed whole
+ * before the 32-hex rule could cut a segment out of it. The message is then truncated, because an
+ * error's text is unbounded and a log line is not.
+ *
+ * @param text - the message to log, as the error that carried it wrote it.
+ * @returns the same text with every recognizable credential, key and email address replaced by
+ * {@link LOGGER_REDACT_CENSOR}, truncated at {@link MAX_LOG_MESSAGE_LENGTH}.
+ */
+export function sanitizeLogMessage(text: string): string {
+  const sanitized = text
+    // 1. Connection-string credentials: the userinfo of any `scheme://` URL.
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, `$1${LOGGER_REDACT_CENSOR}@`)
+    // 2. PEM private-key blocks.
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+      LOGGER_REDACT_CENSOR,
+    )
+    // 3. Stripe secret and restricted keys, and webhook signing secrets.
+    .replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}\b/g, LOGGER_REDACT_CENSOR)
+    .replace(/\bwhsec_[A-Za-z0-9]{8,}\b/g, LOGGER_REDACT_CENSOR)
+    // 4. Bearer credentials and the JWS triples our own access tokens are.
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${LOGGER_REDACT_CENSOR}`)
+    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, LOGGER_REDACT_CENSOR)
+    // 5. OpenAI-style keys, Twilio API-key SIDs and bare 32-hex tokens (a 64-hex digest stays
+    //    readable: it is a digest, not a credential).
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, LOGGER_REDACT_CENSOR)
+    .replace(/\bSK[0-9a-fA-F]{32}\b/g, LOGGER_REDACT_CENSOR)
+    .replace(/(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])/g, LOGGER_REDACT_CENSOR)
+    // 6. Email addresses last: an error message can quote one whole.
+    .replace(EMAIL_ADDRESS_RE, LOGGER_REDACT_CENSOR);
+
+  return sanitized.length > MAX_LOG_MESSAGE_LENGTH
+    ? `${sanitized.slice(0, MAX_LOG_MESSAGE_LENGTH)}${LOG_TRUNCATION_MARKER}`
+    : sanitized;
+}
+
 /**
  * A pino logger, re-exported so a consumer can type one without depending on pino directly
  * (AAP 0.8.1). Exported from this module alone, so the workspace has a single `Logger` name.
@@ -322,17 +396,17 @@ function prettyTransportTarget(appEnv: AppEnv, hasDestination: boolean): string 
 }
 
 /**
- * Bind a request id to `logger`, under the `reqId` binding Fastify writes its own request lines
- * with (AAP 0.11.1). Work that outlives the request — the outbox dispatch after a commit, a
- * settlement run — keeps the id this way.
- */
-export function withRequestId(logger: Logger, requestId: string): Logger {
-  return logger.child({ reqId: requestId });
-}
-
-/**
  * Bind a BullMQ job id to `logger`, so every line a worker processor writes names the job it
  * belongs to (AAP 0.5.6).
+ *
+ * Both hand-offs in the workspace call it: `runJob` in `apps/workers/src/queues.ts` binds one child
+ * per job before the processor runs, and `startSettlementWorker` in
+ * `apps/api/src/modules/settlement/queue.ts` binds one per settlement job. A job whose id is absent
+ * — a hand-built test job — is handed the process logger unchanged.
+ *
+ * @param logger - the process logger, or a child of it.
+ * @param jobId - the BullMQ job id, as `job.id` carries it (`outbox-<id>`, `settle-<meetupId>`, …).
+ * @returns a child logger whose every line carries `jobId`.
  */
 export function withJobId(logger: Logger, jobId: string): Logger {
   return logger.child({ jobId });

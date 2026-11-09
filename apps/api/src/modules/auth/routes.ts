@@ -13,11 +13,11 @@
  * the other's routes and nothing outside this module inherits a gate by accident.
  *
  * Nothing but delegation happens here. The rules themselves belong to the two service modules, and
- * the handler of `POST /auth/magic-link` in particular branches on nothing: it reads no account
- * state, so neither its work nor its timing can tell a known address from an unknown one, which is
- * what lets the route answer `202` with no body for every address it accepts (AAP 0.5.4). No handler
- * logs anything — the service modules log their own events, with no address, token or digest — and
- * no request body, token or address is read by this file beyond the field it passes on.
+ * the handler of `POST /auth/magic-link` in particular branches on nothing: it answers `202` with no
+ * body for every address it accepts, whatever the service under it decided, which is what an
+ * account-enumeration check reads (AAP 0.5.4). No handler logs anything — the service modules log
+ * their own events, with no address, token or digest — and no request body, token or address is read
+ * by this file beyond the field it passes on.
  *
  * Counters carry the allowances of AAP 0.5.4: the magic-link route the per-address limit of five an
  * hour on top of its per-IP allowance, the two other public routes the per-IP allowance alone
@@ -101,8 +101,9 @@ export default function authRoutes(app: App): Promise<void> {
       },
       async (request, reply) => {
         // The link is requested for every address that reaches here, and the answer is the same 202
-        // with no body whether or not an account holds it: a `MagicLinkToken` row is written and the
-        // outbox mails it, and no account is read, created or updated (AAP 0.5.4).
+        // with no body whether or not an account holds it: the service writes a `MagicLinkToken` row
+        // and the outbox mails it, or, for an account that has requested deletion, drops the write
+        // under the write fence — and this handler reads neither outcome (AAP 0.5.3, 0.5.4).
         await requestMagicLink(app.services, request.body.email);
 
         // No argument, so the reply carries no body and no content type, which is what an account

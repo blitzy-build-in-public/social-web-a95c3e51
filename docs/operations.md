@@ -95,11 +95,11 @@ The circuit itself, the registry and the issuer records are in `docs/zk-proofs.m
 
 ## 1. Local stack
 
-1. Copy the environment template and fill the internal secrets. The four `openssl` commands the
-   template names are the whole of it: `FIELD_ENCRYPTION_KEY` is standard base64 of 32 bytes;
+1. Copy the environment template and fill the internal secrets. The two `openssl` commands the
+   template names cover all five of them: `FIELD_ENCRYPTION_KEY` is standard base64 of 32 bytes;
    `JWT_SECRET`, `ANALYTICS_SALT`, `EMAIL_LOOKUP_PEPPER` and `EXPERIMENT_SALT` are 32 hex bytes. Set
-   `NULLIFIER_SALT=1` in the local stack, which is the salt the committed circuit fixtures were built
-   with; any other environment sets its own. The defaults `APP_ENV=demo`, `STRIPE_MODE=mock`,
+   `NULLIFIER_SALT=1` in the local stack, which is the salt the committed circuit fixtures were
+   built with; any other environment sets its own. The defaults `APP_ENV=demo`, `STRIPE_MODE=mock`,
    `TELEPHONY_MODE=off` and `LLM_PROVIDER=fake` reach no third party, so no provider credential is
    needed to start.
 
@@ -214,8 +214,8 @@ The circuit itself, the registry and the issuer records are in `docs/zk-proofs.m
 2. Then grant the role — the only way an account obtains it:
 
    ```bash
-   pnpm --filter @tablemate/api grant-operator -- <email>                        # on the host
-   docker compose exec api node apps/api/dist/scripts/grant-operator.js <email>  # in the container
+   pnpm --filter @tablemate/api grant-operator -- you@example.com                        # on the host
+   docker compose exec api node apps/api/dist/scripts/grant-operator.js you@example.com  # in the container
    ```
 
    `--revoke` demotes the account to `traveler` instead. The address goes through the same lookup

@@ -18,10 +18,11 @@ column. Integration suites: `apps/api/test/integration/<group>.test.ts`. The mac
 is [`./openapi.json`](./openapi.json), and architecture context is in
 [`../architecture.md`](../architecture.md).
 
-The Test column names the suite AAP 0.8.1 assigns to the route. `apps/api/test` carries `support/`
-today — the app factory and the container setup it shares, the fault points, the test clock, the
-fixture proofs, the stateful Stripe proxy and the voice simulator — and each suite is added by its own
-file.
+The Test column names the suite AAP 0.8.1 assigns to the route. Those suites are committed: the route
+suites in `apps/api/test/integration/` and the unit suites in `apps/api/test/unit/`, over the shared
+`apps/api/test/support/` harness — the app factory and the container setup it shares, the fault points,
+the test clock, the fixture proofs, the stateful Stripe proxy and the voice simulator. A Test cell
+naming `tests/system` or `apps/mobile/e2e` points at a suite outside this module.
 
 **Errors.** The envelope is exactly `{ "error": { "code": string, "message": string } }`, with the code
 from `ErrorCode` and the status from `ERROR_STATUS`, both in `packages/shared/src/errors.ts`. An
@@ -52,9 +53,11 @@ The OpenAPI security schemes are `bearer`, `venueSecret` and `lodgingSecret`.
 answers `403 age_gate_required`. The gate is installed per route group and never globally, so it stays
 off `GET /me`, `POST /me/consents`, `POST /auth/logout` and `DELETE /me`; off the public routes
 (`POST /auth/magic-link`, `/auth/verify`, `/auth/refresh`, `GET /health`, `GET /zk/config`); and off
-`/webhooks/*`, the console routes, `/admin/*` and `/test/*`. The three city routes are `traveler`
-routes: an unverified traveler browses a city and its venues without a proof, and only the two reads
-that need one answer `403 no_valid_proof` themselves.
+`/webhooks/*`, the console routes, `/admin/*` and `/test/*`. The routes under `/cities` — `GET /cities`,
+`GET /cities/:cityId/venues`, `GET /cities/:cityId/travelers` and `GET /cities/:cityId/lodgings` — are
+`traveler` routes: an unverified traveler browses a city and its venues without a proof, while
+`GET /cities/:cityId/travelers` and `GET /cities/:cityId/lodgings` answer `403 no_valid_proof`
+themselves, as does `GET /lodgings/:id`.
 
 **Rate limits.** `plugins/rate-limit.ts` registers `@fastify/rate-limit` with `global: false`, so only
 the routes that ask for a counter have one: every POST, PUT, PATCH and DELETE, and the two reads that
@@ -264,9 +267,9 @@ invisible where they are not mounted.
 
 ### Health
 
-| Route         | Auth   | Handler  | Response                                                                                                                                         | Errors (in check order) | Test           | Addition     |
-| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- | -------------- | ------------ |
-| `GET /health` | public | `app.ts` | `200 HealthResponse { status, checks: { database, redis } }`, where each check is `ok` or `fail`; `503` with the same body when either one fails | —                       | `auth.test.ts` | **Addition** |
+| Route         | Auth   | Handler  | Response                                                                                                                                                                                                           | Errors (in check order) | Test           | Addition     |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- | -------------- | ------------ |
+| `GET /health` | public | `app.ts` | `200 HealthResponse { status: "ok", checks: { database, redis } }` when both checks pass, `503 HealthResponse { status: "degraded", checks: { database, redis } }` when either fails; each check is `ok` or `fail` | —                       | `auth.test.ts` | **Addition** |
 
 The probe is what compose gates stack readiness on, so it is mounted as its own context while the
 plugins load and carries no counter.

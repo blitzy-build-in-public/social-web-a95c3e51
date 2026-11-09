@@ -32,6 +32,7 @@ import {
   createLogger,
   keyringFromEnv,
   loadSeedEnv,
+  sanitizeLogMessage,
   systemClock,
 } from '@tablemate/server-core';
 import type { Clock, FieldKeyring, Logger } from '@tablemate/server-core';
@@ -840,7 +841,10 @@ async function runSeedCli(argv: readonly string[]): Promise<void> {
  * The logger is built here rather than shared with {@link runSeedCli}, because the failure may be
  * the environment itself, which is read before that function has one. Only the error's name and
  * message are logged — never its stack, and never a value, which is what keeps a configuration
- * failure from printing a secret (AAP 0.12.2).
+ * failure from printing a secret (AAP 0.12.2). A driver's message is arbitrary text, so it passes
+ * through the shared {@link sanitizeLogMessage} before it is written: redaction rewrites the value
+ * at a path and never text inside one, so a failure that quotes a connection string's userinfo, a
+ * key or an address would otherwise print it (AAP 0.3.2, 0.11.1).
  *
  * @param error The unknown the rejection holds.
  */
@@ -858,7 +862,7 @@ function reportSeedFailure(error: unknown): void {
     appEnv: appEnvOrNull() ?? FAILURE_LINE_APP_ENV,
   });
 
-  logger.error({ err: { name, message } }, 'seed failed');
+  logger.error({ err: { name, message: sanitizeLogMessage(message) } }, 'seed failed');
   process.exitCode = 1;
 }
 

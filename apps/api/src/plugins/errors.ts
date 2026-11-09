@@ -11,8 +11,10 @@
  * unexpected error, the request id: no stack trace, no request body, no header, no token, no email
  * address, no coordinate, no message body (AAP 0.11.1). The one place a failure is recorded is the
  * 5xx log line, and what reaches pino there is the narrowed record {@link loggedFailure} builds — a
- * name, the error's own short code and a sanitized message — never the thrown object, whose message
- * and stack pino writes as strings that key-based redaction cannot rewrite (AAP 0.3.2).
+ * name, the error's own short code and a message passed through the shared `sanitizeLogMessage`
+ * (`packages/server-core/src/logger.ts`, the backstop the process entry points and the seed use too)
+ * — never the thrown object, whose message and stack pino writes as strings that key-based redaction
+ * cannot rewrite (AAP 0.3.2).
  */
 
 import {
@@ -20,6 +22,7 @@ import {
   isResponseSerializationError,
 } from 'fastify-type-provider-zod';
 
+import { sanitizeLogMessage } from '@tablemate/server-core';
 import {
   ERROR_STATUS,
   type ErrorCode,
@@ -72,20 +75,8 @@ const OTHER_CLIENT_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The censor written in place of a value {@link sanitizeLogMessage} removes: the same string the
- * shared logger's `redact` option writes (`LOGGER_REDACT_CENSOR` in
- * `packages/server-core/src/logger.ts`), so an operator greps one marker wherever a value was
- * removed, whichever of the two took it out.
+ * The longest an error's `name` may be and still be logged; an error name is a short token.
  */
-const LOG_REDACT_CENSOR = '[redacted]';
-
-/** The marker appended to a message longer than {@link MAX_LOG_MESSAGE_LENGTH}. */
-const LOG_TRUNCATION_MARKER = '…[truncated]';
-
-/** The longest message a log line carries before it is truncated. */
-const MAX_LOG_MESSAGE_LENGTH = 500;
-
-/** The longest an error's `name` may be and still be logged; an error name is a short token. */
 const MAX_ERROR_NAME_LENGTH = 64;
 
 /** How many entries of an error's cause chain a log line carries. */
@@ -98,13 +89,6 @@ const MAX_CAUSE_ENTRIES = 3;
  * out under `code`.
  */
 const LOGGABLE_ERROR_CODE_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-
-/**
- * The email-address shape {@link sanitizeLogMessage} removes last, after the credentials above: one
- * or more `local@domain` labels with a final label that carries no dot, as an address has.
- */
-const EMAIL_ADDRESS_RE =
-  /[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/g;
 
 /** One failure, resolved to the code and the message the envelope carries. */
 interface Failure {
@@ -280,49 +264,6 @@ function loggedMessage(error: unknown): string | undefined {
 /** Whether a value is one a cause chain can be walked through, rather than a primitive. */
 function isLoggableCause(value: unknown): value is object {
   return typeof value === 'object' && value !== null;
-}
-
-/**
- * The backstop for text of unknown provenance: the credentials, keys and email addresses an error
- * message can quote, removed before the message is logged (AAP 0.3.2, 0.11.1).
- *
- * It is a backstop and not the primary control — the primary control is that the shared redaction
- * list censors these fields by name and that this module narrows an error before pino sees it — so a
- * pattern recognizes a shape and nothing more: text carrying a credential in no recognizable shape
- * still passes.
- *
- * The rules overlap, so they run in the one order below, each tried before the rule that would
- * otherwise swallow it: a password inside a `scheme://user:secret@host` URL is removed as a
- * credential before the email rule could read the userinfo as an address, and a JWS is removed whole
- * before the 32-hex rule could cut a segment out of it. The message is then truncated, because an
- * error's text is unbounded and a log line is not.
- */
-function sanitizeLogMessage(text: string): string {
-  const sanitized = text
-    // 1. Connection-string credentials: the userinfo of any `scheme://` URL.
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]*@/gi, `$1${LOG_REDACT_CENSOR}@`)
-    // 2. PEM private-key blocks.
-    .replace(
-      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-      LOG_REDACT_CENSOR,
-    )
-    // 3. Stripe secret and restricted keys, and webhook signing secrets.
-    .replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{8,}\b/g, LOG_REDACT_CENSOR)
-    .replace(/\bwhsec_[A-Za-z0-9]{8,}\b/g, LOG_REDACT_CENSOR)
-    // 4. Bearer credentials and the JWS triples our own access tokens are.
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, `Bearer ${LOG_REDACT_CENSOR}`)
-    .replace(/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, LOG_REDACT_CENSOR)
-    // 5. OpenAI-style keys, Twilio API-key SIDs and bare 32-hex tokens (a 64-hex digest stays
-    //    readable: it is a digest, not a credential).
-    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, LOG_REDACT_CENSOR)
-    .replace(/\bSK[0-9a-fA-F]{32}\b/g, LOG_REDACT_CENSOR)
-    .replace(/(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])/g, LOG_REDACT_CENSOR)
-    // 6. Email addresses last: an error message can quote one whole.
-    .replace(EMAIL_ADDRESS_RE, LOG_REDACT_CENSOR);
-
-  return sanitized.length > MAX_LOG_MESSAGE_LENGTH
-    ? `${sanitized.slice(0, MAX_LOG_MESSAGE_LENGTH)}${LOG_TRUNCATION_MARKER}`
-    : sanitized;
 }
 
 /**

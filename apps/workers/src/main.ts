@@ -15,8 +15,10 @@
  * on. The tests never import this file — they call `createWorkerContext` with a test clock and drive
  * the processors directly (AAP 0.11.2).
  *
- * Failures end the process with one JSON line carrying the event and, at most, an error's message:
- * never a variable's value, a connection string (which may carry a password) or a job payload
+ * Failures end the process with one JSON line carrying the event and, at most, an error's message
+ * after the shared `sanitizeLogMessage` has removed the credentials, keys and addresses that text
+ * can quote: a failure's message is not one this file wrote, so none of it is trusted verbatim.
+ * Never a variable's value, a connection string (which may carry a password) or a job payload
  * (AAP 0.11.1). A refused environment is written to stderr before any logger exists, because
  * `LOG_LEVEL` itself may be one of the values that was refused.
  *
@@ -31,6 +33,7 @@ import {
   EnvValidationError,
   createLogger,
   loadWorkersEnv,
+  sanitizeLogMessage,
   waitForRedisReady,
 } from '@tablemate/server-core';
 
@@ -51,6 +54,7 @@ const WORKERS_STARTED = 'workers_started';
 const WORKERS_STOPPING = 'workers_stopping';
 const WORKERS_STOPPED = 'workers_stopped';
 const UNHANDLED_REJECTION = 'unhandled_rejection';
+const UNCAUGHT_EXCEPTION = 'uncaught_exception';
 
 /** The signals a container sends, and the pair a shutdown re-arms as an escalation (AAP 0.11.2). */
 const SHUTDOWN_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
@@ -121,7 +125,7 @@ async function main(): Promise<void> {
     );
   } catch (error) {
     activeLogger.fatal(
-      { event: WORKERS_START_FAILED, error: errorMessage(error) },
+      { event: WORKERS_START_FAILED, error: sanitizeLogMessage(errorMessage(error)) },
       WORKERS_START_FAILED,
     );
     await shutdown(STARTUP_FAILURE, 1);
@@ -146,14 +150,30 @@ function installSignalHandlers(): void {
 }
 
 /**
- * Stop the process on an unhandled rejection (AAP 0.11.2). Node's default would end it with a bare
- * stack and hand the queues, the browser, Redis and PostgreSQL back to the kernel; recording the
- * message and closing them first is what leaves a container in a known state.
+ * Stop the process on a failure nothing caught (AAP 0.11.2): an unhandled rejection and an uncaught
+ * exception, the pair the API process installs too. Node's default would end it with a bare stack
+ * and hand the queues, the browser, Redis and PostgreSQL back to the kernel; recording the event and
+ * closing them first is what leaves a container in a known state.
+ *
+ * A reason and a thrown value carry text this file did not write, and a credential quoted in it — a
+ * connection string's userinfo, a key, a bearer token, an address — would otherwise reach the line
+ * verbatim, so the message travels through the shared `sanitizeLogMessage` (AAP 0.11.1).
  */
 function installFailureHandlers(): void {
   process.on('unhandledRejection', (reason: unknown) => {
-    logger?.error({ event: UNHANDLED_REJECTION, error: errorMessage(reason) }, UNHANDLED_REJECTION);
+    logger?.error(
+      { event: UNHANDLED_REJECTION, error: sanitizeLogMessage(errorMessage(reason)) },
+      UNHANDLED_REJECTION,
+    );
     void shutdown(UNHANDLED_REJECTION, 1);
+  });
+
+  process.on('uncaughtException', (error: unknown) => {
+    logger?.error(
+      { event: UNCAUGHT_EXCEPTION, error: sanitizeLogMessage(errorMessage(error)) },
+      UNCAUGHT_EXCEPTION,
+    );
+    void shutdown(UNCAUGHT_EXCEPTION, 1);
   });
 }
 
@@ -257,7 +277,11 @@ await main().catch((error: unknown) => {
   // Reachable only for a failure `main` does not classify itself — a defect in the environment
   // loader rather than a configuration it refused — and then no logger exists to report it through.
   process.stderr.write(
-    `${JSON.stringify({ level: 'fatal', event: WORKERS_START_FAILED, error: errorMessage(error) })}\n`,
+    `${JSON.stringify({
+      level: 'fatal',
+      event: WORKERS_START_FAILED,
+      error: sanitizeLogMessage(errorMessage(error)),
+    })}\n`,
   );
   process.exit(1);
 });

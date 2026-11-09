@@ -50,6 +50,7 @@
 
 import { z } from 'zod';
 
+import { isUniqueViolation } from '@tablemate/db';
 import {
   ConsentsRequest,
   ErrorEnvelope,
@@ -80,6 +81,15 @@ import type { App } from '../../app.ts';
 
 /** The tag all six routes group under: a member of the document's own vocabulary (AAP 0.11.2). */
 const ME_TAG = 'me' satisfies OpenApiTag;
+
+/**
+ * The one refusal `POST /me/push-tokens` answers when the token presented belongs to another account,
+ * whether it was read as such or the write collided with the unique key (AAP 0.5.4).
+ *
+ * The message names neither the token nor an account: the caller is told its registration did not
+ * take, and nothing about the device or the account that owns it leaves the server (AAP 0.11.1).
+ */
+const TOKEN_OWNED_MESSAGE = 'This push token is already registered to another account.';
 
 /**
  * The authenticated caller's context, or a refusal.
@@ -276,19 +286,46 @@ export default function meRoutes(app: App): Promise<void> {
         const userId = callerAuth(request).userId;
         const { token, platform } = request.body;
 
-        // One device, one account: `token` is the row's unique key, so a token presented by a second
-        // account moves to that account — the phone it belongs to now signs in as the caller — and a
-        // re-registration by the same account only refreshes its platform. Behind the write fence,
-        // like every other write, so an account that has requested deletion registers nothing
-        // (AAP 0.5.2, 0.5.3).
+        // One device, one account, and that account never changes: `token` is the table's unique key
+        // (AAP 0.5.2), so the row belongs to the account it was registered for. A token another
+        // account already holds is therefore refused rather than moved — the phone keeps receiving
+        // for its owner and no caller can redirect it to itself — while a re-registration by that
+        // same account only refreshes its platform. The owner is read inside the transaction that
+        // writes, so two accounts presenting one token cannot both be admitted, and the whole handler
+        // runs behind the write fence, like every other write, so an account that has requested
+        // deletion registers nothing (AAP 0.5.3, 0.5.4).
         await transact(
           app.services,
-          (tx) =>
-            tx.pushToken.upsert({
+          async (tx) => {
+            const owner = await tx.pushToken.findUnique({
               where: { token },
-              create: { token, platform, userId },
-              update: { platform, userId },
-            }),
+              select: { userId: true },
+            });
+
+            if (owner === null) {
+              try {
+                await tx.pushToken.create({ data: { token, platform, userId } });
+              } catch (error) {
+                // Two accounts can pass the read above together, both see no row, and only the
+                // insert that commits first owns the token: the other meets the unique key, which is
+                // this route's own refusal and never the `500 internal_error` an unmapped violation
+                // would answer (AAP 0.5.4).
+                if (isUniqueViolation(error, 'token')) {
+                  throw new AppError('invalid_field', TOKEN_OWNED_MESSAGE);
+                }
+                throw error;
+              }
+              return;
+            }
+
+            if (owner.userId !== userId) {
+              throw new AppError('invalid_field', TOKEN_OWNED_MESSAGE);
+            }
+
+            // Refresh only, and in place: the update writes no `userId`, so the account that
+            // registered the token keeps the notifications it carries (AAP 0.5.2).
+            await tx.pushToken.update({ where: { token }, data: { platform } });
+          },
           { fenceUserId: userId },
         );
 

@@ -57,6 +57,7 @@ import {
   reportRedisUnavailable,
   systemClock,
   throttleRedisFailure,
+  withJobId,
 } from '@tablemate/server-core';
 import type {
   CallGuard,
@@ -574,7 +575,8 @@ function startWorker(queue: WorkerQueueName, ctx: WorkerContext): StartedWorker 
 }
 
 /**
- * Run one job: look its processor up by queue and name, and hand it the three fields it reads.
+ * Run one job: look its processor up by queue and name, and hand it the three fields it reads plus a
+ * context whose logger names the job.
  *
  * A name this queue does not accept has no processor, and it fails once, as an `UnrecoverableError`,
  * instead of being retried against a wiring fault no retry can fix. A payload that does not satisfy
@@ -594,12 +596,19 @@ async function runJob(
     throw new UnrecoverableError(`no processor is registered for the job "${queue}/${job.name}"`);
   }
 
+  // The job id is bound here, at the hand-off, so every line the processor writes names the job it
+  // belongs to (AAP 0.5.6); the `failed` listener writes the id from the job itself. The copy is
+  // this job's alone and owns nothing: `ctx` keeps every collaborator, so `closeWorkerContext`, which
+  // is called with the process context, still closes exactly what `createWorkerContext` built. A
+  // hand-built test job carries no id, and the exported `Processor` contract is unchanged either way.
+  const jobCtx = job.id === undefined ? ctx : { ...ctx, logger: withJobId(ctx.logger, job.id) };
+
   try {
     return await processor(
       job.id === undefined
         ? { name: job.name, data: job.data }
         : { id: job.id, name: job.name, data: job.data },
-      ctx,
+      jobCtx,
     );
   } catch (error) {
     if (error instanceof QueuePayloadError) {

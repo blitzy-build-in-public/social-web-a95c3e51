@@ -46,6 +46,7 @@ import {
   isJobName,
   parseJobData,
   throttleRedisFailure,
+  withJobId,
 } from '@tablemate/server-core';
 import type { JobDataByQueueAndName, JobName } from '@tablemate/server-core';
 import { NotificationKind } from '@tablemate/shared';
@@ -165,7 +166,19 @@ export function startSettlementWorker(services: AppServices): () => Promise<void
   });
   const worker: SettlementWorker = new Worker<unknown, SettlementJobResult, string>(
     QUEUE.settlement,
-    (job: SettlementJob) => processSettlementJob(services, job.name, job.data),
+    // The job id is bound here, at the hand-off, so the `settlement_job_done` line and every line a
+    // handler writes name the job they belong to (AAP 0.11.1). The copy owns nothing — `services`
+    // keeps the connections, the gateway and the dispatcher — so nothing here is closed or registered
+    // anywhere, and the exported `processSettlementJob(services, name, data)` signature its own tests
+    // drive is unchanged. A job carrying no id leaves the context as it is.
+    (job: SettlementJob) =>
+      processSettlementJob(
+        job.id === undefined
+          ? services
+          : { ...services, logger: withJobId(services.logger, job.id) },
+        job.name,
+        job.data,
+      ),
     { connection, concurrency: SETTLEMENT_CONCURRENCY },
   );
 
