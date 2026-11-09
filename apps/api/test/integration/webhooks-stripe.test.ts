@@ -439,6 +439,23 @@ describe(`${MODE} POST ${WEBHOOK_URL} — signature`, () => {
 
     expectError(await post(JSON.stringify(event), signature), 400, 'bad_signature');
   });
+
+  it.each(rows([{ body: '[]' }, { body: '"hello"' }, { body: '{}' }]))(
+    'acknowledges the signed body $body, which is no event, and records nothing',
+    async ({ body }) => {
+      // The signature proves who sent the bytes, never what they are: a valid signature over a body
+      // that is no Stripe event carries no id to dedupe on and no effect to apply, so the delivery is
+      // acknowledged rather than answered `500` — which the provider would retry forever
+      // (AAP 0.3.2, 0.3.3, 0.5.4).
+      const response = await post(body, signStripePayload(body, t.stripe.webhookSecret, nowSec()));
+
+      expect(response.status, `the webhook answered ${response.status}: ${response.body}`).toBe(
+        200,
+      );
+      expect(response.json()).toBeNull();
+      expect(await t.services.db.stripeEvent.count()).toBe(0);
+    },
+  );
 });
 
 /* The dedupe key (AAP 0.3.2) */
@@ -690,6 +707,47 @@ describe.runIf(MOCK)(`${MODE} POST ${WEBHOOK_URL} — ordering and lifecycle`, (
 
     expect((await depositOf(meetup.id, 'initiator')).status).toBe('failed');
     expect(await meetupStatus(meetup.id)).toBe('proposed');
+  });
+});
+
+/* The provider-cancellation mapping, reached without the proxy (AAP 0.3.2, 0.5.3) */
+
+describe(`${MODE} POST ${WEBHOOK_URL} — provider-cancellation mapping`, () => {
+  it('applies a lost hold whose payload omits the cancellation instant', async () => {
+    const pair = await lockedPair();
+    // The payload a delivery may carry for a hold Stripe cancelled itself: every field the effect
+    // reads and no `canceled_at`, which leaves the instant to the request's own clock. It is
+    // hand-built rather than recorded, so the case needs no proxy control and runs in both
+    // topologies (AAP 0.11.2, 0.12.1).
+    const event = eventEnvelope('payment_intent.canceled', {
+      id: pair.initiatorDeposit.paymentIntentId,
+      object: 'payment_intent',
+      status: 'canceled',
+      cancellation_reason: 'expired',
+      amount: DEFAULT_DEPOSIT_CENTS,
+      amount_capturable: DEFAULT_DEPOSIT_CENTS,
+      amount_received: 0,
+      currency: 'usd',
+      customer: 'cus_fixture',
+      capture_method: 'manual',
+      metadata: {},
+    });
+
+    const response = await deliverOne(event);
+
+    // A cancellation whose reason is not ours is a hold loss whether or not the payload says when it
+    // happened (AAP 0.3.2), so an absent instant must fall back to the request's clock rather than
+    // become a value the write refuses: a `500` here leaves the deposit `held` and the delivery
+    // unrecorded, and the provider redelivers it forever.
+    expect(response.status, `the webhook answered ${response.status}: ${response.body}`).toBe(200);
+    expect(await meetupStatus(pair.meetupId)).toBe('lock_lost');
+
+    const lost = await depositOf(pair.meetupId, 'initiator');
+    expect(lost.status).toBe('expired');
+    expect(lost.canceledAt).not.toBeNull();
+    expect(lost.canceledAt?.getTime()).toBe(t.services.clock.nowMs());
+
+    await expectProcessedOnce(event.id);
   });
 });
 

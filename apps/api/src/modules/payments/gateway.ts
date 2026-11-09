@@ -430,11 +430,15 @@ export interface PaymentsGateway {
    * @param rawBody The bytes exactly as received, before any parsing.
    * @param signature The value of the `Stripe-Signature` header.
    * @param receivedAt The instant the request arrived, from the injected clock.
+   * @returns The verified event, or `null` when the signed bytes are not a Stripe event at all — no
+   *   non-empty `id` or `type`. The signature proves who sent the bytes, never what they are, and a
+   *   delivery carrying no event id can be neither deduped nor recorded, so `webhook.ts` acknowledges
+   *   it `200` and applies nothing rather than retrying it forever.
    * @throws BadSignatureError when the header is missing or malformed, when the timestamp is outside
    *   tolerance or when the signature was made with another secret; `webhook.ts` maps it to
    *   `400 bad_signature`.
    */
-  verifyWebhook(rawBody: Buffer, signature: string, receivedAt: Date): VerifiedWebhookEvent;
+  verifyWebhook(rawBody: Buffer, signature: string, receivedAt: Date): VerifiedWebhookEvent | null;
 }
 
 /*

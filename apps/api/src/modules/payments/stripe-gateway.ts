@@ -149,12 +149,29 @@ function idOf(value: { id: string } | string | null | undefined): string | null 
 }
 
 /**
+ * The instant a provider field reports in unix seconds, or `null` when it reports none this build can
+ * use (AAP 0.3.2, AAP 0.3.3).
+ *
+ * A payload is whatever bytes the provider sent, so a field its documentation types as a number may
+ * be absent, `null` or of another type, and each of those means "no instant" rather than an instant.
+ * The conversion is guarded here because `new Date(seconds * 1000)` answers them with an **Invalid
+ * Date** (`undefined`) or with the epoch (`null`), and the Invalid Date is the worst answer available:
+ * it is neither `null` nor `undefined`, so it survives every `??` and every `=== null` a caller uses
+ * to fall back to its own instant, and PostgreSQL refuses it — so a delivery whose payload merely
+ * omitted a field would fail the write that records it and roll its transaction back, which is a
+ * `500` answered for a delivery the provider then retries forever.
+ */
+function instantFromSeconds(seconds: unknown): Date | null {
+  return typeof seconds === 'number' && Number.isFinite(seconds) ? new Date(seconds * 1000) : null;
+}
+
+/**
  * The capture deadline a charge reports (AAP 0.2.4). Only an expanded charge carries it, and it is what
- * `Deposit.captureBefore` records when a deposit becomes `held` (AAP 0.5.2).
+ * `Deposit.captureBefore` records when a deposit becomes `held` (AAP 0.5.2); a charge or card detail
+ * that reports none leaves the deadline absent rather than at an instant of the provider's choosing.
  */
 function captureBeforeOf(charge: Stripe.Charge | null): Date | null {
-  const seconds = charge?.payment_method_details?.card?.capture_before;
-  return seconds === undefined ? null : new Date(seconds * 1000);
+  return instantFromSeconds(charge?.payment_method_details?.card?.capture_before);
 }
 
 /** The status of a provider response, or `null` when this build does not model it. */
@@ -168,8 +185,9 @@ function toIntentStatus(status: string): IntentStatus | null {
  *
  * This is the authoritative view the executor, the settlement and the webhook handler decide on, so
  * nothing is inferred: a `latest_charge` that arrived as an id leaves the capture deadline and the
- * refund flag at their defaults, and `metadata` is the attempt metadata this application wrote or
- * `null` when it is absent or malformed.
+ * refund flag at their defaults, `metadata` is the attempt metadata this application wrote or `null`
+ * when it is absent or malformed, and an instant the payload reports no number for is absent rather
+ * than an Invalid Date no caller can detect (AAP 0.3.2).
  *
  * The `null` arm exists for a **webhook payload**, which is whatever bytes the provider sent: an
  * event object may omit the status altogether, and a payload naming no state this build can express
@@ -182,13 +200,13 @@ function toIntentStateOrNull(intent: Stripe.PaymentIntent): IntentState | null {
   if (status === null) return null;
   const charge = typeof intent.latest_charge === 'object' ? intent.latest_charge : null;
   const metadata = PaymentIntentMetadata.safeParse(intent.metadata);
-  const canceledAt = intent.canceled_at;
+  const canceledAt = instantFromSeconds(intent.canceled_at);
   return {
     id: intent.id,
     status,
     customerId: idOf(intent.customer),
     cancellationReason: intent.cancellation_reason ?? null,
-    canceledAt: canceledAt === null ? null : new Date(canceledAt * 1000),
+    canceledAt,
     captureBefore: captureBeforeOf(charge),
     amountCents: intent.amount,
     amountCapturableCents: intent.amount_capturable,
@@ -215,6 +233,23 @@ function toIntentState(intent: Stripe.PaymentIntent): IntentState {
 }
 
 /**
+ * Whether a parsed delivery is a Stripe event at all (AAP 0.3.2, AAP 0.3.3).
+ *
+ * The value is the SDK's parse of bytes this process did not write, so `Stripe.Event` describes what a
+ * payload is meant to be rather than what it turned out to be: `constructEvent` proves the signature
+ * and parses the body, and answers with whatever JSON shape those bytes held — an array, a string, an
+ * object with no `id` or `type`. The handler keys the whole delivery on those two fields before it does
+ * anything else: the id is what the `stripe_event` row dedupes on, and a row cannot be written without
+ * one, so a body that is no event is recognized here rather than left to fail a write. The type
+ * predicate is what carries the checked shape on to the caller.
+ */
+function isEventEnvelope(value: unknown): value is Stripe.Event {
+  if (typeof value !== 'object' || value === null) return false;
+  const { id, type } = value as { id?: unknown; type?: unknown };
+  return typeof id === 'string' && id !== '' && typeof type === 'string' && type !== '';
+}
+
+/**
  * The object a verified event carried, reduced to the fields the handler applies (AAP 0.3.2).
  *
  * The whole provider object never leaves this boundary, so a field the provider added cannot reach the
@@ -225,7 +260,8 @@ function toIntentState(intent: Stripe.PaymentIntent): IntentState {
  * and `intent: null`, which the handler answers by reading the PaymentIntent before its transaction.
  * No shape of signed payload can therefore throw here: a delivery this build cannot read never fails
  * the endpoint, and the receipt line is written for every delivery whose signature checked out
- * (AAP 0.3.2, AAP 0.11.1).
+ * (AAP 0.3.2, AAP 0.11.1). An envelope that is no event at all is refused before this runs, because a
+ * delivery with no event id has nothing to normalize and nothing to record.
  */
 function toWebhookObject(event: Stripe.Event): WebhookObject {
   const object = event.data?.object;
@@ -560,6 +596,10 @@ export function createStripeGateway(
         // its authorization may still be settling, or may already be gone — so nothing is decided
         // from them. The conflict stands, and `operations.ts` hands the unresolved operation to the
         // operator rather than replaying it (AAP 0.3.2).
+        // The id travels under `intent` because an operator has to open that PaymentIntent in the
+        // provider's dashboard, and a PaymentIntent id is not a class the redaction list protects:
+        // a value that has to be read back is logged under a name the list does not cover, which is
+        // the pattern the list's own invariant prescribes, never by widening it.
         logger.warn(
           {
             event: 'stripe_hold_recovery_undecidable',
@@ -567,7 +607,7 @@ export function createStripeGateway(
             depositId: request.depositId,
             attempt: request.attempt,
             status: recovered.status,
-            paymentIntentId: recovered.id,
+            intent: recovered.id,
           },
           'recovered PaymentIntent has an undecidable status',
         );
@@ -649,13 +689,16 @@ export function createStripeGateway(
       default:
         // A create that reached none of the three outcomes above leaves the caller unable to decide, so
         // it is reported as unknown and the executor reconciles by retrieving the PaymentIntent. The id
-        // is in the logger's redaction list; the status is what makes this line readable.
+        // travels under `intent` because an operator has to open that PaymentIntent in the
+        // provider's dashboard, and a PaymentIntent id is not a class the redaction list protects:
+        // a value that has to be read back is logged under a name the list does not cover, which is
+        // the pattern the list's own invariant prescribes, never by widening it.
         logger.warn(
           {
             event: 'stripe_hold_unexpected_status',
             op: 'hold:create',
             status: intent.status,
-            paymentIntentId: intent.id,
+            intent: intent.id,
           },
           'hold returned an unmodeled status',
         );
@@ -771,6 +814,9 @@ export function createStripeGateway(
    * quickly. The tolerance is judged against `receivedAt`, the request's injected-clock instant, which
    * is what lets a suite on the test clock sign an event with a timestamp from that clock (AAP 0.11.1).
    *
+   * @returns The verified event, or `null` when the signed bytes are not a Stripe event at all — no
+   *   non-empty `id` or `type` — which `webhook.ts` acknowledges `200` without a row, because a
+   *   delivery with no event id can be neither deduped nor recorded.
    * @throws BadSignatureError when the header is missing or malformed, when the timestamp is outside
    *   tolerance, or when the signature was made with another secret; `webhook.ts` maps it to
    *   `400 bad_signature`. A body whose signature verifies is normalized and never thrown for: a
@@ -781,10 +827,10 @@ export function createStripeGateway(
     rawBody: Buffer,
     signature: string,
     receivedAt: Date,
-  ): VerifiedWebhookEvent {
-    let event: Stripe.Event;
+  ): VerifiedWebhookEvent | null {
+    let parsed: unknown;
     try {
-      event = client.webhooks.constructEvent(
+      parsed = client.webhooks.constructEvent(
         rawBody,
         signature,
         webhookSecret,
@@ -798,11 +844,19 @@ export function createStripeGateway(
     } catch (error) {
       throw new BadSignatureError({ cause: error });
     }
+
+    // The signature verified, but that says nothing about what was signed: the value is the SDK's
+    // parse of bytes this process did not write (AAP 0.3.3).
+    if (!isEventEnvelope(parsed)) return null;
+
     return {
-      id: event.id,
-      type: event.type,
-      createdAt: new Date(event.created * 1000),
-      object: toWebhookObject(event),
+      id: parsed.id,
+      type: parsed.type,
+      // The event's own `created` is only ever the fallback cancellation instant of a `charge.expired`
+      // event (AAP 0.11.1): a payload that reports no number leaves the fallback to the request's own
+      // clock instant, which is the delivery's time rather than an instant the provider never named.
+      createdAt: instantFromSeconds(parsed.created) ?? receivedAt,
+      object: toWebhookObject(parsed),
     };
   }
 

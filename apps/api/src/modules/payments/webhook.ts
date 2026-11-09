@@ -10,7 +10,11 @@
  *  1. **Signature first.** `registerRawJsonBody` keeps the received bytes on `request.rawBody` and
  *     the gateway checks the `Stripe-Signature` header against them; a missing header or body, a
  *     timestamp outside tolerance or a signature made with another secret is `400 bad_signature` and
- *     applies nothing (AAP 0.3.2, 0.3.3). The `stripe` SDK is `stripe-gateway.ts`'s alone.
+ *     applies nothing (AAP 0.3.2, 0.3.3). The `stripe` SDK is `stripe-gateway.ts`'s alone. A signed
+ *     body that is no Stripe event at all — no non-empty `id` or `type` — is acknowledged `200`,
+ *     logged as `stripe_webhook_not_an_event` and applied to nothing: it carries no id to dedupe on
+ *     and no effect to write, and refusing it would only have the provider redeliver a body that can
+ *     never be applied.
  *  2. **One transaction per event.** The `stripe_event` row is inserted `ON CONFLICT DO NOTHING` and
  *     locked, every effect is applied, then the row is marked `processed`: a replay answers `200`
  *     with no effect, a duplicate delivery in flight waits and is skipped, and a crash before the
@@ -108,6 +112,7 @@ const FAULT_AFTER_COMMIT = 'stripe_webhook.after_commit';
 
 /** The log event names this file writes (AAP 0.11.1); none of them carries a payload. */
 const RECEIVED = 'stripe_webhook_received';
+const NOT_AN_EVENT = 'stripe_webhook_not_an_event';
 const LATE_AUTHORIZATION = 'stripe_webhook_late_authorization';
 const ORPHAN_AUTHORIZATION = 'stripe_webhook_orphan_authorization';
 const HOLD_LOST = 'stripe_webhook_hold_lost';
@@ -243,6 +248,15 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
 
       const event = verifySignature(services, rawBody, signature, now);
 
+      if (event === null) {
+        // The bytes were signed, but they are no event: there is nothing to apply and no id to dedupe
+        // on, so answering anything but `2xx` would only make the provider redeliver a body that can
+        // never be applied — the same reasoning an event naming an unknown intent is acknowledged by.
+        request.log.warn({ event: NOT_AN_EVENT }, NOT_AN_EVENT);
+        reply.code(OK).send(null);
+        return;
+      }
+
       // Ids and the type alone: an event payload is customer data (AAP 0.11.1).
       request.log.info({ event: RECEIVED, eventId: event.id, type: event.type }, RECEIVED);
 
@@ -292,7 +306,9 @@ export function stripeWebhookRoutes(app: App): Promise<void> {
 /**
  * Verify the signature and normalize the event (AAP 0.3.2, 0.3.3), mapping the gateway's own
  * `BadSignatureError` onto the contract's `400 bad_signature` and letting anything else — a bug
- * rather than a bad delivery — reach the error plugin as `500 internal_error`.
+ * rather than a bad delivery — reach the error plugin as `500 internal_error`. The gateway's `null`
+ * answer passes straight through: signed bytes that are no event are the route's to acknowledge, not
+ * a failure to report.
  *
  * @throws AppError `bad_signature` (400) when the header is malformed, the timestamp is outside
  *   tolerance or the signature was made with another secret.
@@ -302,7 +318,7 @@ function verifySignature(
   rawBody: Buffer,
   signature: string,
   receivedAt: Date,
-): VerifiedWebhookEvent {
+): VerifiedWebhookEvent | null {
   try {
     return services.payments.verifyWebhook(rawBody, signature, receivedAt);
   } catch (error) {
