@@ -1,0 +1,27 @@
+// The TypeScript project for @tablemate/server-core, built with `tsc -b` from the root
+// project file. Everything tsconfig.base.json carries — the strict flags, NodeNext
+// resolution, verbatimModuleSyntax, rewriteRelativeImportExtensions, lib ES2023 and the
+// "tablemate-source" custom condition — applies unchanged, so only what this workspace adds
+// appears here.
+//
+// This code runs only in Node (api, workers and the seed), so `types: ["node"]` is the
+// opposite of the sibling `shared` project's `types: []`: Node globals such as `process`,
+// `Buffer` and `node:crypto` are meant to typecheck. "DOM" must not be added to lib — the
+// third-party declaration files that mention web types (openai, twilio) are covered by the
+// base's skipLibCheck instead.
+//
+// rootDir stays "." so emitted files land in dist/src/ and dist/test/, the layout
+// package.json `exports` maps ("tablemate-source" -> src/index.ts, types/default -> dist/src/).
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["dist", "node_modules"],
+  "references": [{ "path": "../shared" }]
+}

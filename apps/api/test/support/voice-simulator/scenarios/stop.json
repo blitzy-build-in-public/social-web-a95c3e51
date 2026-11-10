@@ -1,0 +1,13 @@
+{
+  "name": "stop",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "Não, obrigado. Podem terminar a chamada, por favor.",
+      "classify": { "label": "stop" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 15
+}

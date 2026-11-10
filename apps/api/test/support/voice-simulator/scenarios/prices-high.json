@@ -1,0 +1,38 @@
+{
+  "name": "prices-high",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "O prato principal mais barato é o bitoque, custa 9,50 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "bitoque", "priceAmount": 9.5, "priceText": "9,50 euros" }
+      }
+    },
+    { "say": "Sim, está correto.", "classify": { "label": "yes" } },
+    {
+      "say": "O prato principal mais caro é a cataplana de marisco, custa 32 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "cataplana de marisco", "priceAmount": 32, "priceText": "32 euros" }
+      }
+    },
+    { "say": "Exatamente, é isso mesmo.", "classify": { "label": "yes" } },
+    {
+      "say": "Um café custa 1,20 euros.",
+      "classify": {
+        "label": "price",
+        "values": {
+          "drink": "coffee",
+          "dish": "café",
+          "priceAmount": 1.2,
+          "priceText": "1,20 euros"
+        }
+      }
+    },
+    { "say": "Sim, está tudo certo, obrigado.", "classify": { "label": "yes" } }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 95
+}

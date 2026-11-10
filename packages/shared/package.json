@@ -1,0 +1,22 @@
+{
+  "name": "@tablemate/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zod contract schemas, error codes, enums, constants, copy, tier allowlists and UI tokens shared by every Tablemate workspace.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "tablemate-source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

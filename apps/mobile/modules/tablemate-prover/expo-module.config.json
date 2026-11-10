@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["TablemateProverModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.tablemateprover.TablemateProverModule"]
+  }
+}

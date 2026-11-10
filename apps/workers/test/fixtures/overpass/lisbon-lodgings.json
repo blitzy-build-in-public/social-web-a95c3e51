@@ -1,0 +1,22 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API (fixture)",
+  "osm3s": { "timestamp_osm_base": "2026-11-02T00:00:00Z", "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL." },
+  "_cases": {
+    "kinds": { "hostel": ["node/930001", "node/930002", "node/930005"], "hotel": ["node/930003", "way/940001", "relation/950001"], "guesthouse": ["node/930004", "way/940002"] },
+    "noPhone": ["way/940002"],
+    "contactPhone": ["way/940001"],
+    "fromCenter": ["way/940001", "way/940002", "relation/950001"],
+    "withAddress": ["node/930001", "relation/950001"]
+  },
+  "elements": [
+    { "type": "node", "id": 930001, "lat": 38.71030, "lon": -9.13760, "tags": { "name": "Fixture Hostel Baixa", "tourism": "hostel", "phone": "+14155550180", "addr:street": "Rua da Fixture", "addr:housenumber": "40", "addr:postcode": "0000-002", "addr:city": "Lisboa" } },
+    { "type": "node", "id": 930002, "lat": 38.71080, "lon": -9.14270, "tags": { "name": "Fixture Hostel Chiado", "tourism": "hostel", "phone": "+14155550181" } },
+    { "type": "node", "id": 930003, "lat": 38.71410, "lon": -9.13930, "tags": { "name": "Fixture Hotel Rossio", "tourism": "hotel", "phone": "+14155550182" } },
+    { "type": "node", "id": 930004, "lat": 38.71190, "lon": -9.13140, "tags": { "name": "Fixture Guest House Alfama", "tourism": "guest_house", "phone": "+14155550183" } },
+    { "type": "way", "id": 940001, "center": { "lat": 38.71200, "lon": -9.14080 }, "tags": { "name": "Fixture Hotel Carmo", "tourism": "hotel", "contact:phone": "+14155550184" } },
+    { "type": "way", "id": 940002, "center": { "lat": 38.70990, "lon": -9.13340 }, "tags": { "name": "Fixture Guest House Sé", "tourism": "guest_house" } },
+    { "type": "relation", "id": 950001, "center": { "lat": 38.70800, "lon": -9.13680 }, "tags": { "name": "Fixture Hotel Comércio", "tourism": "hotel", "phone": "+14155550185", "addr:street": "Travessa do Teste", "addr:housenumber": "3", "addr:city": "Lisboa" } },
+    { "type": "node", "id": 930005, "lat": 38.70700, "lon": -9.14590, "tags": { "name": "Fixture Hostel Cais", "tourism": "hostel", "phone": "+14155550186" } }
+  ]
+}

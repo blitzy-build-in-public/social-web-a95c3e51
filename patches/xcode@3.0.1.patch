@@ -1,0 +1,19 @@
+diff --git a/lib/pbxProject.js b/lib/pbxProject.js
+index 068548ab89dfd2d39f90d46d881c17dc86f90bf4..e60ad787d1a7d81d48ca2df799c0654f8fdc5480 100644
+--- a/lib/pbxProject.js
++++ b/lib/pbxProject.js
+@@ -1679,7 +1679,13 @@ function correctForFrameworksPath(file, project) {
+ function correctForPath(file, project, group) {
+     var r_group_dir = new RegExp('^' + group + '[\\\\/]');
+ 
+-    if (project.pbxGroupByName(group).path)
++    // A project need not contain a group by this name: Expo SDK 52's iOS template
++    // has no 'Resources' group, and a share-extension target owns only the group
++    // its own plugin creates. Absent the group there is no path to strip, so the
++    // file path stands as given.
++    var pbxGroup = project.pbxGroupByName(group);
++
++    if (pbxGroup && pbxGroup.path)
+         file.path = file.path.replace(r_group_dir, '');
+ 
+     return file;

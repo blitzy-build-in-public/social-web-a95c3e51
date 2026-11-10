@@ -1,0 +1,341 @@
+/**
+ * Tablemate partner console styles (AAP 0.8.1, 0.5.8, 0.3.2).
+ *
+ * Styled entirely from the shared tokens in `packages/shared/src/ui-tokens.ts`, which `main.tsx`
+ * publishes as custom properties on the document root. This file declares none of them, holds no
+ * hex literal and fetches no remote resource, so the nginx Content-Security-Policy (AAP 0.3.2)
+ * needs no exception for it. It consumes --tm-color-{background,surface,text,text-muted,primary,
+ * on-primary,border,danger,on-danger,focus-ring}, --tm-space-{xs,sm,md,lg,xl,xxl},
+ * --tm-radius-{sm,md,lg,pill}, --tm-font-size-{caption,body,label,title,heading,display},
+ * --tm-line-height-{caption,body,label,title,heading,display}, --tm-font-weight-{regular,medium,
+ * bold}, --tm-border-{separator,edge,control}, --tm-opacity-{hover,pressed,disabled}, --tm-touch-target,
+ * --tm-font-family and the console's own two lengths, --tm-layout-reading-column-width and
+ * --tm-size-qr-code: each key the kebab-case form of the token it comes from, published in rem so
+ * text follows the reader's system font size and in px for the boundary widths the tokens state as
+ * CSS pixels. Text is painted only in pairs recorded in the tokens' CONTRAST_PAIRS; boundaries and
+ * the focus ring only in NON_TEXT_CONTRAST_PAIRS.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html {
+  /* Every rem below resolves against the reader's system font size. */
+  font-size: 100%;
+}
+body {
+  margin: 0;
+  background: var(--tm-color-background);
+  color: var(--tm-color-text);
+  /* The product's one font stack, published by `main.tsx` from the shared tokens. Its family names
+     are unquoted in the token so the value parses as written when it lands in a custom property. */
+  font-family: var(--tm-font-family);
+  font-size: var(--tm-font-size-body);
+  line-height: var(--tm-line-height-body);
+}
+
+/* The console's markup carries the classes below, so the shell is styled by element and spacing
+   comes from the layout's gap rather than from margins between siblings. */
+h1,
+h2,
+p,
+dl,
+dd,
+figure,
+figcaption,
+form {
+  margin: 0;
+}
+h1 {
+  font-size: var(--tm-font-size-heading);
+  line-height: var(--tm-line-height-heading);
+  /* The console's largest text: a heading reflows like the rest of the column, so one unbroken
+     token in it cannot widen the page past the viewport. */
+  overflow-wrap: anywhere;
+}
+h2 {
+  font-size: var(--tm-font-size-title);
+  line-height: var(--tm-line-height-title);
+}
+
+/* One centred column: header, secret form, code, countdown and status lines stack below. Its width
+   is the tokens' reading column, which the console publishes as a custom property. */
+main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-xl);
+  max-width: var(--tm-layout-reading-column-width);
+  margin-inline: auto;
+  padding-inline: var(--tm-space-lg);
+  padding-block: var(--tm-space-xl);
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tm-space-md);
+  align-items: center;
+  justify-content: space-between;
+}
+form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-md);
+}
+label {
+  display: block;
+  font-size: var(--tm-font-size-label);
+  line-height: var(--tm-line-height-label);
+  font-weight: var(--tm-font-weight-medium);
+}
+input,
+button {
+  min-height: var(--tm-touch-target);
+  padding-inline: var(--tm-space-md);
+  border-radius: var(--tm-radius-md);
+  font-family: inherit;
+  font-size: var(--tm-font-size-label);
+  line-height: var(--tm-line-height-label);
+  font-weight: var(--tm-font-weight-medium);
+}
+input {
+  width: 100%;
+  background: var(--tm-color-background);
+  color: var(--tm-color-text);
+  border: var(--tm-border-edge) solid var(--tm-color-border);
+}
+button {
+  min-width: var(--tm-touch-target);
+  border: var(--tm-border-edge) solid transparent;
+  background: var(--tm-color-primary);
+  color: var(--tm-color-on-primary);
+  cursor: pointer;
+}
+
+/* The header carries only the escape hatch out of the session, so it reads as the secondary
+   control rather than the primary one. */
+header button {
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text);
+  border-color: var(--tm-color-border);
+}
+
+/* A control that cannot be used must not look like one; the pair stays legible. */
+button:disabled,
+input:disabled {
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text-muted);
+  border-color: var(--tm-color-border);
+  cursor: default;
+}
+button:disabled {
+  pointer-events: none;
+}
+
+/* A filled action answers the pointer with the tokens' own treatment: it dims its fill by the
+   `hover` factor and then by the `pressed` one -- exactly as the shared Button primitive does -- and
+   its white label keeps the ratio the tokens record for those composites. The header's control is
+   outlined rather than filled, its own fill already the lightest a control takes, so it keeps that
+   fill and takes the `primary` boundary the non-text records cover (7.3:1 over the page, 6.59:1 over
+   its own fill). A disabled control carries pointer-events: none, so it can never be hovered. */
+main :not(header) button:hover {
+  opacity: var(--tm-opacity-hover);
+}
+main :not(header) button:active {
+  opacity: var(--tm-opacity-pressed);
+}
+header button:hover,
+header button:active {
+  border-color: var(--tm-color-primary);
+}
+
+/* A link is underlined by the browser at rest, so its pointer affordance is the colour: it
+   deepens to the palette's darkest tone, whose recorded pair on the page is 17.21:1, against the
+   `primary` it rests in at 7.3:1. The underline is restated so the affordance does not depend on
+   the user agent's own link styling. */
+a:hover,
+a:active {
+  color: var(--tm-color-text);
+  text-decoration: underline;
+}
+a {
+  color: var(--tm-color-primary);
+}
+
+/* A link that stands as a control is sized like one, rather than to the height of its own text
+   line, so the console's index carries the same minimum target its buttons and inputs do
+   (AAP 0.5.8). */
+nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tm-touch-target);
+}
+
+/* The ring and the gap holding it off the control are the boundary the tokens reserve for a
+   control's keyboard focus (`control`), so the indicator is neither thinner nor wider than the band
+   the design system gives it. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: var(--tm-border-control) solid var(--tm-color-focus-ring);
+  outline-offset: var(--tm-border-control);
+}
+
+/* Read off this element as text, so it stays exactly six digits, and painted as the digit cells
+   below rather than as one run: a centred run carries its `letter-spacing` after the final digit,
+   which leaves the numerals left of the centre line the countdown and the QR share. The check-in
+   code is the console's one display element, sized from the tokens' largest type role
+   (--tm-font-size-display) rather than by a type size of this file's own: it fills a phone's width at
+   18vw and never exceeds 4.5x that role. The line height stays the unitless ratio a single line of
+   digits needs, because the tokens state line heights as lengths that track their own font size and
+   cannot follow this viewport-derived size. */
+.code {
+  font-size: clamp(
+    calc(var(--tm-font-size-display) * 1.5),
+    18vw,
+    calc(var(--tm-font-size-display) * 4.5)
+  );
+  line-height: 1.1;
+  font-weight: var(--tm-font-weight-bold);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* One cell per digit, each the width of one tabular digit, so the six cells are equal and the row is
+   centred on their advances. A single 0.1em gap between the cells, and none after the last, gives
+   each digit the same pitch and keeps the row centred. The cells stay inline-level, because a flex
+   row would make them block-level and change how the element's own text reads. */
+.code-digit {
+  display: inline-block;
+  width: 1ch;
+  text-align: center;
+  margin-inline-end: 0.1em;
+}
+.code-digit:last-child {
+  margin-inline-end: 0;
+}
+
+/* Time left is stated as text, never by colour alone (AAP 0.5.8). */
+.countdown {
+  font-size: var(--tm-font-size-title);
+  line-height: var(--tm-line-height-title);
+  text-align: center;
+}
+
+/* The QR form of the code: light background behind dark modules, both from the tokens, so the
+   quiet zone a scanner needs survives. Its box is the tokens' QR size and still yields to a narrow
+   viewport. Fill comes from these classes, never from inline style, which the console's
+   Content-Security-Policy would refuse. */
+.qr {
+  display: block;
+  width: min(70vw, var(--tm-size-qr-code));
+  height: auto;
+  margin: auto;
+  background: var(--tm-color-background);
+}
+
+/* The symbol is a block of its own rather than an inline replaced element, so the figure's line box
+   adds no descender band below it and the QR box is the square the scanner sees. */
+.qr svg {
+  display: block;
+}
+.qr-bg {
+  fill: var(--tm-color-background);
+}
+.qr-modules {
+  fill: var(--tm-color-text);
+}
+
+/* Status and error lines; each carries its own words, so colour is never the only signal. A plain
+   .notice is a status line (role="status"); the .notice-error modifier is the failure line
+   (role="alert") for a rejected secret or a failed refresh, so the danger fill stays available as
+   exactly that and a status is never painted as a failure. */
+.notice {
+  padding: var(--tm-space-md) var(--tm-space-lg);
+  border-radius: var(--tm-radius-md);
+  background: var(--tm-color-surface);
+  color: var(--tm-color-text);
+}
+.notice-error {
+  background: var(--tm-color-danger);
+  color: var(--tm-color-on-danger);
+}
+dl {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--tm-space-lg);
+  row-gap: var(--tm-space-sm);
+  overflow-wrap: anywhere;
+}
+
+/* Each pair is one item of that column and a flex row inside itself, so a term shares the line with
+   its value and the value grows into the space the term leaves. The pair wraps as a unit, so a term
+   too wide for the row moves the value onto the next line instead of squeezing it out of the
+   viewport once the text is scaled up. A two-track grid cannot do this: whichever track is not
+   flexible takes the row and starves the other. */
+dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--tm-space-sm);
+}
+dt {
+  color: var(--tm-color-text-muted);
+  font-weight: var(--tm-font-weight-medium);
+}
+dd {
+  flex: 1 1 auto;
+}
+.trend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tm-space-sm);
+}
+.trend svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.trend-bar {
+  fill: var(--tm-color-primary);
+}
+
+/* Every week's pointer target, drawn over its bar: the full height of the plot and the whole of the
+   week's slot, transparent so it hides nothing. Without it a week scoring 0 has nothing to point at
+   -- its bar has no area and carries no tooltip a reader can reach -- so each week answers the
+   pointer wherever it is over that week's slot (AAP 0.5.8). */
+.trend-target {
+  fill: transparent;
+  pointer-events: all;
+}
+
+/* The trend's x-axis, under the chart and outside the SVG, which would stretch any text drawn in it.
+   One equal track per week -- the number follows the markup, so it cannot disagree with the bars --
+   and a track is a thirteenth of the column, exactly the slot the bar above it occupies, so a label
+   starts where its bar starts. A label never wraps: a track is far narrower than a date, so the text
+   runs over the empty tracks beside it rather than onto a second line, and the last label is aligned
+   to the row's end so that overflow can never reach past the column and widen the page (AAP 0.5.8). */
+.trend-axis {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  color: var(--tm-color-text-muted);
+  font-size: var(--tm-font-size-caption);
+  line-height: var(--tm-line-height-caption);
+}
+.trend-axis > span {
+  white-space: nowrap;
+}
+.trend-axis > span:last-child {
+  justify-self: end;
+}
+.trend-baseline {
+  stroke: var(--tm-color-border);
+  stroke-width: var(--tm-border-separator);
+}
+figcaption {
+  color: var(--tm-color-text-muted);
+  font-size: var(--tm-font-size-caption);
+  line-height: var(--tm-line-height-caption);
+}

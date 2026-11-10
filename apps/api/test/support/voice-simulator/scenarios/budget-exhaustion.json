@@ -1,0 +1,9 @@
+{
+  "name": "budget-exhaustion",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [{ "say": "Pode repetir? Não percebi a pergunta.", "classify": { "label": "unclear" } }],
+  "loopLastTurn": true,
+  "finalStatus": "completed",
+  "durationSec": 120
+}

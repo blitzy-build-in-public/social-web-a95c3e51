@@ -1,0 +1,46 @@
+# Device proving benchmark and native smoke check (AAP 0.5.5, criterion 4). It drives
+# app/dev/zk-bench.tsx — present only in a build with EXPO_PUBLIC_ZK_BENCH=1, i.e. the eas.json `bench`
+# profile — which proves the bundled fixture .eml on the device and renders one JSON line; run it with
+# packages/circuits/scripts/native-smoke.sh (RUNS=1) and by hand on a physical device for the 30-run
+# benchmark. Maestro binds command-line `-e` values first and lets a literal header value win, so every
+# default below reads the incoming value first: a literal here would turn the smoke check into 30 runs.
+#
+# RUNS, ARTIFACTS_URL (the origin of the `artifacts` service), OUTPUT (the file native-smoke.sh writes
+# the result to, echoed back in the payload), COLLECT_URL (an optional HTTP sink) and SALT (the app
+# defaults to 1) are the flow's own inputs. Tagged `bench`, never `e2e`, so the `e2e:native` run cannot
+# select it; scripts/collect-bench.js prints the one `ZK_BENCH_RESULT <json>` line, because GraalJS
+# cannot write files itself.
+appId: com.tablemate.app
+name: zk-bench
+tags: [bench]
+env:
+  RUNS: ${RUNS || '30'}
+  ARTIFACTS_URL: ${ARTIFACTS_URL || 'http://localhost:8070'}
+  OUTPUT: ${OUTPUT || ''}
+  COLLECT_URL: ${COLLECT_URL || ''}
+  SALT: ${SALT || ''}
+---
+# Cold start, so the screen reads the deep-link parameters as its initial URL.
+- stopApp
+- openLink: "tablemate://dev/zk-bench?runs=${RUNS}&artifactsUrl=${encodeURIComponent(ARTIFACTS_URL)}${SALT ? '&salt=' + SALT : ''}"
+# iOS asks before it hands a custom scheme to the app that registered it.
+- runFlow:
+    when:
+      platform: iOS
+      visible: Open
+    commands:
+      - tapOn: Open
+# 150 s per measured run, plus 15 min for the resumable key download, its hash check and the warm-ups.
+- extendedWaitUntil:
+    visible:
+      id: zk-bench-status
+      text: 'done|error'
+    timeout: ${Number(RUNS) * 150000 + 900000}
+- copyTextFrom:
+    id: zk-bench-result
+- runScript:
+    file: scripts/collect-bench.js
+    env:
+      RUNS: ${RUNS}
+      OUTPUT: ${OUTPUT}
+      COLLECT_URL: ${COLLECT_URL}

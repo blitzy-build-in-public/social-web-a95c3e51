@@ -1,0 +1,17 @@
+{
+  "greeting.menu_prices": "Hola, le habla un asistente automatizado que llama en nombre de Tablemate para preguntar por los precios de su menú.",
+  "greeting.lodging_stay_verification": "Hola, le habla un asistente automatizado que llama en nombre de Tablemate para confirmar la estadía de un huésped.",
+  "ask.cheapest_main": "¿Cuál es su plato principal más económico y cuánto cuesta?",
+  "ask.priciest_main": "¿Y cuál es su plato principal más caro y cuánto cuesta?",
+  "ask.coffee_or_beer": "Por último, ¿cuánto cuesta un café o una cerveza?",
+  "ask.stay": "¿Tienen hospedado a un huésped con el nombre {bookingName} del {stayFrom} al {stayTo}?",
+  "readback.price": "Anoté {dish} a {price}.",
+  "readback.stay": "Solo para confirmar: ¿tienen hospedado a un huésped con el nombre {bookingName} del {stayFrom} al {stayTo}? Por favor, responda sí o no.",
+  "confirm.prompt": "¿Es correcto?",
+  "retry.unclear": "Disculpe, no le entendí. ¿Podría repetirlo, por favor?",
+  "switch.english": "Claro, continuemos en inglés.",
+  "closing.thanks": "Muchas gracias por su ayuda. Adiós.",
+  "closing.refused": "No hay problema, disculpe la molestia. Adiós.",
+  "closing.do_not_call": "Entendido. No volveremos a llamar. Adiós.",
+  "closing.budget": "Gracias por su tiempo. Daremos seguimiento por otro medio. Adiós."
+}

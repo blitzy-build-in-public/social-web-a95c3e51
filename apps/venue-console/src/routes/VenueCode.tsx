@@ -1,0 +1,279 @@
+/**
+ * The venue console's check-in code screen (AAP 0.5.1, 0.5.7, 0.5.8, 0.8.1): the six digits a guest reads or scans at
+ * the venue to witness their check-in.
+ *
+ * The console never derives a code -- `GET /venue/check-in-code` answers the server's `{ code, expiresAt }`, which this
+ * screen renders and re-asks for at `expiresAt`, so a device clock minutes off moves the countdown and never a
+ * validation (AAP 0.5.7) -- and the countdown is measured against the server clock, re-estimated from each response's
+ * `Date` header (AAP 0.5.1). The QR carries the bare six digits the mobile scanner hands to the check-in route
+ * (AAP 0.3.4), neither the code nor the secret is ever logged, and no remote resource is fetched: the QR is drawn as
+ * SVG from the bundled `qrcode` encoder, so the console's policy needs no exception beyond `'self'`.
+ */
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+import { create } from 'qrcode';
+
+import type { VenueCodeResponse } from '@tablemate/shared';
+
+import { ConsoleApiError, fetchVenueCode } from '../api.ts';
+import { isStale, msUntilServerTime, secondsLeft, serverNowMs } from '../server-time.ts';
+
+/** How often the countdown is re-derived, so the second it shows is never a beat stale. */
+const TICK_MS = 250;
+/** Added to `expiresAt` before asking for the next code: the server's step boundary is at `expiresAt`, and 250 ms past
+ * it the server serves the next step, so a poll here always answers a new code. */
+const POLL_AFTER_STEP_MS = 250;
+/** Retry delay when a poll still answered the previous code, because it landed inside that step. */
+const EARLY_POLL_RETRY_MS = 1_000;
+const RETRY_MS = 5_000;
+/** Quiet zone around the QR symbol, in modules: four is the margin a scanner expects. */
+const QR_QUIET_ZONE_MODULES = 4;
+/** Which of the three states the screen is in; the markup branches on this alone. */
+type Phase = 'loading' | 'ok' | 'reconnecting';
+interface ViewState {
+  /** `loading` until the first answer arrives, `reconnecting` after a failed poll. */
+  phase: Phase;
+  code: string | null;
+  /** Whole seconds the shown code is still accepted, on the server clock. */
+  secondsLeft: number;
+  /** True once the shown code is older than the server's one-step tolerance (AAP 0.5.7). */
+  stale: boolean;
+}
+/** A QR symbol as SVG geometry: `size` counts modules per side, quiet zone excluded. */
+interface QrGeometry {
+  size: number;
+  /** `d` of one path holding every dark module, each a 1x1 unit square offset by the quiet zone. */
+  d: string;
+}
+/** Whether the unreadable-`Date`-header warning has been printed for this page load: module scope,
+ * so a page that polls for hours warns once instead of every minute. */
+let warnedUnreadableDateHeader = false;
+/** Reports once per page load that the API's `Date` header could not be read, so the countdown follows
+ * this device's clock instead of the server's (AAP 0.5.1). Only the header's absence is named: no
+ * secret, no code and no response body is ever logged. */
+function warnUnreadableDateHeader(): void {
+  if (warnedUnreadableDateHeader) {
+    return;
+  }
+  warnedUnreadableDateHeader = true;
+  console.warn(
+    'The API Date header is not readable from this origin, so the countdown follows this device clock.',
+  );
+}
+/** Encodes the code as QR geometry (AAP 0.3.4): the payload is the bare six digits, which is what a scanner returns
+ * as its text. Every dark module becomes one unit square of a single `<path>`, offset by the quiet zone, so the
+ * symbol is one DOM node and no pixel of it depends on the rendered size. */
+function buildQr(code: string | null): QrGeometry | null {
+  if (code === null) {
+    return null;
+  }
+  const { modules } = create(code, { errorCorrectionLevel: 'M' });
+  const squares: string[] = [];
+  for (let row = 0; row < modules.size; row += 1) {
+    for (let col = 0; col < modules.size; col += 1) {
+      if (modules.get(row, col) !== 0) {
+        squares.push(`M${col + QR_QUIET_ZONE_MODULES} ${row + QR_QUIET_ZONE_MODULES}h1v1h-1z`);
+      }
+    }
+  }
+  return { size: modules.size, d: squares.join('') };
+}
+/** The code split into one cell per digit, which is what the screen paints (AAP 0.5.8). `styles.css` centres six equal
+ * cells rather than one text run, whose trailing `letter-spacing` lands the numerals left of the centre line the QR
+ * below them shares. The cells hold the digits with nothing between them, so the element's own text is still exactly
+ * the six digits its readers take from it (AAP 0.5.7). */
+function codeCells(code: string): JSX.Element[] {
+  return [...code].map((digit, index) => (
+    // The slot is the identity here, never the digit: a code repeats digits, and only the position
+    // stays stable as the server rotates it.
+    <span key={index} className="code-digit">
+      {digit}
+    </span>
+  ));
+}
+/** One venue's rotating check-in code (AAP 0.5.1, 0.5.4, 0.5.7). The screen polls the code route at each `expiresAt`,
+ * keeps the last code on screen through a failed poll until a full step of the server's tolerance has passed, and
+ * tells the operator to check the connection once it has. A rejected secret hands control back through
+ * `onUnauthorized`, where `App` returns to the secret form. */
+export function VenueCode({
+  secret,
+  onUnauthorized,
+}: {
+  secret: string;
+  onUnauthorized: () => void;
+}): JSX.Element {
+  const [view, setView] = useState<ViewState>({
+    phase: 'loading',
+    code: null,
+    secondsLeft: 0,
+    stale: false,
+  });
+  // Held as a latest-value ref: `App` may pass a new function identity on any render, and the
+  // polling effect below must not restart because of it.
+  const onUnauthorizedRef = useRef(onUnauthorized);
+  useEffect(() => {
+    onUnauthorizedRef.current = onUnauthorized;
+  }, [onUnauthorized]);
+  // Drawing the symbol walks every module, so it is rebuilt only when the code changes.
+  const qr = useMemo(() => buildQr(view.code), [view.code]);
+  useEffect(() => {
+    const controller = new AbortController();
+    // Loop state lives here, not in React state: none of it renders, and the effect's own closure is
+    // what the timers and the in-flight request belong to.
+    let current: VenueCodeResponse | null = null;
+    let expiresAtMs = 0;
+    let offsetMs = 0;
+    let inFlight = false;
+    let pollTimer: number | null = null;
+    function clearPoll(): void {
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    }
+    function schedulePoll(delayMs: number): void {
+      clearPoll();
+      pollTimer = window.setTimeout(() => {
+        pollTimer = null;
+        void poll();
+      }, delayMs);
+    }
+    // The clock moves only how long the shown code stays valid: the code itself is always the server's,
+    // and a code older than one step of tolerance is hidden rather than shown as accepted (AAP 0.5.7).
+    function tick(): void {
+      if (current === null) {
+        return;
+      }
+      const serverNow = serverNowMs(Date.now(), offsetMs);
+      const nextSecondsLeft = secondsLeft(expiresAtMs, serverNow);
+      const nextStale = isStale(expiresAtMs, serverNow);
+      setView((previous) =>
+        previous.secondsLeft === nextSecondsLeft && previous.stale === nextStale
+          ? previous
+          : { ...previous, secondsLeft: nextSecondsLeft, stale: nextStale },
+      );
+    }
+    async function poll(): Promise<void> {
+      if (inFlight || controller.signal.aborted) {
+        return;
+      }
+      inFlight = true;
+      clearPoll();
+      try {
+        const { data, offsetMs: measuredOffsetMs } = await fetchVenueCode(
+          secret,
+          controller.signal,
+        );
+        if (controller.signal.aborted) {
+          return;
+        }
+        expiresAtMs = Date.parse(data.expiresAt);
+        if (measuredOffsetMs === null) {
+          warnUnreadableDateHeader();
+        } else {
+          offsetMs = measuredOffsetMs;
+        }
+        const unchanged =
+          current !== null && current.code === data.code && current.expiresAt === data.expiresAt;
+        current = data;
+        tick();
+        setView((previous) =>
+          previous.phase === 'ok' && previous.code === data.code
+            ? previous
+            : { ...previous, phase: 'ok', code: data.code },
+        );
+        if (unchanged) {
+          // The poll landed inside the step it had just displayed, so the boundary is still ahead.
+          schedulePoll(EARLY_POLL_RETRY_MS);
+        } else {
+          schedulePoll(msUntilServerTime(expiresAtMs + POLL_AFTER_STEP_MS, Date.now(), offsetMs));
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (error instanceof ConsoleApiError && error.kind === 'unauthorized') {
+          // `api.ts` has already dropped the stored secret; `App` shows the secret form again.
+          onUnauthorizedRef.current();
+          return;
+        }
+        // Every other failure keeps the last code on screen until it goes stale.
+        setView((previous) =>
+          previous.phase === 'reconnecting' ? previous : { ...previous, phase: 'reconnecting' },
+        );
+        schedulePoll(RETRY_MS);
+      } finally {
+        inFlight = false;
+      }
+    }
+    function onVisibilityChange(): void {
+      // A background tab throttles its timers, so a foregrounded one re-reads the code at once.
+      if (document.visibilityState === 'visible') {
+        void poll();
+      }
+    }
+    void poll();
+    const tickTimer = window.setInterval(tick, TICK_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      controller.abort();
+      clearPoll();
+      window.clearInterval(tickTimer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [secret]);
+  // Read once, so the value the guard below rules non-null is the very one the cells are built from.
+  const code = view.code;
+  const hasFreshCode = code !== null && !view.stale;
+  const isLoading = code === null && view.phase === 'loading';
+  const symbolSize = qr === null ? 0 : qr.size + 2 * QR_QUIET_ZONE_MODULES;
+  return (
+    <>
+      <h1>Check-in code</h1>
+      <p>Guests enter or scan this code when they check in. It changes every minute.</p>
+      {hasFreshCode ? (
+        <>
+          <p className="code" data-testid="venue-code" aria-live="polite" aria-atomic="true">
+            {codeCells(code)}
+          </p>
+          <p
+            className="countdown"
+            data-testid="venue-countdown"
+            data-seconds-left={view.secondsLeft}
+            aria-live="off"
+          >
+            New code in {view.secondsLeft} s
+          </p>
+          {qr === null ? null : (
+            <figure className="qr" data-testid="venue-qr">
+              <svg
+                role="img"
+                aria-label="QR code of the check-in code"
+                viewBox={`0 0 ${String(symbolSize)} ${String(symbolSize)}`}
+                shapeRendering="crispEdges"
+              >
+                <rect className="qr-bg" x={0} y={0} width={symbolSize} height={symbolSize} />
+                <path className="qr-modules" d={qr.d} />
+              </svg>
+            </figure>
+          )}
+          {view.phase === 'reconnecting' ? (
+            <p role="status" className="notice">
+              Reconnecting… the code shown is still valid.
+            </p>
+          ) : null}
+        </>
+      ) : null}
+      {isLoading ? (
+        <p role="status" className="notice">
+          Loading code…
+        </p>
+      ) : null}
+      {!hasFreshCode && !isLoading ? (
+        <p role="alert" className="notice notice-error">
+          Code unavailable — check this screen&apos;s internet connection.
+        </p>
+      ) : null}
+    </>
+  );
+}

@@ -1,0 +1,13 @@
+{
+  "name": "do-not-call",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "Por favor, não voltem a ligar para este número.",
+      "classify": { "label": "do_not_call" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 15
+}

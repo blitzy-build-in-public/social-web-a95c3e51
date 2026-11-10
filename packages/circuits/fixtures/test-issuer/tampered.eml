@@ -1,0 +1,37 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=DjmDJlleTlMA3FmdOk25Sp0K3qARgGHr0BNUOJL0mvw=; b=cOFkA/EUts2w7ecZ2Ryvk8JG3/zm7Zn5tXx8F0XXNttzA+GGW79Q1N/jQeQahECmTyjgeCrMJCTPiiKZY/20+tCWQnB9/UjG7VlSQdAa5sNE9dS25S0OAmJLn9Xxm2a8vA5N9S8G9iUGrcBontBqmCRF0Woahr2nfObr8RUV4OJaWbEEJaB45ivQNOyuf2vX6YtiPc4L7qxQIrcAsN6vgnERHqOyre3KcG4vuilPhsKiIe+gFa3i6xEfmRDbHqM9VOOKgGnPmpbWbqozGhQVc6d4imyluFS6sqKjaQabkXM9f3TEIL9iJgb/i4SmcXCcdjHp9BfmICOPKcCIRA/wEQ==
+From: Fixture Stays <bookings@tablemate.test>
+To: Fixture Marlow Quenby <guest@example.test>
+Subject: Fixture booking confirmation
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <fixture-valid@tablemate.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Thank you for booking with Fixture Stays. This confirmation repeats every =
+detail our reservation record holds for your stay, and it is the only =
+document the property needs at the desk.
+The property is a quiet guesthouse on the corner of Rua das Oliveiras and =
+Travessa do Sossego, four streets up from the tram stop. Reception is open =
+from eight in the morning until ten at night, and a night porter answers =
+the bell outside those hours. Your room is on the second floor, at the end =
+of the corridor, and the key card is waiting in an envelope with your name =
+on it.
+Please read the house notes before you arrive. Breakfast is served in the =
+courtyard between seven and ten thirty, and there is a small kitchen on =
+the ground floor that guests may use at any time. The wifi password is =
+printed on the back of the key card holder. Towels are exchanged on =
+request, and the laundry room beside the stairs takes coins.
+Free cancellation applies until seven days before your arrival. After that =
+date the first night is charged, and the remaining nights are refunded =
+within five working days. The city tax is collected by the property when =
+you leave. If your plans change, write to the address in the footer and a =
+member of the reservations team will answer within one working day.
+City: Lisbon
+Check-in: 2026-11-02
+Check-out: 2027-02-28
+Booking reference: FIXTURE-7Q4K9M2X
+Guest: Fixture Marlow Quenby
+Fixture Stays Reservations, 1 Example Bay, Example Port
+This message was generated for a Tablemate circuit fixture and describes =
+no real booking.

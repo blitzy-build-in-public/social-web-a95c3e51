@@ -1,0 +1,25 @@
+// The TypeScript project for @tablemate/db (AAP 0.8.1): everything tsconfig.base.json carries applies here
+// unchanged and is deliberately not restated, and only what this workspace adds appears below.
+//
+// rootDir stays "." so src/index.ts emits dist/src/index.{js,d.ts} and seed/seed.ts emits dist/seed/seed.{js,d.ts},
+// exactly the targets package.json `exports` maps. `tsc -b` builds the referenced shared and server-core projects
+// first, which is the order this package's imports require.
+//
+// types: ["node"] exists for the seed, which uses node:fs/promises, node:path, node:url and node:crypto. prisma/
+// holds no TypeScript, and the generated Prisma client is reached through @prisma/client, so `pnpm db:generate`
+// runs before this project is built.
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  // Every TypeScript file of the package is checked, the seed's load-config and secrets-out helpers
+  // included, so typescript-eslint's projectService sees them too.
+  "include": ["src/**/*.ts", "seed/**/*.ts"],
+  "exclude": ["dist", "node_modules"],
+  "references": [{ "path": "../shared" }, { "path": "../server-core" }]
+}

@@ -1,0 +1,20 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=tablemate.test; s=fixture; h=from:to:subject:date:message-id; bh=wgW+bQbU17eVyAHx9OLe2CPF5QLjeUkPpIhrTHDhpeM=; b=hi+qxmtDv5pM0lBipeLGNeamXl7LIYeeIIkXM1VSGWquQCcDA1itcJHRj7aUpWYv/M3Go5p7lnzz2exUQTca7Y5+7s4SG5ixNGxprTx+JYQRkTR0VKGS97Ub1TVIXTiatZi0pVbd3lXowpfTHhx+h6aa7URubOcc3NriiBwZtId0JMIkqGwDD8nVaZ8aqzo+UTbzEgyGNn+l0KaqGaHPJpqMaBS9gBVt295jLmfy7tn/w+1z+EzmkNCX2Z3kT7Itb1Gm/6squD9N79WvRYmsXkTZvjBPPutKbeuqfqyVHhGl2sO3CuEyzBpugGJD0TLYwlPInre6W+OEBWh84w3NsQ==
+From: Fixture Stays <bookings@tablemate.test>
+To: Fixture Marlow Quenby <guest@example.test>
+Subject: Fixture booking confirmation
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <fixture-date-feb-30@tablemate.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Thank you for booking with Fixture Stays. Your reservation is confirmed =
+and the property has been notified of your dates. Keep this message for =
+your own records.
+City: Lisbon
+Check-in: 2026-02-30
+Check-out: 2027-02-27
+Booking reference: FIXTURE-7Q4K9M2X
+Guest: Fixture Marlow Quenby
+Fixture Stays Reservations, 1 Example Bay
+This message was generated for a Tablemate circuit fixture.

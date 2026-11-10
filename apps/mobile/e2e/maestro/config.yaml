@@ -1,0 +1,19 @@
+# Maestro workspace configuration: it fixes the order these native flows run in, which the magic-link
+# budget requires — POST /v1/auth/magic-link allows five links per address per hour (AAP 0.5.4) and
+# actor A has two per platform, one spent by criterion1-initiator's device sign-in (reachability reuses
+# that session) and one by criterion1-recipient's API-side sign-in. Maestro's own discovery order is
+# undocumented and is not the file-name order: reachability first, with no session on the device, spends
+# one of A's links and ends signed out, so criterion1-initiator must spend a second.
+#
+# Every entry matches its flow's header `name`, which is also its file stem. zk-bench.yaml is absent
+# deliberately (the `bench` tag; tag selection stays on the command line, so no flows/includeTags/
+# excludeTags key appears, and continueOnFailure: false stops the sequence at the first failure so a
+# broken run does not spend the remaining links). Never run this folder with a filter that drops a
+# listed flow: Maestro 2.12.1 loses ordered entries silently or aborts with "Could not find flows
+# needed for execution in order" (#1681).
+executionOrder:
+  continueOnFailure: false
+  flowsOrder:
+    - criterion1-initiator
+    - reachability
+    - criterion1-recipient

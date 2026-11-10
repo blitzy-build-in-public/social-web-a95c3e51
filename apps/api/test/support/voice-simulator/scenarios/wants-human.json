@@ -1,0 +1,13 @@
+{
+  "name": "wants-human",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "Prefiro falar com uma pessoa, se faz favor.",
+      "classify": { "label": "wants_human" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 20
+}

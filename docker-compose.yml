@@ -1,0 +1,416 @@
+# docker-compose.yml — the local Tablemate stack (AAP 0.4.2, 0.6.2, 0.7.1, 0.11.2).
+#
+# `docker compose up` starts the pilot's whole stack on one machine with no third-party credential: the defaults
+# are APP_ENV=demo, STRIPE_MODE=mock (through the stateful stripe-proxy in front of stripe-mock), TELEPHONY_MODE=off
+# and LLM_PROVIDER=fake. Confirming a card needs `STRIPE_MODE=test` and test-mode keys.
+#
+# Published ports bind the loopback interface alone, and the host side of each is the per-clone variable of its own
+# name — API_PORT, WEB_PORT, VENUE_CONSOLE_PORT, ARTIFACTS_PORT, POSTGRES_PORT, REDIS_PORT, MAILPIT_SMTP_PORT and
+# MAILPIT_HTTP_PORT — so checkouts side by side take separate blocks, and `COMPOSE_PROJECT_NAME` or
+# `docker compose -p` overrides the project name compose derives from the checkout directory. The container side
+# never moves, so `API_PUBLIC_URL` must name the host side of `API_PORT`; stripe-mock, stripe-proxy and voice-sim
+# publish nothing and only the compose network reaches them.
+#
+# Profiles, none of which a plain `docker compose up` starts: `test` the scripted telephony simulator,
+# `stripe-test` the Stripe CLI forwarding test-mode webhooks, `perf` the k6 load profile.
+#
+# Every environment is scoped to the process that validates it — `env_file` is deliberately unused — so the workers
+# receive no STRIPE_* variable in any mode (AAP 0.3.2) and the API receives no SMTP, crawler or caller-id variable.
+# A key written with an empty value (`STRIPE_SECRET_KEY:`) is passed through from the shell or `.env` when set and
+# left unset in the container when not.
+
+# Shared environment blocks (the AAP 0.6.2 scope rows), merged into the services below.
+# The `api` and `workers` row, plus the two variables of the `api`-only row that `workers` reads as well:
+# `API_PUBLIC_URL` (the base of the TwiML and status-callback URLs a call carries) and `WEB_ORIGIN` (the base of the
+# magic link the notifications job mails) (AAP 0.3.2, 0.3.3).
+x-common-server-env: &common-server-env
+  APP_ENV: ${APP_ENV:-demo}
+  # Prisma's default pool, `2 x CPU cores + 1`, exceeds the server's ceiling on a large host; 20 per client keeps
+  # all three clients inside `postgres`'s 200.
+  DATABASE_URL: 'postgresql://tablemate:${POSTGRES_PASSWORD:-tablemate}@postgres:5432/tablemate?connection_limit=20&pool_timeout=10'
+  REDIS_URL: redis://redis:6379
+  FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:-}
+  FIELD_ENCRYPTION_KEY_ID: ${FIELD_ENCRYPTION_KEY_ID:-k1}
+  ANALYTICS_SALT: ${ANALYTICS_SALT:-}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  CAP_CALLS_PER_CITY_DAY: ${CAP_CALLS_PER_CITY_DAY:-40}
+  CAP_CALL_SECONDS: ${CAP_CALL_SECONDS:-300}
+  CAP_LLM_USD_PER_CITY_DAY: ${CAP_LLM_USD_PER_CITY_DAY:-25}
+  LLM_MAX_TURNS_PER_CALL: ${LLM_MAX_TURNS_PER_CALL:-60}
+  TELEPHONY_MODE: ${TELEPHONY_MODE:-off}
+  LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+  API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3000}
+  WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+  # Unset unless a mode that reaches Twilio or the language model provides them.
+  TWILIO_ACCOUNT_SID:
+  TWILIO_AUTH_TOKEN:
+  LLM_API_KEY:
+  LLM_MODEL:
+  LLM_PRICE_INPUT_USD_PER_MTOK:
+  LLM_PRICE_OUTPUT_USD_PER_MTOK:
+
+# The API's own scope. `migrate` merges this block too, because `pnpm perf` runs `perf-seed` — which loads
+# the API's configuration and builds the app from it — through that service.
+x-api-env: &api-env
+  <<: *common-server-env
+  API_PORT: '3000'
+  VENUE_CONSOLE_ORIGIN: ${VENUE_CONSOLE_ORIGIN:-http://localhost:8090}
+  JWT_SECRET: ${JWT_SECRET:-}
+  EMAIL_LOOKUP_PEPPER: ${EMAIL_LOOKUP_PEPPER:-}
+  EXPERIMENT_SALT: ${EXPERIMENT_SALT:-}
+  EXPERIMENT_SOCIAL_SHARE: ${EXPERIMENT_SOCIAL_SHARE:-0.5}
+  # The committed circuit fixtures are built with the salt 1; other environments set their own value.
+  NULLIFIER_SALT: ${NULLIFIER_SALT:-1}
+  ARTIFACTS_BASE_URL: ${ARTIFACTS_BASE_URL:-http://localhost:8070}
+  RATE_LIMIT_IP_PER_MIN: ${RATE_LIMIT_IP_PER_MIN:-600}
+  TERMS_VERSION: ${TERMS_VERSION:-2026-11-04}
+  VOICE_RELAY_MAX_SESSIONS: ${VOICE_RELAY_MAX_SESSIONS:-10}
+  CHAT_MAX_SOCKETS_PER_USER: ${CHAT_MAX_SOCKETS_PER_USER:-5}
+  PILOT_LOCK_RATE_THRESHOLD: ${PILOT_LOCK_RATE_THRESHOLD:-0.5}
+  PILOT_COMPLETION_THRESHOLD: ${PILOT_COMPLETION_THRESHOLD:-0.7}
+  # Named by this network's service name rather than the host-addressed `.env` value; `mock` needs no key.
+  STRIPE_MODE: ${STRIPE_MODE:-mock}
+  STRIPE_API_BASE: http://stripe-proxy:12100
+  STRIPE_SECRET_KEY:
+  STRIPE_PUBLISHABLE_KEY:
+  STRIPE_WEBHOOK_SECRET:
+  # Absent unless `.env` sets them, and then refused by the API outside APP_ENV=test.
+  ZK_ALLOW_TEST_ISSUER:
+  TEST_CONTROL_TOKEN:
+
+# The workers' own scope. No Stripe variable appears here or in `x-common-server-env`.
+x-workers-env: &workers-env
+  <<: *common-server-env
+  # Mailpit's service name: the `.env` value addresses the host, which a container cannot reach.
+  SMTP_URL: smtp://mailpit:1025
+  EMAIL_FROM: '${EMAIL_FROM:-Tablemate <no-reply@tablemate.local>}'
+  OVERPASS_URL: ${OVERPASS_URL:-https://overpass-api.de/api/interpreter}
+  FX_URL: ${FX_URL:-https://open.er-api.com/v6/latest/USD}
+  CRAWLER_CONTACT_URL: ${CRAWLER_CONTACT_URL:-https://example.org/tablemate-bot}
+  CALLS_PRODUCTION_APPROVED: ${CALLS_PRODUCTION_APPROVED:-false}
+  FINANCIAL_RETENTION_DAYS: ${FINANCIAL_RETENTION_DAYS:-2557}
+  # Read in `simulator` mode alone; the simulator's service name, not the host-addressed `.env` value.
+  VOICE_SIM_URL: http://voice-sim:4010
+  # The caller id belongs to the dialing process, the allowlist to the environment that dials (AAP 0.3.3).
+  TWILIO_FROM_NUMBER:
+  EXPO_ACCESS_TOKEN:
+  CALL_ALLOWLIST:
+  CRAWL_ALLOW_PRIVATE_HOSTS:
+
+# Data services
+services:
+  # PostgreSQL 16 with PostGIS 3.4 (AAP 0.3.1, 0.4.2), the single source of truth, pinned by digest because the
+  # PostGIS 3.4 line is complete upstream and a republished tag must not change a run.
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
+    environment:
+      POSTGRES_DB: tablemate
+      POSTGRES_USER: tablemate
+      # Reachable on the loopback interface alone; `.env.example` documents it as a non-credential.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tablemate}
+    ports:
+      - 127.0.0.1:${POSTGRES_PORT:-5432}:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Sized against those pools: api 20 + workers 20 + migrate 20 = 60 running, 80 with a second API replica
+    # (AAP 0.1.1); the rest of the 200 stays free for an operator's own session.
+    command: [postgres, -c, max_connections=200]
+    # The probe dials the TCP listener rather than the unix socket: the socket is also answered by the temporary
+    # server the entrypoint runs while initializing the cluster, whose `listen_addresses=''` leaves port 5432
+    # closed, so a socket probe would report ready too early.
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -h 127.0.0.1 -p 5432 -U tablemate -d tablemate]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # Redis 7 (AAP 0.3.1): rate-limit counters, WebSocket fan-out and the BullMQ queues, never shared between
+  # checkouts because queue names and settlement job ids are fixed in the code. Eviction is off.
+  redis:
+    image: redis:7.4.12-alpine
+    command: [redis-server, --maxmemory-policy, noeviction]
+    ports:
+      - 127.0.0.1:${REDIS_PORT:-6379}:6379
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Mailpit: the SMTP endpoint the notifications job delivers through, and the capture the end-to-end suite reads
+  # a magic link out of (AAP 0.3.3); authentication is accepted in the clear on this local endpoint.
+  mailpit:
+    image: axllent/mailpit:v1.33.0
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: '1'
+      MP_SMTP_AUTH_ALLOW_INSECURE: '1'
+    ports:
+      - 127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025
+      - 127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025
+    healthcheck:
+      test: [CMD, /mailpit, readyz]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # The one-shot that applies the migrations and loads the seed before anything serves, on the api image's
+  # `test-support` target, where the Prisma CLI and tsx live; that target never serves (AAP 0.11.2).
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: test-support
+    command: [sh, -c, 'pnpm db:deploy && pnpm db:seed']
+    environment:
+      <<: *api-env
+      # `pnpm perf` runs `perf-seed` through this service, and its closing token check must reach the API
+      # at an address this network resolves.
+      API_PUBLIC_URL: http://api:3000
+    volumes:
+      # The seed writes the fixture console secrets to the host's git-ignored `.local/` (AAP 0.5.2).
+      - type: bind
+        source: ./.local
+        target: /app/.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # The API: all state transitions, the REST and WebSocket surface, proof verification, the Stripe holds and the
+  # in-process settlement worker (AAP 0.3.2).
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    environment:
+      <<: *api-env
+    ports:
+      - 127.0.0.1:${API_PORT:-3000}:3000
+    volumes:
+      # The API verifies proofs and never produces one, so it mounts the verification key and the artefact
+      # manifest and nothing else of the circuit build (AAP 0.5.5, 0.12.2). A missing `pnpm circuits:build`
+      # must fail the start loudly rather than leave an empty directory where the key belongs.
+      - type: bind
+        source: ./packages/circuits/build/verification_key.json
+        target: /app/packages/circuits/build/verification_key.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./packages/circuits/build/artifacts.manifest.json
+        target: /app/packages/circuits/build/artifacts.manifest.json
+        read_only: true
+        bind:
+          create_host_path: false
+    # The slim runtime image ships no curl, so the check is Node's own fetch on the listening address.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.API_PORT||3000)+'/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      stripe-proxy:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The workers: place and lodging refresh, menu ingestion, call dispatch, notification delivery, data expiry
+  # and account erasure (AAP 0.5.6). It serves no port, so it carries no healthcheck.
+  workers:
+    build:
+      context: .
+      dockerfile: apps/workers/Dockerfile
+    # Headless Chromium forks a renderer, a GPU process and zygotes per context and nothing here reaps them.
+    init: true
+    # A 1 GiB shared-memory segment instead of the 64 MiB default, and not `ipc: host` on purpose: the container
+    # keeps its own IPC namespace, where `ipc: host` would share this browser with every checkout running the same
+    # file side by side, whose Chromium segments would collide by name.
+    shm_size: '1gb'
+    environment:
+      <<: *workers-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # The web client: the Expo web export of `apps/mobile`, served by nginx (AAP 0.3.4, 0.7.1).
+  web:
+    build:
+      context: .
+      dockerfile: apps/mobile/Dockerfile
+      args:
+        # Inlined into the bundle at build time. `app.config.ts` requires both as bare origins, the
+        # WebSocket one being the base the client appends `/v1/chat` to.
+        EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://localhost:3000}
+        EXPO_PUBLIC_WS_URL: ${EXPO_PUBLIC_WS_URL:-ws://localhost:3000}
+        # Empty in the `mock` default, which leaves the card screens reporting payments are not configured.
+        EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+        EXPO_PUBLIC_ZK_BENCH: '0'
+    environment:
+      # The nginx template's two origins, both of which the client's Content-Security-Policy admits.
+      API_ORIGIN: ${API_PUBLIC_URL:-http://localhost:3000}
+      ARTIFACTS_ORIGIN: ${ARTIFACTS_BASE_URL:-http://localhost:8070}
+    ports:
+      - 127.0.0.1:${WEB_PORT:-8080}:80
+    restart: unless-stopped
+
+  # The venue console: the rotating check-in code and the lodging statistics, served by nginx and
+  # authenticated with the per-venue secret a user types in (AAP 0.5.8).
+  venue-console:
+    build:
+      context: .
+      dockerfile: apps/venue-console/Dockerfile
+      args:
+        # `vite.config.ts` fails the build when this is missing, so it always carries an origin.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+    environment:
+      API_ORIGIN: ${API_PUBLIC_URL:-http://localhost:3000}
+    ports:
+      - 127.0.0.1:${VENUE_CONSOLE_PORT:-8090}:80
+    restart: unless-stopped
+
+  # The proving-artefact server (AAP 0.5.5): it publishes the circuit WASM, the proving key and the manifest.
+  artifacts:
+    image: nginx:1.30.6-alpine
+    environment:
+      # The one origin allowed to fetch the artefacts, which must equal the web client's own origin exactly.
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+    volumes:
+      - type: bind
+        source: ./infra/nginx/artifacts.conf
+        target: /etc/nginx/templates/default.conf.template
+        read_only: true
+      - type: bind
+        source: ./packages/circuits/build
+        target: /usr/share/nginx/artifacts
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - 127.0.0.1:${ARTIFACTS_PORT:-8070}:80
+    healthcheck:
+      # `/healthz` reads no file, so the service is healthy before a circuit build exists, which is how the
+      # native smoke check starts it alone.
+      test: [CMD-SHELL, wget -q -O /dev/null http://127.0.0.1/healthz]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Stripe's own request validator, serving the `mock` mode: a scratch image with no shell, reached through
+  # the proxy below alone (AAP 0.3.3, 0.4.2).
+  stripe-mock:
+    image: stripe/stripe-mock:v0.206.0
+    restart: unless-stopped
+
+  # The stateful proxy every Stripe request passes through in `mock` mode: it claims an idempotency key,
+  # validates the request against stripe-mock and answers the endpoints it models statefully, which is what
+  # makes the hold, capture, release and replay rules testable with no key (AAP 0.3.2, 0.3.3).
+  stripe-proxy:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: test-support
+    command: [pnpm, --filter, '@tablemate/api', stripe-proxy]
+    environment:
+      PORT: '12100'
+      STRIPE_MOCK_UPSTREAM: http://stripe-mock:12111
+    # The image is the api's `test-support` target, whose slim base ships neither curl nor wget, so the
+    # check is Node's own fetch, and the health control answers without consulting the upstream.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:12100/__proxy/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      stripe-mock:
+        condition: service_started
+    restart: unless-stopped
+
+  # The scripted telephony simulator (profile `test`): it plays Twilio's part for a stack the automated suite
+  # drives, fetching the TwiML, opening the relay socket and posting signed status callbacks (AAP 0.11.2).
+  voice-sim:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: test-support
+    command: [pnpm, --filter, '@tablemate/api', voice-sim]
+    environment:
+      PORT: '4010'
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3000}
+      VOICE_SIM_TARGET_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: [test]
+    restart: unless-stopped
+
+  # The Stripe CLI (profile `stripe-test`): it forwards the seven test-mode events the API handles to the
+  # webhook route (AAP 0.3.3, 0.11.2). `scripts/e2e.ts` reads the signing secret with
+  # `docker compose run --rm stripe-cli listen --print-secret` before it starts the API.
+  stripe-cli:
+    image: stripe/stripe-cli:v1.55.8
+    environment:
+      # The CLI reads the secret key under this name; empty leaves it unauthenticated.
+      STRIPE_API_KEY: ${STRIPE_SECRET_KEY:-}
+    command:
+      - listen
+      - --forward-to
+      - http://api:3000/v1/webhooks/stripe
+      - --events
+      - setup_intent.succeeded,payment_intent.amount_capturable_updated,payment_intent.payment_failed,payment_intent.succeeded,payment_intent.canceled,charge.expired,charge.refunded
+    profiles: [stripe-test]
+    restart: 'no'
+
+  # The k6 load profile (profile `perf`), run by root `pnpm perf` after it seeds the stack through `migrate`
+  # (AAP 0.12.2).
+  k6:
+    image: grafana/k6:2.3.0
+    user: '0:0'
+    environment:
+      API_URL: http://api:3000
+    volumes:
+      - type: bind
+        source: ./infra/k6
+        target: /scripts
+        read_only: true
+      - type: bind
+        source: ./.local/perf
+        target: /results
+    command: [run, --summary-export=/results/summary.json, /scripts/api-load.js]
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: [perf]
+    restart: 'no'
+
+volumes:
+  # The database's own storage. Everything else a run writes lives on the host, under the git-ignored
+  # `.local/` the seed, the end-to-end suite and the load profile share.
+  pgdata: {}

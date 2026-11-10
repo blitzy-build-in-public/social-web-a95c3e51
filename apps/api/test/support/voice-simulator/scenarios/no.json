@@ -1,0 +1,14 @@
+{
+  "name": "no",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    { "say": "Não, não temos nenhuma reserva com esse nome.", "classify": { "label": "no" } },
+    {
+      "say": "Não, confirmo que não há nenhum hóspede com esse nome nessas datas.",
+      "classify": { "label": "no" }
+    }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 40
+}

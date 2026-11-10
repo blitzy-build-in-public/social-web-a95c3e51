@@ -1,0 +1,18 @@
+{
+  "name": "drop-mid-script",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "O mais barato é a sopa do dia com pão, fica a 6 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "sopa do dia com pão", "priceAmount": 6, "priceText": "6 euros" }
+      }
+    },
+    { "say": "Sim, é esse o preço.", "classify": { "label": "yes" } }
+  ],
+  "dropAfterTurn": 2,
+  "finalStatus": "completed",
+  "durationSec": 30
+}

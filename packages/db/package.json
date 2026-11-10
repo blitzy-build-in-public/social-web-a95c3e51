@@ -1,0 +1,35 @@
+{
+  "name": "@tablemate/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "tablemate-source": "./src/index.ts",
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./seed": {
+      "tablemate-source": "./seed/seed.ts",
+      "types": "./dist/seed/seed.d.ts",
+      "default": "./dist/seed/seed.js"
+    }
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "seed": "tsx --conditions=tablemate-source seed/seed.ts",
+    "build": "tsc -b",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "@tablemate/server-core": "workspace:*",
+    "@tablemate/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}

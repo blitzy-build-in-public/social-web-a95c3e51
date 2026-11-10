@@ -1,0 +1,39 @@
+{
+  "name": "prices-low",
+  "answer": "human",
+  "language": "pt-PT",
+  "turns": [
+    {
+      "say": "O nosso prato mais barato é a bifana no prato, são 7 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "bifana no prato", "priceAmount": 7, "priceText": "7 euros" }
+      }
+    },
+    {
+      "say": "É a bifana no prato, como já disse, mas não lhe sei dizer o preço.",
+      "classify": { "label": "dish", "values": { "dish": "bifana no prato" } }
+    },
+    {
+      "say": "O mais caro é o polvo à lagareiro, anda pelos 24 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "dish": "polvo à lagareiro", "priceAmount": 24, "priceText": "24 euros" }
+      }
+    },
+    {
+      "say": "Hum, não sei bem, teria de perguntar na cozinha.",
+      "classify": { "label": "unclear" }
+    },
+    {
+      "say": "A imperial custa mais ou menos 2 euros.",
+      "classify": {
+        "label": "price",
+        "values": { "drink": "beer", "dish": "imperial", "priceAmount": 2, "priceText": "2 euros" }
+      }
+    },
+    { "say": "Não sei dizer ao certo, os preços mudam.", "classify": { "label": "unclear" } }
+  ],
+  "finalStatus": "completed",
+  "durationSec": 80
+}

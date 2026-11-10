@@ -1,0 +1,37 @@
+// The TypeScript project for @tablemate/workers: composite so `tsc -b` emits dist/{src,test,eval}/**
+// for the referenced projects. rootDir stays "." so the layout package.json `exports` maps
+// ("tablemate-source" -> src/jobs/*.ts, types/default -> dist/src/jobs/*) is the emitted layout, and
+// apps/workers/Dockerfile copies dist/src alone as the runtime.
+//
+// The JSON globs beside the .ts ones are load-bearing: tsconfig.base.json enables resolveJsonModule,
+// and a JSON module that is not matched by `include` fails a composite build with TS6307 rather than
+// being added implicitly. Fixture directories stay excluded, because menu, Overpass, FX and label
+// fixtures are served by the test fixture servers and read from disk instead of imported.
+//
+// ../api is referenced because test/integration/** imports @tablemate/api/test-support/*, and that
+// project's own include covers its test/**; src/** must never import @tablemate/api.
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.json",
+    "test/**/*.ts",
+    "test/**/*.json",
+    "eval/**/*.ts",
+    "eval/**/*.json"
+  ],
+  "exclude": ["dist", "node_modules", "test/fixtures/**", "eval/fixtures/**"],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/db" },
+    { "path": "../../packages/server-core" },
+    { "path": "../api" }
+  ]
+}

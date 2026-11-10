@@ -1,0 +1,21 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=other-issuer.test; s=fixture; h=from:to:subject:date:message-id; bh=UEZsswDuiXRzSomfUD2yf2HkIJoDzZzlMzAFWi9R7+Q=; b=gZAqcI30dMdq6jjW0vlXVaw8dp9YLYcb4R4wJ+o71wqkVOjixHTVshguPYkKe+wH8d8I0+uRoDmm9bM/1LLuWHg0bjVy3SIraU6GfwWsa1+ZVnCl1Ol5aHyc1OZs+MJuxNUlh+cABWI5Wfc+Psc4fCTs5Mmuw5aFAfAOkuSgX03En+/o5rXjGZYOMUQ9XesDQe8kVR6rsit4TzY4w9yFaJ/vRBfstFnHY9oH/IP8q1TJMVEbF1Xw4UHlHyz/FACKCxbxzCD2ZOMdd/zIXymIjWzk8sIqE6rOTiyUr7QOH1e17XWVdI7ZNOneIR+DF9heBPAwBQ8Xn53B6nCaswpPIg==
+From: Fixture Stays <bookings@other-issuer.test>
+To: Fixture Rowan Ashdown <guest@example.test>
+Subject: Fixture booking confirmation
+Date: Wed, 04 Nov 2026 10:00:00 +0000
+Message-ID: <fixture-other-issuer@other-issuer.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+X-Tablemate-Fixture-Key: nnUdsi9HSjZDoD9p3Qy+ntLx8q/4bIQNQz1g85xA0zHbnLy1EGbPtPIaIEPIns+EbAK58xcRchmuj/Gi60b0HWYkm9+XjEmjzBAkhZo8tjgzSdJRvwFSfAnSnZEFyByXmkhcXXNzpl/mC0qHJYQJRFoTES1+Zoxkb6xGVDMQpOeVRXG+sbhxBGnmH9J75nRwlkle85tXCScAO3Ut3FMudJNHtTcXnonXAxYCyEt0QLmETRlrVYqhOlHeprcRvWxb4I1SqmALZ3dbt6kYK+mr63/EzaFB/n8BHQ5n4KWz31WI4cTKCdkQumTfd7TaunmylZUAwKTfu0YaXUSAxNy/bQ==
+
+Thank you for booking with Fixture Stays. Your reservation is confirmed =
+and the property has been notified of your dates. Keep this message for =
+your own records.
+City: Lisbon
+Check-in: 2026-11-10
+Check-out: 2027-01-20
+Booking reference: FIXTURE-9K2OTHER4
+Guest: Fixture Rowan Ashdown
+Fixture Stays Reservations, 1 Example Bay
+This message was generated for a Tablemate circuit fixture.

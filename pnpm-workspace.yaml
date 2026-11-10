@@ -1,0 +1,99 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Workspace-wide settings. pnpm 12 ignores the `pnpm` field in package.json and every non-auth .npmrc setting, so
+# the values below are the authoritative copies of what that field and .npmrc state.
+#
+# Expo SDK 52 (React Native 0.76.9) Metro and native autolinking need the hoisted linker, as Expo's own pnpm
+# template uses.
+nodeLinker: hoisted
+# Exact version pins: every dependency is declared at its resolved version and no range.
+saveExact: true
+# The root scripts `test:stripe` and `perf` set a variable for the commands they run.
+shellEmulator: true
+# pnpm 12 records the pnpm version it resolved in a leading "env" document of pnpm-lock.yaml, turning that file
+# into a two-document YAML stream no single-document consumer (js-yaml's load, PyYAML, dependency-review, SBOM and
+# licence scanners) can read. Ignoring the pin at install time leaves pnpm nothing to record, so it writes one
+# document holding all nine importers. Corepack still activates the pinned 12.16.1 from the root manifest, whose
+# `preinstall` guard aborts any install under another manager or pnpm version.
+pmOnFail: ignore
+
+# The snarkjs override replaces the git-hosted fork @zk-email/helpers declares; without it pnpm refuses
+# the install with ERR_PNPM_EXOTIC_SUBDEP.
+overrides:
+  snarkjs: 0.7.6
+  # jsonpath, through snarkjs's bfj, pins underscore at 1.13.6, which carries GHSA-qpx9-hpmf-5gmw
+  # (unlimited recursion in _.flatten and _.isEqual) and would fail the `pnpm audit --prod` gate.
+  underscore: 1.13.8
+
+  # The @tablemate/mobile manifest pulls the Expo SDK 52 toolchain into the production graph, and every
+  # package below reaches the tree only through it. The manifest's own AAP pins stay untouched.
+  #
+  # tar 6.2.1, via @expo/cli, carries the critical GHSA-23hp-3jrh-7fpw and eight high and three moderate
+  # advisories, the last of which (GHSA-r292-9mhp-454m) requires 7.5.21.
+  tar: 7.5.21
+  # @xmldom/xmldom 0.7.13, via @expo/plist, carries thirteen high and two moderate XML injection and
+  # denial-of-service advisories, all patched at 0.8.15. Scoped below 0.9: the 0.9.12 plist resolves is
+  # already outside every advisory's range.
+  '@xmldom/xmldom@<0.9': 0.8.15
+  # postcss 8.4.49, via @expo/metro-config, carries the high GHSA-6g55-p6wh-862q and GHSA-r28c-9q8g-f849
+  # (arbitrary file read) and two moderate advisories, all cleared from 8.5.23.
+  postcss: 8.5.32
+  # image-size 1.2.1, via metro, carries the high GHSA-5p2g-fcmc-qvqq and GHSA-w3rx-r6r6-pgpr (parser denial of
+  # service); their patched line starts at 2.0.3, which still ships a CommonJS build. Known cost, accepted: metro
+  # 0.81.5 calls this module as a function (src/Assets.js getAssetSize/getAssetData) and 2.0.3 exposes named exports
+  # only, so those call sites throw until metro's import is adapted.
+  image-size: 2.0.3
+  # decode-uri-component 0.2.2, via the mobile manifest's query-string, carries the high
+  # GHSA-qr28-fpjm-wq7f (quadratic decoding denial of service) and GHSA-vcc3-ghjq-m6fr; 0.5.1 is the first
+  # patched release, and is ESM-only.
+  decode-uri-component: 0.5.1
+  # ajv 8.11.0, via expo-dev-client > expo-dev-launcher, carries GHSA-2g4f-4pwh-qvx6 (ReDoS through the
+  # `$data` option); 8.18.0 is the first patched release. Scoped to the 8.x line: the ajv 6 ESLint
+  # resolves sits outside the advisory's range.
+  'ajv@^8.0.0': 8.20.0
+
+# `pnpm audit --prod` reports no high or critical advisories (AAP 0.11.2). The four below are moderate or
+# low, reach the tree only through the Expo SDK 52 toolchain, and have no patched release that fits the
+# ranges the consuming packages pin; every high and critical advisory in the graph is pinned above.
+auditConfig:
+  ignoreGhsas:
+    # glob 10.5.0, via @expo/config: the only patched release is 14.0.2, a major jump from the 10.x that
+    # @expo/config pins and that expo-module-scripts' jest chain shares.
+    - GHSA-3g3m-2fjr-6pw4
+    # minimatch 9.x and 10.x, via the same glob chains: the only patched release is 11.0.1, a major jump
+    # from the lines Expo SDK 52's config and glob chains pin.
+    - GHSA-g3hv-75wg-m249
+    # uuid 7.x and 8.x, via xcode and @expo/config-plugins: the only patched release is 11.1.1, a major
+    # jump from the lines those packages pin.
+    - GHSA-w5hq-g745-h8pq
+    # deepmerge 4.3.1, via @expo/config: no patched release exists, its patched_versions being null.
+    - GHSA-gcqx-w48m-w2h4
+
+# pnpm 11 replaced onlyBuiltDependencies with allowBuilds. Without these entries pnpm exits 1 with
+# ERR_PNPM_IGNORED_BUILDS and the Prisma engines, the esbuild binary and the native addons are never built.
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  '@zk-email/zk-regex-circom': true
+  blake-hash: true
+  cpu-features: true
+  esbuild: true
+  msgpackr-extract: true
+  prisma: true
+  protobufjs: true
+  ssh2: true
+
+# image-size 2.0.3 and decode-uri-component 0.5.1 clear their high advisories, but no patched release of either
+# keeps the callable form its consumer needs, so the two patches below carry that difference rather than reverting
+# a pin or widening the ignore list: metro also needs the asset file path read for it, and query-string 7.1.3
+# resolves the default export of an ESM-only module. tar and xcode are patched for the same reason — @expo/cli
+# unpacks the project template through `interopDefault(require('tar')).default.extract` while tar 7's CommonJS entry
+# marks the module as ESM, and xcode 3.0.1 reads a group's path without checking the template has one. Each patch
+# adds a guard only: no pin moves and no advisory is ignored.
+patchedDependencies:
+  metro@0.81.5: patches/metro@0.81.5.patch
+  query-string@7.1.3: patches/query-string@7.1.3.patch
+  tar@7.5.21: patches/tar@7.5.21.patch
+  xcode@3.0.1: patches/xcode@3.0.1.patch

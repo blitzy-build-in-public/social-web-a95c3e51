@@ -1,0 +1,24 @@
+// Solution file for the root `tsc -b tsconfig.json` step the `build` and `typecheck` scripts run (package.json):
+// the six composite projects below, plus the root-owned TypeScript (scripts/, tests/system/, vitest.config.ts) in a
+// project of its own, which type-aware ESLint's projectService needs. `files: []` keeps a build silent while the
+// globs still match nothing, and noEmit is right because tsx and Vitest consume these files through the
+// "tablemate-source" condition. The two bundler apps are non-composite, so the root scripts typecheck apps/mobile
+// and apps/venue-console through their own `typecheck` script.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "files": [],
+  "include": ["scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/circuits" },
+    { "path": "packages/server-core" },
+    { "path": "packages/db" },
+    { "path": "apps/api" },
+    { "path": "apps/workers" }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "cli": {
+    "version": ">= 27.4.1",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://localhost:3000",
+        "EXPO_PUBLIC_WS_URL": "ws://localhost:3000",
+        "EXPO_PUBLIC_ZK_BENCH": "0"
+      }
+    },
+    "bench": {
+      "distribution": "internal",
+      "developmentClient": false,
+      "ios": {
+        "simulator": true,
+        "buildConfiguration": "Release"
+      },
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_ZK_BENCH": "1",
+        "EXPO_PUBLIC_API_URL": "http://localhost:3000",
+        "EXPO_PUBLIC_WS_URL": "ws://localhost:3000"
+      }
+    },
+    "bench-device": {
+      "extends": "bench",
+      "distribution": "internal",
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      }
+    }
+  }
+}
