@@ -11,6 +11,7 @@ import type { CityDto, Reputation, Tier0Profile } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
+import { forgetUserPhoto } from '../../src/api/user-photo-cache';
 import type { ClientErrorCode } from '../../src/api/errors';
 import { IMPORT_BANNER, REPUTATION_EMPTY, formatCalendarDate } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
@@ -107,6 +108,9 @@ export default function TravelerProfileScreen(): ReactElement {
       }
     },
     onSuccess: () => {
+      // A block revokes the pair's tier, which is what released the photo bytes in the first place: the cached entry
+      // is dropped with the profile query, so nothing draws them again (AAP 0.5.4, AAP 0.5.7).
+      forgetUserPhoto(userId);
       queryClient.removeQueries({ queryKey: queryKeys.user(userId) });
       void queryClient.invalidateQueries({ queryKey: CITY_LIST_ROOT });
       void queryClient.invalidateQueries({ queryKey: queryKeys.meetupsAll });

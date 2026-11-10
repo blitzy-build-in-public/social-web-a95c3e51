@@ -13,6 +13,7 @@
 import type { MeDto, RefreshResponse } from '@tablemate/shared';
 import { apiClient, configureAuth } from '../api/client';
 import { ApiError, isApiError } from '../api/errors';
+import { clearUserPhotos } from '../api/user-photo-cache';
 import { connect, disconnect } from '../api/ws';
 import { queryClient, queryKeys } from '../state/meetup-store';
 import {
@@ -89,11 +90,13 @@ export async function verifyToken(token: string): Promise<MeDto> {
   if (epoch !== sessionEpoch) throw refusal();
 
   // An account switch must not leave the previous session behind: not a socket, not a cached
-  // profile, and above all not an access token that could authenticate as the wrong traveler.
+  // profile, not a counterpart's photo bytes, and above all not an access token that could
+  // authenticate as the wrong traveler.
   const active = getSessionSnapshot().userId;
   if (active !== undefined && active !== answer.user.id) {
     accessToken = null;
     disconnect();
+    clearUserPhotos();
     queryClient.clear();
   }
 
@@ -300,6 +303,7 @@ async function finishSignOut(remote: boolean): Promise<void> {
     // Nothing is left to refuse a request with: the session did not survive the sign-out.
     recordRestoreFailure(null);
     disconnect();
+    clearUserPhotos();
     queryClient.clear();
     setSignedOut();
   }

@@ -6,19 +6,31 @@
  * disclosure is enforced at field level by the API. The pattern is a pure function of `avatarSeed`, so one traveler
  * draws the same mosaic in every render and nothing is stored, uploaded or fetched for a profile without a photo.
  * Only native can send a header with an image, so the photo loads differently per platform: native hands the bearer
- * token to `Image`, while react-native-web cannot and the effect fetches the bytes. A load refused with `401` joins the
- * session's one rotation and is retried once with the token that rotation installed (AAP 0.3.3); a load that then fails
- * falls back to the pattern silently, with nothing logged (AAP 0.5.5). On web the load is deferred by viewport distance
- * — the browser's own `loading="lazy"` cannot apply with the bearer header — so a frame starts its fetch only once it
- * comes within `LAZY_ROOT_MARGIN` of the viewport.
+ * token to `Image`, while react-native-web cannot and reads `../api/user-photo-cache` instead, which downloads a
+ * traveler's photo once per session however many frames draw them — a list of twenty rows about one pair costs one
+ * request and one object URL rather than twenty of each. That cache is the client's own, and it decides nothing: the
+ * photo route still answers `private, no-store` and still resolves the tier per render (AAP 0.5.4, AAP 0.5.7), while
+ * a frame here asks for a photo only where the API reported `hasPhoto` and stands down on the entry the cache holds
+ * for that traveler. A load the API refuses falls back to the pattern silently, with nothing logged (AAP 0.5.5), and
+ * bytes this browser cannot draw are dropped from the cache so the pattern stands in for them everywhere. Both
+ * platforms recover from a `401` through the session's one rotation and a single retry (AAP 0.3.3): the cache does it
+ * for the web, the source memo below for native. On web the request is deferred by viewport distance — the browser's
+ * own `loading="lazy"` cannot apply with the bearer header — so a frame asks only once it comes within
+ * `LAZY_ROOT_MARGIN` of the viewport.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Image, Platform, StyleSheet, View } from 'react-native';
 import type { ImageSourcePropType, ViewProps } from 'react-native';
 import { Rect, Svg } from 'react-native-svg';
 import { colors, componentSizes, radii } from '@tablemate/shared';
 import type { ColorToken } from '@tablemate/shared';
 import { refreshSession, userPhotoRequest } from '../api/client';
+import {
+  discardUserPhoto,
+  requestUserPhoto,
+  subscribeUserPhotos,
+  userPhotoSnapshot,
+} from '../api/user-photo-cache';
 
 export interface AvatarProps {
   /** The seed the API assigned to this traveler; the whole pattern derives from it. */
@@ -124,52 +136,11 @@ function photoRequest(userId: string): { url: string; headers: Record<string, st
   }
 }
 
-/** The one refusal a session rotation recovers from: an access token the API no longer accepts. */
-const UNAUTHORIZED = 401;
 /**
  * How far outside the viewport a frame may sit and still start its web photo request, in CSS px: a list row of
  * lead-in, so the rows below the fold are never requested.
  */
 const LAZY_ROOT_MARGIN = '200px';
-
-async function fetchPhotoBytes(
-  request: { url: string; headers: Record<string, string> },
-  signal: AbortSignal,
-): Promise<{ status: number; bytes: Blob | null } | null> {
-  try {
-    const answer = await fetch(request.url, { headers: request.headers, signal });
-    if (!answer.ok) return { status: answer.status, bytes: null };
-    return { status: answer.status, bytes: await answer.blob() };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Loads a traveler's photo bytes, joining the session's single-flight rotation once when the bearer token the request
- * carried is refused with `401` (AAP 0.3.3).
- *
- * @param userId - The traveler whose photo is requested.
- * @param signal - Aborts the request when the render that asked for it ends.
- * @returns The bytes, or null when the API has none for that traveler.
- */
-async function loadPhotoBytes(userId: string, signal: AbortSignal): Promise<Blob | null> {
-  const first = photoRequest(userId);
-  if (first === null) return null;
-  const answer = await fetchPhotoBytes(first, signal);
-  if (answer === null) return null;
-  if (answer.status !== UNAUTHORIZED) return answer.bytes;
-  try {
-    await refreshSession();
-  } catch {
-    // A refused rotation means the session is spent; this load only gives up on the photo (AAP 0.3.2).
-    return null;
-  }
-  const rotated = photoRequest(userId);
-  if (rotated === null) return null;
-  const retry = await fetchPhotoBytes(rotated, signal);
-  return retry === null ? null : retry.bytes;
-}
 
 /**
  * Renders a traveler's avatar: the generated pattern, or the API's photo once it has loaded.
@@ -196,13 +167,15 @@ export function Avatar({
   const [nativeRetry, setNativeRetry] = useState<{ userId: string; rotations: number } | null>(
     null,
   );
-  // Web holds the fetched bytes as an object URL, tagged with the traveler it belongs to, so a
-  // previous row's photo is never drawn over the next one's pattern while it loads.
-  const [webPhoto, setWebPhoto] = useState<{ userId: string; url: string } | null>(null);
-  // Whether this frame has come near the viewport, which defers the web fetch below. Starts true off web, where nothing is deferred.
+  // Whether this frame has come near the viewport, which defers the web request below. Starts true off web, where nothing is deferred.
   const [nearViewport, setNearViewport] = useState(Platform.OS !== 'web');
   // The frame the observer watches: react-native-web forwards a ref to the DOM node the frame renders.
   const frame = useRef<View | null>(null);
+  // The shared cache's entry for this traveler, read as a primitive: `useSyncExternalStore` compares what it reads
+  // between renders, so every frame drawing one counterpart re-reads the one answer that traveler's single load
+  // stored, and a frame re-renders when that answer arrives rather than holding a load of its own.
+  const getPhoto = useCallback(() => userPhotoSnapshot(photoUserId ?? ''), [photoUserId]);
+  const photo = useSyncExternalStore(subscribeUserPhotos, getPhoto, getPhoto);
   useEffect(() => {
     if (Platform.OS !== 'web' || photoUserId === null || nearViewport) return undefined;
     // `View`'s ref is the host node on web and React Native's own handle on native; only the web branch reads it.
@@ -225,29 +198,12 @@ export function Avatar({
     return () => observer.disconnect();
   }, [nearViewport, photoUserId]);
   useEffect(() => {
-    if (Platform.OS !== 'web' || photoUserId === null || !nearViewport) return undefined;
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-    let live = true;
-    // Recovery-aware: a load refused with `401` joins the session's rotation and is retried once with the token that
-    // rotation installed (AAP 0.3.3). `live` keeps a rotation that finishes after the traveler changed from drawing
-    // its photo over the next one's pattern.
-    void loadPhotoBytes(photoUserId, controller.signal)
-      .then((bytes) => {
-        if (!live || bytes === null) return;
-        objectUrl = URL.createObjectURL(bytes);
-        setWebPhoto({ userId: photoUserId, url: objectUrl });
-      })
-      // Silent by design: a refused, failed or undecodable load leaves the generated pattern in
-      // place, and neither the id, the URL, the token nor the status reaches a log (AAP 0.5.5).
-      .catch(() => undefined);
-    return () => {
-      // Abandoned when the traveler changes and released on unmount: no request outlives the render that asked for it, and no object URL is left for the browser to hold.
-      live = false;
-      controller.abort();
-      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
-    };
-  }, [nearViewport, photoUserId]);
+    if (Platform.OS !== 'web' || photoUserId === null || !nearViewport || photo !== undefined)
+      return;
+    // One call per frame and nothing held here: the cache joins every frame drawing this traveler into the load
+    // already running for them, or starts the one the next frame joins, and `photo` above draws its answer.
+    requestUserPhoto(photoUserId);
+  }, [nearViewport, photo, photoUserId]);
   const retryNativePhoto = (): void => {
     if (photoUserId === null) return;
     if (nativeRetry !== null && nativeRetry.userId === photoUserId) {
@@ -262,12 +218,13 @@ export function Avatar({
     );
   };
   // The source to draw, or null for the pattern: native carries the bearer token on the source, which React Native
-  // sends on iOS and Android, while web shows the object URL the effect built, because react-native-web cannot send
-  // a header on an image.
+  // sends on iOS and Android, while web draws the object URL the shared cache holds, because react-native-web cannot
+  // send a header on an image.
   const photoSource: ImageSourcePropType | null = useMemo(() => {
     if (photoUserId === null || failedPhotoUserId === photoUserId) return null;
     if (Platform.OS === 'web') {
-      return webPhoto !== null && webPhoto.userId === photoUserId ? { uri: webPhoto.url } : null;
+      // The cache's answer for this traveler, or the pattern while it is still on its way.
+      return typeof photo === 'string' ? { uri: photo } : null;
     }
     // A retry whose rotation is still running draws the pattern: the source memo below rebuilds the request from the
     // token the rotation installed, and drawing nothing until then replaces the failed image rather than re-offering
@@ -277,7 +234,7 @@ export function Avatar({
     }
     const request = photoRequest(photoUserId);
     return request === null ? null : { uri: request.url, headers: request.headers };
-  }, [failedPhotoUserId, nativeRetry, photoUserId, webPhoto]);
+  }, [failedPhotoUserId, nativeRetry, photo, photoUserId]);
   return (
     <View
       {...frameAccessibility(decorative, handle)}
@@ -314,8 +271,13 @@ export function Avatar({
           {...HIDDEN_FROM_ASSISTIVE_TECH}
           onError={() => {
             if (Platform.OS === 'web' || photoUserId === null) {
-              // Web recovered inside the loader, so an error here is bytes that do not decode: the pattern is the fallback, as for a native retry that failed twice.
-              setFailedPhotoUserId(photoUserId);
+              // The cache recovered inside its loader, so an error here is bytes this browser cannot draw: it drops
+              // that entry, so no other row draws the same dead URL and this frame stands on the pattern. Nothing is
+              // remembered per frame on web, because the cache's own answer is what decides whether this frame draws
+              // the traveler again — including after the entry is forgotten and fetched afresh.
+              if (photoUserId !== null && typeof photo === 'string') {
+                discardUserPhoto(photoUserId, photo);
+              }
               return;
             }
             retryNativePhoto();

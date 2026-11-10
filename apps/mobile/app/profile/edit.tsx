@@ -30,6 +30,7 @@ import type { InterestTag, MeDto } from '@tablemate/shared';
 
 import { apiClient } from '../../src/api/client';
 import { isApiError, userMessageFor } from '../../src/api/errors';
+import { forgetUserPhoto } from '../../src/api/user-photo-cache';
 import { bootstrap } from '../../src/auth/session';
 import { remainingCharsText } from '../../src/copy/strings';
 import { queryClient, queryKeys, useMe } from '../../src/state/meetup-store';
@@ -354,7 +355,11 @@ function ProfileForm({ profile }: { readonly profile: MeDto }): ReactElement {
   const unsavable = update === null || countryIssue !== null;
   const save = useMutation({
     mutationFn: (body: ProfileUpdate) => apiClient.updateProfile(body),
-    onSuccess: (updated) => {
+    onSuccess: (updated, variables) => {
+      // A replaced or removed own photo is no longer the photo any frame has cached, so the entry is dropped and the
+      // bytes the API now serves are fetched again. A save that carried no photo leaves the cached one alone
+      // (AAP 0.5.4).
+      if (variables.photoBase64 !== undefined) forgetUserPhoto(updated.id);
       queryClient.setQueryData(queryKeys.me, updated);
       setForm(formFrom(updated));
       setPhoto(UNCHANGED_PHOTO);
