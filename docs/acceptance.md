@@ -96,7 +96,7 @@ Each check is the mechanism AAP 0.12.2 binds to the constraint.
 | Guest list opt-in, off by default, behind the safety warning                                                                 | criterion 15; `lodgings.test.ts`                                                                                                                                 | pass — lodgings.test.ts: LodgingVisibility.showStaying defaulted off, a guest who had not opted in never appeared in any response, and a count below 3 was returned and shown as fewer than 3                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 2026-11-08 | 9139a1b       |
 | Webhooks idempotent and settlement safe to run twice                                                                         | `webhooks-stripe.test.ts`, `settlement.test.ts`, `payment-operations.test.ts`, including the crash and interruption faults of AAP 0.11.2                         | pass — webhooks-stripe.test.ts applied one delivery of an event and skipped its replay, refused a missing or foreign signature and a body altered after signing, and rolled a crashed delivery back so the redelivery applied exactly once; settlement.test.ts settled once however many passes ran, and payment-operations.test.ts produced one provider effect per operation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 2026-11-08 | 9139a1b       |
 | Clock skew up to two minutes tolerated for check-in codes                                                                    | `apps/api/test/unit/totp.test.ts`, `apps/venue-console/test/server-time.test.ts`, `apps/mobile/e2e/playwright/console-clock.spec.ts`                             | pass — the web console walk shows the server's code and countdown under a skewed browser clock (end-to-end block); apps/api/test/unit/totp.test.ts (32) and apps/venue-console/test/server-time.test.ts (23) passed in the 9139a1b mock run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | 2026-11-08 | 9139a1b       |
-| Delivered code stays below the 100,000-line ceiling                                                                          | `pnpm loc`; the Line count block                                                                                                                                 | fail — the total is above the ceiling: 161,063 lines against the 83,300-line budget and the 100,000-line ceiling, 14 of 17 areas over their budget by more than the 10% allowance. The tree must give up 77,763 lines for the overrun rule (61,064 for the ceiling alone). Of the 161,063 lines, 123,688 carry code and every comment-only and blank line together is 37,375, so removing every one of them still leaves 123,688, above both thresholds. The density cut-back this checkpoint applied in every area over its allowance took the tree from 175,893 to 158,094 lines and did not settle the row — no cut AAP 0.8.1's density convention and AAP 0.11.1's comment rule allow can: the residual needs delivered requirements withdrawn, which AAP 0.7.1 forbids. Closing the row takes a raised ceiling or a delivered scope smaller than the request's | 2026-11-09 | 8b375d8       |
+| Delivered code stays below the 100,000-line ceiling                                                                          | `pnpm loc`; the Line count block                                                                                                                                 | fail — the total is above the ceiling: 162,109 lines against the 83,300-line budget and the 100,000-line ceiling, 14 of 17 areas over their budget by more than the 10% allowance. The tree must give up 78,809 lines for the overrun rule (62,109 for the ceiling alone). Of the 162,109 lines, 124,385 carry code and every comment-only and blank line together is 37,724, so removing every one of them still leaves 124,385, above both thresholds. The density cut-back this checkpoint applied in every area over its allowance took the tree from 175,893 to 158,094 lines and did not settle the row — no cut AAP 0.8.1's density convention and AAP 0.11.1's comment rule allow can: the residual needs delivered requirements withdrawn, which AAP 0.7.1 forbids. Closing the row takes a raised ceiling or a delivered scope smaller than the request's | 2026-11-10 | 367d753       |
 
 ## Evidence needing outside input
 
@@ -142,7 +142,7 @@ name, so a record whose commit no longer resolves is read from the delivered com
 the run: `git log -S'2026-11-08T18:06:00.950Z' -- docs/acceptance.md` names `673781c`, that block's
 end-to-end run, and `git log -S'2026-11-08T20:46:04.000Z' -- docs/zk-performance.md` names `0795653`,
 the web-proving run it recorded. The line-count block is read back the same way: `git log -S'Total
-161,063 / 83,300 budget' -- docs/acceptance.md` names the commit that landed the recorded line-count
+162,109 / 83,300 budget' -- docs/acceptance.md` names the commit that landed the recorded line-count
 run, and a line-count run made in a unit's own clone records a unit-branch commit the batch replay
 may rename, which is why the recipe is the way back to it.
 
@@ -150,15 +150,15 @@ may rename, which is why the recipe is the way back to it.
 
 The block below is the last recorded `pnpm loc --write` run: every budget area against its budget,
 and the total against the 83,300-line budget and the 100,000-line ceiling (AAP 0.8.1, 0.12.2). The
-tree the record measures is 161,063 lines: the density cut-back this checkpoint applied in every
+tree the record measures is 162,109 lines: the density cut-back this checkpoint applied in every
 area over its allowance took it from 175,893 lines to 158,094, removing comment lines and blank
 lines and not one line that carries code, and later work units' changes are merged into that result.
-Clearing the ceiling needs 61,064 lines given up, and clearing the per-area overrun rule 77,763. The
+Clearing the ceiling needs 62,109 lines given up, and clearing the per-area overrun rule 78,809. The
 composition, read from the same file set the run counts and classified line by line — blank when a
 line holds only whitespace, comment-only when its first non-space characters begin `//`, `/*` or
-`*`, and code otherwise — is 123,688 lines carrying code, 28,047 comment-only and 9,328 blank,
-summing to the run's 161,063 total to the line. Every comment-only and blank line together is
-37,375, so removing every one of them still leaves 123,688 code-carrying lines above both
+`*`, and code otherwise — is 124,385 lines carrying code, 28,327 comment-only and 9,397 blank,
+summing to the run's 162,109 total to the line. Every comment-only and blank line together is
+37,724, so removing every one of them still leaves 124,385 code-carrying lines above both
 thresholds, and no cut AAP 0.8.1's density convention and AAP 0.11.1's comment rule allow can
 settle the row. The documents area is 3,397 lines against its own 3,000-line budget in the same run
 (+397), as the block and the constraint row above show.
@@ -168,15 +168,15 @@ settle the row. The documents area is 3,397 lines against its own 3,000-line bud
 | Area                                   |   Lines | Budget |   Delta | Status     |
 | -------------------------------------- | ------: | -----: | ------: | ---------- |
 | prover module                          |     976 |  1,200 |    -224 | ok         |
-| app screens                            |  10,903 |  9,000 |  +1,903 | over_limit |
-| tests and e2e                          |   8,724 |  2,500 |  +6,224 | over_limit |
-| configuration and src                  |  10,240 |  5,000 |  +5,240 | over_limit |
-| tests                                  |  32,845 | 15,000 | +17,845 | over_limit |
-| source and scripts                     |  36,770 | 16,000 | +20,770 | over_limit |
+| app screens                            |  10,975 |  9,000 |  +1,975 | over_limit |
+| tests and e2e                          |   9,088 |  2,500 |  +6,588 | over_limit |
+| configuration and src                  |  10,523 |  5,000 |  +5,523 | over_limit |
+| tests                                  |  33,056 | 15,000 | +18,056 | over_limit |
+| source and scripts                     |  36,874 | 16,000 | +20,874 | over_limit |
 | tests, fixtures, eval                  |   8,960 |  5,500 |  +3,460 | over_limit |
 | source                                 |  11,897 |  5,500 |  +6,397 | over_limit |
 | console app                            |   1,930 |    900 |  +1,030 | over_limit |
-| contracts and constants                |   3,737 |  4,000 |    -263 | ok         |
+| contracts and constants                |   3,749 |  4,000 |    -251 | ok         |
 | schema, migrations and seed            |   3,863 |  2,800 |  +1,063 | over_limit |
 | server utilities                       |   6,010 |  2,500 |  +3,510 | over_limit |
 | circuits and registry                  |  12,354 |  5,500 |  +6,854 | over_limit |
@@ -184,8 +184,8 @@ settle the row. The documents area is 3,397 lines against its own 3,000-line bud
 | cities, fixtures, registries           |     690 |  1,000 |    -310 | ok         |
 | documents and results                  |   3,397 |  3,000 |    +397 | over_limit |
 | root files, scripts/, infra/, patches/ |   4,708 |  2,100 |  +2,608 | over_limit |
-| **Total**                              | 161,063 | 83,300 | +77,763 | failing    |
+| **Total**                              | 162,109 | 83,300 | +78,809 | failing    |
 
-Total 161,063 / 83,300 budget / 100,000 ceiling.
-Run 2026-11-09 at commit 8b375d8.
+Total 162,109 / 83,300 budget / 100,000 ceiling.
+Run 2026-11-10 at commit 367d753.
 <!-- END loc -->

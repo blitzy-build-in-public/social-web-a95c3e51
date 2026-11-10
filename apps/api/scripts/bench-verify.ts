@@ -7,6 +7,7 @@
  */
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { cpus, totalmem } from 'node:os';
 import path from 'node:path';
@@ -61,7 +62,11 @@ const USAGE_LINE =
   `usage: ${COMMAND} [${API_URL_FLAG} <url>]\n` +
   `       ${COMMAND} ${PREPARE_FLAG} [${API_URL_FLAG} <url>]\n` +
   `       ${COMMAND} ${MEASURE_FLAG} <file> [${API_URL_FLAG} <url>]\n`;
-/** The host default is the compose stack's published `API_PORT`; the container default is itself. */
+/**
+ * The host default is the api service's published origin, which {@link hostApiUrl} resolves: `API_PUBLIC_URL`, else
+ * `API_PORT` as a localhost origin, from the process environment and then from the repository root's `.env`, and this
+ * literal — the compose file's own `API_PORT` default — last. The container default is itself.
+ */
 const DEFAULT_HOST_API_URL = 'http://localhost:3000';
 const DEFAULT_CONTAINER_API_URL = 'http://127.0.0.1:3000';
 const ZK_CONFIG_PATH = '/v1/zk/config';
@@ -286,7 +291,7 @@ function parseArguments(argv: readonly string[]): Invocation | null {
  * against exactly the salt and registry it publishes.
  */
 async function prepare(invocation: Invocation): Promise<string> {
-  const apiUrl = apiUrlFor(invocation, DEFAULT_HOST_API_URL);
+  const apiUrl = apiUrlFor(invocation, hostApiUrl(DEFAULT_HOST_API_URL));
   const config = await fetchZkConfig(apiUrl);
   const testIssuer = testIssuerId();
   if (!config.issuers.some((issuer) => issuer.issuerId === testIssuer)) {
@@ -891,6 +896,44 @@ function gibibytes(bytes: number): number {
 
 function thousands(value: number): string {
   return value.toLocaleString('en-US');
+}
+
+/**
+ * The origin the host half reaches the api service on: `API_PUBLIC_URL` when it is set and non-empty, else `API_PORT`
+ * as a localhost origin, from the process environment before the repository root's `.env`, because compose lets a
+ * shell value override the file it interpolates, and that file is where every checkout writes the port block it took.
+ * A port that is not a run of digits is no port, so it is ignored rather than interpolated into an origin, and
+ * `fallback` — the compose file's own default — answers when neither key is set in either place.
+ */
+function hostApiUrl(fallback: string): string {
+  const fromKeys = (url: string | undefined, port: string | undefined): string | null => {
+    if (url !== undefined && url !== '') return url;
+    return port !== undefined && /^\d+$/.test(port) ? `http://localhost:${port}` : null;
+  };
+  const file = new Map<string, string>();
+  try {
+    for (const line of readFileSync(path.join(findRepoRoot(), '.env'), 'utf8').split('\n')) {
+      const entry = line.trim();
+      const separator = entry.indexOf('=');
+      // Blank lines, comments and anything without a key are not pairs; a value may be quoted, and a repeated
+      // key keeps its last value, which is what compose's own interpolation does.
+      if (entry.startsWith('#') || separator < 1) continue;
+      file.set(
+        entry.slice(0, separator).trim(),
+        entry
+          .slice(separator + 1)
+          .trim()
+          .replace(/^(['"])(.*)\1$/, '$2'),
+      );
+    }
+  } catch {
+    // A checkout whose `.env` is absent or unreadable is the ordinary case for a script started by hand, and the
+    // process environment read below still answers.
+  }
+  const configured =
+    fromKeys(process.env.API_PUBLIC_URL, process.env.API_PORT) ??
+    fromKeys(file.get('API_PUBLIC_URL'), file.get('API_PORT'));
+  return (configured ?? fallback).replace(/\/+$/, '');
 }
 
 function apiUrlFor(invocation: Invocation, fallback: string): string {
