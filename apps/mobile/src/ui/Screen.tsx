@@ -129,7 +129,10 @@ export function Screen({
         }
       : {};
 
-  // The skip link is the container's first child, so it is the screen content's first Tab stop, and it paints nothing until a keyboard reaches it.
+  // The skip link is the container's first child, so it is the screen content's first Tab stop. While the keyboard
+  // holds focus here it is laid out in the flow and takes its own space above the content region, so the region
+  // starts under its bottom edge and the pill can never cover a line of content at any scroll offset; at rest it is
+  // out of the flow and clipped to a single pixel, painting nothing.
   const skipLink =
     Platform.OS === 'web' ? (
       <Pressable
@@ -140,7 +143,6 @@ export function Screen({
         onFocus={() => setSkipLinkFocused(true)}
         onPress={focusContent}
         style={[
-          styles.skipLink,
           skipLinkFocused ? styles.skipLinkRevealed : styles.skipLinkHidden,
           webFocusRingReset,
         ]}
@@ -211,25 +213,29 @@ const styles = StyleSheet.create({
     lineHeight: typography.heading.lineHeight,
     fontWeight: fontWeights.bold,
   },
-  // The skip link is out of the flow in both states — absolutely positioned over the top of the content region —
-  // so revealing it shifts nothing below it, and it sits one padding step in from the content's own edge.
-  skipLink: {
+  // At rest the skip link is out of the flow, clipped to a single pixel and hung one padding step in from the
+  // content's own edge, so it paints nothing and shifts nothing while it waits for the keyboard: still in the tab
+  // order and still in the accessibility tree, where `display: none` would take the link out of both and leave the
+  // page with no bypass.
+  skipLinkHidden: {
     position: 'absolute',
     left: spacing.lg,
     top: spacing.sm,
     zIndex: 1,
-  },
-  // At rest it is a single clipped pixel: still in the tab order and still in the accessibility
-  // tree, where `display: none` would take the link out of both and leave the page with no bypass.
-  skipLinkHidden: {
     height: 1,
     overflow: 'hidden',
     width: 1,
   },
   // Focused it is the pill an outlined control paints: the `surface` fill under `primary` text (6.59:1), and the
   // boundary is the app's ring rather than the neutral `border`, because the pill is only on screen while the
-  // keyboard is on it.
+  // keyboard is on it. It holds focus in the flow, where the content region below starts under the pill's bottom
+  // edge plus one spacing step, so the pill can never cover a line of content at any scroll offset; hugging its own
+  // label keeps it the width of the words it shows instead of stretching across the container.
   skipLinkRevealed: {
+    alignSelf: 'flex-start',
+    marginBottom: spacing.md,
+    marginLeft: spacing.lg,
+    marginTop: spacing.sm,
     backgroundColor: colors.surface,
     borderColor: colors.focusRing,
     borderRadius: radii.md,
